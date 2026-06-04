@@ -5,9 +5,9 @@
     </requires>
     <extension point="xbmc.addon.repository" name="Bowserr Repository">
         <dir>
-            <info compressed="false">https://bowserrdev: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@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml</info>
-            <checksum>https://bowserrdev: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@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml.md5</checksum>
-            <datadir zip="true">https://bowserrdev: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@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/</datadir>
+            <info compressed="false">https://raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml</info>
+            <checksum>https://raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml.md5</checksum>
+            <datadir zip="true">https://raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/</datadir>
         </dir>
     </extension>
     <extension point="xbmc.addon.metadata">
