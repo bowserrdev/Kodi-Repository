@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="repository.myprivate" name="Bowserr Repo" version="1.0.0" provider-name="Bowserr">
+    <requires>
+        <import addon="xbmc.addon" version="12.0.0"/>
+    </requires>
+    <extension point="xbmc.addon.repository" name="Bowserr Repository">
+        <dir>
+            <info compressed="false">https://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@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml</info>
+            <checksum>https://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@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml.md5</checksum>
+            <datadir zip="true">https://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@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/</datadir>
+        </dir>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+        <summary>Repo privata</summary>
+        <description>Sincronizzazione personale dei miei dispositivi</description>
+        <platform>all</platform>
+    </extension>
+</addon>
