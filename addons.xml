@@ -30,9 +30,9 @@
     </requires>
     <extension point="xbmc.addon.repository" name="Bowserr Repository">
         <dir>
-            <info compressed="false">https://***RIMOSSO***@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml</info>
-            <checksum>https://***RIMOSSO***@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml.md5</checksum>
-            <datadir zip="true">https://***RIMOSSO***@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/</datadir>
+            <info compressed="false">https://bowserrdev:***RIMOSSO***@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml</info>
+            <checksum>https://bowserrdev:***RIMOSSO***@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml.md5</checksum>
+            <datadir zip="true">https://bowserrdev:***RIMOSSO***@raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/</datadir>
         </dir>
     </extension>
     <extension point="xbmc.addon.metadata">
