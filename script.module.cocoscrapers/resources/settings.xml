@@ -59,6 +59,28 @@
 					<control type="button" format="action"/>
 				</setting>
 			</group>
+			<group id="3">
+				<setting id="proxy.enabled" type="boolean" label="32580" help="">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="proxy.url" type="string" label="32581" help="" parent="proxy.enabled">
+					<level>0</level>
+					<default/>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="proxy.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="edit" format="string">
+						<heading>32581</heading>
+					</control>
+				</setting>
+			</group>
 		</category>
 		<category id="torrents" label="32052" help="32538">
 			<group id="1">

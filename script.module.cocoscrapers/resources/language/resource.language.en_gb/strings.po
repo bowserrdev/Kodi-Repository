@@ -762,3 +762,11 @@ msgstr ""
 msgctxt "#32578"
 msgid "PROWLARR url"
 msgstr ""
+
+msgctxt "#32580"
+msgid "Use Proxy"
+msgstr ""
+
+msgctxt "#32581"
+msgid "Proxy URL (e.g. http://user:pass@host:port)"
+msgstr ""
