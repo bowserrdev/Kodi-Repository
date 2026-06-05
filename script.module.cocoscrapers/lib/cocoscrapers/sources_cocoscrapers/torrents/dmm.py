@@ -119,22 +119,26 @@ class source(BaseTorrentScraper):
 			except:
 				data = None
 			if data:
+				n = len(data.get('results', []))
+				log_utils.log('DMM page %s: %s results' % (page, n))
 				out.extend(r for r in data.get('results', []) if r.get('hash'))
 
 		page0 = []
 		data0 = self._get(api_url, _build_params(0), headers)
 		if data0:
 			page0.extend(r for r in data0.get('results', []) if r.get('hash'))
+		log_utils.log('DMM page0 raw results: %s for imdb: %s' % (len(page0), imdb_id))
 
-		if len(page0) < 30 or not self._proxy:
+		if not self._proxy:
 			return page0
 
-		page1, page2 = [], []
-		t1 = Thread(target=_fetch_proxy, args=(1, page1))
-		t2 = Thread(target=_fetch_proxy, args=(2, page2))
-		t1.start(); t2.start()
-		t1.join(); t2.join()
-		return page0 + page1 + page2
+		extra_pages = [[] for _ in range(10)]
+		threads = [Thread(target=_fetch_proxy, args=(i+1, extra_pages[i])) for i in range(10)]
+		[t.start() for t in threads]
+		[t.join() for t in threads]
+		results = page0
+		for p in extra_pages: results += p
+		return results
 
 	@staticmethod
 	def _parse_item(item):
