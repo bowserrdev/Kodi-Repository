@@ -8,7 +8,7 @@ from apis.easydebrid_api import EasyDebridAPI
 from apis.torbox_api import TorBoxAPI
 from modules import kodi_utils
 from modules.settings import enabled_debrids_check, authorized_debrid_check
-# logger = kodi_utils.logger
+logger = kodi_utils.logger
 
 show_busy_dialog, hide_busy_dialog, notification = kodi_utils.show_busy_dialog, kodi_utils.hide_busy_dialog, kodi_utils.notification
 debrid_list = [('Real-Debrid', 'rd'), ('Premiumize.me', 'pm'), ('AllDebrid', 'ad'), ('Offcloud', 'oc'), ('EasyDebrid', 'ed'), ('TorBox', 'tb')]
@@ -111,6 +111,8 @@ def ED_check(hash_list, cached_hashes):
 
 def TB_check(hash_list, cached_hashes):
 	cached_hashes, unchecked_hashes = cached_check(hash_list, cached_hashes, 'tb')
+	logger('TB_check', 'hash_list: %s, already_cached: %s, unchecked: %s' % (
+        len(hash_list), len(cached_hashes), len(unchecked_hashes)))
 	if unchecked_hashes:
 		results = TorBoxAPI().check_cache(unchecked_hashes)
 		if results:
@@ -119,6 +121,7 @@ def TB_check(hash_list, cached_hashes):
 			process_append = process_list.append
 			try:
 				results = [i['hash'].lower() for i in results['data']]
+				logger('TB_check', 'TB returned %s cached hashes' % len(results))
 				for h in unchecked_hashes:
 					cached = 'False'
 					if h in results:

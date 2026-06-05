@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addons>
-<addon id="plugin.video.fenlight" name="Fen Light" provider-name="Tikipeter" version="2.0.08">
+<addon id="plugin.video.fenlight" name="Fen Light" provider-name="Tikipeter" version="2.0.09">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
         <import addon="script.module.requests" version="2.19.1"/>
@@ -24,7 +24,7 @@
         <news>INFO: For latest changes see Changelog within Tools of add-on.</news>
     </extension>
 </addon>
-<addon id="repository.myprivate" name="Bowserr Repo" version="1.0.1" provider-name="Bowserr">
+<addon id="repository.myprivate" name="Bowserr Repo" version="1.0.2" provider-name="Bowserr">
     <requires>
         <import addon="xbmc.addon" version="12.0.0"/>
     </requires>
