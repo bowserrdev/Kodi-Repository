@@ -71,6 +71,8 @@ class source(BaseTorrentScraper):
 		self.min_seeders = 0
 		proxy = getSetting('proxy.url') if getSetting('proxy.enabled') == 'true' else None
 		self._proxy = proxy if proxy else None
+		log_utils.log('DMM proxy — enabled: "%s" url: "%s" active: "%s"' % (
+    		getSetting('proxy.enabled'), getSetting('proxy.url'), str(self._proxy)))
 
 	def _get(self, url, params, headers, use_proxy=False):
 		try:

@@ -209,6 +209,11 @@
 					<default>false</default>
 					<control type="toggle"/>
 				</setting>
+				<setting id="provider.dmm" type="boolean" label="32582" help="">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
 				<setting id="provider.eztv" type="boolean" label="32107" help="">
 					<level>0</level>
 					<default>true</default>

@@ -118,7 +118,7 @@ def TB_check(hash_list, cached_hashes):
 			process_list = []
 			process_append = process_list.append
 			try:
-				results = [i['hash'] for i in results['data']]
+				results = [i['hash'].lower() for i in results['data']]
 				for h in unchecked_hashes:
 					cached = 'False'
 					if h in results:
