@@ -8,7 +8,8 @@ from caches.settings_cache import get_setting
 from modules import kodi_utils, source_utils
 from modules.debrid import RD_check, PM_check, AD_check, OC_check, ED_check ,TB_check, query_local_cache
 from modules.utils import clean_file_name
-# logger = kodi_utils.logger
+from modules.settings import preferred_language, meta_language
+logger = kodi_utils.logger
 
 normalize, get_file_info, pack_enable_check = source_utils.normalize, source_utils.get_file_info, source_utils.pack_enable_check
 sleep, xbmc_monitor, get_property, set_property = kodi_utils.sleep, kodi_utils.xbmc_monitor, kodi_utils.get_property, kodi_utils.set_property
@@ -56,13 +57,13 @@ class source:
 			if self.media_type == 'movie':
 				self.season_divider, self.show_divider = 0, 0
 				self.data = {'imdb': info['imdb_id'], 'title': self.title, 'aliases': aliases, 'year': self.year,
-				'debrid_service': self.debrid_service, 'debrid_token': self.debrid_token}
+				'debrid_service': self.debrid_service, 'debrid_token': self.debrid_token, 'preferred_language': preferred_language(), 'meta_language': meta_language()}
 			else:
 				try: self.season_divider = [int(x['episode_count']) for x in self.meta['season_data'] if int(x['season_number']) == int(self.meta['season'])][0]
 				except: self.season_divider = 1
 				self.show_divider = int(self.meta['total_aired_eps'])
 				self.data = {'imdb': info['imdb_id'], 'tvdb': info['tvdb_id'], 'tvshowtitle': self.title, 'aliases': aliases,'year': self.year,
-							'title': ep_name, 'season': str(self.season), 'episode': str(self.episode), 'debrid_service': self.debrid_service, 'debrid_token': self.debrid_token}
+							'title': ep_name, 'season': str(self.season), 'episode': str(self.episode), 'debrid_service': self.debrid_service, 'debrid_token': self.debrid_token, 'preferred_language': preferred_language(), 'meta_language': meta_language()}
 		except: return []
 		return self.get_sources()
 
@@ -193,6 +194,9 @@ class source:
 			cached = function(hash_list, cached_hashes)
 			if not self.background: self.process_quality_count_final([i for i in results if i['hash'] in cached])
 			final_results.extend([dict(i, **{'cache_provider': provider if i['hash'] in cached else 'Uncached %s' % provider, 'debrid':provider}) for i in results])
+			for i in results:
+				logger('FenLight', 'DEBRID %s %s: "%s" | hash=%s' % (provider, 'CACHED' if i['hash'] in cached else 'UNCACHED', i.get('name', ''), i['hash']))
+		
 		def _debrid_check_dialog():
 			self.progress_dialog.reset_is_cancelled()
 			start_time, timeout = time.time(), 20

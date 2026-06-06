@@ -166,7 +166,8 @@ def check_title(title, aliases, release_title, hdlr, year, years=None): # non pa
 					r's\d{1,3}e\d{1,3}[-.]\d{1,3}(?!p|bit|gb)(?!\d{1,3})',
 					r's\d{1,3}[-.]e\d{1,3}[-.]e\d{1,3}',
 					r'season[.-]?\d{1,3}[.-]?ep[.-]?\d{1,3}[-.]ep[.-]?\d{1,3}',
-					r'season[.-]?\d{1,3}[.-]?episode[.-]?\d{1,3}[-.]episode[.-]?\d{1,3}') # may need to add "to", "thru"
+					r'season[.-]?\d{1,3}[.-]?episode[.-]?\d{1,3}[-.]episode[.-]?\d{1,3}',
+					r's\d{1,3}x\d{1,3}[-]\d{1,3}(?!p|bit|gb)(?!\d{1,3})') # may need to add "to", "thru"
 			for regex in range_regex:
 				if bool(re.search(regex, release_title, re.I)): return False
 		return True
@@ -207,7 +208,6 @@ def filter_season_pack(show_title, aliases, year, season, release_title):
 				from cocoscrapers.modules import log_utils
 				log_utils.error()
 	try:
-		# show_title = show_title.replace('!', '').replace('(', '').replace(')', '').replace('&', 'and')
 		show_title = show_title.replace('!', '').replace('(', '').replace(')', '').replace('&', 'and').replace(year, '') # year only in meta title if an addon custom query added it
 		if show_title not in title_list: title_list_append(show_title)
 
@@ -219,8 +219,17 @@ def filter_season_pack(show_title, aliases, year, season, release_title):
 		season_full_check_ns = '.season%s.' % season
 		season_full_fill_check = '.season.%s.' % season_fill
 		season_full_fill_check_ns = '.season%s.' % season_fill
-		split_list = (season_check, season_fill_check, season_fill_checke, '.' + season + '.season', 'total.season', 'season', 'the.complete', 'complete', year)
-		string_list = (season_check, season_fill_check, season_fill_checke, season_full_check, season_full_check_ns, season_full_fill_check, season_full_fill_check_ns)
+		stagione_check = '.stagione.%s.' % season
+		stagione_fill_check = '.stagione.%s.' % season_fill
+		stagioni_check = '.stagioni.%s.' % season
+		stagioni_fill_check = '.stagioni.%s.' % season_fill
+		split_list = (season_check, season_fill_check, season_fill_checke, stagione_check, stagione_fill_check,
+					  's%sx' % season, 's%sx' % season_fill,
+					  '.' + season + '.season', 'total.season', 'stagioni', 'stagione', 'season',
+					  'the.complete', 'complete', 'completa', 'completo', year)
+		string_list = (season_check, season_fill_check, season_fill_checke, season_full_check, season_full_check_ns,
+					   season_full_fill_check, season_full_fill_check_ns,
+					   stagione_check, stagione_fill_check, stagioni_check, stagioni_fill_check)
 
 		release_title = release_title_format(release_title)
 		t = release_title.replace('-', '.')
@@ -231,6 +240,7 @@ def filter_season_pack(show_title, aliases, year, season, release_title):
 # remove single episodes ONLY (returned in single ep scrape), keep episode ranges as season packs
 		episode_regex = (
 				r's\d{1,3}e\d{1,3}[-.](?!\d{2,3}[-.])(?!e\d{1,3})(?!\d{2}gb)',
+				r's\d{1,3}x\d{1,3}[-.](?!\d{2,3}[-.])(?!\d{2}gb)',  # NxM single ep (e.g. 3x04)
 				r'season[.-]?\d{1,3}[.-]?ep[.-]?\d{1,3}[-.](?!\d{2,3}[-.])(?!e\d{1,3})(?!\d{2}gb)',
 				r'season[.-]?\d{1,3}[.-]?episode[.-]?\d{1,3}[-.](?!\d{2,3}[-.])(?!e\d{1,3})(?!\d{2}gb)')
 		for item in episode_regex:
@@ -240,14 +250,13 @@ def filter_season_pack(show_title, aliases, year, season, release_title):
 		range_regex = (
 				r's\d{1,3}e(\d{1,3})[-.]e(\d{1,3})',
 				r's\d{1,3}e(\d{1,3})[-.](\d{1,3})(?!p|bit|gb)(?!\d{1,3})',
+				r's\d{1,3}x(\d{1,3})-(\d{1,3})(?!p|bit|gb)(?!\d{1,3})',  # SxxXep-ep range (e.g. S03x01-14)
 				r's\d{1,3}[-.]e(\d{1,3})[-.]e(\d{1,3})',
 				r'season[.-]?\d{1,3}[.-]?ep[.-]?(\d{1,3})[-.]ep[.-]?(\d{1,3})',
-				r'season[.-]?\d{1,3}[.-]?episode[.-]?(\d{1,3})[-.]episode[.-]?(\d{1,3})') # may need to add "to", "thru"
+				r'season[.-]?\d{1,3}[.-]?episode[.-]?\d{1,3}[-.]episode[.-]?\d{1,3}') # may need to add "to", "thru"
 		for regex in range_regex:
 			match = re.search(regex, release_title)
 			if match:
-				# from cocoscrapers.modules import log_utils
-				# log_utils.log('pack episode range found -- > release_title=%s' % release_title)
 				episode_start = int(match.group(1))
 				episode_end = int(match.group(2))
 				return True, episode_start, episode_end
@@ -266,7 +275,11 @@ def filter_season_pack(show_title, aliases, year, season, release_title):
 				season_full_check.rstrip('.') + r'[.-]\d{1}[.-]\d{1,2}(?:[.-]|$)', # "season.1.9.09."
 				season_full_check.rstrip('.') + r'[.-]\d{3}[.-](?:19|20)[0-9]{2}(?:[.-]|$)', # single season followed by 3 digit followed by 4 digit year ex."season.1.004.1971"
 				season_full_fill_check.rstrip('.') + r'[.-]\d{3}[.-]\d{3}(?:[.-]|$)', # 2 digit season followed by 3 digit dash range ex."season.10.001-025."
-				season_full_fill_check.rstrip('.') + r'[.-]season[.-]\d{2}(?:[.-]|$)' # 2 digit season followed by 2 digit season range ex."season.01-season.09."
+				season_full_fill_check.rstrip('.') + r'[.-]season[.-]\d{2}(?:[.-]|$)', # 2 digit season followed by 2 digit season range ex."season.01-season.09."
+				stagione_check.rstrip('.') + r'[.-](?:stagion[ei]|s)[.-]?\d{1,2}(?:[.-]|$)', # ".stagione.3-stagione.4" or ".stagione.3.s4"
+				stagione_check.rstrip('.') + r'[.-]([2-9]{1}|[1-3]{1}[0-9]{1})(?:[.-]|$)', # ".stagione.3.4."
+				stagione_fill_check.rstrip('.') + r'[.-](?:stagion[ei]|s)[.-]?\d{2}(?:[.-]|$)',
+				stagione_fill_check.rstrip('.') + r'[.-]\d{1,2}(?:[.-]|$)', # ".stagione.03.04."
 					):
 				if bool(re.search(item, release_title)): return False, 0, 0
 			return True, 0, 0
@@ -290,11 +303,11 @@ def filter_show_pack(show_title, aliases, imdb, year, season, release_title, tot
 				from cocoscrapers.modules import log_utils
 				log_utils.error()
 	try:
-		# show_title = show_title.replace('!', '').replace('(', '').replace(')', '').replace('&', 'and')
 		show_title = show_title.replace('!', '').replace('(', '').replace(')', '').replace('&', 'and').replace(year, '') # year only in meta title if an addon custom query added it
 		if show_title not in title_list: title_list_append(show_title)
 
-		split_list = ('.all.seasons', 'seasons', 'season', 'the.complete', 'complete', 'all.torrent', 'total.series', 'tv.series', 'series', 'edited', 's1', 's01', year)#s1 or s01 used so show pack only kept that begin with 1
+		split_list = ('.all.seasons', 'stagioni', 'stagione', 'seasons', 'season', 'the.complete', 'complete',
+					  'completa', 'completo', 'all.torrent', 'total.series', 'tv.series', 'series', 'edited', 's1', 's01', year)
 		release_title = release_title_format(release_title)
 		t = release_title.replace('-', '.')
 		for i in split_list: t = t.split(i)[0]
@@ -306,18 +319,23 @@ def filter_show_pack(show_title, aliases, imdb, year, season, release_title, tot
 				r's\d{1,3}e\d{1,3}',
 				r's[0-3]{1}[0-9]{1}[.-]e\d{1,2}',
 				r's\d{1,3}[.-]\d{1,3}e\d{1,3}',
+				r's\d{1,3}x\d{1,3}(?![-]\d)',  # NxM single ep, not a range like S03x01-14
 				r'season[.-]?\d{1,3}[.-]?ep[.-]?\d{1,3}',
 				r'season[.-]?\d{1,3}[.-]?episode[.-]?\d{1,3}')
 		for item in episode_regex:
 			if bool(re.search(item, release_title)):
 				return False, 0
 
-# remove season ranges that do not begin at 1
-		season_range_regex = (
-				r'(?:season|seasons|s)[.-]?(?:0?[2-9]{1}|[1-3]{1}[0-9]{1})(?:[.-]?to[.-]?|[.-]?thru[.-]?|[.-])(?:season|seasons|s|)[.-]?(?:0?[3-9]{1}(?!\d{2}p)|[1-3]{1}[0-9]{1}(?!\d{2}p))',) # seasons.5-6, seasons5.to.6, seasons.5.thru.6, season.2-9.s02-s09.1080p
-		for item in season_range_regex:
-			if bool(re.search(item, release_title)):
+# detect season ranges (NxM or stagione/season N-M), accept only if target season is within range
+		range_pattern = re.compile(
+			r'(?:stagion[ei]|season|seasons|s)[.-]?(\d{1,2})(?:[.-]?(?:to|thru)[.-]?|-(?!\d+-))(?:stagion[ei]|season|seasons|s|)[.-]?(\d{1,2})(?!\d{2}p)',
+			re.I)
+		m_range = range_pattern.search(release_title)
+		if m_range:
+			start_s, end_s = int(m_range.group(1)), int(m_range.group(2))
+			if not (start_s <= int(season) <= end_s):
 				return False, 0
+			return True, end_s
 
 # remove single seasons - returned in seasonPack scrape
 		season_regex = (
@@ -331,7 +349,12 @@ def filter_show_pack(show_title, aliases, imdb, year, season, release_title, tot
 				r'season[.-]?\d{1,2}[.-](?:19|20)[0-9]{2}', # single season followed by 4 digit year ex."season.1.1971", "season.01.1971", or "season01.1971"
 				r'season[.-]?\d{1,2}[.-]\d{3}[.-]{1,2}(?:19|20)[0-9]{2}', # single season followed by 3 digits then 4 digit year ex."season.1.004.1971" or "season.01.004.1971" (comic book format)
 				r'(?<!thru)(?<!to)(?<!\d{2})[.-]s\d{2}[.-]complete', # ".s01.complete" not preceded by "thru", "to", or 2 digit number
-				r'(?<!thru)(?<!to)(?<!s\d{2})[.-]s\d{2}(?![.-]thru)(?![.-]to)(?![.-]s\d{2})(?![.-]\d{2}[.-])' # .s02. not preceded by "thru", "to", or "s01". Not followed by ".thru", ".to", ".s02", "-s02", ".02.", or "-02."
+				r'(?<!thru)(?<!to)(?<!s\d{2})[.-]s\d{2}(?![.-]thru)(?![.-]to)(?![.-]s\d{2})(?![.-]\d{2}[.-])', # .s02. not preceded by "thru", "to", or "s01". Not followed by ".thru", ".to", ".s02", "-s02", ".02.", or "-02."
+				r'stagion[ei][.-]?\d{1,2}[.-]completa',
+				r'stagion[ei][.-]?\d{1,2}[.-]s\d{1,2}',
+				r'stagion[ei][.-]?\d{1,2}[.-]\d{3,4}p{0,1}',
+				r'stagion[ei][.-]?\d{1,2}[.-](?!thru|to|\d{1,2}[.-])',
+				r'stagion[ei][.-]?\d{1,2}[.]?$',
 				)
 		for item in season_regex:
 			if bool(re.search(item, release_title)):

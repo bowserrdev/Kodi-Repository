@@ -172,16 +172,32 @@ class source(BaseTorrentScraper):
 				self._queue.put_nowait(files)
 				self._queue.put_nowait(files)
 
+		log_utils.log('DMM: %s raw results for "%s" (imdb=%s)' % (len(files), self.title, data.get('imdb', '?')))
 		for item in files:
 			try:
+				raw_title = item.get('title') or item.get('filename') or item.get('name') or ''
 				hash, name, seeders, dsize, isize, url = self._parse_item(item)
-				if not name or not hash: continue
-				if self.min_seeders > seeders: continue
-				if not source_utils.check_title(self.title, self.aliases, name, self.hdlr, self.year, self.years): continue
+				if not name or not hash:
+					log_utils.log('DMM SKIP [empty after clean_name] raw="%s"' % raw_title)
+					continue
+				log_utils.log('DMM RAW: "%s" | hash=%s | size=%s' % (name, hash, isize or '?'))
+				if self.min_seeders > seeders:
+					log_utils.log('DMM SKIP [seeders=%s < min=%s]: "%s"' % (seeders, self.min_seeders, name))
+					continue
+				if not source_utils.check_title(self.title, self.aliases, name, self.hdlr, self.year, self.years):
+					log_utils.log('DMM SKIP [title mismatch]: "%s"' % name)
+					continue
 				name_info = source_utils.info_from_name(name, self.title, self.year, self.hdlr, self.episode_title)
-				if source_utils.remove_lang(name_info, self.check_foreign_audio): continue
-				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables): continue
-				if not self.episode_title and self._is_episode_result(name): continue
+				if source_utils.remove_lang(name_info, self.check_foreign_audio):
+					log_utils.log('DMM SKIP [language filter]: "%s"' % name)
+					continue
+				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables):
+					log_utils.log('DMM SKIP [undesirable tag]: "%s"' % name)
+					continue
+				if not self.episode_title and self._is_episode_result(name):
+					log_utils.log('DMM SKIP [episode in movie search]: "%s"' % name)
+					continue
+				log_utils.log('DMM KEPT: "%s" | hash=%s' % (name, hash))
 				self._results.append(self._build_result('dmm', hash, name, name_info, url, seeders, dsize, isize))
 			except:
 				source_utils.scraper_error('DMM')
@@ -202,32 +218,47 @@ class source(BaseTorrentScraper):
 			self._log_stats('DMM', pack=True)
 			return self._results
 
+		log_utils.log('DMM packs: %s raw results for "%s"' % (len(files), self.title))
 		for item in files:
 			try:
+				raw_title = item.get('title') or item.get('filename') or item.get('name') or ''
 				hash, name, seeders, dsize, isize, url = self._parse_item(item)
-				if not name or not hash: continue
-				if self.min_seeders > seeders: continue
+				if not name or not hash:
+					log_utils.log('DMM SKIP [empty after clean_name] raw="%s"' % raw_title)
+					continue
+				if self.min_seeders > seeders:
+					log_utils.log('DMM SKIP [seeders=%s < min=%s]: "%s"' % (seeders, self.min_seeders, name))
+					continue
 
 				episode_start, episode_end, last_season = 0, 0, None
 				if not search_series:
 					if not bypass_filter:
 						valid, episode_start, episode_end = source_utils.filter_season_pack(
 							self.title, self.aliases, self.year, self.season_x, name)
-						if not valid: continue
+						if not valid:
+							log_utils.log('DMM SKIP [filter_season_pack]: "%s"' % name)
+							continue
 					package = 'season'
 				else:
 					if not bypass_filter:
 						valid, last_season = source_utils.filter_show_pack(
 							self.title, self.aliases, imdb, self.year, self.season_x, name, total_seasons)
-						if not valid: continue
+						if not valid:
+							log_utils.log('DMM SKIP [filter_show_pack]: "%s"' % name)
+							continue
 					else:
 						last_season = total_seasons
 					package = 'show'
 
 				name_info = source_utils.info_from_name(name, self.title, self.year, season=self.season_x, pack=package)
-				if source_utils.remove_lang(name_info, self.check_foreign_audio): continue
-				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables): continue
+				if source_utils.remove_lang(name_info, self.check_foreign_audio):
+					log_utils.log('DMM SKIP [language filter]: "%s"' % name)
+					continue
+				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables):
+					log_utils.log('DMM SKIP [undesirable tag]: "%s"' % name)
+					continue
 
+				log_utils.log('DMM KEPT (pack=%s): "%s" | hash=%s' % (package, name, hash))
 				self._results.append(self._build_pack_result(
 					'dmm', hash, name, name_info, url, seeders, dsize, isize,
 					package, episode_start, episode_end, last_season, search_series))
