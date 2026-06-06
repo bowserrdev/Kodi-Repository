@@ -71,10 +71,6 @@ msgctxt "#32016"
 msgid "Remove Undesirables"
 msgstr ""
 
-msgctxt "#32017"
-msgid "Remove identified Foreign single audio sources"
-msgstr ""
-
 msgctxt "#32018"
 msgid "Username"
 msgstr ""

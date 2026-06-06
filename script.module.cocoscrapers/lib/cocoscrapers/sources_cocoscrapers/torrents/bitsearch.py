@@ -17,11 +17,12 @@ class source(BaseTorrentScraper):
 		self.base_link = 'https://bitsearch.to'
 		self.search_link = '/search?q=%s&sort=size'
 		self.min_seeders = 0
+		self._headers = {'Accept-Language': 'en-US,en;q=0.9'}
 
 	@staticmethod
-	def _fetch_rows(page_url):
+	def _fetch_rows(page_url, headers):
 		try:
-			results = client.request(page_url, timeout=7)
+			results = client.request(page_url, timeout=7, headers=headers)
 			if not results or '/torrent/' not in results: return []
 			cards = re.split(r'<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6', results)
 			return [c for c in cards[1:] if 'magnet:' in c]
@@ -52,27 +53,42 @@ class source(BaseTorrentScraper):
 		except: return None
 
 	def get_sources(self, page_url):
-		for row in self._fetch_rows(page_url):
+		rows = self._fetch_rows(page_url, self._headers)
+		log_utils.log('BITSEARCH page "%s": %s rows' % (page_url, len(rows)))
+		for row in rows:
 			try:
 				parsed = self._parse_row(row)
 				if not parsed: continue
 				url, hash, name, seeders, dsize, isize = parsed
-				if not source_utils.check_title(self.title, self.aliases, name, self.hdlr, self.year): continue
+				if not name or not hash: continue
+				log_utils.log('BITSEARCH RAW: "%s" | hash=%s | seeders=%s' % (name, hash, seeders))
+				if not source_utils.check_title(self.title, self.aliases, name, self.hdlr, self.year):
+					log_utils.log('BITSEARCH SKIP [title mismatch]: "%s"' % name)
+					continue
 				name_info = source_utils.info_from_name(name, self.title, self.year, self.hdlr, self.episode_title)
-				if source_utils.remove_lang(name_info, self.check_foreign_audio): continue
-				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables): continue
-				if not self.episode_title and self._is_episode_result(name): continue
-				if self.min_seeders > seeders: continue
+				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables):
+					log_utils.log('BITSEARCH SKIP [undesirable tag]: "%s"' % name)
+					continue
+				if not self.episode_title and self._is_episode_result(name):
+					log_utils.log('BITSEARCH SKIP [episode in movie search]: "%s"' % name)
+					continue
+				if self.min_seeders > seeders:
+					log_utils.log('BITSEARCH SKIP [seeders=%s < min=%s]: "%s"' % (seeders, self.min_seeders, name))
+					continue
+				log_utils.log('BITSEARCH KEPT: "%s" | hash=%s' % (name, hash))
 				self._results.append(self._build_result('bitsearch', hash, name, name_info, url, seeders, dsize, isize))
 			except:
 				source_utils.scraper_error('BITSEARCH')
 
 	def get_sources_packs(self, link):
-		for row in self._fetch_rows(link):
+		rows = self._fetch_rows(link, self._headers)
+		log_utils.log('BITSEARCH pack page "%s": %s rows' % (link, len(rows)))
+		for row in rows:
 			try:
 				parsed = self._parse_row(row)
 				if not parsed: continue
 				url, hash, name, seeders, dsize, isize = parsed
+				if not name or not hash: continue
 				if self.min_seeders > seeders: continue
 
 				episode_start, episode_end, last_season = 0, 0, None
@@ -80,20 +96,26 @@ class source(BaseTorrentScraper):
 					if not self.bypass_filter:
 						valid, episode_start, episode_end = source_utils.filter_season_pack(
 							self.title, self.aliases, self.year, self.season_x, name)
-						if not valid: continue
+						if not valid:
+							log_utils.log('BITSEARCH SKIP [filter_season_pack]: "%s"' % name)
+							continue
 					package = 'season'
 				else:
 					if not self.bypass_filter:
 						valid, last_season = source_utils.filter_show_pack(
 							self.title, self.aliases, self.imdb, self.year, self.season_x, name, self.total_seasons)
-						if not valid: continue
+						if not valid:
+							log_utils.log('BITSEARCH SKIP [filter_show_pack]: "%s"' % name)
+							continue
 					else: last_season = self.total_seasons
 					package = 'show'
 
 				name_info = source_utils.info_from_name(name, self.title, self.year, season=self.season_x, pack=package)
-				if source_utils.remove_lang(name_info, self.check_foreign_audio): continue
-				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables): continue
+				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables):
+					log_utils.log('BITSEARCH SKIP [undesirable tag]: "%s"' % name)
+					continue
 
+				log_utils.log('BITSEARCH KEPT (pack=%s): "%s" | hash=%s' % (package, name, hash))
 				self._results.append(self._build_pack_result(
 					'bitsearch', hash, name, name_info, url, seeders, dsize, isize,
 					package, episode_start, episode_end, last_season, self.search_series))
@@ -104,12 +126,20 @@ class source(BaseTorrentScraper):
 		self._reset()
 		if not data: return self._results
 		try:
-			if 'tvshowtitle' in data: self._init_episode_data(data)
+			is_tv = 'tvshowtitle' in data
+			if is_tv: self._init_episode_data(data)
 			else: self._init_movie_data(data)
 			self._init_filters()
-			query = '%s %s' % (re.sub(r'[^A-Za-z0-9\s\.-]+', '', self.title), self.hdlr)
-			base_url = '%s%s' % (self.base_link, self.search_link % quote_plus(query))
-			self._run_threads(self.get_sources, [base_url, base_url + '&page=2'])
+			cat = '3' if is_tv else '2'
+			pages = []
+			for idx, st in enumerate(self.search_titles):
+				q = '%s %s' % (re.sub(r'[^A-Za-z0-9\s\.-]+', '', st), self.hdlr)
+				base = '%s%s&category=%s' % (self.base_link, self.search_link % quote_plus(q), cat)
+				log_utils.log('BITSEARCH query[%s]: %s' % (idx, base))
+				pages.append(base)
+				if idx == 0:
+					pages += [base + '&page=%s' % p for p in range(2, 5)]
+			self._run_threads(self.get_sources, list(dict.fromkeys(pages)))
 		except:
 			source_utils.scraper_error('BITSEARCH')
 		self._log_stats('BITSEARCH')
@@ -125,12 +155,16 @@ class source(BaseTorrentScraper):
 			self.total_seasons = total_seasons
 			self.bypass_filter = bypass_filter
 
-			query = re.sub(r'[^A-Za-z0-9\s\.-]+', '', self.title)
-			if search_series:
-				queries = [query + ' Season', query + ' Complete']
-			else:
-				queries = [query + ' S%s' % self.season_xx, query + ' Season %s' % self.season_x]
-			links = ['%s%s' % (self.base_link, self.search_link % quote_plus(q)) for q in queries]
+			queries = []
+			for st in self.search_titles:
+				q = re.sub(r'[^A-Za-z0-9\s\.-]+', '', st)
+				if search_series:
+					queries += [q + ' Season', q + ' Complete']
+				else:
+					queries += [q + ' S%s' % self.season_xx, q + ' Season %s' % self.season_x]
+			links = list(dict.fromkeys(['%s%s&category=3' % (self.base_link, self.search_link % quote_plus(q)) for q in queries]))
+			for lnk in links:
+				log_utils.log('BITSEARCH pack query: %s' % lnk)
 			self._run_threads(self.get_sources_packs, links)
 		except:
 			source_utils.scraper_error('BITSEARCH')

@@ -26,6 +26,27 @@ class BaseTorrentScraper:
 	# Data init helpers
 	# ------------------------------------------------------------------ #
 
+	def _get_search_titles(self):
+		meta_lang = (self._meta_language or '').strip().lower()
+		en_title = next((a.get('title') for a in (self.aliases or [])
+						 if isinstance(a, dict) and a.get('country') == 'en'), None)
+		orig_title = next((a.get('title') for a in (self.aliases or [])
+						   if isinstance(a, dict) and a.get('country') == 'original'), None)
+		pref_title = None
+		if meta_lang:
+			pref_title = next((a.get('title') for a in (self.aliases or [])
+							   if isinstance(a, dict) and a.get('country', '').lower() == meta_lang), None)
+		seen, titles = set(), []
+		def _add(t):
+			if t and t.strip() and t.strip().lower() not in seen:
+				seen.add(t.strip().lower())
+				titles.append(t.strip())
+		_add(en_title or orig_title or self.title)
+		if orig_title: _add(orig_title)
+		if pref_title: _add(pref_title)
+		if not titles: _add(self.title)
+		return titles
+
 	def _init_episode_data(self, data):
 		self.title = data['tvshowtitle'].replace('&', 'and').replace('Special Victims Unit', 'SVU').replace('/', ' ').replace('$', 's')
 		self.episode_title = data['title']
@@ -35,6 +56,8 @@ class BaseTorrentScraper:
 		self.season_x = data['season']
 		self.season_xx = self.season_x.zfill(2)
 		self.years = None
+		self._meta_language = data.get('meta_language', '')
+		self.search_titles = self._get_search_titles()
 
 	def _init_movie_data(self, data):
 		self.title = data['title'].replace('&', 'and').replace('/', ' ').replace('$', 's')
@@ -43,6 +66,8 @@ class BaseTorrentScraper:
 		self.year = data['year']
 		self.aliases = data['aliases']
 		self.years = [str(int(self.year) - 1), str(self.year), str(int(self.year) + 1)]
+		self._meta_language = data.get('meta_language', '')
+		self.search_titles = self._get_search_titles()
 
 	def _init_pack_data(self, data):
 		self.title = data['tvshowtitle'].replace('&', 'and').replace('Special Victims Unit', 'SVU').replace('/', ' ').replace('$', 's')
@@ -51,10 +76,12 @@ class BaseTorrentScraper:
 		self.year = data['year']
 		self.season_x = data['season']
 		self.season_xx = self.season_x.zfill(2)
+		self._meta_language = data.get('meta_language', '')
+		self.search_titles = self._get_search_titles()
 
 	def _init_filters(self):
 		self.undesirables = source_utils.get_undesirables()
-		self.check_foreign_audio = source_utils.check_foreign_audio()
+		self.check_foreign_audio = False
 
 	# ------------------------------------------------------------------ #
 	# Threading helper
@@ -99,7 +126,7 @@ class BaseTorrentScraper:
 		return item
 
 	# ------------------------------------------------------------------ #
-	# Episode filter — per movie queries che restituiscono TV results
+	# Episode filter
 	# ------------------------------------------------------------------ #
 
 	_EP_STRINGS = [r'[.-]s\d{2}e\d{2}([.-]?)', r'[.-]s\d{2}([.-]?)', r'[.-]season[.-]?\d{1,2}[.-]?']

@@ -101,7 +101,7 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 		alternative_titles = data_get('alternative_titles', [])
 		if alternative_titles:
 			alternatives = alternative_titles['titles']
-			alternative_titles = [i['title'] for i in alternatives if i['iso_3166_1'] in alt_titles_check]
+			alternative_titles = [{'title': i['title'], 'iso': i['iso_3166_1']} for i in alternatives]
 		else: alternative_titles = []
 		spoken_languages = data_get('spoken_languages', [])
 		if spoken_languages:
@@ -231,7 +231,8 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 		alternative_titles = data_get('alternative_titles', [])
 		if alternative_titles:
 			alternatives = alternative_titles['results']
-			alternative_titles = [i['title'] for i in alternatives if i['iso_3166_1'] in alt_titles_check]
+			alternative_titles = [{'title': i['title'], 'iso': i['iso_3166_1']} for i in alternatives]
+		else: alternative_titles = []
 		videos = data_get('videos', None)
 		if videos:
 			try:

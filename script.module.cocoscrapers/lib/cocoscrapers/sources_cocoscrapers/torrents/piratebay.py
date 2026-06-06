@@ -31,44 +31,25 @@ class source(BaseTorrentScraper):
 			source_utils.scraper_error('PIRATEBAY')
 			return []
 
-	def sources(self, data, hostDict):
-		self._reset()
-		if not data: return self._results
-		try:
-			if 'tvshowtitle' in data:
-				self._init_episode_data(data)
-			else:
-				self._init_movie_data(data)
-			self.title = self.title.replace('·', '-')
-			self._init_filters()
-			query = '%s %s' % (re.sub(r'[^A-Za-z0-9\s\.-]+', '', self.title), self.hdlr)
-			files = self._fetch('%s%s' % (self.base_link, self.search_link % quote(query)))
-		except:
-			source_utils.scraper_error('PIRATEBAY')
-			self._log_stats('PIRATEBAY')
-			return self._results
-
+	def get_sources(self, url):
+		files = self._fetch(url)
 		for file in files:
 			try:
 				hash = file['info_hash']
 				name = source_utils.clean_name(file['name'])
 				if not source_utils.check_title(self.title, self.aliases, name, self.hdlr, self.year, self.years): continue
 				name_info = source_utils.info_from_name(name, self.title, self.year, self.hdlr, self.episode_title)
-				if source_utils.remove_lang(name_info, self.check_foreign_audio): continue
 				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables): continue
 				if not self.episode_title and self._is_episode_result(name): continue
-				url = 'magnet:?xt=urn:btih:%s&dn=%s' % (hash, name)
+				url_magnet = 'magnet:?xt=urn:btih:%s&dn=%s' % (hash, name)
 				try: seeders = int(file['seeders'])
 				except: seeders = 0
 				if self.min_seeders > seeders: continue
 				try: dsize, isize = source_utils.convert_size(float(file['size']), to='GB')
 				except: dsize, isize = 0, ''
-				self._results.append(self._build_result('piratebay', hash, name, name_info, url, seeders, dsize, isize))
+				self._results.append(self._build_result('piratebay', hash, name, name_info, url_magnet, seeders, dsize, isize))
 			except:
 				source_utils.scraper_error('PIRATEBAY')
-
-		self._log_stats('PIRATEBAY')
-		return self._results
 
 	def get_sources_packs(self, link):
 		files = self._fetch(link)
@@ -93,10 +74,9 @@ class source(BaseTorrentScraper):
 					package = 'show'
 
 				name_info = source_utils.info_from_name(name, self.title, self.year, season=self.season_x, pack=package)
-				if source_utils.remove_lang(name_info, self.check_foreign_audio): continue
 				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables): continue
 
-				url = 'magnet:?xt=urn:btih:%s&dn=%s' % (hash, name)
+				url_magnet = 'magnet:?xt=urn:btih:%s&dn=%s' % (hash, name)
 				try: seeders = int(file['seeders'])
 				except: seeders = 0
 				if self.min_seeders > seeders: continue
@@ -104,10 +84,27 @@ class source(BaseTorrentScraper):
 				except: dsize, isize = 0, ''
 
 				self._results.append(self._build_pack_result(
-					'piratebay', hash, name, name_info, url, seeders, dsize, isize,
+					'piratebay', hash, name, name_info, url_magnet, seeders, dsize, isize,
 					package, episode_start, episode_end, last_season, self.search_series))
 			except:
 				source_utils.scraper_error('PIRATEBAY')
+
+	def sources(self, data, hostDict):
+		self._reset()
+		if not data: return self._results
+		try:
+			if 'tvshowtitle' in data: self._init_episode_data(data)
+			else: self._init_movie_data(data)
+			self.title = self.title.replace('·', '-')
+			self._init_filters()
+			links = list(dict.fromkeys([
+				'%s%s' % (self.base_link, self.search_link % quote('%s %s' % (re.sub(r'[^A-Za-z0-9\s\.-]+', '', t), self.hdlr)))
+				for t in self.search_titles]))
+			self._run_threads(self.get_sources, links)
+		except:
+			source_utils.scraper_error('PIRATEBAY')
+		self._log_stats('PIRATEBAY')
+		return self._results
 
 	def sources_packs(self, data, hostDict, search_series=False, total_seasons=None, bypass_filter=False):
 		self._reset()
@@ -120,15 +117,16 @@ class source(BaseTorrentScraper):
 			self.total_seasons = total_seasons
 			self.bypass_filter = bypass_filter
 
-			query = re.sub(r'[^A-Za-z0-9\s\.-]+', '', self.title)
-			if search_series:
-				queries = [query + ' Season', query + ' Complete']
-			else:
-				queries = [query + ' S%s' % self.season_xx, query + ' Season %s' % self.season_x]
-			links = ['%s%s' % (self.base_link, self.search_link % quote(q)) for q in queries]
+			queries = []
+			for st in self.search_titles:
+				q = re.sub(r'[^A-Za-z0-9\s\.-]+', '', st)
+				if search_series:
+					queries += [q + ' Season', q + ' Complete']
+				else:
+					queries += [q + ' S%s' % self.season_xx, q + ' Season %s' % self.season_x]
+			links = list(dict.fromkeys(['%s%s' % (self.base_link, self.search_link % quote(q)) for q in queries]))
 			self._run_threads(self.get_sources_packs, links)
 		except:
 			source_utils.scraper_error('PIRATEBAY')
-
 		self._log_stats('PIRATEBAY', pack=True)
 		return self._results
