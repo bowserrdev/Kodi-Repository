@@ -86,8 +86,10 @@ class source(BaseTorrentScraper):
 					continue
 				if self.bypass_filter == 'false':
 					if not source_utils.check_title(self.title, self.aliases, name.replace('.(Archie.Bunker', ''), self.hdlr, self.year, self.years):
-						log_utils.log('TORRENTIO SKIP [title mismatch]: "%s"' % name)
-						continue
+						if not self._check_title_raw(raw_title):
+							log_utils.log('TORRENTIO SKIP [title mismatch]: "%s"' % name)
+							continue
+						log_utils.log('TORRENTIO KEPT [non-ASCII title]: "%s"' % raw_title)
 				name_info = source_utils.info_from_name(name, self.title, self.year, self.hdlr, self.episode_title)
 				if source_utils.remove_lang(name_info, self.check_foreign_audio):
 					log_utils.log('TORRENTIO SKIP [language filter]: "%s"' % name)
@@ -96,7 +98,7 @@ class source(BaseTorrentScraper):
 					log_utils.log('TORRENTIO SKIP [undesirable tag]: "%s"' % name)
 					continue
 				log_utils.log('TORRENTIO KEPT: "%s" | hash=%s' % (name, hash))
-				self._results.append(self._build_result('torrentio', hash, name, name_info, url, seeders, dsize, isize))
+				self._append_result(self._build_result('torrentio', hash, name, name_info, url, seeders, dsize, isize))
 			except:
 				source_utils.scraper_error('TORRENTIO')
 
@@ -161,7 +163,7 @@ class source(BaseTorrentScraper):
 					continue
 
 				log_utils.log('TORRENTIO KEPT (pack=%s): "%s" | hash=%s' % (package, name, hash))
-				self._results.append(self._build_pack_result(
+				self._append_result(self._build_pack_result(
 					'torrentio', hash, name, name_info, url, seeders, dsize, isize,
 					package, episode_start, episode_end, last_season, search_series))
 			except:

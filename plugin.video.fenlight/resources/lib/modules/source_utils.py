@@ -90,12 +90,16 @@ def make_alias_dict(meta, title):
 	if alternative_titles and isinstance(alternative_titles[0], dict):
 		aliases = [{'title': i['title'], 'country': i['iso']} for i in alternative_titles]
 	alt_strings = {a['title'] for a in aliases}
-	if original_title not in alt_strings:
-		aliases.append({'title': original_title, 'country': 'original'})
-	if english_title and english_title not in alt_strings and english_title != original_title:
+	aliases.append({'title': original_title, 'country': 'original'})
+	if english_title and english_title != original_title:
 		aliases.append({'title': english_title, 'country': 'en'})
+	if english_title and ': ' in english_title:
+		subtitle = english_title.split(': ', 1)[1]
+		if subtitle and subtitle not in alt_strings and subtitle != original_title:
+			aliases.append({'title': subtitle, 'country': 'en'})
 	if country_codes:
-		aliases.extend([{'title': '%s %s' % (title, i), 'country': ''} for i in country_codes])
+		base = original_title or title
+		aliases.extend([{'title': '%s %s' % (base, i), 'country': ''} for i in country_codes])
 	return aliases
 
 def internal_results(provider, sources):

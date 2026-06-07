@@ -2134,6 +2134,14 @@
                       </item>
                       <item>
                           <visible>Container(2000).HasFocus(60)</visible>
+                          <property name="setting_label">Preferred Source Language Country Code</property>
+                          <property name="setting_type">string</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.pref_language_country)]</property>
+                          <property name="setting_description">ISO 3166-1 two-letter country code for searching localized titles in TMDB (e.g. it, de, es, fr). Used to find the translated title when searching text-based scrapers like Bitsearch. Must match the country code used by TMDB. Leave empty to skip.</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_string&amp;setting_id=pref_language_country)</onclick>
+                      </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(60)</visible>
                           <property name="setting_label">Choose Audio Properties to Exclude</property>
                           <property name="setting_type">action</property>
                           <property name="setting_value">$INFO[Window(10000).Property(fenlight.filter_audio)]</property>
