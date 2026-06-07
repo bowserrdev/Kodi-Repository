@@ -29,35 +29,27 @@ elif action == "Defaults":
 	control.setProviderDefaults()
 
 elif action == "toggleAll":
-	sourceList = []
 	sourceList = sources_cocoscrapers.all_providers
 	for i in sourceList:
-		source_setting = 'provider.' + i
-		control.setSetting(source_setting, params['setting'])
+		control.setSetting('provider.' + i, params['setting'])
 
 elif action == "toggleAllHosters":
-	sourceList = []
 	sourceList = sources_cocoscrapers.hoster_providers
 	for i in sourceList:
-		source_setting = 'provider.' + i
-		control.setSetting(source_setting, params['setting'])
+		control.setSetting('provider.' + i, params['setting'])
 
 elif action == "toggleAllTorrent":
-	sourceList = []
 	sourceList = sources_cocoscrapers.torrent_providers
 	for i in sourceList:
-		source_setting = 'provider.' + i
-		control.setSetting(source_setting, params['setting'])
+		control.setSetting('provider.' + i, params['setting'])
 
 elif action == "toggleAllPackTorrent":
 	control.execute('RunPlugin(plugin://script.module.cocoscrapers/?action=toggleAllTorrent&amp;setting=false)')
 	control.sleep(500)
-	sourceList = []
 	from cocoscrapers import pack_sources
 	sourceList = pack_sources()
 	for i in sourceList:
-		source_setting = 'provider.' + i
-		control.setSetting(source_setting, params['setting'])
+		control.setSetting('provider.' + i, params['setting'])
 
 elif action == 'cleanSettings':
 	control.clean_settings()
@@ -97,34 +89,8 @@ elif action == 'tools_uploadLogFile':
 	from cocoscrapers.modules import log_utils
 	log_utils.upload_LogFile()
 
-elif action == 'plexAuth':
-	from cocoscrapers.modules import plex
-	plex.Plex().auth()
-
-elif action == 'plexRevoke':
-	from cocoscrapers.modules import plex
-	plex.Plex().revoke()
-
-elif action == 'plexSelectShare':
-	from cocoscrapers.modules import plex
-	plex.Plex().get_plexshare_resource()
-
-elif action == 'plexSeeShare':
-	from cocoscrapers.modules import plex
-	plex.Plex().see_active_shares()
-
 elif action == 'ShowOKDialog':
 	control.okDialog(params.get('title', 'default'), int(params.get('message', '')))
-
-elif action == 'TestProwlarrConnection':
-	from cocoscrapers.modules.prowlarr import Prowlarr
-	prowlarr = Prowlarr()
-	prowlarr.test()
-
-elif action == 'ProwlarrIndexers':
-	from cocoscrapers.modules.prowlarr import Prowlarr
-	prowlarr = Prowlarr()
-	prowlarr.get_indexers()
 
 elif action == 'mediafusionAuth':
 	from cocoscrapers.modules.mediafusion import MediaFusion

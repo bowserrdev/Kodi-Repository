@@ -744,19 +744,11 @@ msgid "Reset Secret"
 msgstr ""
 
 msgctxt "#32575"
-msgid "LIMETORRENTS (Pack Capable)"
+msgid "Use Custom Comet URL"
 msgstr ""
 
 msgctxt "#32576"
-msgid "PROWLARR (PACK CAPABLE)"
-msgstr ""
-
-msgctxt "#32577"
-msgid "PROWLARR apikey"
-msgstr ""
-
-msgctxt "#32578"
-msgid "PROWLARR url"
+msgid "Comet URL"
 msgstr ""
 
 msgctxt "#32580"
