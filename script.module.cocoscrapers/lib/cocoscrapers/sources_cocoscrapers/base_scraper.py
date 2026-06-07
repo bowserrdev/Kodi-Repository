@@ -18,6 +18,7 @@ class BaseTorrentScraper:
 
 	def _reset(self):
 		self._results = []
+		self._seen_hashes = set()
 		self._items = []
 		self.item_totals = {'4K': 0, '1080p': 0, '720p': 0, 'SD': 0, 'CAM': 0}
 		self._start_time = time()
@@ -27,24 +28,34 @@ class BaseTorrentScraper:
 	# ------------------------------------------------------------------ #
 
 	def _get_search_titles(self):
-		meta_lang = (self._meta_language or '').strip().lower()
 		en_title = next((a.get('title') for a in (self.aliases or [])
 						 if isinstance(a, dict) and a.get('country') == 'en'), None)
 		orig_title = next((a.get('title') for a in (self.aliases or [])
 						   if isinstance(a, dict) and a.get('country') == 'original'), None)
 		pref_title = None
-		if meta_lang:
+		if self._pref_language_country:
 			pref_title = next((a.get('title') for a in (self.aliases or [])
-							   if isinstance(a, dict) and a.get('country', '').lower() == meta_lang), None)
+							   if isinstance(a, dict) and a.get('country', '').lower() == self._pref_language_country), None)
+
 		seen, titles = set(), []
 		def _add(t):
 			if t and t.strip() and t.strip().lower() not in seen:
 				seen.add(t.strip().lower())
 				titles.append(t.strip())
-		_add(en_title or orig_title or self.title)
-		if orig_title: _add(orig_title)
-		if pref_title: _add(pref_title)
+
+		_add(orig_title or self.title)
+		_add(en_title)
+		_add(pref_title)
 		if not titles: _add(self.title)
+
+		en_norm = en_title.strip().lower() if en_title else None
+		self._paginate_title = next(
+			(t for t in titles if t.strip().lower() == en_norm),
+			titles[0] if titles else None
+		)
+
+		log_utils.log('COCOSCRAPERS', 'SEARCH_TITLES: pref_lc=%s titles=%s paginate="%s"' % (
+			self._pref_language_country, titles, self._paginate_title))
 		return titles
 
 	def _init_episode_data(self, data):
@@ -56,7 +67,7 @@ class BaseTorrentScraper:
 		self.season_x = data['season']
 		self.season_xx = self.season_x.zfill(2)
 		self.years = None
-		self._meta_language = data.get('meta_language', '')
+		self._pref_language_country = data.get('pref_language_country', '')
 		self.search_titles = self._get_search_titles()
 
 	def _init_movie_data(self, data):
@@ -66,7 +77,7 @@ class BaseTorrentScraper:
 		self.year = data['year']
 		self.aliases = data['aliases']
 		self.years = [str(int(self.year) - 1), str(self.year), str(int(self.year) + 1)]
-		self._meta_language = data.get('meta_language', '')
+		self._pref_language_country = data.get('pref_language_country', '')
 		self.search_titles = self._get_search_titles()
 
 	def _init_pack_data(self, data):
@@ -76,7 +87,7 @@ class BaseTorrentScraper:
 		self.year = data['year']
 		self.season_x = data['season']
 		self.season_xx = self.season_x.zfill(2)
-		self._meta_language = data.get('meta_language', '')
+		self._pref_language_country = data.get('pref_language_country', '')
 		self.search_titles = self._get_search_titles()
 
 	def _init_filters(self):
@@ -99,7 +110,6 @@ class BaseTorrentScraper:
 	def _build_result(self, provider, hash, name, name_info, url, seeders, dsize, isize):
 		quality, info = source_utils.get_release_quality(name_info, url)
 		if isize: info.insert(0, isize)
-		self.item_totals[quality] += 1
 		return {
 			'provider': provider, 'source': 'torrent', 'seeders': seeders,
 			'hash': hash, 'name': name, 'name_info': name_info,
@@ -111,7 +121,6 @@ class BaseTorrentScraper:
 							package, episode_start=0, episode_end=0, last_season=None, search_series=False):
 		quality, info = source_utils.get_release_quality(name_info, url)
 		if isize: info.insert(0, isize)
-		self.item_totals[quality] += 1
 		item = {
 			'provider': provider, 'source': 'torrent', 'seeders': seeders,
 			'hash': hash, 'name': name, 'name_info': name_info,
@@ -125,6 +134,15 @@ class BaseTorrentScraper:
 			item.update({'episode_start': episode_start, 'episode_end': episode_end})
 		return item
 
+	def _append_result(self, result):
+		h = result.get('hash')
+		if h and h in self._seen_hashes:
+			return
+		if h:
+			self._seen_hashes.add(h)
+		self.item_totals[result.get('quality', 'SD')] += 1
+		self._results.append(result)
+
 	# ------------------------------------------------------------------ #
 	# Episode filter
 	# ------------------------------------------------------------------ #
@@ -133,6 +151,15 @@ class BaseTorrentScraper:
 
 	def _is_episode_result(self, name):
 		return any(re.search(p, name.lower()) for p in self._EP_STRINGS)
+
+	def _check_title_raw(self, raw_title):
+		if not raw_title or raw_title.isascii(): return False
+		if self.years and not any(y in raw_title for y in self.years): return False
+		non_ascii = [a['title'] for a in (self.aliases or [])
+		if isinstance(a, dict) and a.get('title') and not a['title'].isascii()]
+		if not non_ascii: return False
+		raw_lower = raw_title.lower()
+		return any(alias.lower() in raw_lower for alias in non_ascii)
 
 	# ------------------------------------------------------------------ #
 	# Stats logging

@@ -235,6 +235,7 @@ def filter_season_pack(show_title, aliases, year, season, release_title):
 		t = release_title.replace('-', '.')
 		for i in split_list: t = t.split(i)[0]
 		cleantitle_t = cleantitle.get(t)
+		
 		if all(cleantitle.get(x) != cleantitle_t for x in title_list): return False, 0, 0
 
 # remove single episodes ONLY (returned in single ep scrape), keep episode ranges as season packs

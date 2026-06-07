@@ -8,7 +8,7 @@ from caches.settings_cache import get_setting
 from modules import kodi_utils, source_utils
 from modules.debrid import RD_check, PM_check, AD_check, OC_check, ED_check ,TB_check, query_local_cache
 from modules.utils import clean_file_name
-from modules.settings import preferred_language, meta_language
+from modules.settings import preferred_language, pref_language_country
 logger = kodi_utils.logger
 
 normalize, get_file_info, pack_enable_check = source_utils.normalize, source_utils.get_file_info, source_utils.pack_enable_check
@@ -57,13 +57,13 @@ class source:
 			if self.media_type == 'movie':
 				self.season_divider, self.show_divider = 0, 0
 				self.data = {'imdb': info['imdb_id'], 'title': self.title, 'aliases': aliases, 'year': self.year,
-				'debrid_service': self.debrid_service, 'debrid_token': self.debrid_token, 'preferred_language': preferred_language(), 'meta_language': meta_language()}
+				'debrid_service': self.debrid_service, 'debrid_token': self.debrid_token, 'preferred_language': preferred_language(), 'pref_language_country': pref_language_country()}
 			else:
 				try: self.season_divider = [int(x['episode_count']) for x in self.meta['season_data'] if int(x['season_number']) == int(self.meta['season'])][0]
 				except: self.season_divider = 1
 				self.show_divider = int(self.meta['total_aired_eps'])
 				self.data = {'imdb': info['imdb_id'], 'tvdb': info['tvdb_id'], 'tvshowtitle': self.title, 'aliases': aliases,'year': self.year,
-							'title': ep_name, 'season': str(self.season), 'episode': str(self.episode), 'debrid_service': self.debrid_service, 'debrid_token': self.debrid_token, 'preferred_language': preferred_language(), 'meta_language': meta_language()}
+							'title': ep_name, 'season': str(self.season), 'episode': str(self.episode), 'debrid_service': self.debrid_service, 'debrid_token': self.debrid_token, 'preferred_language': preferred_language(), 'pref_language_country': pref_language_country()}
 		except: return []
 		return self.get_sources()
 

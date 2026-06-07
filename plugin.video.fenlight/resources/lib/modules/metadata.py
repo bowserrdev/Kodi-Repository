@@ -52,13 +52,26 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 		images = data_get('images', {})
 		if images:
 			try:
-				logo_path = images.get('logos')[0].get('file_path')
-				if logo_path.endswith('png'): clearlogo = tmdb_image_url % ('original', logo_path)
-				else: clearlogo = tmdb_image_url % ('original', logo_path.replace(logo_path.split('.')[-1], 'png'))
+				logos = images.get('logos', [])
+				if logos:
+					logo = next((i for i in logos if i.get('iso_639_1') == lang), None) or \
+						   next((i for i in logos if i.get('iso_639_1') == 'en'), None) or \
+						   logos[0]
+					logo_path = logo.get('file_path')
+					if logo_path.endswith('png'): clearlogo = tmdb_image_url % ('original', logo_path)
+					else: clearlogo = tmdb_image_url % ('original', logo_path.replace(logo_path.split('.')[-1], 'png'))
+				else: clearlogo = ''
 			except: clearlogo = ''
 			try:
-				landscape_path = images.get('backdrops')[0].get('file_path')
-				landscape = tmdb_image_url % ('w1280', landscape_path)
+				backdrops = images.get('backdrops', [])
+				if backdrops:
+					landscape_item = next((i for i in backdrops if i.get('iso_639_1') == lang), None) or \
+									 next((i for i in backdrops if i.get('iso_639_1') == 'en'), None) or \
+									 next((i for i in backdrops if i.get('iso_639_1') is None), None) or \
+									 backdrops[0]
+					landscape_path = landscape_item.get('file_path')
+					landscape = tmdb_image_url % ('w1280', landscape_path)
+				else: landscape = ''
 			except: landscape = ''
 		else: clearlogo, landscape = '', ''
 		title, original_title = data_get('title'), data_get('original_title')
@@ -103,6 +116,15 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 			alternatives = alternative_titles['titles']
 			alternative_titles = [{'title': i['title'], 'iso': i['iso_3166_1']} for i in alternatives]
 		else: alternative_titles = []
+		translations_data = data_get('translations', {})
+		if translations_data:
+			alt_strings = {a['title'] for a in alternative_titles}
+			for t in translations_data.get('translations', []):
+				t_title = t.get('data', {}).get('title', '')
+				t_lang = t.get('iso_639_1', '')
+				if t_title and t_lang and t_title not in alt_strings:
+					alternative_titles.append({'title': t_title, 'iso': t_lang})
+					alt_strings.add(t_title)
 		spoken_languages = data_get('spoken_languages', [])
 		if spoken_languages:
 			try: spoken_language = spoken_languages[0]['english_name']
@@ -178,13 +200,26 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 		images = data_get('images', {})
 		if images:
 			try:
-				logo_path = images.get('logos')[0].get('file_path')
-				if logo_path.endswith('png'): clearlogo = tmdb_image_url % ('original', logo_path)
-				else: clearlogo = tmdb_image_url % ('original', logo_path.replace(logo_path.split('.')[-1], 'png'))
+				logos = images.get('logos', [])
+				if logos:
+					logo = next((i for i in logos if i.get('iso_639_1') == lang), None) or \
+						   next((i for i in logos if i.get('iso_639_1') == 'en'), None) or \
+						   logos[0]
+					logo_path = logo.get('file_path')
+					if logo_path.endswith('png'): clearlogo = tmdb_image_url % ('original', logo_path)
+					else: clearlogo = tmdb_image_url % ('original', logo_path.replace(logo_path.split('.')[-1], 'png'))
+				else: clearlogo = ''
 			except: clearlogo = ''
 			try:
-				landscape_path = images.get('backdrops')[0].get('file_path')
-				landscape = tmdb_image_url % ('w1280', landscape_path)
+				backdrops = images.get('backdrops', [])
+				if backdrops:
+					landscape_item = next((i for i in backdrops if i.get('iso_639_1') == lang), None) or \
+									 next((i for i in backdrops if i.get('iso_639_1') == 'en'), None) or \
+									 next((i for i in backdrops if i.get('iso_639_1') is None), None) or \
+									 backdrops[0]
+					landscape_path = landscape_item.get('file_path')
+					landscape = tmdb_image_url % ('w1280', landscape_path)
+				else: landscape = ''
 			except: landscape = ''
 		else: clearlogo, landscape = '', ''
 		title, original_title = data_get('name'), data_get('original_name')
@@ -233,6 +268,15 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			alternatives = alternative_titles['results']
 			alternative_titles = [{'title': i['title'], 'iso': i['iso_3166_1']} for i in alternatives]
 		else: alternative_titles = []
+		translations_data = data_get('translations', {})
+		if translations_data:
+			alt_strings = {a['title'] for a in alternative_titles}
+			for t in translations_data.get('translations', []):
+				t_title = t.get('data', {}).get('name', '') or t.get('data', {}).get('title', '')
+				t_lang = t.get('iso_639_1', '')
+				if t_title and t_lang and t_title not in alt_strings:
+					alternative_titles.append({'title': t_title, 'iso': t_lang})
+					alt_strings.add(t_title)
 		videos = data_get('videos', None)
 		if videos:
 			try:

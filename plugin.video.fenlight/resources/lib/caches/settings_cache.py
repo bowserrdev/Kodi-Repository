@@ -404,6 +404,7 @@ default_settings = [
 {'setting_id': 'filter.enhanced_upscaled', 'setting_type': 'action', 'setting_default': '0', 'settings_options':{'0': 'Include', '1': 'Exclude'}},
 {'setting_id': 'preferred_autoplay', 'setting_type': 'string', 'setting_default': 'empty_setting'},
 {'setting_id': 'preferred_language', 'setting_type': 'string', 'setting_default': 'empty_setting'},
+{'setting_id': 'pref_language_country', 'setting_type': 'string', 'setting_default': 'empty_setting'},
 {'setting_id': 'filter_audio', 'setting_type': 'string', 'setting_default': 'empty_setting'},
 #==================== Results Color Highlights
 {'setting_id': 'highlight.type', 'setting_type': 'action', 'setting_default': '0', 'settings_options': {'0': 'Provider', '1': 'Quality', '2': 'Single Color'}},

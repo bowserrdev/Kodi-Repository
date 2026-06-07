@@ -76,7 +76,7 @@ class source(BaseTorrentScraper):
 					log_utils.log('BITSEARCH SKIP [seeders=%s < min=%s]: "%s"' % (seeders, self.min_seeders, name))
 					continue
 				log_utils.log('BITSEARCH KEPT: "%s" | hash=%s' % (name, hash))
-				self._results.append(self._build_result('bitsearch', hash, name, name_info, url, seeders, dsize, isize))
+				self._append_result(self._build_result('bitsearch', hash, name, name_info, url, seeders, dsize, isize))
 			except:
 				source_utils.scraper_error('BITSEARCH')
 
@@ -116,7 +116,7 @@ class source(BaseTorrentScraper):
 					continue
 
 				log_utils.log('BITSEARCH KEPT (pack=%s): "%s" | hash=%s' % (package, name, hash))
-				self._results.append(self._build_pack_result(
+				self._append_result(self._build_pack_result(
 					'bitsearch', hash, name, name_info, url, seeders, dsize, isize,
 					package, episode_start, episode_end, last_season, self.search_series))
 			except:
@@ -133,11 +133,14 @@ class source(BaseTorrentScraper):
 			cat = '3' if is_tv else '2'
 			pages = []
 			for idx, st in enumerate(self.search_titles):
-				q = '%s %s' % (re.sub(r'[^A-Za-z0-9\s\.-]+', '', st), self.hdlr)
+				st_clean = re.sub(r'[^A-Za-z0-9\s\.-]+', '', st).strip()
+				if not st_clean:
+					continue
+				q = '%s %s' % (st_clean, self.hdlr)
 				base = '%s%s&category=%s' % (self.base_link, self.search_link % quote_plus(q), cat)
 				log_utils.log('BITSEARCH query[%s]: %s' % (idx, base))
 				pages.append(base)
-				if idx == 0:
+				if st == self._paginate_title:
 					pages += [base + '&page=%s' % p for p in range(2, 5)]
 			self._run_threads(self.get_sources, list(dict.fromkeys(pages)))
 		except:
@@ -157,7 +160,9 @@ class source(BaseTorrentScraper):
 
 			queries = []
 			for st in self.search_titles:
-				q = re.sub(r'[^A-Za-z0-9\s\.-]+', '', st)
+				q = re.sub(r'[^A-Za-z0-9\s\.-]+', '', st).strip()
+				if not q:
+					continue
 				if search_series:
 					queries += [q + ' Season', q + ' Complete']
 				else:
