@@ -52,6 +52,16 @@ def get_last_played_value(watched_indicators):
 	if watched_indicators == 0: return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 	else: return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
+def _map_to_tmdb_episode(tmdb_id, season, episode):
+	try:
+		meta = metadata.tvshow_meta('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime())
+		ep_map = meta.get('tvdb_to_tmdb_ep')
+		if ep_map is None:
+			from apis.skyhook_api import get_tvdb_to_tmdb_map
+			ep_map = get_tvdb_to_tmdb_map(meta.get('tvdb_id'), meta.get('tmdb_season_data_original', []))
+		return ep_map.get((int(season), int(episode)), (season, episode))
+	except: return season, episode
+
 def make_batch_insert(action, media_type, media_id, season, episode, last_played, title):
 	if action == 'mark_as_watched': return (media_type, media_id, season, episode, last_played, title)
 	else: return (media_type, media_id, season, episode)
@@ -246,7 +256,14 @@ def set_bookmark(params):
 		watched_indicators = watched_indicators_function()
 		if watched_indicators == 1:
 			if trakt_official_status(media_type) == False: return
-			else: trakt_progress('set_progress', media_type, tmdb_id, resume_point, season, episode, refresh_trakt=True)
+			else:
+				_ts, _te = _map_to_tmdb_episode(tmdb_id, season, episode)
+				trakt_progress('set_progress', media_type, tmdb_id, resume_point, _ts, _te, refresh_trakt=True)
+				try:
+					dbcon = get_database(1)
+					dbcon.execute('INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time), get_last_played_value(1), 0, title))
+				except: pass
 		else:
 			erase_bookmark(media_type, tmdb_id, season, episode)
 			last_played = get_last_played_value(watched_indicators)
@@ -345,7 +362,7 @@ def mark_episode(params):
 	watched_indicators = watched_indicators_function()
 	if watched_indicators == 1:
 		if from_playback == 'true' and trakt_official_status(media_type) == False: sleep(1000)
-		elif not trakt_watched_status_mark(action, media_type, tmdb_id, tvdb_id, season, episode): return notification('Error')
+		elif not trakt_watched_status_mark(action, media_type, tmdb_id, tvdb_id, *_map_to_tmdb_episode(tmdb_id, season, episode)): return notification('Error')
 		clear_trakt_collection_watchlist_data('watchlist', 'tvshow')
 	watched_status_mark(watched_indicators, media_type, tmdb_id, action, season, episode, title)
 	refresh_container(refresh)
