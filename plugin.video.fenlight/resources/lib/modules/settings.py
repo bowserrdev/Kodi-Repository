@@ -101,9 +101,10 @@ def preferred_language():
 	return setting.lower().strip()
 
 def pref_language_country():
-	setting = get_setting('fenlight.pref_language_country')
-	if setting in ('empty_setting', '', None): return ''
-	return setting.lower().strip()
+	lang = preferred_language()
+	if not lang: return ''
+	import xbmc
+	return xbmc.convertLanguage(lang, xbmc.ISO_639_1)
 
 def include_prerelease_results():
 	return int(get_setting('fenlight.filter.include_prerelease', '0')) == 0
