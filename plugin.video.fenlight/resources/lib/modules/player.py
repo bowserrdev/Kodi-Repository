@@ -21,6 +21,10 @@ class FenLightPlayer(xbmc_player):
 	def __init__ (self):
 		xbmc_player.__init__(self)
 
+	def onAVStarted(self):
+		self._av_started = True
+
+
 	def run(self, url=None, obj=None):
 		hide_busy_dialog()
 		self.clear_playback_properties()
@@ -94,6 +98,9 @@ class FenLightPlayer(xbmc_player):
 						if st.trakt_user_active() and trakt_official_status(self.media_type):
 							Thread(target=trakt_scrobble_start, args=(self.media_type, self.tmdb_id, self.season, self.episode)).start()
 							self.scrobble_started = True
+						from modules.auto_subtitles import auto_subtitle_check
+						Thread(target=auto_subtitle_check, args=(self,)).start()
+
 					sleep(1000)
 					self.current_point = round(float(self.curr_time/self.total_time * 100), 1)
 					if self.scrobble_started and (time.time() - self._last_scrobble_update) >= 120:
@@ -236,6 +243,8 @@ class FenLightPlayer(xbmc_player):
 			self._last_scrobble_update = 0.0
 			self.playback_successful, self.cancel_all_playback = None, False
 			self.playing_item = self.sources_object.playing_item
+			self._av_started = False
+
 
 	def set_playback_properties(self):
 		try:

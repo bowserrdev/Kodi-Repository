@@ -2134,14 +2134,6 @@
                       </item>
                       <item>
                           <visible>Container(2000).HasFocus(60)</visible>
-                          <property name="setting_label">Preferred Source Language Country Code</property>
-                          <property name="setting_type">string</property>
-                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.pref_language_country)]</property>
-                          <property name="setting_description">ISO 3166-1 two-letter country code for searching localized titles in TMDB (e.g. it, de, es, fr). Used to find the translated title when searching text-based scrapers like Bitsearch. Must match the country code used by TMDB. Leave empty to skip.</property>
-                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_string&amp;setting_id=pref_language_country)</onclick>
-                      </item>
-                      <item>
-                          <visible>Container(2000).HasFocus(60)</visible>
                           <property name="setting_label">Choose Audio Properties to Exclude</property>
                           <property name="setting_type">action</property>
                           <property name="setting_value">$INFO[Window(10000).Property(fenlight.filter_audio)]</property>
@@ -2476,6 +2468,49 @@
                           <property name="setting_description">Choose the maximum allowed volume level</property>
                           <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_numeric&amp;setting_id=playback.volumecheck_percent)</onclick>
                       </item>
+                      <!-- Auto Subtitles -->
+                      <item>
+                          <visible>Container(2000).HasFocus(70)</visible>
+                          <property name="setting_label">Auto Subtitles</property>
+                          <property name="setting_type">separator</property>
+                          <onclick>noop</onclick>
+                      </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(70)</visible>
+                          <property name="setting_label">Enable Auto Subtitles</property>
+                          <property name="setting_type">boolean</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.autosub.enabled)]</property>
+                          <property name="setting_description">When enabled, Fen Light will automatically download and apply subtitles at playback start if your Preferred Source Language is not found in the audio or subtitle tracks. Requires an OpenSubtitles.com account</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_boolean&amp;setting_id=autosub.enabled)</onclick>
+                      </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(70)</visible>
+                          <visible>String.IsEqual(Window(10000).Property(fenlight.autosub.enabled),true)</visible>
+                          <property name="setting_label">    - OpenSubtitles.com API Key</property>
+                          <property name="setting_type">numeric</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.autosub.api_key)]</property>
+                          <property name="setting_description">Your OpenSubtitles.com API key. Get yours at opensubtitles.com/en/consumers</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_string&amp;setting_id=autosub.api_key)</onclick>
+                      </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(70)</visible>
+                          <visible>String.IsEqual(Window(10000).Property(fenlight.autosub.enabled),true)</visible>
+                          <property name="setting_label">    - OpenSubtitles.com Username</property>
+                          <property name="setting_type">numeric</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.autosub.username)]</property>
+                          <property name="setting_description">Your OpenSubtitles.com username. Required to download up to 20 subtitles per day</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_string&amp;setting_id=autosub.username)</onclick>
+                      </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(70)</visible>
+                          <visible>String.IsEqual(Window(10000).Property(fenlight.autosub.enabled),true)</visible>
+                          <property name="setting_label">    - OpenSubtitles.com Password</property>
+                          <property name="setting_type">numeric</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.autosub.password)]</property>
+                          <property name="setting_description">Your OpenSubtitles.com password</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_string&amp;setting_id=autosub.password)</onclick>
+                      </item>
+
                 </content>
             </control>
             <control type="group">
