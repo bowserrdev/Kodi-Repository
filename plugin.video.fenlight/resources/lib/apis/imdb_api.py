@@ -4,15 +4,14 @@ import json
 import requests
 from caches.base_cache import connect_database
 from caches.main_cache import cache_object
-from caches.settings_cache import get_setting
 from modules.dom_parser import parseDOM
-from modules.kodi_utils import sleep
 from modules.utils import remove_accents, replace_html_codes, normalize
-# from modules.kodi_utils import logger
+from modules.kodi_utils import logger
 
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.64 Safari/537.36 Edge/101.0.1210.53',
 			'Accept-Language':'en-us,en;q=0.5'}
 base_url = 'https://www.imdb.com/%s'
+graphql_url = 'https://api.graphql.imdb.com/'
 more_like_this_url = 'title/%s'
 reviews_url = 'title/%s/reviews/?sort=num_votes,desc'
 trivia_url = 'title/%s/trivia'
@@ -24,6 +23,27 @@ people_trivia_url = 'name/%s/trivia'
 people_search_url_backup = 'search/name/?name=%s'
 people_search_url = 'https://sg.media-imdb.com/suggests/%s/%s.json'
 timeout = 20.0
+
+def imdb_plot(imdb_id, lang):
+	if not imdb_id or imdb_id == 'tt0000000': return ''
+	ietf_lang = '%s-%s' % (lang, lang.upper())
+	string = 'imdb_plot_%s_%s' % (lang, imdb_id)
+	params = {'imdb_id': imdb_id, 'lang': ietf_lang}
+	return cache_object(get_imdb_graphql, string, params, False, 720)[0]
+
+def get_imdb_graphql(params):
+	try:
+		query = {
+			'query': 'query GetPlot($id: ID!) { title(id: $id) { plot { plotText { plainText } } } }',
+			'variables': {'id': params['imdb_id']}
+		}
+		graphql_headers = {'Content-Type': 'application/json', 'User-Agent': headers['User-Agent'], 'X-Imdb-User-Language': params['lang']}
+		r = requests.post(graphql_url, json=query, headers=graphql_headers, timeout=timeout)
+		if r.status_code == 200:
+			return (r.json()['data']['title']['plot']['plotText']['plainText'], None)
+	except: pass
+	return ('', None)
+
 
 def imdb_more_like_this(imdb_id):
 	url = base_url % more_like_this_url % imdb_id

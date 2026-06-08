@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 from apis import tmdb_api
+from apis.imdb_api import imdb_plot
 from caches.meta_cache import meta_cache
 from modules.settings import meta_language
 from modules.utils import jsondate_to_datetime, subtract_dates
-# from modules.kodi_utils import logger
+from modules.kodi_utils import logger
 
 movie_details, tvshow_details, season_episodes_details = tmdb_api.movie_details, tmdb_api.tvshow_details, tmdb_api.season_episodes_details
 movie_set_details, movie_external_id, tvshow_external_id = tmdb_api.movie_set_details, tmdb_api.movie_external_id, tmdb_api.tvshow_external_id
@@ -42,7 +43,8 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 		mpaa, trailer, spoken_language = '', '', ''
 		tmdb_id, imdb_id = data_get('id', ''), data_get('imdb_id', '')
 		rating, votes = data_get('vote_average', ''), data_get('vote_count', '')
-		plot, tagline, premiered = data_get('overview', ''), data_get('tagline', ''), data_get('release_date', '')
+		tagline, premiered = data_get('tagline', ''), data_get('release_date', '')
+		plot = imdb_plot(imdb_id, lang) or data_get('overview', '')
 		poster_path = data_get('poster_path', '')
 		if poster_path: poster = tmdb_image_url % ('w780', poster_path)
 		else: poster = ''
@@ -189,7 +191,8 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 		external_ids = data_get('external_ids')
 		tmdb_id, imdb_id, tvdb_id = data_get('id', ''), external_ids.get('imdb_id', ''), external_ids.get('tvdb_id', 'None')
 		rating, votes = data_get('vote_average', ''), data_get('vote_count', '')
-		plot, tagline, premiered = data_get('overview', ''), data_get('tagline', ''), data_get('first_air_date', '')
+		tagline, premiered = data_get('tagline', ''), data_get('first_air_date', '')
+		plot = imdb_plot(imdb_id, lang) or data_get('overview', '')
 		season_data, total_seasons = data_get('seasons'), data_get('number_of_seasons')
 		poster_path = data_get('poster_path', '')
 		if poster_path: poster = tmdb_image_url % ('w780', poster_path)
