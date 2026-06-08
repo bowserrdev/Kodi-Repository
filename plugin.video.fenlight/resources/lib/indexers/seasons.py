@@ -30,7 +30,7 @@ def build_season_list(params):
 				season_special = season_number == 0
 				title = item_get('name', None) or season_name_str % season_number
 				if custom_order is not None: title = '%s - %s' % (show_title, title)
-				poster = tmdb_poster % poster_path if poster_path is not None else show_poster
+				poster = (poster_path if poster_path.startswith('http') else tmdb_poster % poster_path) if poster_path is not None else show_poster
 				thumb = poster or show_landscape or show_fanart
 				try: year = air_date.split('-')[0]
 				except: year = show_year or '2050'

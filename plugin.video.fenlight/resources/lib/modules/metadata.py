@@ -4,7 +4,8 @@ from apis.imdb_api import imdb_plot
 from caches.meta_cache import meta_cache
 from modules.settings import meta_language
 from modules.utils import jsondate_to_datetime, subtract_dates
-from modules.kodi_utils import logger
+from apis.skyhook_api import get_skyhook_season_data, get_skyhook_episodes, get_tvdb_to_tmdb_map
+# from modules.kodi_utils import logger
 
 movie_details, tvshow_details, season_episodes_details = tmdb_api.movie_details, tmdb_api.tvshow_details, tmdb_api.season_episodes_details
 movie_set_details, movie_external_id, tvshow_external_id = tmdb_api.movie_set_details, tmdb_api.movie_external_id, tmdb_api.tvshow_external_id
@@ -311,6 +312,13 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 				'country_codes': country_codes, 'writer': writer, 'director': director, 'all_trailers': all_trailers, 'cast': cast, 'studio': studio, 'extra_info': extra_info,
 				'total_aired_eps': total_aired_eps, 'mediatype': 'tvshow', 'total_seasons': total_seasons, 'tvshowtitle': title, 'status': status, 'clearlogo': clearlogo,
 				'landscape': landscape, 'spoken_language': spoken_language, 'keywords': keywords, 'meta_language': lang}
+		_skyhook_seasons = get_skyhook_season_data(tvdb_id, season_data)
+		if _skyhook_seasons:
+			meta['tmdb_season_data_original'] = season_data
+			meta['season_data'] = _skyhook_seasons
+			meta['total_seasons'] = max((s['season_number'] for s in _skyhook_seasons if s['season_number'] > 0), default=total_seasons)
+			meta['total_aired_eps'] = sum(s['episode_count'] for s in _skyhook_seasons if s['season_number'] > 0)
+			meta['tvdb_to_tmdb_ep'] = get_tvdb_to_tmdb_map(tvdb_id, season_data)
 		metacache_set('tvshow', id_type, meta, tvshow_expiry(current_date, meta), current_time)
 	except: pass
 	return meta
@@ -385,6 +393,26 @@ def episodes_meta(season, meta):
 	prop_string = '%s_%s_%s' % (media_id, season, lang) if lang != 'en' else '%s_%s' % (media_id, season)
 	data = metacache_get_season(prop_string)
 	if data is not None: return data
+	_skyhook_eps = get_skyhook_episodes(meta.get('tvdb_id'), season, meta)
+	if _skyhook_eps is not None:
+		try:
+			_expiry = EXPIRES_182_DAYS if (meta.get('status', '') in finished_show_check or meta.get('total_seasons', 1) > int(season)) else EXPIRES_4_DAYS
+		except: _expiry = EXPIRES_4_DAYS
+		try:
+			_ep_map = meta.get('tvdb_to_tmdb_ep') or {}
+			_tmdb_seasons = {_ep_map.get((ep['season'], ep['episode']), (ep['season'], ep['episode']))[0] for ep in _skyhook_eps}
+			_tmdb_thumb_map = {}
+			for _ts in _tmdb_seasons:
+				for _te in season_episodes_details(media_id, _ts, lang).get('episodes', []):
+					if _te.get('still_path'):
+						_tmdb_thumb_map[(_te['season_number'], _te['episode_number'])] = tmdb_image_url % ('original', _te['still_path'])
+			for _ep in _skyhook_eps:
+				_tmdb_s, _tmdb_e = _ep_map.get((_ep['season'], _ep['episode']), (_ep['season'], _ep['episode']))
+				_tmdb_t = _tmdb_thumb_map.get((_tmdb_s, _tmdb_e))
+				if _tmdb_t: _ep['thumb'] = _tmdb_t
+		except: pass
+		metacache_set_season(prop_string, _skyhook_eps, _expiry)
+		return _skyhook_eps
 	try:
 		season, tvshow_status, total_seasons = int(season), meta['status'], meta['total_seasons']
 		if season == 1: season_type = 'premiere_finale' if (total_seasons == season and tvshow_status in finished_show_check) else 'premiere'

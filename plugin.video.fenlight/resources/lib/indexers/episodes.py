@@ -127,7 +127,7 @@ def build_episode_list(params):
 		bookmarks = get_bookmarks_episode(tmdb_id, season, watched_db)
 		try:
 			poster_path = next((i['poster_path'] for i in meta_get('season_data') if i['season_number'] == int(season)), None)
-			season_poster = tmdb_poster % poster_path if poster_path is not None else show_poster
+			season_poster = (poster_path if poster_path.startswith('http') else tmdb_poster % poster_path) if poster_path is not None else show_poster
 		except: season_poster = show_poster
 		category_name = 'Season %s' % season
 	add_items(handle, list(_process()))

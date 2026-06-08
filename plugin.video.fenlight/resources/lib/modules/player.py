@@ -9,6 +9,7 @@ from modules import kodi_utils as ku, settings as st, watched_status as ws
 
 set_property, clear_property, get_visibility, hide_busy_dialog, xbmc_actor = ku.set_property, ku.clear_property, ku.get_visibility, ku.hide_busy_dialog, ku.xbmc_actor
 xbmc_player, execute_builtin, sleep = ku.xbmc_player, ku.execute_builtin, ku.sleep
+kodi_refresh = ku.kodi_refresh
 make_listitem, volume_checker, get_infolabel, xbmc_monitor = ku.make_listitem, ku.volume_checker, ku.get_infolabel, ku.xbmc_monitor
 close_all_dialog, notification, poster_empty, fanart_empty = ku.close_all_dialog, ku.notification, ku.empty_poster, ku.get_addon_fanart()
 auto_resume, auto_nextep_settings, store_resolved_to_cloud = st.auto_resume, st.auto_nextep_settings, st.store_resolved_to_cloud
@@ -24,6 +25,18 @@ class FenLightPlayer(xbmc_player):
 	def onAVStarted(self):
 		self._av_started = True
 
+	def onPlayBackSeek(self, time, seekOffset):
+		try:
+			if getattr(self, 'is_generic', True) or not getattr(self, '_av_started', False): return
+			self._last_scrobble_update = 0.0
+			total = getattr(self, 'total_time', 0) or 0
+			if not total: return
+			self.curr_time = time / 1000.0
+			self.current_point = round(float(self.curr_time / total * 100), 1)
+			if self.current_point >= set_watched and not self.media_marked:
+				self.media_watched_marker()
+		except: pass
+ 
 
 	def run(self, url=None, obj=None):
 		hide_busy_dialog()
@@ -82,7 +95,14 @@ class FenLightPlayer(xbmc_player):
 				if disable_autoplay_next_episode: notification('Scrape with Custom Values - Autoplay Next Episode Cancelled', 4500)
 				if any((play_random_continual, play_random, disable_autoplay_next_episode)): self.autoplay_nextep, self.autoscrape_nextep = False, False
 				else: self.autoplay_nextep, self.autoscrape_nextep = self.sources_object.autoplay_nextep, self.sources_object.autoscrape_nextep
-			else: play_random_continual, self.autoplay_nextep, self.autoscrape_nextep = False, False, False
+				_ep_map = self.meta.get('tvdb_to_tmdb_ep')
+				if _ep_map is None:
+					from apis.skyhook_api import get_tvdb_to_tmdb_map
+					_ep_map = get_tvdb_to_tmdb_map(self.meta.get('tvdb_id'), self.meta.get('tmdb_season_data_original', []))
+				self._trakt_season, self._trakt_episode = _ep_map.get((self.season, self.episode), (self.season, self.episode))
+			else:
+				play_random_continual, self.autoplay_nextep, self.autoscrape_nextep = False, False, False
+				self._trakt_season, self._trakt_episode = self.season, self.episode
 			while total_check_time <= 30 and not get_visibility(video_fullscreen_check):
 				sleep(100)
 				total_check_time += 0.10
@@ -96,7 +116,7 @@ class FenLightPlayer(xbmc_player):
 						ensure_dialog_dead = True
 						self.playback_close_dialogs()
 						if st.trakt_user_active() and trakt_official_status(self.media_type):
-							Thread(target=trakt_scrobble_start, args=(self.media_type, self.tmdb_id, self.season, self.episode)).start()
+							Thread(target=trakt_scrobble_start, args=(self.media_type, self.tmdb_id, self._trakt_season, self._trakt_episode)).start()
 							self.scrobble_started = True
 						from modules.auto_subtitles import auto_subtitle_check
 						Thread(target=auto_subtitle_check, args=(self,)).start()
@@ -104,7 +124,7 @@ class FenLightPlayer(xbmc_player):
 					sleep(1000)
 					self.current_point = round(float(self.curr_time/self.total_time * 100), 1)
 					if self.scrobble_started and (time.time() - self._last_scrobble_update) >= 120:
-						Thread(target=trakt_scrobble_start, args=(self.media_type, self.tmdb_id, self.season, self.episode, self.current_point)).start()
+						Thread(target=trakt_scrobble_start, args=(self.media_type, self.tmdb_id, self._trakt_season, self._trakt_episode)).start()
 						self._last_scrobble_update = time.time()
 					if self.current_point >= set_watched:
 						if play_random_continual: self.run_random_continual(); break
@@ -171,7 +191,7 @@ class FenLightPlayer(xbmc_player):
 	def media_watched_marker(self, force_watched=False):
 		self.media_marked = True
 		if self.scrobble_started:
-			Thread(target=trakt_scrobble_stop, args=(self.media_type, self.tmdb_id, self.current_point, self.season, self.episode)).start()
+			Thread(target=trakt_scrobble_stop, args=(self.media_type, self.tmdb_id, self.current_point, self._trakt_season, self._trakt_episode)).start()
 		try:
 			if self.current_point >= set_watched or force_watched:
 				if self.media_type == 'movie': watched_function = mark_movie
@@ -179,16 +199,19 @@ class FenLightPlayer(xbmc_player):
 				watched_params = {'action': 'mark_as_watched', 'tmdb_id': self.tmdb_id, 'title': self.title, 'year': self.year, 'season': self.season, 'episode': self.episode,
 									'tvdb_id': self.tvdb_id, 'from_playback': 'true'}
 				Thread(target=self.run_media_progress, args=(watched_function, watched_params)).start()
+				# note: for mark_movie/mark_episode kodi_refresh is already called internally
 			else:
 				clear_property('fenlight.random_episode_history')
 				if self.current_point >= set_resume:
 					progress_params = {'media_type': self.media_type, 'tmdb_id': self.tmdb_id, 'curr_time': self.curr_time, 'total_time': self.total_time,
 									'title': self.title, 'season': self.season, 'episode': self.episode, 'from_playback': 'true'}
-					Thread(target=self.run_media_progress, args=(set_bookmark, progress_params)).start()
+					Thread(target=self.run_media_progress, args=(set_bookmark, progress_params, True)).start()
 		except: pass
 
-	def run_media_progress(self, function, params):
-		try: function(params)
+	def run_media_progress(self, function, params, do_refresh=False):
+		try:
+			function(params)
+			if do_refresh: kodi_refresh()
 		except: pass
 
 	def run_next_ep(self):
