@@ -284,6 +284,9 @@ def scraping_settings():
 def omdb_api_key():
 	return get_setting('fenlight.omdb_api', 'empty_setting')
 
+def mdblist_api_key():
+    return get_setting('fenlight.mdblist_api', '')
+
 def default_all_episodes():
 	return int(get_setting('fenlight.default_all_episodes', '0'))
 

@@ -240,7 +240,7 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 		if networks:
 			if len(networks) == 1: studio = ([i['name'] for i in networks][0],)
 			else:
-				try: studio = (next(i['name'] for i in networks if i['logo_path'] not in empty_value_check) or next(i['name'] for i in network),)
+				try: studio = (next(i['name'] for i in networks if i['logo_path'] not in empty_value_check) or next(i['name'] for i in networks),)
 				except: pass
 		production_countries = data_get('production_countries', None)
 		if production_countries:
