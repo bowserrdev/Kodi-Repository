@@ -318,8 +318,10 @@ def trakt_progress(action, media, media_id, percent, season=None, episode=None, 
 		url = 'scrobble/pause'
 		if media in ('movie', 'movies'): data = {'movie': {'ids': {'tmdb': media_id}}, 'progress': float(percent)}
 		else: data = {'show': {'ids': {'tmdb': media_id}}, 'episode': {'season': int(season), 'number': int(episode)}, 'progress': float(percent)}
-		call_trakt(url, data=data)
+		try: resume_id = (call_trakt(url, data=data) or {}).get('id', 0)
+		except: resume_id = 0
 	if refresh_trakt: trakt_sync_activities()
+	return resume_id
 
 def trakt_scrobble_start(media, media_id, season=None, episode=None, progress=0.0):
 	try:
