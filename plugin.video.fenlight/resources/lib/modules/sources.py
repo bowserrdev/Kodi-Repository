@@ -91,6 +91,11 @@ class Sources():
 		if 'autoplay' in self.params: self.autoplay = params_get('autoplay', 'false') == 'true'
 		else: self.autoplay = auto_play(self.media_type)
 		self.get_meta()
+		if self.media_type == 'episode' and not any([self.custom_season, self.custom_episode]):
+			_ep_map = self.meta.get('tvdb_to_tmdb_ep') or {}
+			_tmdb_val = _ep_map.get((self.season, self.episode))
+			if _tmdb_val and _tmdb_val[0] == self.season and _tmdb_val[1] != self.episode:
+				self.custom_episode = _tmdb_val[1]
 		self.determine_scrapers_status()
 		self.sleep_time, self.provider_sort_ranks, self.scraper_settings = 100, provider_sort_ranks(), scraping_settings()
 		self.include_prerelease_results, self.ignore_results_filter, self.limit_resolve = include_prerelease_results(), ignore_results_filter(), limit_resolve()
