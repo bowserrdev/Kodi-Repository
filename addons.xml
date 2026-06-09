@@ -24,7 +24,7 @@
         <news>INFO: For latest changes see Changelog within Tools of add-on.</news>
     </extension>
 </addon>
-<addon id="repository.myprivate" name="Bowserr Repo" version="1.0.5" provider-name="Bowserr">
+<addon id="repository.myprivate" name="Bowserr Repo" version="1.0.6" provider-name="Bowserr">
     <requires>
         <import addon="xbmc.addon" version="12.0.0"/>
     </requires>
