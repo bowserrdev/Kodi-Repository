@@ -68,6 +68,20 @@ class TraktWatched():
 		self._delete(PROGRESS_DELETE, ('episode',))
 		self._executemany(PROGRESS_INSERT, insert_list)
 
+	def has_any_progress(self):
+		try:
+			dbcon = connect_database('trakt_db')
+			return dbcon.execute('SELECT 1 FROM progress LIMIT 1').fetchone() is not None
+		except: return False
+
+	def has_progress_deletions(self, db_type, trakt_ids):
+		try:
+			dbcon = connect_database('trakt_db')
+			local_ids = {row[0] for row in dbcon.execute('SELECT resume_id FROM progress WHERE db_type = ?', (db_type,)).fetchall()}
+			return bool(local_ids - trakt_ids)
+		except: return False
+
+
 	def _executemany(self, command, insert_list):
 		dbcon = connect_database('trakt_db')
 		dbcon.executemany(command, insert_list)
