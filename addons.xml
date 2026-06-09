@@ -39,6 +39,9 @@
         <summary>Repo privata</summary>
         <description>Sincronizzazione personale dei miei dispositivi</description>
         <platform>all</platform>
+        <assets>
+            <icon>icon.png</icon>
+        </assets>
     </extension>
 </addon>
 <addon id="script.module.cocoscrapers" name="CocoScrapers Module" version="1.1" provider-name="CocoJoe">
