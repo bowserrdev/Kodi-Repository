@@ -300,6 +300,8 @@ default_settings = [
 {'setting_id': 'meta_language', 'setting_type': 'string', 'setting_default': 'en'},
 #==================== OMDb
 {'setting_id': 'omdb_api', 'setting_type': 'string', 'setting_default': 'empty_setting'},
+#==================== MDBList
+{'setting_id': 'mdblist_api', 'setting_type': 'string', 'setting_default': 'empty_setting'},
 #==================== External
 {'setting_id': 'provider.external', 'setting_type': 'boolean', 'setting_default': 'false'},
 {'setting_id': 'external_scraper.name', 'setting_type': 'string', 'setting_default': 'empty_setting'},

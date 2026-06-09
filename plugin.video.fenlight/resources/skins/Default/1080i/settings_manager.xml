@@ -1188,6 +1188,21 @@
                           <property name="setting_description">Enter here your OMDb API key. This will allow you to utilize extra ratings information in Fen Lights Extras window</property>
                           <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_string&amp;setting_id=omdb_api)</onclick>
                       </item>
+        <!-- MDBList -->
+                      <item>
+                          <visible>Container(2000).HasFocus(50)</visible>
+                          <property name="setting_label">MDBList</property>
+                          <property name="setting_type">separator</property>
+                          <onclick>noop</onclick>
+                      </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(50)</visible>
+                          <property name="setting_label">API Key</property>
+                          <property name="setting_type">numeric</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.mdblist_api)]</property>
+                          <property name="setting_description">Enter here your MDBList API key. Get yours at mdblist.com/preferences#api</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_string&amp;setting_id=mdblist_api)</onclick>
+                      </item>
         <!-- External Scrapers -->
                       <item>
                           <visible>Container(2000).HasFocus(50)</visible>
