@@ -258,11 +258,11 @@ def set_bookmark(params):
 			if trakt_official_status(media_type) == False: return
 			else:
 				_ts, _te = _map_to_tmdb_episode(tmdb_id, season, episode)
-				trakt_progress('set_progress', media_type, tmdb_id, resume_point, _ts, _te, refresh_trakt=True)
+				_trakt_id = trakt_progress('set_progress', media_type, tmdb_id, resume_point, _ts, _te, refresh_trakt=True) or 0
 				try:
 					dbcon = get_database(1)
 					dbcon.execute('INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time), get_last_played_value(1), 0, title))
+						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time), get_last_played_value(1), _trakt_id, title))
 				except: pass
 		else:
 			erase_bookmark(media_type, tmdb_id, season, episode)

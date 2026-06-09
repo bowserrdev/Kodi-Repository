@@ -9,7 +9,6 @@ from modules import kodi_utils as ku, settings as st, watched_status as ws
 
 set_property, clear_property, get_visibility, hide_busy_dialog, xbmc_actor = ku.set_property, ku.clear_property, ku.get_visibility, ku.hide_busy_dialog, ku.xbmc_actor
 xbmc_player, execute_builtin, sleep = ku.xbmc_player, ku.execute_builtin, ku.sleep
-kodi_refresh = ku.kodi_refresh
 make_listitem, volume_checker, get_infolabel, xbmc_monitor = ku.make_listitem, ku.volume_checker, ku.get_infolabel, ku.xbmc_monitor
 close_all_dialog, notification, poster_empty, fanart_empty = ku.close_all_dialog, ku.notification, ku.empty_poster, ku.get_addon_fanart()
 auto_resume, auto_nextep_settings, store_resolved_to_cloud = st.auto_resume, st.auto_nextep_settings, st.store_resolved_to_cloud
@@ -211,7 +210,11 @@ class FenLightPlayer(xbmc_player):
 	def run_media_progress(self, function, params, do_refresh=False):
 		try:
 			function(params)
-			if do_refresh: kodi_refresh()
+			if do_refresh:
+				for _b1, _b2 in ((True, True), (True, False), (False, True), (False, False)):
+					ku.clear_property('1_%s_%s_%s_watched' % (self.media_type, _b1, _b2))
+				ku.sleep(2000)
+				ku.run_plugin({'mode': 'refresh_widgets'})
 		except: pass
 
 	def run_next_ep(self):
