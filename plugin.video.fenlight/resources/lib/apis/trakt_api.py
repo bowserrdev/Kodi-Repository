@@ -714,7 +714,9 @@ def trakt_progress_movies(progress_info):
 	insert_list = []
 	insert_append = insert_list.append
 	progress_items = [i for i in progress_info  if i['type'] == 'movie' and i['progress'] > 1]
-	if not progress_items: return
+	if not progress_items:
+		trakt_watched_cache.set_bulk_movie_progress([])
+		return
 	threads = list(make_thread_list(_process, progress_items))
 	[i.join() for i in threads]
 	trakt_watched_cache.set_bulk_movie_progress(insert_list)
@@ -746,7 +748,9 @@ def trakt_progress_tv(progress_info):
 	tmdb_list = []
 	tmdb_list_append = tmdb_list.append
 	progress_items = [i for i in progress_info if i['type'] == 'episode' and i['progress'] > 1]
-	if not progress_items: return
+	if not progress_items:
+		trakt_watched_cache.set_bulk_tvshow_progress([])
+		return
 	all_shows = [i['show'] for i in progress_items]
 	all_shows = [i for n, i in enumerate(all_shows) if not i in all_shows[n + 1:]] # remove duplicates
 	threads = list(make_thread_list(_process_tmdb_ids, all_shows))
@@ -832,7 +836,22 @@ def trakt_sync_activities(force_update=False):
 	except: return 'failed'
 	if not latest: return 'failed'
 	cached = reset_activity(latest)
-	if not _compare(latest['all'], cached['all']): return 'not needed'
+	if not _compare(latest['all'], cached['all']):
+		if trakt_watched_cache.has_any_progress():
+			progress_info = trakt_playback_progress()
+			if progress_info is not None:
+				movie_ids = {i['id'] for i in progress_info if i['type'] == 'movie'}
+				ep_ids = {i['id'] for i in progress_info if i['type'] == 'episode'}
+				movie_deleted = trakt_watched_cache.has_progress_deletions('movie', movie_ids)
+				ep_deleted = trakt_watched_cache.has_progress_deletions('episode', ep_ids)
+				if movie_deleted:
+					clear_properties('movie')
+					trakt_progress_movies(progress_info)
+				if ep_deleted:
+					clear_properties('episode')
+					trakt_progress_tv(progress_info)
+				if movie_deleted or ep_deleted: return 'success'
+		return 'not needed'
 	lists_actions, refresh_movies_progress, refresh_shows_progress, clear_tvshow_watched_cache = [], False, False, False
 	cached_movies, latest_movies = cached['movies'], latest['movies']
 	cached_shows, latest_shows = cached['shows'], latest['shows']
@@ -857,8 +876,18 @@ def trakt_sync_activities(force_update=False):
 	if _compare(latest_episodes['paused_at'], cached_episodes['paused_at']): refresh_shows_progress = True
 	if _compare(latest_lists['updated_at'], cached_lists['updated_at']): lists_actions.append('my_lists')
 	if _compare(latest_lists['liked_at'], cached_lists['liked_at']): lists_actions.append('liked_lists')
-	if refresh_movies_progress or refresh_shows_progress:
+	progress_info = None
+	if not (refresh_movies_progress and refresh_shows_progress):
 		progress_info = trakt_playback_progress()
+		if progress_info is not None:
+			if not refresh_movies_progress:
+				trakt_ids = {i['id'] for i in progress_info if i['type'] == 'movie'}
+				if trakt_watched_cache.has_progress_deletions('movie', trakt_ids): refresh_movies_progress = True
+			if not refresh_shows_progress:
+				trakt_ids = {i['id'] for i in progress_info if i['type'] == 'episode'}
+				if trakt_watched_cache.has_progress_deletions('episode', trakt_ids): refresh_shows_progress = True
+	if refresh_movies_progress or refresh_shows_progress:
+		if progress_info is None: progress_info = trakt_playback_progress()
 		if refresh_movies_progress:
 			clear_properties('movie')
 			trakt_progress_movies(progress_info)

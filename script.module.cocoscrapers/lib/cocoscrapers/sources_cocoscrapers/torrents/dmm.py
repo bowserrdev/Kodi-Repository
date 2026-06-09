@@ -114,7 +114,7 @@ class source(BaseTorrentScraper):
 			proxies = {'http': self._proxy, 'https': self._proxy}
 			try:
 				resp = requests.Session().get(api_url, params=_build_params(page), headers=headers,
-											  timeout=(2, 15), proxies=proxies)
+											  timeout=(5, 15), proxies=proxies)
 				data = resp.json() if resp.ok else None
 			except:
 				data = None
