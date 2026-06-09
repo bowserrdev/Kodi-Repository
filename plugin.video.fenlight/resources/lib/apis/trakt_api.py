@@ -658,12 +658,19 @@ def trakt_indicators_tv():
 		title = show['title']
 		tmdb_id = get_trakt_tvshow_id(show['ids'])
 		if not tmdb_id: return
+		try:
+			from modules.metadata import tvshow_meta as _tm
+			from modules.settings import mpaa_region as _mr
+			_meta = _tm('tmdb_id', tmdb_id, tmdb_api_key(), _mr(), get_datetime())
+			_ep_remap = _meta.get('tmdb_to_tvdb_ep', {}) if _meta else {}
+		except: _ep_remap = {}
 		for s in seasons:
 			season_no, episodes = s['number'], s['episodes']
 			for e in episodes:
 				last_watched_at = e['last_watched_at']
 				if reset_at and reset_at > js2date(last_watched_at, res_format): continue
-				insert_append(('episode', tmdb_id, season_no, e['number'], last_watched_at, title))
+				tvdb_s, tvdb_e = _ep_remap.get((season_no, e['number']), (season_no, e['number']))
+				insert_append(('episode', tmdb_id, tvdb_s, tvdb_e, last_watched_at, title))
 	insert_list = []
 	insert_append = insert_list.append
 	params = {'path': 'users/me/watched/shows?extended=full%s', 'with_auth': True, 'pagination': False}
@@ -720,11 +727,19 @@ def trakt_progress_tv(progress_info):
 				tmdb_id = item[0]
 				if not tmdb_id: continue
 				title = item[1]
+				try:
+					from modules.metadata import tvshow_meta as _tm
+					from modules.settings import mpaa_region as _mr
+					_meta = _tm('tmdb_id', tmdb_id, tmdb_api_key(), _mr(), get_datetime())
+					_ep_remap = _meta.get('tmdb_to_tvdb_ep', {}) if _meta else {}
+				except: _ep_remap = {}
 				for p_item in progress_items:
 					if p_item['show']['title'] == title:
 						season = p_item['episode']['season']
-						if season > 0: yield ('episode', str(tmdb_id), season, p_item['episode']['number'], str(round(p_item['progress'], 1)),
-												0, p_item['paused_at'], p_item['id'], p_item['show']['title'])
+						ep_num = p_item['episode']['number']
+						tvdb_s, tvdb_e = _ep_remap.get((season, ep_num), (season, ep_num))
+						if tvdb_s > 0: yield ('episode', str(tmdb_id), tvdb_s, tvdb_e, str(round(p_item['progress'], 1)),
+											0, p_item['paused_at'], p_item['id'], p_item['show']['title'])
 			except: pass
 	tmdb_list = []
 	tmdb_list_append = tmdb_list.append
