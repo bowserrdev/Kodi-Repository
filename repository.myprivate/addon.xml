@@ -14,5 +14,8 @@
         <summary>Repo privata</summary>
         <description>Sincronizzazione personale dei miei dispositivi</description>
         <platform>all</platform>
+        <assets>
+            <icon>icon.png</icon>
+        </assets>
     </extension>
 </addon>
