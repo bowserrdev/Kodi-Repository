@@ -183,7 +183,7 @@ def trakt_manager_choice(params):
 def episode_groups_choice(params):
 	episode_group_types = {1: 'Original Air Date', 2: 'Absolute', 3: 'DVD', 4: 'Digital', 5: 'Story Arc', 6: 'Production', 7: 'TV'}
 	meta = params.get('meta')
-	poster = params.get('poster') or empty_poster
+	poster = params.get('poster') or poster_empty
 	groups = metadata.episode_groups(meta['tmdb_id'])
 	if not groups:
 		notification('No Episode Groups to choose from.')
@@ -219,7 +219,7 @@ def playback_choice(params):
 	if not isinstance(meta, dict):
 		function = metadata.movie_meta if media_type == 'movie' else metadata.tvshow_meta
 		meta = function('tmdb_id', meta, tmdb_api_key(), mpaa_region(), get_datetime())
-	poster = meta.get('poster') or empty_poster
+	poster = meta.get('poster') or poster_empty
 	aliases = get_aliases_titles(make_alias_dict(meta, meta['title']))
 	items = [{'line': 'Select Source', 'function': 'scrape'},
 			{'line': 'Rescrape & Select Source', 'function': 'clear_and_rescrape'},
@@ -323,7 +323,7 @@ def playback_choice(params):
 			set_property('fs_filterless_search', 'true')
 	else:
 		from modules.metadata import episodes_meta
-		episodes_data = episodes_meta(orig_season, meta)
+		episodes_data = episodes_meta(season, meta)
 	from modules.sources import Sources
 	Sources().playback_prep(play_params)
 
@@ -477,9 +477,6 @@ def clear_favorites_choice(params={}):
 def favorites_choice(params):
 	from caches.favorites_cache import favorites_cache
 	media_type, tmdb_id, title = params.get('media_type'), params.get('tmdb_id'), params.get('title')
-	if media_type == 'tvshow':
-		if params.get('is_anime', None) in (True, 'True', 'true'): media_type = 'anime'
-		elif metadata.is_anime_check(tmdb_id): media_type = 'anime'
 	current_favorites = favorites_cache.get_favorites(media_type)
 	people_favorite = media_type == 'people'
 	current_favorite = any(i['tmdb_id'] == tmdb_id for i in current_favorites)
