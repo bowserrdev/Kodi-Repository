@@ -353,9 +353,3 @@ def nextep_sort_key():
 
 def nextep_sort_direction():
 	return int(get_setting('fenlight.nextep.sort_order', '0')) == 0
-
-def update_delay():
-	return int(get_setting('fenlight.update.delay', '45'))
-
-def update_action():
-	return int(get_setting('fenlight.update.action', '2'))
