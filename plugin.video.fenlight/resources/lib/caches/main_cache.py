@@ -1,11 +1,8 @@
 # -*- coding: utf-8 -*-
 from caches.base_cache import BaseCache, get_timestamp
-# from modules.kodi_utils import logger
 
 GET_ALL = 'SELECT id FROM maincache'
 DELETE_ALL = 'DELETE FROM maincache'
-LIKE_SELECT = 'SELECT id from maincache where id LIKE %s'
-LIKE_DELETE = 'DELETE FROM maincache WHERE id LIKE %s'
 CLEAN = 'DELETE from maincache WHERE CAST(expires AS INT) <= ?'
 
 class MainCache(BaseCache):
@@ -15,20 +12,22 @@ class MainCache(BaseCache):
 	def delete_all(self):
 		try:
 			dbcon = self.manual_connect('maincache_db')
-			for i in dbcon.execute(GET_ALL): self.delete_memory_cache(str(i[0]))
+			for i in dbcon.execute(GET_ALL):
+				self.delete_memory_cache(str(i[0]))
 			dbcon.execute(DELETE_ALL)
 			dbcon.execute('VACUUM')
 			return True
 		except: return False
 
 	def delete_all_folderscrapers(self):
-		dbcon = self.manual_connect('maincache_db')
-		remove_list = [str(i[0]) for i in dbcon.execute(LIKE_SELECT % "'FOLDERSCRAPER_%'").fetchall()]
-		if not remove_list: return True
 		try:
-			dbcon.execute(LIKE_DELETE % "'FOLDERSCRAPER_%'")
+			dbcon = self.manual_connect('maincache_db')
+			remove_list = [str(i[0]) for i in dbcon.execute('SELECT id FROM maincache WHERE id LIKE ?', ('FOLDERSCRAPER_%',)).fetchall()]
+			if not remove_list: return True
+			dbcon.execute('DELETE FROM maincache WHERE id LIKE ?', ('FOLDERSCRAPER_%',))
 			dbcon.execute('VACUUM')
-			for item in remove_list: self.delete_memory_cache(str(item))
+			for item in remove_list:
+				self.delete_memory_cache(item)
 			return True
 		except: return False
 
@@ -47,7 +46,6 @@ def cache_object(function, string, args, json=True, expiration=24):
 	if cache is not None: return cache
 	if isinstance(args, list): args = tuple(args)
 	else: args = (args,)
-	if json: result = function(*args).json()
-	else: result = function(*args)
+	result = function(*args).json() if json else function(*args)
 	main_cache.set(string, result, expiration=expiration)
 	return result

@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 from caches.base_cache import connect_database
-# from modules.kodi_utils import logger
 
 INSERT_ONE = 'INSERT OR REPLACE INTO discover VALUES (?, ?, ?)'
 DELETE_ONE = 'DELETE FROM discover where id=?'
@@ -9,13 +8,10 @@ DELETE_TYPE = 'DELETE FROM discover WHERE db_type=?'
 
 class DiscoverCache:
 	def insert_one(self, _id, db_type, data):
-		dbcon = connect_database('discover_db')
-		dbcon.execute(INSERT_ONE, (_id, db_type, data))
+		connect_database('discover_db').execute(INSERT_ONE, (_id, db_type, data))
 
 	def delete_one(self, _id):
-		dbcon = connect_database('discover_db')
-		dbcon.execute(DELETE_ONE, (_id,))
-		dbcon.execute('VACUUM')
+		connect_database('discover_db').execute(DELETE_ONE, (_id,))
 
 	def get_all(self, db_type):
 		dbcon = connect_database('discover_db')

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
+import json
 from caches.base_cache import connect_database, get_timestamp
-# from modules.kodi_utils import logger
 
 SELECT_RESULTS = 'SELECT results, expires FROM results_data WHERE provider = ? AND db_type = ? AND tmdb_id = ? AND title = ? AND year = ? AND season = ? AND episode = ?'
 DELETE_RESULTS = 'DELETE FROM results_data WHERE provider = ? AND db_type = ? AND tmdb_id = ? AND title = ? AND year = ? AND season = ? AND episode = ?'
@@ -9,58 +9,49 @@ SINGLE_DELETE = 'DELETE FROM results_data WHERE db_type=? AND tmdb_id=?'
 FULL_DELETE = 'DELETE FROM results_data'
 CLEAN = 'DELETE from results_data WHERE CAST(expires AS INT) <= ?'
 
-class ExternalCache(object):
+class ExternalCache:
 	def get(self, source, media_type, tmdb_id, title, year, season, episode):
-		result = None
 		try:
-			cache_data = self._execute(SELECT_RESULTS, (source, media_type, tmdb_id, title, year, season, episode)).fetchone()
-			if cache_data:
-				if cache_data[1] > get_timestamp(): result = eval(cache_data[0])
-				else: self.delete(source, media_type, title, year, tmdb_id, season, episode)
+			row = connect_database('external_db').execute(SELECT_RESULTS, (source, media_type, tmdb_id, title, year, season, episode)).fetchone()
+			if row:
+				if row[1] > get_timestamp():
+					return json.loads(row[0])
+				self.delete(source, media_type, tmdb_id, title, season, episode)
 		except: pass
-		return result
+		return None
 
 	def set(self, source, media_type, tmdb_id, title, year, season, episode, results, expire_time):
 		try:
 			expires = get_timestamp(expire_time)
-			self._execute(INSERT_RESULTS, (source, media_type, tmdb_id, title, year, season, episode, repr(results or []), int(expires)))
+			connect_database('external_db').execute(INSERT_RESULTS, (source, media_type, tmdb_id, title, year, season, episode, json.dumps(results or [], ensure_ascii=False), int(expires)))
 		except: pass
 
 	def delete(self, source, media_type, tmdb_id, title, season, episode):
 		try:
-			self._execute(DELETE_RESULTS, (source, media_type, tmdb_id, title, season, episode))
-		except: return
+			connect_database('external_db').execute(DELETE_RESULTS, (source, media_type, tmdb_id, title, season, episode))
+		except: pass
 
 	def delete_cache_single(self, media_type, tmdb_id):
 		try:
-			self._execute(SINGLE_DELETE, (media_type, tmdb_id))
-			self._vacuum()
+			connect_database('external_db').execute(SINGLE_DELETE, (media_type, tmdb_id))
+			connect_database('external_db').execute('VACUUM')
 			return True
 		except: return False
 
 	def clear_cache(self):
 		try:
-			self._execute(FULL_DELETE, ())
-			self._vacuum()
+			dbcon = connect_database('external_db')
+			dbcon.execute(FULL_DELETE)
+			dbcon.execute('VACUUM')
 			return True
 		except: return False
-
-	def _execute(self, command, params):
-		self.dbcon = connect_database('external_db')
-		return self.dbcon.execute(command, params)
 
 	def clean_database(self):
 		try:
 			dbcon = connect_database('external_db')
 			dbcon.execute(CLEAN, (get_timestamp(),))
-			dbcon.close()
-			self._vacuum()
+			dbcon.execute('VACUUM')
 			return True
 		except: return False
-
-	def _vacuum(self):
-		dbcon = connect_database('external_db')
-		dbcon.execute('VACUUM')
-		dbcon.close()
 
 external_cache = ExternalCache()

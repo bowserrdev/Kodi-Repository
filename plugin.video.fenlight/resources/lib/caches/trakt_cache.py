@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
+import json
 from threading import Thread
 from caches.base_cache import connect_database
 from modules.kodi_utils import sleep, confirm_dialog, close_all_dialog
-# from modules.kodi_utils import logger
 
 SELECT = 'SELECT id FROM trakt_data'
 DELETE = 'DELETE FROM trakt_data WHERE id=?'
-DELETE_LIKE = 'DELETE FROM trakt_data WHERE id LIKE "%s"'
+DELETE_LIKE = 'DELETE FROM trakt_data WHERE id LIKE ?'
 WATCHED_INSERT = 'INSERT OR IGNORE INTO watched VALUES (?, ?, ?, ?, ?, ?)'
 WATCHED_DELETE = 'DELETE FROM watched WHERE db_type = ?'
 PROGRESS_INSERT = 'INSERT OR IGNORE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
@@ -17,23 +17,22 @@ BASE_DELETE = 'DELETE FROM %s'
 TC_BASE_GET = 'SELECT data FROM trakt_data WHERE id = ?'
 TC_BASE_SET = 'INSERT OR REPLACE INTO trakt_data (id, data) VALUES (?, ?)'
 TC_BASE_DELETE = 'DELETE FROM trakt_data WHERE id = ?'
-DELETE_LISTS_WITH_MEDIA = 'SELECT id FROM maincache WHERE id LIKE %s'
+DELETE_LISTS_WITH_MEDIA = 'SELECT id FROM maincache WHERE id LIKE ?'
 
-class TraktCache:	
+class TraktCache:
 	def get(self, string):
-		result = None
 		try:
 			dbcon = connect_database('trakt_db')
-			cache_data = dbcon.execute(TC_BASE_GET, (string,)).fetchone()
-			if cache_data: result = eval(cache_data[0])
+			row = dbcon.execute(TC_BASE_GET, (string,)).fetchone()
+			if row: return json.loads(row[0])
 		except: pass
-		return result
+		return None
 
 	def set(self, string, data):
 		try:
 			dbcon = connect_database('trakt_db')
-			dbcon.execute(TC_BASE_SET, (string, repr(data)))
-		except: return None
+			dbcon.execute(TC_BASE_SET, (string, json.dumps(data, ensure_ascii=False)))
+		except: pass
 
 	def delete(self, string):
 		try:
@@ -43,14 +42,14 @@ class TraktCache:
 
 trakt_cache = TraktCache()
 
-class TraktWatched():
+class TraktWatched:
 	def set_bulk_tvshow_status(self, insert_list):
 		self._delete(STATUS_DELETE, ())
 		self._executemany(STATUS_INSERT, insert_list)
 
 	def set_tvshow_status(self, insert_dict):
 		dbcon = connect_database('trakt_db')
-		dbcon.execute('INSERT OR REPLACE INTO trakt_data (id, data) VALUES (?, ?)', ('trakt_tvshow_status', repr(insert_dict),))
+		dbcon.execute(TC_BASE_SET, ('trakt_tvshow_status', json.dumps(insert_dict, ensure_ascii=False)))
 
 	def set_bulk_movie_watched(self, insert_list):
 		self._delete(WATCHED_DELETE, ('movie',))
@@ -81,15 +80,16 @@ class TraktWatched():
 			return bool(local_ids - trakt_ids)
 		except: return False
 
-
 	def _executemany(self, command, insert_list):
 		dbcon = connect_database('trakt_db')
 		dbcon.executemany(command, insert_list)
 
 	def _delete(self, command, args):
+		# VACUUM is intentionally omitted here: called frequently during Trakt sync,
+		# it would rewrite the entire DB after each bulk delete. Reclamation happens
+		# in clear_all_trakt_cache_data after the full sync completes.
 		dbcon = connect_database('trakt_db')
 		dbcon.execute(command, args)
-		dbcon.execute('VACUUM')
 
 trakt_watched_cache = TraktWatched()
 
@@ -104,9 +104,8 @@ def reset_activity(latest_activities):
 	string = 'trakt_get_activity'
 	try:
 		dbcon = connect_database('trakt_db')
-		data = dbcon.execute(TC_BASE_GET, (string,)).fetchone()
-		if data: cached_data = eval(data[0]) or default_activities()
-		else: cached_data = default_activities()
+		row = dbcon.execute(TC_BASE_GET, (string,)).fetchone()
+		cached_data = json.loads(row[0]) if row else default_activities()
 		dbcon.execute(DELETE, (string,))
 		trakt_cache.set(string, latest_activities)
 	except: cached_data = default_activities()
@@ -120,52 +119,48 @@ def clear_daily_cache():
 	clear_trakt_list_contents_data('user_lists')
 
 def clear_trakt_hidden_data(list_type):
-	string = 'trakt_hidden_items_%s' % list_type
 	try:
 		dbcon = connect_database('trakt_db')
-		dbcon.execute(DELETE, (string,))
+		dbcon.execute(DELETE, ('trakt_hidden_items_%s' % list_type,))
 	except: pass
 
 def clear_trakt_collection_watchlist_data(list_type, media_type):
 	if media_type == 'movies': media_type = 'movie'
 	if media_type in ('tvshows', 'shows'): media_type = 'tvshow'
-	string = 'trakt_%s_%s' % (list_type, media_type)
 	try:
 		dbcon = connect_database('trakt_db')
-		dbcon.execute(DELETE, (string,))
+		dbcon.execute(DELETE, ('trakt_%s_%s' % (list_type, media_type),))
 	except: pass
 
 def clear_trakt_calendar():
 	try:
 		dbcon = connect_database('trakt_db')
-		dbcon.execute(DELETE_LIKE % 'trakt_get_my_calendar_%')
-	except: return
+		dbcon.execute(DELETE_LIKE, ('trakt_get_my_calendar_%',))
+	except: pass
 
 def clear_trakt_list_contents_data(list_type):
-	string = 'trakt_list_contents_' + list_type + '_%'
 	try:
 		dbcon = connect_database('trakt_db')
-		dbcon.execute(DELETE_LIKE % string)
+		dbcon.execute(DELETE_LIKE, ('trakt_list_contents_' + list_type + '_%',))
 	except: pass
 
 def clear_trakt_list_data(list_type):
-	string = 'trakt_%s' % list_type
 	try:
 		dbcon = connect_database('trakt_db')
-		dbcon.execute(DELETE, (string,))
+		dbcon.execute(DELETE, ('trakt_%s' % list_type,))
 	except: pass
 
 def clear_trakt_recommendations():
 	try:
 		dbcon = connect_database('trakt_db')
-		dbcon.execute(DELETE_LIKE % 'trakt_recommendations_%')
-	except: return
+		dbcon.execute(DELETE_LIKE, ('trakt_recommendations_%',))
+	except: pass
 
 def clear_trakt_favorites():
 	try:
 		dbcon = connect_database('trakt_db')
-		dbcon.execute(DELETE_LIKE % 'trakt_favorites_%')
-	except: return
+		dbcon.execute(DELETE_LIKE, ('trakt_favorites_%',))
+	except: pass
 
 def clear_continue_watching_cache():
 	try:
@@ -175,17 +170,17 @@ def clear_continue_watching_cache():
 
 def clear_all_trakt_cache_data(silent=False, refresh=True):
 	try:
-		start = silent or confirm_dialog()
-		if not start: return False
+		if not silent and not confirm_dialog(): return False
 		from caches.main_cache import main_cache
 		main_cache_dbcon = connect_database('maincache_db')
-		lists_with_media = main_cache_dbcon.execute(DELETE_LISTS_WITH_MEDIA % "'trakt_lists_with_media_%'").fetchall()
+		lists_with_media = main_cache_dbcon.execute(DELETE_LISTS_WITH_MEDIA, ('trakt_lists_with_media_%',)).fetchall()
 		for item in lists_with_media:
 			try: main_cache.delete(item[0])
 			except: pass
 		main_cache.clean_database()
 		dbcon = connect_database('trakt_db')
-		for table in ('trakt_data', 'progress', 'watched', 'watched_status'): dbcon.execute(BASE_DELETE % table)
+		for table in ('trakt_data', 'progress', 'watched', 'watched_status'):
+			dbcon.execute(BASE_DELETE % table)
 		dbcon.execute('VACUUM')
 		if refresh:
 			from apis.trakt_api import trakt_sync_activities
@@ -195,86 +190,44 @@ def clear_all_trakt_cache_data(silent=False, refresh=True):
 
 def default_activities():
 	return {
-			'all': '2024-01-22T00:22:21.000Z',
-			'movies':
-				{
-				'watched_at': '2020-01-01T00:00:01.000Z',
-				'collected_at': '2020-01-01T00:00:01.000Z',
-				'rated_at': '2020-01-01T00:00:01.000Z',
-				'watchlisted_at': '2020-01-01T00:00:01.000Z',
-				'favorited_at': '2020-01-01T00:00:01.000Z',
-				'recommendations_at': '2020-01-01T00:00:01.000Z',
-				'commented_at': '2020-01-01T00:00:01.000Z',
-				'paused_at': '2020-01-01T00:00:01.000Z',
-				'hidden_at': '2020-01-01T00:00:01.000Z'
-				},
-			'episodes':
-				{
-				'watched_at': '2020-01-01T00:00:01.000Z',
-				'collected_at': '2020-01-01T00:00:01.000Z',
-				'rated_at': '2020-01-01T00:00:01.000Z',
-				'watchlisted_at': '2020-01-01T00:00:01.000Z',
-				'commented_at': '2020-01-01T00:00:01.000Z',
-				'paused_at': '2020-01-01T00:00:01.000Z'
-				},
-			'shows':
-				{
-				'rated_at': '2020-01-01T00:00:01.000Z',
-				'watchlisted_at': '2020-01-01T00:00:01.000Z',
-				'favorited_at': '2020-01-01T00:00:01.000Z',
-				'recommendations_at': '2020-01-01T00:00:01.000Z',
-				'commented_at': '2020-01-01T00:00:01.000Z',
-				'hidden_at': '2020-01-01T00:00:01.000Z'
-				},
-			'seasons':
-				{
-				'rated_at': '2020-01-01T00:00:01.000Z',
-				'watchlisted_at': '2020-01-01T00:00:01.000Z',
-				'commented_at': '2020-01-01T00:00:01.000Z',
-				'hidden_at': '2020-01-01T00:00:01.000Z'
-				},
-			'comments':
-				{
-				'liked_at': '2020-01-01T00:00:01.000Z',
-				'blocked_at': '2020-01-01T00:00:01.000Z'
-				},
-			'lists':
-				{
-				'liked_at': '2020-01-01T00:00:01.000Z',
-				'updated_at': '2020-01-01T00:00:01.000Z',
-				'commented_at': '2020-01-01T00:00:01.000Z'
-				},
-			'watchlist':
-				{
-				'updated_at': '2020-01-01T00:00:01.000Z'
-				},
-			'favorites':
-				{
-				'updated_at': '2020-01-01T00:00:01.000Z'
-				},
-			'recommendations':
-				{
-				'updated_at': '2020-01-01T00:00:01.000Z'
-				},
-			'collaborations':
-				{
-				'updated_at': '2020-01-01T00:00:01.000Z'
-				},
-			'account':
-				{
-				'settings_at': '2020-01-01T00:00:01.000Z',
-				'followed_at': '2020-01-01T00:00:01.000Z',
-				'following_at': '2020-01-01T00:00:01.000Z',
-				'pending_at': '2020-01-01T00:00:01.000Z',
-				'requested_at': '2020-01-01T00:00:01.000Z'
-				},
-			'saved_filters':
-				{
-				'updated_at': '2020-01-01T00:00:01.000Z'
-				},
-			'notes':
-				{
-				'updated_at': '2020-01-01T00:00:01.000Z'
-				}
-			}
-	
+		'all': '2024-01-22T00:22:21.000Z',
+		'movies': {
+			'watched_at': '2020-01-01T00:00:01.000Z', 'collected_at': '2020-01-01T00:00:01.000Z',
+			'rated_at': '2020-01-01T00:00:01.000Z', 'watchlisted_at': '2020-01-01T00:00:01.000Z',
+			'favorited_at': '2020-01-01T00:00:01.000Z', 'recommendations_at': '2020-01-01T00:00:01.000Z',
+			'commented_at': '2020-01-01T00:00:01.000Z', 'paused_at': '2020-01-01T00:00:01.000Z',
+			'hidden_at': '2020-01-01T00:00:01.000Z'
+		},
+		'episodes': {
+			'watched_at': '2020-01-01T00:00:01.000Z', 'collected_at': '2020-01-01T00:00:01.000Z',
+			'rated_at': '2020-01-01T00:00:01.000Z', 'watchlisted_at': '2020-01-01T00:00:01.000Z',
+			'commented_at': '2020-01-01T00:00:01.000Z', 'paused_at': '2020-01-01T00:00:01.000Z'
+		},
+		'shows': {
+			'rated_at': '2020-01-01T00:00:01.000Z', 'watchlisted_at': '2020-01-01T00:00:01.000Z',
+			'favorited_at': '2020-01-01T00:00:01.000Z', 'recommendations_at': '2020-01-01T00:00:01.000Z',
+			'commented_at': '2020-01-01T00:00:01.000Z', 'hidden_at': '2020-01-01T00:00:01.000Z'
+		},
+		'seasons': {
+			'rated_at': '2020-01-01T00:00:01.000Z', 'watchlisted_at': '2020-01-01T00:00:01.000Z',
+			'commented_at': '2020-01-01T00:00:01.000Z', 'hidden_at': '2020-01-01T00:00:01.000Z'
+		},
+		'comments': {
+			'liked_at': '2020-01-01T00:00:01.000Z', 'blocked_at': '2020-01-01T00:00:01.000Z'
+		},
+		'lists': {
+			'liked_at': '2020-01-01T00:00:01.000Z', 'updated_at': '2020-01-01T00:00:01.000Z',
+			'commented_at': '2020-01-01T00:00:01.000Z'
+		},
+		'watchlist': {'updated_at': '2020-01-01T00:00:01.000Z'},
+		'favorites': {'updated_at': '2020-01-01T00:00:01.000Z'},
+		'recommendations': {'updated_at': '2020-01-01T00:00:01.000Z'},
+		'collaborations': {'updated_at': '2020-01-01T00:00:01.000Z'},
+		'account': {
+			'settings_at': '2020-01-01T00:00:01.000Z', 'followed_at': '2020-01-01T00:00:01.000Z',
+			'following_at': '2020-01-01T00:00:01.000Z', 'pending_at': '2020-01-01T00:00:01.000Z',
+			'requested_at': '2020-01-01T00:00:01.000Z'
+		},
+		'saved_filters': {'updated_at': '2020-01-01T00:00:01.000Z'},
+		'notes': {'updated_at': '2020-01-01T00:00:01.000Z'}
+	}
