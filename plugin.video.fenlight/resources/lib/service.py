@@ -93,29 +93,6 @@ class TraktMonitor:
 		except: pass
 		return logger('Fen Light', 'TraktMonitor Service Finished')
 
-class UpdateCheck:
-	def run(self):
-		window = xbmcgui.Window(10000)
-		if window.getProperty(firstrun_update_prop) == 'true': return
-		logger('Fen Light', 'UpdateCheck Service Starting')
-		from time import time
-		from modules.updater import update_check
-		from modules.settings import update_action, update_delay
-		end_pause = time() + update_delay()
-		monitor, player = xbmc.Monitor(), xbmc.Player()
-		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
-		while not monitor.abortRequested():
-			while time() < end_pause: wait_for_abort(1)
-			while window.getProperty(pause_services_prop) == 'true' or is_playing(): wait_for_abort(1)
-			update_check(update_action())
-			break
-		window.setProperty(firstrun_update_prop, 'true')
-		try: del monitor
-		except: pass
-		try: del player
-		except: pass
-		return logger('Fen Light', 'UpdateCheck Service Finished')
-
 class WidgetRefresher:
 	def run(self):
 		logger('Fen Light', 'WidgetRefresher Service Starting')
