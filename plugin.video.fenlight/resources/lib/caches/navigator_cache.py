@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
+import json
 from caches.base_cache import connect_database
 from modules.kodi_utils import get_property, set_property, clear_property
-# from modules.kodi_utils import logger
 
 GET_LIST = 'SELECT list_contents FROM navigator WHERE list_name = ? AND list_type = ?'
 SET_LIST = 'INSERT OR REPLACE INTO navigator VALUES (?, ?, ?)'
@@ -9,7 +9,7 @@ DELETE_LIST = 'DELETE FROM navigator WHERE list_name=? and list_type=?'
 GET_FOLDERS = 'SELECT list_name, list_contents FROM navigator WHERE list_type = ?'
 GET_FOLDER_CONTENTS = 'SELECT list_contents FROM navigator WHERE list_name = ? AND list_type = ?'
 prop_dict = {'default': 'fenlight_%s_default', 'edited': 'fenlight_%s_edited', 'shortcut_folder': 'fenlight_%s_shortcut_folder'}
-movie_random_converts = {'navigator.genres': 'tmdb_movies_genres', 'navigator.providers': 'tmdb_movies_providers',  'navigator.languages': 'tmdb_movies_languages',
+movie_random_converts = {'navigator.genres': 'tmdb_movies_genres', 'navigator.providers': 'tmdb_movies_providers', 'navigator.languages': 'tmdb_movies_languages',
 'navigator.years': 'tmdb_movies_year', 'navigator.decades': 'tmdb_movies_decade', 'navigator.certifications': 'tmdb_movies_certifications'}
 tvshow_random_converts = {'navigator.genres': 'tmdb_tv_genres', 'navigator.providers': 'tmdb_tv_providers', 'navigator.networks': 'tmdb_tv_networks',
 'navigator.languages': 'tmdb_tv_languages', 'navigator.years': 'tmdb_tv_year', 'navigator.decades': 'tmdb_tv_decade', 'navigator.certifications': 'trakt_tv_certifications'}
@@ -98,7 +98,7 @@ anime_list = [
 {'name': 'Anime Years', 'mode': 'navigator.years', 'menu_type': 'anime', 'random_support': 'true', 'iconImage': 'calender'},
 {'name': 'Anime Decades', 'mode': 'navigator.decades', 'menu_type': 'anime', 'random_support': 'true', 'iconImage': 'calendar_decades'},
 {'name': 'Anime Certifications', 'mode': 'navigator.certifications', 'menu_type': 'anime', 'random_support': 'true', 'iconImage': 'certifications'},
-				]
+			]
 
 main_menus = {'RootList': root_list, 'MovieList': movie_list, 'TVShowList': tvshow_list, 'AnimeList': anime_list}
 
@@ -107,7 +107,7 @@ class NavigatorCache:
 		default_contents = self.get_memory_cache(list_name, 'default')
 		if not default_contents:
 			default_contents = self.get_list(list_name, 'default')
-			if default_contents == None:
+			if default_contents is None:
 				self.rebuild_database()
 				return self.get_main_lists(list_name)
 			try: edited_contents = self.get_list(list_name, 'edited')
@@ -116,16 +116,14 @@ class NavigatorCache:
 		return default_contents, edited_contents
 
 	def get_list(self, list_name, list_type):
-		contents = None
 		try:
-			dbcon = connect_database('navigator_db')
-			contents = eval(dbcon.execute(GET_LIST, (list_name, list_type)).fetchone()[0])
+			row = connect_database('navigator_db').execute(GET_LIST, (list_name, list_type)).fetchone()
+			if row: return json.loads(row[0])
 		except: pass
-		return contents
+		return None
 
 	def set_list(self, list_name, list_type, list_contents):
-		dbcon = connect_database('navigator_db')
-		dbcon.execute(SET_LIST, (list_name, list_type, repr(list_contents)))
+		connect_database('navigator_db').execute(SET_LIST, (list_name, list_type, json.dumps(list_contents, ensure_ascii=False)))
 		self.set_memory_cache(list_name, list_type, list_contents)
 
 	def delete_list(self, list_name, list_type):
@@ -133,13 +131,13 @@ class NavigatorCache:
 		dbcon.execute(DELETE_LIST, (list_name, list_type))
 		self.delete_memory_cache(list_name, list_type)
 		dbcon.execute('VACUUM')
-	
+
 	def get_memory_cache(self, list_name, list_type):
-		try: return eval(get_property(self._get_list_prop(list_type) % list_name))
+		try: return json.loads(get_property(self._get_list_prop(list_type) % list_name))
 		except: return None
-	
+
 	def set_memory_cache(self, list_name, list_type, list_contents):
-		set_property(self._get_list_prop(list_type) % list_name, repr(list_contents))
+		set_property(self._get_list_prop(list_type) % list_name, json.dumps(list_contents, ensure_ascii=False))
 
 	def delete_memory_cache(self, list_name, list_type):
 		clear_property(self._get_list_prop(list_type) % list_name)
@@ -148,37 +146,35 @@ class NavigatorCache:
 		try:
 			dbcon = connect_database('navigator_db')
 			folders = dbcon.execute(GET_FOLDERS, ('shortcut_folder',)).fetchall()
-			folders = sorted([(str(i[0]), eval(i[1])) for i in folders], key=lambda s: s[0].lower())
-		except: folders = []
-		return folders
+			return sorted([(str(i[0]), json.loads(i[1])) for i in folders], key=lambda s: s[0].lower())
+		except: return []
 
 	def get_shortcut_folder_contents(self, list_name):
 		try:
-			dbcon = connect_database('navigator_db')
-			contents = eval(dbcon.execute(GET_FOLDER_CONTENTS, (list_name, 'shortcut_folder')).fetchone()[0])
-		except: contents = []
-		return contents
+			row = connect_database('navigator_db').execute(GET_FOLDER_CONTENTS, (list_name, 'shortcut_folder')).fetchone()
+			if row: return json.loads(row[0])
+		except: pass
+		return []
 
 	def currently_used_list(self, list_name):
 		default_contents, edited_contents = self.get_main_lists(list_name)
-		list_items = edited_contents or default_contents
-		return list_items
+		return edited_contents or default_contents
 
 	def rebuild_database(self):
-		dbcon = connect_database('navigator_db')
-		for list_name, list_contents in main_menus.items(): self.set_list(list_name, 'default', list_contents)
+		for list_name, list_contents in main_menus.items():
+			self.set_list(list_name, 'default', list_contents)
 
 	def _get_list_prop(self, list_type):
 		return prop_dict[list_type]
-	
+
 	def random_movie_lists(self):
 		return [dict(i, **{'mode': 'random.build_movie_list', 'action': i.get('action') or movie_random_converts[i['mode']],
 							'random': 'true', 'name': 'Movies Random %s' % i['name'], 'menu_type': 'movie'}) for i in movie_list if 'random_support' in i]
-	
+
 	def random_tvshow_lists(self):
 		return [dict(i, **{'mode': 'random.build_tvshow_list', 'action': i.get('action') or tvshow_random_converts[i['mode']],
 							'random': 'true', 'name': 'TV Shows Random %s' % i['name'], 'menu_type': 'tvshow'}) for i in tvshow_list if 'random_support' in i]
-	
+
 	def random_anime_lists(self):
 		return [dict(i, **{'mode': 'random.build_tvshow_list', 'action': i.get('action') or anime_random_converts[i['mode']],
 							'random': 'true', 'name': i['name'].replace('Anime', 'Anime Random'), 'menu_type': 'tvshow'}) for i in anime_list if 'random_support' in i]
