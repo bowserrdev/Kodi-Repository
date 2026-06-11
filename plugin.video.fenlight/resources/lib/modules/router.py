@@ -11,13 +11,13 @@ def routing(sys):
 	mode = _get('mode', 'navigator.main')
 	if 'navigator.' in mode:
 		from indexers.navigator import Navigator
-		return exec('Navigator(params).%s()' % mode.split('.')[1])
+		return getattr(Navigator(params), mode.split('.')[1])()
 	if 'menu_editor.' in mode:
 		from modules.menu_editor import MenuEditor
-		return exec('MenuEditor(params).%s()' % mode.split('.')[1])
+		return getattr(MenuEditor(params), mode.split('.')[1])()
 	if 'easynews.' in mode:
 		from indexers import easynews
-		return exec('easynews.%s(params)' % mode.split('.')[1])
+		return getattr(easynews, mode.split('.')[1])(params)
 	if 'playback.' in mode:
 		if mode == 'playback.media':
 			from modules.sources import Sources
@@ -27,22 +27,22 @@ def routing(sys):
 			return FenLightPlayer().run(_get('url', None), _get('obj', None))
 	if 'choice' in mode:
 		from indexers import dialogs
-		return exec('dialogs.%s(params)' % mode)
+		return getattr(dialogs, mode)(params)
 	if 'custom_key.' in mode:
 		from modules import custom_keys
-		return exec('custom_keys.%s()' % mode.split('custom_key.')[1])
+		return getattr(custom_keys, mode.split('custom_key.')[1])()
 	if 'trakt.' in mode:
 		if '.list' in mode:
 			from indexers import trakt_lists
-			return exec('trakt_lists.%s(params)' % mode.split('.')[2])
+			return getattr(trakt_lists, mode.split('.')[2])(params)
 		from apis import trakt_api
-		return exec('trakt_api.%s(params)' % mode.split('.')[1])
+		return getattr(trakt_api, mode.split('.')[1])(params)
 	if 'mdblist.' in mode:
 		if '.list' in mode:
 			from indexers import mdblist_lists
-			return exec('mdblist_lists.%s(params)' % mode.split('.')[2])
+			return getattr(mdblist_lists, mode.split('.')[2])(params)
 		from apis import mdblist_api
-		return exec('mdblist_api.%s(params)' % mode.split('.')[1])
+		return getattr(mdblist_api, mode.split('.')[1])(params)
 	if 'build' in mode:
 		if mode == 'build_movie_list':
 			from indexers.movies import Movies
@@ -248,10 +248,10 @@ def routing(sys):
 			return show_text(_get('heading'), _get('text', None), _get('file', None), _get('meta'), {})
 	if 'settings_manager.' in mode:
 		from caches import settings_cache
-		return exec('settings_cache.%s(params)' % mode.split('.')[1])
+		return getattr(settings_cache, mode.split('.')[1])(params)
 	if 'downloader.' in mode:
 		from modules import downloader
-		return exec('downloader.%s(params)' % mode.split('.')[1])
+		return getattr(downloader, mode.split('.')[1])(params)
 	##EXTRA modes##
 	if mode == 'set_view':
 		from modules.kodi_utils import set_view

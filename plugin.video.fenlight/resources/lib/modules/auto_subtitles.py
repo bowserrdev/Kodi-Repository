@@ -138,7 +138,7 @@ def auto_subtitle_check(player):
 
     timeout = 0
     while not getattr(player, '_av_started', False) and timeout < 150:
-        sleep(100)
+        sleep(300)
         timeout += 1
 
     audio_streams = []
