@@ -23,7 +23,7 @@ get_bookmarks_all_episode, get_progress_status_all_episode = ws.get_bookmarks_al
 get_hidden_progress_items, get_database, watched_info_episode, get_next = ws.get_hidden_progress_items, ws.get_database, ws.watched_info_episode, ws.get_next
 get_watched_status_tvshow, watched_info_tvshow = ws.get_watched_status_tvshow, ws.watched_info_tvshow
 string =  str
-poster_empty, fanart_empty = kodi_utils.empty_poster, kodi_utils.addon_fanart()
+poster_empty = kodi_utils.empty_poster
 run_plugin, unaired_label, tmdb_poster = 'RunPlugin(%s)', '[COLOR red][I]%s[/I][/COLOR]', 'https://image.tmdb.org/t/p/w780%s'
 upper = string.upper
 content_type = 'episodes'
@@ -100,6 +100,7 @@ def build_episode_list(params):
 	handle, is_external, is_home, category_name = int(sys.argv[1]), external(), home(), 'Episodes'
 	item_list = []
 	append = item_list.append
+	fanart_empty = kodi_utils.addon_fanart()
 	watched_indicators, adjust_hours = watched_indicators_info(), date_offset_info()
 	current_date, hide_watched = get_datetime(), is_home and widget_hide_watched()
 	watched_title = 'Trakt' if watched_indicators == 1 else 'Fen Light'
@@ -268,6 +269,7 @@ def build_single_episode(list_type, params={}):
 	item_list, airing_today, unwatched, return_results = [], [], [], False
 	resinsert = ''
 	item_list_append = item_list.append
+	fanart_empty = kodi_utils.addon_fanart()
 	window_command = 'ActivateWindow(Videos,%s,return)' if is_external else 'Container.Update(%s)'
 	all_episodes, watched_indicators, display_format = default_all_episodes(), watched_indicators_info(), ep_display_format(is_external)
 	current_date, adjust_hours, unwatched_info, hide_watched = get_datetime(), date_offset_info(), single_ep_unwatched_episodes(), is_home and widget_hide_watched()

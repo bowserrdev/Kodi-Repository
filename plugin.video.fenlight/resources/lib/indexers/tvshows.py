@@ -11,7 +11,7 @@ string, external, add_items, add_dir = str, kodi_utils.external, kodi_utils.add_
 sleep, add_item, xbmc_actor, home, tmdb_api_key = kodi_utils.sleep, kodi_utils.add_item, kodi_utils.xbmc_actor, kodi_utils.home, settings.tmdb_api_key
 set_category, make_listitem, build_url, set_property = kodi_utils.set_category, kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.set_property
 set_content, end_directory, set_view_mode, folder_path = kodi_utils.set_content, kodi_utils.end_directory, kodi_utils.set_view_mode, kodi_utils.folder_path
-poster_empty, fanart_empty, nextpage_landscape = kodi_utils.empty_poster, kodi_utils.addon_fanart(), kodi_utils.nextpage_landscape
+poster_empty, nextpage_landscape = kodi_utils.empty_poster, kodi_utils.nextpage_landscape
 media_open_action, default_all_episodes, page_limit, paginate = settings.media_open_action, settings.default_all_episodes, settings.page_limit, settings.paginate
 widget_hide_next_page, widget_hide_watched, watched_indicators = settings.widget_hide_next_page, settings.widget_hide_watched, settings.watched_indicators
 mpaa_region = settings.mpaa_region
@@ -44,6 +44,7 @@ class TVShows:
 		self.append = self.items.append
 		try: self.is_anime = '_anime_' in self.action
 		except: self.is_anime = False
+		self.fanart_empty = kodi_utils.addon_fanart()
 	
 	def fetch_list(self):
 		handle = int(sys.argv[1])
@@ -140,7 +141,7 @@ class TVShows:
 			premiered = meta_get('premiered')
 			trailer, title, year = meta_get('trailer'), meta_get('title'), meta_get('year') or '2050'
 			tvdb_id, imdb_id = meta_get('tvdb_id'), meta_get('imdb_id')
-			poster, fanart, clearlogo, landscape = meta_get('poster') or poster_empty, meta_get('fanart') or fanart_empty, meta_get('clearlogo') or '', meta_get('landscape') or ''
+			poster, fanart, clearlogo, landscape = meta_get('poster') or poster_empty, meta_get('fanart') or self.fanart_empty, meta_get('clearlogo') or '', meta_get('landscape') or ''
 			thumb = poster or landscape or fanart
 			tmdb_id, total_seasons, total_aired_eps = meta_get('tmdb_id'), meta_get('total_seasons'), meta_get('total_aired_eps')
 			unaired = total_aired_eps == 0

@@ -49,6 +49,8 @@ video_extensions = ('m4v', '3g2', '3gp', 'nsv', 'tp', 'ts', 'ty', 'pls', 'rm', '
 					'bdmv', 'bdm', 'wtv', 'trp', 'f4v', 'pvr', 'disc')
 image_extensions = ('jpg', 'jpeg', 'jpe', 'jif', 'jfif', 'jfi', 'bmp', 'dib', 'png', 'gif', 'webp', 'tiff', 'tif',
 					'psd', 'raw', 'arw', 'cr2', 'nrw', 'k25', 'jp2', 'j2k', 'jpf', 'jpx', 'jpm', 'mj2')
+_WINDOW = Window(10000)
+_KODI_VERSION = int(get_infolabel('System.BuildVersion')[0:2])
 
 def kodi_dialog():
 	return xbmcgui.Dialog()
@@ -137,19 +139,19 @@ def logger(heading, function):
 	log('###%s###: %s' % (heading, function), 1)
 
 def kodi_window():
-	return Window(10000)
+	return _WINDOW
 
 def get_property(prop):
-	return kodi_window().getProperty(prop)
+	return _WINDOW.getProperty(prop)
 
 def set_property(prop, value):
-	return kodi_window().setProperty(prop, value)
+	return _WINDOW.setProperty(prop, value)
 
 def clear_property(prop):
-	return kodi_window().clearProperty(prop)
+	return _WINDOW.clearProperty(prop)
 
 def clear_all_properties():
-	return kodi_window().clearProperties()
+	return _WINDOW.clearProperties()
 
 def addon(addon_id='plugin.video.fenlight'):
 	return xbmcaddon.Addon(id=addon_id)
@@ -169,7 +171,7 @@ def set_sort_method(handle, method):
 def make_session(url='https://'):
 	import requests
 	session = requests.Session()
-	session.mount(url, requests.adapters.HTTPAdapter(pool_maxsize=100))
+	session.mount(url, requests.adapters.HTTPAdapter(pool_maxsize=8))
 	return session	
 
 def make_playlist(playlist_type='video'):
@@ -227,10 +229,19 @@ def current_window_object():
 	return Window(get_window_id())
 
 def kodi_version():
-	return int(get_infolabel('System.BuildVersion')[0:2])
+	return _KODI_VERSION
 
 def get_video_database_path():
-	return translate_path('special://profile/Database/MyVideos%s.db' % myvideos_db_paths[kodi_version()])
+	db_version = myvideos_db_paths.get(_KODI_VERSION)
+	if db_version:
+		return translate_path('special://profile/Database/MyVideos%s.db' % db_version)
+	try:
+		import re
+		db_dir = translate_path('special://profile/Database/')
+		db_files = [f for f in list_dirs(db_dir)[1] if re.match(r'MyVideos\d+\.db', f)]
+		if db_files: return '%s%s' % (db_dir, sorted(db_files)[-1])
+	except: pass
+	return None
 
 def show_busy_dialog():
 	return execute_builtin('ActivateWindow(busydialognocancel)')

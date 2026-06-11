@@ -4,9 +4,10 @@ import json
 import requests
 from caches.base_cache import connect_database
 from caches.main_cache import cache_object
+from caches.settings_cache import get_setting
 from modules.dom_parser import parseDOM
 from modules.utils import remove_accents, replace_html_codes, normalize
-from modules.kodi_utils import logger
+from modules.kodi_utils import make_session
 
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.64 Safari/537.36 Edge/101.0.1210.53',
 			'Accept-Language':'en-us,en;q=0.5'}
@@ -22,14 +23,16 @@ people_images_url = 'name/%s/mediaindex?page=%s'
 people_trivia_url = 'name/%s/trivia'
 people_search_url_backup = 'search/name/?name=%s'
 people_search_url = 'https://sg.media-imdb.com/suggests/%s/%s.json'
-timeout = 20.0
+timeout = 10.0
+session = make_session('https://')
 
 def imdb_plot(imdb_id, lang):
+	if get_setting('fenlight.imdb_plot') != 'true': return ''
 	if not imdb_id or imdb_id == 'tt0000000': return ''
 	ietf_lang = '%s-%s' % (lang, lang.upper())
 	string = 'imdb_plot_%s_%s' % (lang, imdb_id)
 	params = {'imdb_id': imdb_id, 'lang': ietf_lang}
-	return cache_object(get_imdb_graphql, string, params, False, 720)[0]
+	return cache_object(get_imdb_graphql, string, params, False, 720)
 
 def get_imdb_graphql(params):
 	try:
@@ -38,61 +41,60 @@ def get_imdb_graphql(params):
 			'variables': {'id': params['imdb_id']}
 		}
 		graphql_headers = {'Content-Type': 'application/json', 'User-Agent': headers['User-Agent'], 'X-Imdb-User-Language': params['lang']}
-		r = requests.post(graphql_url, json=query, headers=graphql_headers, timeout=timeout)
+		r = session.post(graphql_url, json=query, headers=graphql_headers, timeout=timeout)
 		if r.status_code == 200:
-			return (r.json()['data']['title']['plot']['plotText']['plainText'], None)
+			return r.json()['data']['title']['plot']['plotText']['plainText']
 	except: pass
-	return ('', None)
+	return ''
 
 
 def imdb_more_like_this(imdb_id):
 	url = base_url % more_like_this_url % imdb_id
 	string = 'imdb_more_like_this_%s' % imdb_id
 	params = {'url': url, 'action': 'imdb_more_like_this', 'imdb_id': imdb_id}
-	return cache_object(get_imdb, string, params, False, 168)[0]
+	return cache_object(get_imdb, string, params, False, 168)
 
 def imdb_people_id(actor_name):
 	name = actor_name.lower()
 	string = 'imdb_people_id_%s' % name
 	url, url_backup = people_search_url % (name[0], name.replace(' ', '%20')), base_url % people_search_url_backup % name
 	params = {'url': url, 'action': 'imdb_people_id', 'name': name, 'url_backup': url_backup}
-	return cache_object(get_imdb, string, params, False, 8736)[0]
+	return cache_object(get_imdb, string, params, False, 8736)
 
 def imdb_reviews(imdb_id):
 	url = base_url % reviews_url % imdb_id
 	string = 'imdb_reviews_%s' % imdb_id
 	params = {'url': url, 'action': 'imdb_reviews'}
-	return cache_object(get_imdb, string, params, False, 168)[0]
+	return cache_object(get_imdb, string, params, False, 168)
 
 def imdb_parentsguide(imdb_id):
 	url = base_url % parentsguide_url % imdb_id
 	string = 'imdb_parentsguide_%s' % imdb_id
 	params = {'url': url, 'action': 'imdb_parentsguide'}
-	return cache_object(get_imdb, string, params, False, 168)[0]
+	return cache_object(get_imdb, string, params, False, 168)
 
 def imdb_trivia(imdb_id):
 	url = base_url % trivia_url % imdb_id
 	string = 'imdb_trivia_%s' % imdb_id
 	params = {'url': url, 'action': 'imdb_trivia'}
-	return cache_object(get_imdb, string, params, False, 168)[0]
+	return cache_object(get_imdb, string, params, False, 168)
 
 def imdb_blunders(imdb_id):
 	url = base_url % blunders_url % imdb_id
 	string = 'imdb_blunders_%s' % imdb_id
 	params = {'url': url, 'action': 'imdb_blunders'}
-	return cache_object(get_imdb, string, params, False, 168)[0]
+	return cache_object(get_imdb, string, params, False, 168)
 
 def imdb_people_trivia(imdb_id):
 	url = base_url % people_trivia_url % imdb_id
 	string = 'imdb_people_trivia_%s' % imdb_id
 	params = {'url': url, 'action': 'imdb_people_trivia'}
-	return cache_object(get_imdb, string, params, False, 168)[0]
+	return cache_object(get_imdb, string, params, False, 168)
 
 def get_imdb(params):
 	imdb_list = []
 	action = params.get('action')
 	url = params.get('url')
-	next_page = None
 	if action == 'imdb_more_like_this':
 		def _process():
 			for item in items:
@@ -101,7 +103,7 @@ def get_imdb(params):
 					if _id.replace('tt','').isnumeric(): yield (_id)
 				except: pass
 		try:
-			result = requests.get(url, timeout=timeout, headers=headers).text
+			result = session.get(url, timeout=timeout, headers=headers).text
 			result = result.split('<span>Storyline</span>')[0].split('<span>More like this</span>')[1]
 			items = str(result).split('poster-card__title--clickable" aria-label="')
 		except: items = []
@@ -119,7 +121,7 @@ def get_imdb(params):
 				except: pass
 		if action == 'imdb_trivia': _str = 'TRIVIA'
 		else: _str =  'BLUNDERS'
-		result = requests.get(url, timeout=timeout, headers=headers)
+		result = session.get(url, timeout=timeout, headers=headers)
 		result = remove_accents(result.text)
 		result = result.replace('\n', ' ')
 		items = parseDOM(result, 'div', attrs={'class': 'ipc-html-content-inner-div'})
@@ -135,7 +137,7 @@ def get_imdb(params):
 					yield content
 				except: pass
 		trivia_str = 'TRIVIA'
-		result = requests.get(url, timeout=timeout, headers=headers)
+		result = session.get(url, timeout=timeout, headers=headers)
 		result = remove_accents(result.text)
 		result = result.replace('\n', ' ')
 		items = parseDOM(result, 'div', attrs={'class': 'ipc-html-content-inner-div'})
@@ -168,7 +170,7 @@ def get_imdb(params):
 					yield review
 				except: pass
 		spoiler_str = 'CONTAINS SPOILERS'
-		result = requests.get(url, timeout=timeout, headers=headers)
+		result = session.get(url, timeout=timeout, headers=headers)
 		result = remove_accents(result.text)
 		result = result.replace('\n', ' ')
 		body = re.findall(r'{"node":{"id":(.*)"__typename":"ReviewEdge"', result)[0]
@@ -177,13 +179,13 @@ def get_imdb(params):
 	elif action == 'imdb_people_id':
 		try:
 			name = params['name']
-			result = requests.get(url, timeout=timeout)
+			result = session.get(url, timeout=timeout)
 			results = json.loads(re.sub(r'imdb\$(.+?)\(', '', result.text)[:-1])['d']
 			imdb_list = [i['id'] for i in results if i['id'].startswith('nm') and i['l'].lower() == name][0]
 		except: imdb_list = []
 		if not imdb_list:
 			try:
-				result = requests.get(params['url_backup'], timeout=timeout)
+				result = session.get(params['url_backup'], timeout=timeout)
 				result = remove_accents(result.text)
 				result = result.replace('\n', ' ')
 				result = parseDOM(result, 'div', attrs={'class': 'lister-item-image'})[0]
@@ -192,7 +194,7 @@ def get_imdb(params):
 	elif action == 'imdb_parentsguide':
 		imdb_list = []
 		imdb_append = imdb_list.append
-		result = requests.get(url, timeout=timeout, headers=headers)
+		result = session.get(url, timeout=timeout, headers=headers)
 		result = remove_accents(result.text)
 		result = result.replace('\n', ' ')
 		results = parseDOM(result, 'section', attrs={'class': 'ipc-page-section ipc-page-section--base'})
@@ -218,7 +220,7 @@ def get_imdb(params):
 			elif item_dict['ranking'] == 'none': continue
 			item_dict['total_count'] = len(listings)
 			if item_dict: imdb_append(item_dict)
-	return (imdb_list, next_page)
+	return imdb_list
 
 def clear_imdb_cache(silent=False):
 	from modules.kodi_utils import clear_property

@@ -7,12 +7,16 @@ import random
 import _strptime
 import unicodedata
 from html import unescape
-from threading import Thread, activeCount
+import os
+from threading import Thread
+from concurrent.futures import ThreadPoolExecutor
 from zipfile import ZipFile
 from importlib import import_module, reload as rel_module
 from datetime import datetime, timedelta, date
-from modules.settings import max_threads
 from modules.kodi_utils import translate_path, sleep, show_busy_dialog, hide_busy_dialog, path_exists
+
+# Auto-detect optimal worker count: cpu_count + 2 for I/O waiting threads, capped for low-RAM devices.
+_WORKER_COUNT = max(4, min((os.cpu_count() or 4) + 2, 10))
 # from modules.kodi_utils import logger
 
 def change_image_resolution(image, replace_res):
@@ -30,29 +34,29 @@ def reload_module(location):
 def manual_module_import(location):
 	return import_module(location)
 
+class _Done:
+	__slots__ = ()
+	def join(self): pass
+
+_DONE = (_Done(),)
+
 def make_thread_list(_target, _list):
-	_max_threads = max_threads()
-	for item in _list:
-		while activeCount() > _max_threads: sleep(1)
-		threaded_object = Thread(target=_target, args=(item,))
-		threaded_object.start()
-		yield threaded_object
+	with ThreadPoolExecutor(max_workers=_WORKER_COUNT) as pool:
+		for item in _list:
+			pool.submit(_target, item)
+	return _DONE
 
 def make_thread_list_multi_arg(_target, _list):
-	_max_threads = max_threads()
-	for item in _list:
-		while activeCount() > _max_threads: sleep(1)
-		threaded_object = Thread(target=_target, args=item)
-		threaded_object.start()
-		yield threaded_object
+	with ThreadPoolExecutor(max_workers=_WORKER_COUNT) as pool:
+		for item in _list:
+			pool.submit(_target, *item)
+	return _DONE
 
 def make_thread_list_enumerate(_target, _list):
-	_max_threads = max_threads()
-	for count, item in enumerate(_list):
-		while activeCount() > _max_threads: sleep(1)
-		threaded_object = Thread(target=_target, args=(count, item))
-		threaded_object.start()
-		yield threaded_object
+	with ThreadPoolExecutor(max_workers=_WORKER_COUNT) as pool:
+		for count, item in enumerate(_list):
+			pool.submit(_target, count, item)
+	return _DONE
 
 def chunks(item_list, limit):
 	"""

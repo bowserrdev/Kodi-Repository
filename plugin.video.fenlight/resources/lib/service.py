@@ -132,7 +132,7 @@ class WidgetRefresher:
 		if self.window.getProperty('fenlight.window_loaded') == 'true': return True 
 		try:
 			window_stack = json.loads(self.window.getProperty('fenlight.window_stack'))
-			if window_stack or window_stack == []: return True
+			if isinstance(window_stack, list): return True
 		except: pass
 		return False
 

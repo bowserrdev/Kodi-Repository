@@ -2,11 +2,10 @@
 import json
 from modules import kodi_utils
 from caches.base_cache import connect_database
-# logger = kodi_utils.logger
 
 numeric_input = kodi_utils.numeric_input
 kodi_dialog, ok_dialog, select_dialog, confirm_dialog = kodi_utils.kodi_dialog, kodi_utils.ok_dialog, kodi_utils.select_dialog, kodi_utils.confirm_dialog
-default_addon_fanart, get_property, set_property, notification = kodi_utils.addon_fanart(), kodi_utils.get_property, kodi_utils.set_property, kodi_utils.notification
+default_addon_fanart, get_property, set_property, clear_property, notification = kodi_utils.addon_fanart(), kodi_utils.get_property, kodi_utils.set_property, kodi_utils.clear_property, kodi_utils.notification
 tmdb_default_api, trakt_default_id, trakt_default_secret = kodi_utils.tmdb_default_api, kodi_utils.trakt_default_id, kodi_utils.trakt_default_secret
 boolean_dict = {'true': 'false', 'false': 'true'}
 
@@ -293,6 +292,7 @@ default_settings = [
 #==================== TMDb
 {'setting_id': 'tmdb_api', 'setting_type': 'string', 'setting_default': tmdb_default_api},
 {'setting_id': 'meta_language', 'setting_type': 'string', 'setting_default': 'en'},
+{'setting_id': 'imdb_plot', 'setting_type': 'boolean', 'setting_default': 'false'},
 #==================== OMDb
 {'setting_id': 'omdb_api', 'setting_type': 'string', 'setting_default': 'empty_setting'},
 #==================== MDBList
