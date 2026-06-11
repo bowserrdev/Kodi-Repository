@@ -4,7 +4,6 @@ import json
 from threading import Thread
 
 pause_services_prop = 'fenlight.pause_services'
-firstrun_update_prop = 'fenlight.firstrun_update'
 current_skin_prop = 'fenlight.current_skin'
 trakt_service_string = 'TraktMonitor Service Update %s - %s'
 trakt_success_line_dict = {'success': 'Trakt Update Performed', 'no account': '(Unauthorized) Trakt Update Performed'}
@@ -162,7 +161,6 @@ class FenLightMonitor(xbmc.Monitor):
 		SyncSettings().run()
 		Thread(target=CustomFonts().run).start()
 		Thread(target=TraktMonitor().run).start()
-		Thread(target=UpdateCheck().run).start()
 		Thread(target=WidgetRefresher().run).start()
 		AutoStart().run()
 

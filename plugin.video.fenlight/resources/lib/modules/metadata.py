@@ -142,7 +142,7 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 					next((youtube_url % i['key'] for i in all_trailers if i['type'] == 'Trailer'), None) or \
 					next((youtube_url % i['key'] for i in all_trailers if 'trailer' in i['name'].lower()), None) or \
 					next((youtube_url % i['key'] for i in all_trailers), None) or ''
-				else: trailler = ''
+				
 			except: pass
 		keywords = data_get('keywords', None)
 		status, homepage = data_get('status', 'N/A'), data_get('homepage', 'N/A')
@@ -291,7 +291,7 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 					next((youtube_url % i['key'] for i in all_trailers if i['type'] == 'Trailer'), None) or \
 					next((youtube_url % i['key'] for i in all_trailers if 'trailer' in i['name'].lower()), None) or \
 					next((youtube_url % i['key'] for i in all_trailers), None) or ''
-				else: trailler = ''
+				
 			except: pass
 		keywords = data_get('keywords', None)
 		status, _type, homepage = data_get('status', 'N/A'), data_get('type', 'N/A'), data_get('homepage', 'N/A')
