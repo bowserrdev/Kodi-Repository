@@ -6,7 +6,7 @@ from modules.utils import get_datetime, adjust_premiered_date, make_thread_list
 from modules.watched_status import get_database, watched_info_season, get_watched_status_season, get_progress_status_season
 # logger = kodi_utils.logger
 
-poster_empty, fanart_empty, xbmc_actor, set_category, home = kodi_utils.empty_poster, kodi_utils.addon_fanart(), kodi_utils.xbmc_actor, kodi_utils.set_category, kodi_utils.home
+poster_empty, xbmc_actor, set_category, home = kodi_utils.empty_poster, kodi_utils.xbmc_actor, kodi_utils.set_category, kodi_utils.home
 add_items, set_content, end_directory, set_view_mode = kodi_utils.add_items, kodi_utils.set_content, kodi_utils.end_directory, kodi_utils.set_view_mode
 make_listitem, build_url, external, date_offset_info, tmdb_api_key = kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.external, settings.date_offset, settings.tmdb_api_key
 watched_indicators_info, widget_hide_watched, show_specials, mpaa_region = settings.watched_indicators, settings.widget_hide_watched, settings.show_specials, settings.mpaa_region
@@ -82,6 +82,7 @@ def build_season_list(params):
 				yield (url_params, listitem, True)
 			except: pass
 	handle, is_external, is_home, category_name = int(sys.argv[1]), external(), home(), 'Season'
+	fanart_empty = kodi_utils.addon_fanart()
 	watched_indicators, adjust_hours, hide_watched = watched_indicators_info(), date_offset_info(), is_home and widget_hide_watched()
 	current_date = get_datetime()
 	watched_title = 'Trakt' if watched_indicators == 1 else 'Fen Light'
@@ -101,7 +102,7 @@ def build_season_list(params):
 		season_data = [i for i in season_data if not i['season_number'] == 0]
 		season_data.sort(key=lambda k: k['season_number'])
 	watched_info = watched_info_season(tmdb_id, get_database(watched_indicators))
-	list_items = list(list(_process()))
+	list_items = list(_process())
 	if custom_order is not None: return (list_items[0], custom_order)
 	add_items(handle, list_items)
 	category_name = show_title

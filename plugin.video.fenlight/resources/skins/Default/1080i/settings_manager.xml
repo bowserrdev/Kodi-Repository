@@ -1131,6 +1131,14 @@
                           <property name="setting_description">Language for TMDb metadata (title and plot). ISO 639-1 format: en, it, fr, de, es... After changing, clear the Meta Cache from Tools</property>
                           <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_string&amp;setting_id=meta_language)</onclick>
                       </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(50)</visible>
+                          <property name="setting_label">Use IMDb for Plot</property>
+                          <property name="setting_type">boolean</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.imdb_plot)]</property>
+                          <property name="setting_description">Enable this and Fen Light will fetch plot descriptions from IMDb instead of TMDb. Requires one additional network call per item on cold start. After changing, clear the Meta Cache from Tools</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_boolean&amp;setting_id=imdb_plot)</onclick>
+                      </item>
         <!-- OMDb -->
                       <item>
                           <visible>Container(2000).HasFocus(50)</visible>

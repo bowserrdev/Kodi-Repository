@@ -10,7 +10,7 @@ logger = kodi_utils.logger
 make_listitem, build_url, nextpage_landscape = kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.nextpage_landscape
 string, external, add_items, add_dir, get_property = str, kodi_utils.external, kodi_utils.add_items, kodi_utils.add_dir, kodi_utils.get_property
 set_content, end_directory, set_view_mode, folder_path = kodi_utils.set_content, kodi_utils.end_directory, kodi_utils.set_view_mode, kodi_utils.folder_path
-poster_empty, fanart_empty, set_property = kodi_utils.empty_poster, kodi_utils.addon_fanart(), kodi_utils.set_property
+poster_empty, set_property = kodi_utils.empty_poster, kodi_utils.set_property
 sleep, xbmc_actor, set_category = kodi_utils.sleep, kodi_utils.xbmc_actor, kodi_utils.set_category
 add_item, home = kodi_utils.add_item, kodi_utils.home
 watched_indicators, widget_hide_next_page = settings.watched_indicators, settings.widget_hide_next_page
@@ -42,6 +42,7 @@ class Movies:
 		self.paginate_start = int(self.params_get('paginate_start', '0'))
 		self.append = self.items.append
 		self.movieset_list_active = False
+		self.fanart_empty = kodi_utils.addon_fanart()
 
 	def fetch_list(self):
 		handle = int(sys.argv[1])
@@ -135,7 +136,7 @@ class Movies:
 			title, year = meta_get('title'), meta_get('year') or '2050'
 			tmdb_id, imdb_id = meta_get('tmdb_id'), meta_get('imdb_id')
 			str_tmdb_id = string(tmdb_id)
-			poster, fanart, clearlogo, landscape = meta_get('poster') or poster_empty, meta_get('fanart') or fanart_empty, meta_get('clearlogo') or '', meta_get('landscape') or ''
+			poster, fanart, clearlogo, landscape = meta_get('poster') or poster_empty, meta_get('fanart') or self.fanart_empty, meta_get('clearlogo') or '', meta_get('landscape') or ''
 			thumb = poster or landscape or fanart
 			movieset_id, movieset_name = meta_get('extra_info').get('collection_id', None), meta_get('extra_info').get('collection_name', None)
 			first_airdate = jsondate_to_datetime(premiered, '%Y-%m-%d', True)

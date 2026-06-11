@@ -6,15 +6,14 @@ from modules.meta_lists import oscar_winners, years_tvshows
 from modules.settings import get_meta_filter, tmdb_api_key
 from modules.utils import make_thread_list_enumerate
 from modules.kodi_utils import make_session, tmdb_dict_removals, remove_keys, notification
-# from modules.kodi_utils import logger
 
 EXPIRY_4_HOURS, EXPIRY_1_DAY, EXPIRY_1_WEEK = 4, 24, 168
 base_url = 'https://api.themoviedb.org/3'
-movies_append = 'external_ids,videos,credits,release_dates,alternative_titles,translations,images,keywords'
-tvshows_append = 'external_ids,videos,credits,content_ratings,alternative_titles,translations,images,keywords'
+movies_append = 'external_ids,videos,credits,release_dates,translations,images'
+tvshows_append = 'external_ids,videos,credits,content_ratings,translations,images'
 empty_setting_check = (None, 'empty_setting', '')
 session = make_session(base_url)
-timeout = 20.0
+timeout = 10.0
 
 def no_api_key():
 	notification('Please set a valid TMDb API Key')
