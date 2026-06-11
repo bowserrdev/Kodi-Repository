@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addons>
-<addon id="plugin.video.fenlight" name="Fen Light" provider-name="Tikipeter" version="2.1.1">
+<addon id="plugin.video.fenlight" name="Fen Light" provider-name="Tikipeter" version="2.1.2">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
         <import addon="script.module.requests" version="2.19.1"/>
@@ -24,7 +24,7 @@
         <news>INFO: For latest changes see Changelog within Tools of add-on.</news>
     </extension>
 </addon>
-<addon id="repository.myprivate" name="Bowserr Repo" version="1.0.9" provider-name="Bowserr">
+<addon id="repository.myprivate" name="Bowserr Repo" version="1.0.10" provider-name="Bowserr">
     <requires>
         <import addon="xbmc.addon" version="12.0.0"/>
     </requires>
@@ -45,7 +45,7 @@
     </extension>
 </addon>
 <addon id="plugin.video.themoviedb.helper"
-version="6.15.6"
+version="6.15.7"
 name="TMDb Helper"
 provider-name="jurialmunkey">
 <requires>
@@ -93,7 +93,7 @@ provider-name="jurialmunkey">
   </assets>
 </extension>
 </addon>
-<addon id="skin.arctic.fuse.3" name="Arctic Fuse 3" provider-name="jurialmunkey" version="3.3">
+<addon id="skin.arctic.fuse.3" name="Arctic Fuse 3" provider-name="jurialmunkey" version="3.3.1">
     <requires>
         <import addon="xbmc.gui" version="5.17.0" />
         <import addon="script.skinvariables" version="2.2.1" />
