@@ -404,7 +404,7 @@
             <param name="id">11</param>
             <param name="baseid">50</param>
             <param name="basegroupid">51</param>
-            <param name="label">$INFO[Window(Home).Property(TMDbHelper.ListItem.Set.Name)]</param>
+            <param name="label">$INFO[Window(Home).Property(FenLight.ListItem.Set.Name)]</param>
             <param name="include">List_Poster_Row</param>
             <param name="visible">$EXP[Exp_InfoDialogs_WidgetsGroup_HasFocus]</param>
             <param name="widgetfade_include">true</param>
@@ -558,7 +558,7 @@
                     <visible>Integer.IsGreater(Container(5001).NumItems,1) | [Integer.IsEqual(Container(5001).NumItems,1) + String.IsEmpty(Container(5001).ListItemAbsolute(0).Property(is_static))]</visible>
                 </item>
             </content>
-            <content>$VAR[Path_FromDirector,plugin://plugin.video.themoviedb.helper/?info=crew_in_both&amp;tmdb_type=person&amp;filter_key=job&amp;filter_value=Director&amp;sort_by=premiered&amp;tmdb_id=,&amp;nextpage=false&amp;cacheonly=true&amp;length=1]</content>
+            <content>$VAR[Path_FromDirector,plugin://plugin.video.fenlight/?mode=build_person_credits_list&amp;job=Director&amp;person_id=,]</content>
             <include>DialogInfo_Widgets_Action</include>
         </include>
 
@@ -1023,7 +1023,9 @@
             <onclick>SetProperty(origin_tmdb_type,$VAR[Path_InfoParams_TMDbType],1114)</onclick>
             <onclick>SetProperty(origin_season,$VAR[Path_InfoParams_Season],1114)</onclick>
             <onclick>SetProperty(origin_episode,$VAR[Path_InfoParams_Episode],1114)</onclick>
-            <onclick>ActivateWindow(1114)</onclick>
+            <onclick condition="!String.IsEqual(Container.ListItem.Property(tmdb_type),person) + String.IsEqual(Container.ListItem.DBType,movie) + !String.IsEmpty(Container.ListItem.UniqueID(tmdb))">RunPlugin(plugin://plugin.video.fenlight/?mode=open_media_info&amp;media_type=movie&amp;tmdb_id=$INFO[Container.ListItem.UniqueID(tmdb)])</onclick>
+            <onclick condition="!String.IsEqual(Container.ListItem.Property(tmdb_type),person) + [String.IsEqual(Container.ListItem.DBType,tvshow) | String.IsEqual(Container.ListItem.DBType,season) | String.IsEqual(Container.ListItem.DBType,episode)] + !String.IsEmpty(Container.ListItem.UniqueID(tmdb))">RunPlugin(plugin://plugin.video.fenlight/?mode=open_media_info&amp;media_type=tvshow&amp;tmdb_id=$INFO[Container.ListItem.UniqueID(tmdb)])</onclick>
+            <onclick condition="!String.IsEqual(Container.ListItem.Property(tmdb_type),person) + String.IsEmpty(Container.ListItem.UniqueID(tmdb)) + !String.IsEmpty(Container.ListItem.Property(tmdb_id))">RunPlugin(plugin://plugin.video.fenlight/?mode=open_media_info&amp;media_type=$INFO[Container.ListItem.Property(tmdb_type)]&amp;tmdb_id=$INFO[Container.ListItem.Property(tmdb_id)])</onclick>
         </definition>
     </include>
 
@@ -1514,72 +1516,47 @@
             <control type="group">
                 <top>20</top>
                 <left>20</left>
-                <height>80</height>
-                <include content="View_Line">
-                    <param name="top">20</param>
-                    <param name="use_spinner">false</param>
-                    <param name="left">20</param>
-                    <param name="label" />
-                </include>
+                <height>120</height>
                 <control type="grouplist" id="9000">
                     <orientation>horizontal</orientation>
-                    <top>-2</top>
+                    <top>0</top>
                     <left>20</left>
-                    <height>57</height>
+                    <height>72</height>
                     <itemgap>40</itemgap>
                     <ondown>90001</ondown>
-                    <onup condition="$EXP[Exp_TMDbHelper_IsData]">ActivateWindow(1113)</onup>
-
-                    <!-- Play/Browse -->
-                    <include content="Button_Underline_Switcher">
-                        <param name="id">4001</param>
-                        <param name="control">button</param>
+                    <control type="button" id="4001">
+                        <width>340</width>
+                        <height>72</height>
+                        <visible>!$EXP[Exp_IsFolder]</visible>
+                        <texturefocus border="35" colordiffuse="FFFFFFFF">special://skin/extras/buttons/pill.png</texturefocus>
+                        <texturenofocus border="35" colordiffuse="FFFFFFFF">special://skin/extras/buttons/pill-outline.png</texturenofocus>
                         <label>$VAR[Label_DialogInfo_PlayButton]</label>
+                        <font>font13</font>
+                        <textcolor>FFFFFFFF</textcolor>
+                        <focusedcolor>FF000000</focusedcolor>
+                        <align>center</align>
+                        <textoffsetx>40</textoffsetx>
                         <onclick>$VAR[Action_DialogInfo_PlayMedia]</onclick>
-                    </include>
-
-                    <!-- Button 0 -->
-                    <include content="Button_Underline_Switcher">
-                        <param name="id">4002</param>
-                        <param name="control">button</param>
-                        <label>$INFO[Container(4900).ListItemAbsolute(0).Label]</label>
-                        <onclick>SetFocus(4900,0,absolute)</onclick>
-                        <onclick>Action(select)</onclick>
-                        <onclick>SetFocus(4002)</onclick>
-                        <visible>!String.IsEmpty(Container(4900).ListItemAbsolute(0).Label)</visible>
-                    </include>
-
-                    <!-- Button 1 -->
-                    <include content="Button_Underline_Switcher">
-                        <param name="id">4003</param>
-                        <param name="control">button</param>
-                        <label>$INFO[Container(4900).ListItemAbsolute(1).Label]</label>
-                        <onclick>SetFocus(4900,1,absolute)</onclick>
-                        <onclick>Action(select)</onclick>
-                        <onclick>SetFocus(4003)</onclick>
-                        <visible>!String.IsEmpty(Container(4900).ListItemAbsolute(1).Label)</visible>
-                    </include>
-
-                    <!-- Button 2 -->
-                    <include content="Button_Underline_Switcher">
-                        <param name="id">4004</param>
-                        <param name="control">button</param>
-                        <label>$INFO[Container(4900).ListItemAbsolute(2).Label]</label>
-                        <onclick>SetFocus(4900,2,absolute)</onclick>
-                        <onclick>Action(select)</onclick>
-                        <onclick>SetFocus(4004)</onclick>
-                        <visible>!String.IsEmpty(Container(4900).ListItemAbsolute(2).Label)</visible>
-                    </include>
-
-                    <!-- Options -->
-                    <include content="Button_Underline_Switcher">
-                        <param name="id">4005</param>
-                        <param name="control">button</param>
-                        <label>$LOCALIZE[33063]</label>
-                        <onclick>SetProperty(Dialog.1172.DBTYPE,$INFO[ListITem.DBTYpe],Home)</onclick>
-                        <onclick>ActivateWindow(1172)</onclick>
-                    </include>
-
+                        <onclick>Dialog.Close(movieinformation,true)</onclick>
+                    </control>
+                </control>
+                <control type="image">
+                    <left>64</left>
+                    <top>18</top>
+                    <width>36</width>
+                    <height>36</height>
+                    <aspectratio>keep</aspectratio>
+                    <texture colordiffuse="FF000000">special://skin/extras/icons/circle-play.png</texture>
+                    <visible>Control.HasFocus(4001) + !$EXP[Exp_IsFolder]</visible>
+                </control>
+                <control type="image">
+                    <left>64</left>
+                    <top>18</top>
+                    <width>36</width>
+                    <height>36</height>
+                    <aspectratio>keep</aspectratio>
+                    <texture colordiffuse="FFFFFFFF">special://skin/extras/icons/circle-play.png</texture>
+                    <visible>!Control.HasFocus(4001) + !$EXP[Exp_IsFolder]</visible>
                 </control>
             </control>
 
@@ -1594,7 +1571,7 @@
                     <width>$PARAM[left_group_width]</width>
                     <height>320</height>
 
-                    <onup>9000</onup>
+                    <onup condition="!$EXP[Exp_IsFolder]">9000</onup>
                     <ondown>SetFocus(90001)</ondown>
                     <ondown>SetFocus(5000)</ondown>
                     <!-- <onleft>61</onleft> -->
@@ -1611,9 +1588,8 @@
                         <param name="tmdb_type">person</param>
                         <param name="tmdb_id">$VAR[Path_FromDirector]</param>
                         <onclick condition="$EXP[Exp_TMDbHelper_IsData]">SetProperty(type,Director,1120)</onclick>
-                        <onclick condition="$EXP[Exp_TMDbHelper_IsData]">ActivateWindow(1120)</onclick>
                         <onclick condition="!$EXP[Exp_TMDbHelper_IsData]">SendClick(13)</onclick>
-                        <visible>!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Director)) | !String.IsEmpty(ListItem.Director)</visible>
+                        <visible>!String.IsEmpty(Window(Home).Property(FenLight.ListItem.Director.1.Name)) | !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Director.1.Name)) | !String.IsEmpty(ListItem.Director)</visible>
                     </include>
 
                     <!-- Writer -->
@@ -1626,8 +1602,7 @@
                         <param name="tmdb_type">person</param>
                         <param name="tmdb_id">$VAR[Path_FromWriter]</param>
                         <onclick>SetProperty(type,Writer,1120)</onclick>
-                        <onclick>ActivateWindow(1120)</onclick>
-                        <visible>!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer)) | !String.IsEmpty(ListItem.Writer)</visible>
+                        <visible>!String.IsEmpty(Window(Home).Property(FenLight.ListItem.Director.1.Name)) | !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Director.1.Name)) | !String.IsEmpty(ListItem.Director)</visible>
                     </include>
                     <include content="Object_InfoCircle_Detail" condition="!$EXP[Exp_TMDbHelper_IsData]">
                         <param name="id">02</param>
@@ -1690,7 +1665,7 @@
                     <height>320</height>
                     <left>$PARAM[left_group_width]</left>
 
-                    <onup>9000</onup>
+                    <onup condition="!$EXP[Exp_IsFolder]">9000</onup>
                     <ondown>5000</ondown>
                     <onleft>9100</onleft>
                     <onright>9100</onright>
@@ -1701,7 +1676,7 @@
                         <param name="icon">special://skin/extras/icons/language.png</param>
                         <param name="role">$LOCALIZE[248]</param>
                         <param name="name">$VAR[Label_Language]</param>
-                        <visible>!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Language)) | !String.IsEmpty(ListItem.Property(Language))</visible>
+                        <visible>!String.IsEmpty(Window(Home).Property(FenLight.ListItem.Language)) | !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Language)) | !String.IsEmpty(ListItem.Property(Language))</visible>
                     </include>
 
                     <!-- Genre -->
@@ -1781,7 +1756,6 @@
                     <height>57</height>
                     <itemgap>40</itemgap>
                     <ondown>5000</ondown>
-                    <onup condition="$EXP[Exp_TMDbHelper_IsData]">ActivateWindow(1113)</onup>
 
                     <!-- Info -->
                     <include content="Button_Underline_Switcher">

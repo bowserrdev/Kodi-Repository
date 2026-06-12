@@ -16,6 +16,18 @@ tmdb_image_url, youtube_url, date_format = 'https://image.tmdb.org/t/p/%s%s', 'p
 EXPIRES_1_DAYS, EXPIRES_4_DAYS, EXPIRES_7_DAYS, EXPIRES_14_DAYS, EXPIRES_30_DAYS, EXPIRES_182_DAYS = 24, 96, 168, 336, 720, 4368
 invalid_error_codes = (6, 34, 37)
 
+def _make_people(crew, job_check, single_job=False):
+	# job_check: stringa singola (Director) o tupla di job (writer_credits)
+	try:
+		if single_job: source = [i for i in crew if i['job'] == job_check]
+		else: source = [i for i in crew if i['job'] in job_check]
+		return [{'name': i['name'], 'id': i['id'], 'thumbnail': tmdb_image_url % ('h632', i['profile_path']) if i['profile_path'] else ''} for i in source][:3]
+	except: return []
+
+def _make_studio_id(companies):
+	try: return next((i['id'] for i in companies if i['logo_path'] not in empty_value_check), companies[0]['id'])
+	except: return None
+
 def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_time=None):
 	if id_type == 'trakt_dict':
 		if media_id.get('tmdb', None): id_type, media_id = 'tmdb_id', media_id['tmdb']
@@ -39,7 +51,8 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 			metacache_set('movie', id_type, meta, EXPIRES_1_DAYS, current_time)
 			return meta
 		data_get = data.get
-		cast, writer, director, all_trailers, country, country_codes, studio = [], [], [], [], [], [], []
+		cast, writer, director, directors, writers, all_trailers, country, country_codes, studio = [], [], [], [], [], [], [], [], []
+		studio_id = None
 		mpaa, trailer, spoken_language = '', '', ''
 		tmdb_id, imdb_id = data_get('id', ''), data_get('imdb_id', '')
 		rating, votes = data_get('vote_average', ''), data_get('vote_count', '')
@@ -92,6 +105,7 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 			else:
 				try: studio = (next(i['name'] for i in companies if i['logo_path'] not in empty_value_check) or next(i['name'] for i in companies),)
 				except: pass
+			studio_id = _make_studio_id(companies)
 		production_countries = data_get('production_countries', None)
 		if production_countries:
 			country = [i['name'] for i in production_countries]
@@ -104,8 +118,8 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 		if credits:
 			all_cast = credits.get('cast', None)
 			if all_cast:
-				try: cast = [{'name': i['name'], 'role': i['character'], 'thumbnail': tmdb_image_url % ('h632', i['profile_path'])if i['profile_path'] else ''}\
-							for i in all_cast[:10]]
+				try: cast = [{'name': i['name'], 'role': i['character'], 'id': i['id'], 'thumbnail': tmdb_image_url % ('h632', i['profile_path']) if i['profile_path'] else ''}\
+							for i in all_cast]
 				except: pass
 			crew = credits.get('crew', None)
 			if crew:
@@ -113,6 +127,8 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 				except: pass
 				try: director = [i['name'] for i in crew if i['job'] == 'Director']
 				except: pass
+				directors = _make_people(crew, 'Director', single_job=True)
+				writers = _make_people(crew, writer_credits)
 		alternative_titles = []
 		alt_strings = set()
 		for t in data_get('translations', {}).get('translations', []):
@@ -135,7 +151,6 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 					next((youtube_url % i['key'] for i in all_trailers if i['type'] == 'Trailer'), None) or \
 					next((youtube_url % i['key'] for i in all_trailers if 'trailer' in i['name'].lower()), None) or \
 					next((youtube_url % i['key'] for i in all_trailers), None) or ''
-				else: trailler = ''
 			except: pass
 		status, homepage = data_get('status', 'N/A'), data_get('homepage', 'N/A')
 		belongs_to_collection = data_get('belongs_to_collection')
@@ -145,12 +160,12 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 		except: ei_budget = '$0'
 		try: ei_revenue = '${:,}'.format(data_get('revenue'))
 		except: ei_revenue = '$0'
-		extra_info = {'status': status, 'budget': ei_budget, 'revenue': ei_revenue, 'homepage': homepage, 'collection_name': ei_collection_name, 'collection_id': ei_collection_id}
+		extra_info = {'status': status, 'budget': ei_budget, 'revenue': ei_revenue, 'homepage': homepage, 'collection_name': ei_collection_name, 'collection_id': ei_collection_id, 'studio_id': studio_id}
 		meta = {'tmdb_id': tmdb_id, 'imdb_id': imdb_id, 'rating': rating, 'tagline': tagline, 'votes': votes, 'premiered': premiered, 'imdbnumber': imdb_id, 'trailer': trailer,
 				'poster': poster, 'fanart': fanart, 'genre': genre, 'title': title, 'original_title': original_title, 'english_title': english_title, 'year': year, 'cast': cast,
 				'duration': duration, 'rootname': rootname, 'country': country, 'country_codes': country_codes, 'mpaa': mpaa,'writer': writer, 'all_trailers': all_trailers,
-				'director': director, 'alternative_titles': alternative_titles, 'plot': plot, 'studio': studio, 'extra_info': extra_info, 'mediatype': 'movie', 'tvdb_id': 'None',
-				'clearlogo': clearlogo, 'landscape': landscape, 'spoken_language': spoken_language, 'meta_language': lang}
+				'director': director, 'directors': directors, 'writers': writers, 'alternative_titles': alternative_titles, 'plot': plot, 'studio': studio, 'extra_info': extra_info,
+				'mediatype': 'movie', 'tvdb_id': 'None', 'clearlogo': clearlogo, 'landscape': landscape, 'spoken_language': spoken_language, 'meta_language': lang}
 		metacache_set('movie', id_type, meta, movie_expiry(current_date, meta), current_time)
 	except: pass
 	return meta
@@ -179,7 +194,8 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			metacache_set('tvshow', id_type, meta, EXPIRES_1_DAYS, current_time)
 			return meta
 		data_get = data.get
-		cast, writer, director, studio, all_trailers, country, country_codes = [], [], [], [], [], [], []
+		cast, writer, director, directors, writers, studio, all_trailers, country, country_codes = [], [], [], [], [], [], [], [], []
+		studio_id = None
 		mpaa, trailer, spoken_language = '', '', ''
 		external_ids = data_get('external_ids')
 		tmdb_id, imdb_id, tvdb_id = data_get('id', ''), external_ids.get('imdb_id', ''), external_ids.get('tvdb_id', 'None')
@@ -234,6 +250,7 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			else:
 				try: studio = (next(i['name'] for i in networks if i['logo_path'] not in empty_value_check) or next(i['name'] for i in networks),)
 				except: pass
+			studio_id = _make_studio_id(networks)
 		production_countries = data_get('production_countries', None)
 		if production_countries:
 			country = [i['name'] for i in production_countries]
@@ -250,8 +267,8 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 		if credits:
 			all_cast = credits.get('cast', None)
 			if all_cast:
-				try: cast = [{'name': i['name'], 'role': i['character'], 'thumbnail': tmdb_image_url % ('h632', i['profile_path']) if i['profile_path'] else ''} \
-							for i in all_cast[:10]]
+				try: cast = [{'name': i['name'], 'role': i['character'], 'id': i['id'], 'thumbnail': tmdb_image_url % ('h632', i['profile_path']) if i['profile_path'] else ''}\
+							for i in all_cast]
 				except: pass
 			crew = credits.get('crew', None)
 			if crew:
@@ -259,6 +276,8 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 				except: pass
 				try: director = [i['name'] for i in crew if i['job'] == 'Director']
 				except: pass
+				directors = _make_people(crew, 'Director', single_job=True)
+				writers = _make_people(crew, writer_credits)
 		alternative_titles = []
 		alt_strings = set()
 		for t in data_get('translations', {}).get('translations', []):
@@ -277,7 +296,6 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 					next((youtube_url % i['key'] for i in all_trailers if i['type'] == 'Trailer'), None) or \
 					next((youtube_url % i['key'] for i in all_trailers if 'trailer' in i['name'].lower()), None) or \
 					next((youtube_url % i['key'] for i in all_trailers), None) or ''
-				else: trailler = ''
 			except: pass
 		status, _type, homepage = data_get('status', 'N/A'), data_get('type', 'N/A'), data_get('homepage', 'N/A')
 		created_by = data_get('created_by', None)
@@ -290,13 +308,14 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			total_aired_eps = sum([i['episode_count'] for i in season_data if i['season_number'] < ei_last_ep['season_number'] \
 																		and i['season_number'] != 0]) + ei_last_ep['episode_number']
 		else: total_aired_eps = data_get('number_of_episodes')
-		extra_info = {'status': status, 'type': _type, 'homepage': homepage, 'created_by': ei_created_by, 'next_episode_to_air': ei_next_ep, 'last_episode_to_air': ei_last_ep}
+		extra_info = {'status': status, 'type': _type, 'homepage': homepage, 'created_by': ei_created_by, 'next_episode_to_air': ei_next_ep, 'last_episode_to_air': ei_last_ep,
+					'studio_id': studio_id}
 		meta = {'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'imdb_id': imdb_id, 'rating': rating, 'plot': plot, 'tagline': tagline, 'votes': votes, 'premiered': premiered, 'year': year,
 				'poster': poster, 'fanart': fanart, 'genre': genre, 'title': title, 'original_title': original_title, 'english_title': english_title, 'season_data': season_data,
 				'alternative_titles': alternative_titles, 'duration': duration, 'rootname': rootname, 'imdbnumber': imdb_id, 'country': country, 'mpaa': mpaa, 'trailer': trailer,
-				'country_codes': country_codes, 'writer': writer, 'director': director, 'all_trailers': all_trailers, 'cast': cast, 'studio': studio, 'extra_info': extra_info,
-				'total_aired_eps': total_aired_eps, 'mediatype': 'tvshow', 'total_seasons': total_seasons, 'tvshowtitle': title, 'status': status, 'clearlogo': clearlogo,
-				'landscape': landscape, 'spoken_language': spoken_language, 'meta_language': lang}
+				'country_codes': country_codes, 'writer': writer, 'director': director, 'directors': directors, 'writers': writers, 'all_trailers': all_trailers, 'cast': cast,
+				'studio': studio, 'extra_info': extra_info, 'total_aired_eps': total_aired_eps, 'mediatype': 'tvshow', 'total_seasons': total_seasons, 'tvshowtitle': title,
+				'status': status, 'clearlogo': clearlogo, 'landscape': landscape, 'spoken_language': spoken_language, 'meta_language': lang}
 		meta['original_language'] = data_get('original_language', '')
 		_is_anime = data_get('original_language', '') in ('ja', 'ko', 'zh')
 		_skyhook_seasons = get_skyhook_season_data(tvdb_id, season_data) if _is_anime else None

@@ -74,6 +74,9 @@ def routing(sys):
 		if mode == 'build_tmdb_people':
 			from indexers.people import tmdb_people
 			return tmdb_people(params)
+		if mode == 'build_cast_list':
+			from indexers.people import build_cast_list
+			return build_cast_list(params)
 		if 'random.' in mode:
 			from indexers.random_lists import RandomLists
 			return RandomLists(params).run_random()
@@ -283,6 +286,15 @@ def routing(sys):
 	if mode == 'toggle_language_invoker':
 		from modules.kodi_utils import toggle_language_invoker
 		return toggle_language_invoker()
+	if mode == 'set_videoinfo_properties':
+		from modules.skin_properties import set_videoinfo_properties
+		return set_videoinfo_properties(params)
+	if mode == 'build_person_credits_list':
+			from indexers.people import build_person_credits_list
+			return build_person_credits_list(params)
+	if mode == 'open_media_info':
+		from modules.skin_properties import open_media_info
+		return open_media_info(params)
 	if mode == 'downloader':
 		from modules.downloader import runner
 		return runner(params)
