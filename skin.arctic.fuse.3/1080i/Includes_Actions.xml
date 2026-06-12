@@ -31,9 +31,7 @@
     </include>
 
     <variable name="Action_DialogInfo_PlayMedia">
-        <!-- Play FileNameAndPath -->
-        <value condition="!String.IsEmpty(ListItem.FileNameAndPath) + !$EXP[Exp_IsFolder]">PlayMedia($ESCINFO[ListItem.FileNameAndPath])</value>
-        <!-- Play FolderPath -->
+        <value condition="!String.IsEmpty(ListItem.FileNameAndPath)">PlayMedia($ESCINFO[ListItem.FileNameAndPath])</value>
         <value>PlayMedia($ESCINFO[ListItem.FolderPath])</value>
     </variable>
 

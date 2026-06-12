@@ -26,6 +26,17 @@ def _get_session(url):
 		return _session_pool[netloc]
 
 
+def _get_configured_proxy():
+	try:
+		from cocoscrapers.modules.control import setting as getSetting
+		if getSetting('proxy.enabled') != 'true':
+			return None
+		proxy = (getSetting('proxy.url') or '').strip()
+		return proxy if proxy else None
+	except:
+		return None
+
+
 def request(url, close=True, redirect=True, error=False, proxy=None, post=None, headers=None, mobile=False,
 			XHR=False, limit=None, referer=None, cookie=None, compression=True, output='', timeout='30',
 			verifySsl=True, flare=True, ignoreErrors=None, as_bytes=False):
@@ -53,16 +64,28 @@ def request(url, close=True, redirect=True, error=False, proxy=None, post=None, 
 		elif isinstance(post, bytes): post_data = post
 		else: post_data = None
 
-		response = session.request(
-			method='POST' if post_data is not None else 'GET',
-			url=url,
-			headers=req_headers,
-			data=post_data,
-			proxies={'http': proxy, 'https': proxy} if proxy else None,
-			timeout=(2, int(timeout)),
-			verify=verifySsl,
-			allow_redirects=redirect
-		)
+		def _send(request_proxy=None):
+			return session.request(
+				method='POST' if post_data is not None else 'GET',
+				url=url,
+				headers=req_headers,
+				data=post_data,
+				proxies={'http': request_proxy, 'https': request_proxy} if request_proxy else None,
+				timeout=(2, int(timeout)),
+				verify=verifySsl,
+				allow_redirects=redirect
+			)
+
+		response = _send(proxy)
+		if response.status_code == 429 and not proxy:
+			fallback_proxy = _get_configured_proxy()
+			if fallback_proxy:
+				try:
+					from cocoscrapers.modules import log_utils
+					log_utils.log('CLIENT: 429 from %s, retrying with configured proxy' % urlparse(url).netloc)
+				except:
+					pass
+				response = _send(fallback_proxy)
 
 		# output='extended' is always returned regardless of status so callers can inspect the code
 		if output == 'extended':

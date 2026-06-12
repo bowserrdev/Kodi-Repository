@@ -76,6 +76,7 @@ class source(BaseTorrentScraper):
 
 	def _get(self, url, params, headers, use_proxy=False):
 		try:
+			page = params.get('page', '?')
 			if use_proxy and self._proxy:
 				proxies = {'http': self._proxy, 'https': self._proxy}
 				resp = requests.Session().get(url, params=params, headers=headers, timeout=(2, 15), proxies=proxies)
@@ -83,10 +84,11 @@ class source(BaseTorrentScraper):
 				resp = _session.get(url, params=params, headers=headers, timeout=(2, 15))
 			if resp.status_code == 429:
 				if use_proxy or not self._proxy:
-					log_utils.log('DMM: 429, stopping pagination')
+					log_utils.log('DMM: 429 page=%s proxy=%s, stopping pagination' % (page, use_proxy))
 					return None
 				return self._get(url, params, headers, use_proxy=True)
 			if not resp.ok:
+				log_utils.log('DMM HTTP %s page=%s proxy=%s' % (resp.status_code, page, use_proxy))
 				return None
 			return resp.json()
 		except:
@@ -110,34 +112,59 @@ class source(BaseTorrentScraper):
 				p['seasonNum'] = season
 			return p
 
-		def _fetch_proxy(page, out):
-			proxies = {'http': self._proxy, 'https': self._proxy}
-			try:
-				resp = requests.Session().get(api_url, params=_build_params(page), headers=headers,
-											  timeout=(5, 15), proxies=proxies)
-				data = resp.json() if resp.ok else None
-			except:
-				data = None
-			if data:
-				n = len(data.get('results', []))
-				log_utils.log('DMM page %s: %s results' % (page, n))
-				out.extend(r for r in data.get('results', []) if r.get('hash'))
+		def _fetch_page(page, retries=1):
+			for attempt in range(retries + 1):
+				data = self._get(api_url, _build_params(page), headers, use_proxy=bool(self._proxy))
+				if data is not None:
+					raw_count = len(data.get('results', []))
+					page_results = []
+					for item in data.get('results', []):
+						if not item.get('hash'):
+							continue
+						item = dict(item)
+						item['_dmm_page'] = page
+						page_results.append(item)
+					log_utils.log('DMM page %s raw results: %s (%s with hash) for imdb: %s' % (
+						page, raw_count, len(page_results), imdb_id))
+					return page_results
+				if attempt < retries:
+					log_utils.log('DMM page %s failed, retrying' % page)
+			log_utils.log('DMM page %s failed after retries for imdb: %s' % (page, imdb_id))
+			return None
 
-		page0 = []
-		data0 = self._get(api_url, _build_params(0), headers)
-		if data0:
-			page0.extend(r for r in data0.get('results', []) if r.get('hash'))
-		log_utils.log('DMM page0 raw results: %s for imdb: %s' % (len(page0), imdb_id))
-
+		results = []
+		page_results = _fetch_page(0)
+		if page_results is None:
+			log_utils.log('DMM pagination stopped on failed page: 0')
+			return results
+		results += page_results
 		if not self._proxy:
-			return page0
+			log_utils.log('DMM pagination stopped after page 0: no proxy configured')
+			return results
 
-		extra_pages = [[] for _ in range(10)]
-		threads = [Thread(target=_fetch_proxy, args=(i+1, extra_pages[i])) for i in range(10)]
-		[t.start() for t in threads]
-		[t.join() for t in threads]
-		results = page0
-		for p in extra_pages: results += p
+		batch_size = 3
+		page = 1
+		while True:
+			pages = list(range(page, page + batch_size))
+			batch_results = [None] * len(pages)
+
+			def _fetch_batch_page(idx, batch_page):
+				batch_results[idx] = _fetch_page(batch_page)
+
+			threads = [Thread(target=_fetch_batch_page, args=(idx, batch_page)) for idx, batch_page in enumerate(pages)]
+			[t.start() for t in threads]
+			[t.join() for t in threads]
+
+			batch_total = sum(len(page_result or []) for page_result in batch_results)
+			log_utils.log('DMM batch pages %s-%s raw results: %s for imdb: %s' % (
+				pages[0], pages[-1], batch_total, imdb_id))
+			if batch_total == 0:
+				log_utils.log('DMM pagination stopped on empty batch: pages %s-%s' % (pages[0], pages[-1]))
+				break
+			for page_result in batch_results:
+				if page_result:
+					results += page_result
+			page += batch_size
 		return results
 
 	@staticmethod
@@ -176,11 +203,14 @@ class source(BaseTorrentScraper):
 		for item in files:
 			try:
 				raw_title = item.get('title') or item.get('filename') or item.get('name') or ''
+				page = item.get('_dmm_page', '?')
+				log_utils.log('DMM RAW page=%s: raw="%s" | hash=%s | fileSize=%s' % (
+					page, raw_title, item.get('hash', '?'), item.get('fileSize', '?')))
 				hash, name, seeders, dsize, isize, url = self._parse_item(item)
 				if not name or not hash:
 					log_utils.log('DMM SKIP [empty after clean_name] raw="%s"' % raw_title)
 					continue
-				log_utils.log('DMM RAW: "%s" | hash=%s | size=%s' % (name, hash, isize or '?'))
+				log_utils.log('DMM PARSED page=%s: "%s" | hash=%s | size=%s' % (page, name, hash, isize or '?'))
 				if self.min_seeders > seeders:
 					log_utils.log('DMM SKIP [seeders=%s < min=%s]: "%s"' % (seeders, self.min_seeders, name))
 					continue
@@ -224,6 +254,9 @@ class source(BaseTorrentScraper):
 		for item in files:
 			try:
 				raw_title = item.get('title') or item.get('filename') or item.get('name') or ''
+				page = item.get('_dmm_page', '?')
+				log_utils.log('DMM RAW PACK page=%s: raw="%s" | hash=%s | fileSize=%s' % (
+					page, raw_title, item.get('hash', '?'), item.get('fileSize', '?')))
 				hash, name, seeders, dsize, isize, url = self._parse_item(item)
 				if not name or not hash:
 					log_utils.log('DMM SKIP [empty after clean_name] raw="%s"' % raw_title)

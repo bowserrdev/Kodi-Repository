@@ -9,8 +9,8 @@ from modules.kodi_utils import make_session, tmdb_dict_removals, remove_keys, no
 
 EXPIRY_4_HOURS, EXPIRY_1_DAY, EXPIRY_1_WEEK = 4, 24, 168
 base_url = 'https://api.themoviedb.org/3'
-movies_append = 'external_ids,videos,credits,release_dates,translations,images'
-tvshows_append = 'external_ids,videos,credits,content_ratings,translations,images'
+movies_append = 'external_ids,videos,credits,release_dates,translations,alternative_titles,images'
+tvshows_append = 'external_ids,videos,credits,content_ratings,translations,alternative_titles,images'
 empty_setting_check = (None, 'empty_setting', '')
 session = make_session(base_url)
 timeout = 10.0
