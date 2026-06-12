@@ -83,4 +83,17 @@ def open_media_info(params):
 		while getCondVisibility('Window.IsVisible(movieinformation)') and count < 20:
 			sleep(50)
 			count += 1
+	if media_type != 'movie': listitem.setPath('plugin://plugin.video.fenlight/?mode=build_season_list&tmdb_id=%s' % str(meta_get('tmdb_id') or tmdb_id))
 	Dialog().info(listitem)
+
+def browse_media(params):
+	import xbmc
+	tmdb_id = params.get('tmdb_id', '')
+	if not tmdb_id: return
+	url = 'plugin://plugin.video.fenlight/?mode=build_season_list&tmdb_id=%s' % tmdb_id
+	xbmc.executebuiltin('Dialog.Close(movieinformation,true)')
+	for _ in range(50):
+		if not xbmc.getCondVisibility('Window.IsVisible(movieinformation)'): break
+		xbmc.sleep(20)
+	if xbmc.getCondVisibility('Window.IsVisible(videos)'): xbmc.executebuiltin('Container.Update(%s)' % url)
+	else: xbmc.executebuiltin('ActivateWindow(videos,%s,return)' % url)

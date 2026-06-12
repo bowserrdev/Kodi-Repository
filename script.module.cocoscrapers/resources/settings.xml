@@ -245,6 +245,52 @@
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
+				<setting id="provider.icv" type="boolean" label="32583" help="">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="icv.usecustomurl" type="boolean" label="32584" help="" parent="provider.icv">
+					<level>0</level>
+					<default>false</default>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="provider.icv">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="toggle"/>
+				</setting>
+				<setting id="icv.customurl" type="string" label="32585" help="" parent="provider.icv">
+					<level>0</level>
+					<default/>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="icv.usecustomurl">true</condition>
+							<condition operator="is" setting="provider.icv">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="edit" format="string">
+						<heading>32585</heading>
+					</control>
+				</setting>
+				<setting id="icv.userdata" type="string" label="32586" help="" parent="provider.icv">
+					<level>0</level>
+					<default/>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="provider.icv">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="edit" format="string">
+						<heading>32586</heading>
+					</control>
+				</setting>
 				<setting id="provider.knaben" type="boolean" label="32545" help="">
 					<level>0</level>
 					<default>false</default>

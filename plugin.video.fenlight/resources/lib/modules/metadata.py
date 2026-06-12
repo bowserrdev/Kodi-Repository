@@ -131,6 +131,12 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 				writers = _make_people(crew, writer_credits)
 		alternative_titles = []
 		alt_strings = set()
+		for t in data_get('alternative_titles', {}).get('titles', []):
+			t_title = t.get('title', '')
+			t_lang = t.get('iso_3166_1', '')
+			if t_title and t_title not in alt_strings:
+				alternative_titles.append({'title': t_title, 'iso': t_lang})
+				alt_strings.add(t_title)
 		for t in data_get('translations', {}).get('translations', []):
 			t_title = t.get('data', {}).get('title', '')
 			t_lang = t.get('iso_639_1', '')
@@ -280,6 +286,12 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 				writers = _make_people(crew, writer_credits)
 		alternative_titles = []
 		alt_strings = set()
+		for t in data_get('alternative_titles', {}).get('results', []):
+			t_title = t.get('title', '')
+			t_lang = t.get('iso_3166_1', '')
+			if t_title and t_title not in alt_strings:
+				alternative_titles.append({'title': t_title, 'iso': t_lang})
+				alt_strings.add(t_title)
 		for t in data_get('translations', {}).get('translations', []):
 			t_title = t.get('data', {}).get('name', '') or t.get('data', {}).get('title', '')
 			t_lang = t.get('iso_639_1', '')

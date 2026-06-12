@@ -157,7 +157,21 @@ def check_title(title, aliases, release_title, hdlr, year, years=None): # non pa
 			for i in years: t = t.split(i)[0]
 		t = re.split(r'2160p|216op|4k|1080p|1o8op|108op|1o80p|720p|72op|480p|48op', t, 1, re.I)[0]
 		cleantitle_t = cleantitle.get(t)
-		if all(cleantitle.get(i) != cleantitle_t for i in title_list): return False
+		clean_titles = [cleantitle.get(i) for i in title_list if cleantitle.get(i)]
+		if all(i != cleantitle_t for i in clean_titles):
+			title_segments = []
+			aka_segments = re.split(r'(?:^|[.\s_-]+)a\.?k\.?a\.?(?:[.\s_-]+|$)', t, flags=re.I)
+			if len(aka_segments) > 1: title_segments.extend(aka_segments)
+			title_segments.append(re.split(r'[\(\[]', t, 1)[0])
+			title_segments.extend(re.findall(r'[\(\[]([^)\]]+)[\)\]]', t))
+			segment_match = any(cleantitle.get(i) and cleantitle.get(i) in clean_titles for i in title_segments if i)
+			clean_title = cleantitle.get(title)
+			start_match = any(
+				i and cleantitle.get(i) != clean_title and
+				re.match(r'\s*%s(?:\s|[._\-\(\[\]/]|$)' % re.escape(i.strip()), t, re.I)
+				for i in title_list
+			)
+			if not segment_match and not start_match: return False
 
 # filter to remove episode ranges that should be picked up in "filter_season_pack()" ex. "s01e01-08"
 		if hdlr != year: # equal for movies but not for shows

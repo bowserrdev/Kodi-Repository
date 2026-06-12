@@ -762,3 +762,19 @@ msgstr ""
 msgctxt "#32582"
 msgid "Debrid Media Manager"
 msgstr ""
+
+msgctxt "#32583"
+msgid "ICV (Pack Capable)"
+msgstr ""
+
+msgctxt "#32584"
+msgid "Use Custom ICV URL"
+msgstr ""
+
+msgctxt "#32585"
+msgid "ICV URL"
+msgstr ""
+
+msgctxt "#32586"
+msgid "ICV User String"
+msgstr ""

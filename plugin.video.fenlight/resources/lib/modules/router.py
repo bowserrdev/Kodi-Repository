@@ -295,6 +295,9 @@ def routing(sys):
 	if mode == 'open_media_info':
 		from modules.skin_properties import open_media_info
 		return open_media_info(params)
+	if mode == 'browse_media': 
+		from modules.skin_properties import browse_media
+		return browse_media(params)
 	if mode == 'downloader':
 		from modules.downloader import runner
 		return runner(params)

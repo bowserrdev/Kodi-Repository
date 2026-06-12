@@ -20,7 +20,7 @@ class BaseTorrentScraper:
 		self._results = []
 		self._seen_hashes = set()
 		self._items = []
-		self.item_totals = {'4K': 0, '1080p': 0, '720p': 0, 'SD': 0, 'CAM': 0}
+		self.item_totals = {'4K': 0, '1080p': 0, '720p': 0, 'SD': 0, 'SCR': 0, 'CAM': 0}
 		self._start_time = time()
 
 	# ------------------------------------------------------------------ #
@@ -56,6 +56,13 @@ class BaseTorrentScraper:
 
 		log_utils.log('COCOSCRAPERS', 'SEARCH_TITLES: pref_lc=%s titles=%s paginate="%s"' % (
 			self._pref_language_country, titles, self._paginate_title))
+		alias_debug = []
+		for alias in (self.aliases or []):
+			if isinstance(alias, dict):
+				alias_debug.append('%s:%s' % (alias.get('country', ''), alias.get('title', '')))
+			else:
+				alias_debug.append(str(alias))
+		log_utils.log('COCOSCRAPERS', 'ALIASES: %s' % alias_debug)
 		return titles
 
 	def _init_episode_data(self, data):
