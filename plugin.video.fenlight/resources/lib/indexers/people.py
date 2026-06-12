@@ -2,7 +2,7 @@
 import os
 import sys
 from urllib.parse import unquote
-from apis.tmdb_api import tmdb_people_info
+from apis.tmdb_api import tmdb_people_info, tmdb_people_full_info
 from windows.base_window import open_window
 from indexers.images import Images
 from modules import kodi_utils
@@ -60,5 +60,73 @@ def person_direct_search(key_id):
 	set_category(handle, key_id)
 	end_directory(handle, cacheToDisc=False)
 
+def build_cast_list(params):
+	def _builder():
+		for item in cast_data:
+			try:
+				person_id = item.get('id')
+				if not person_id: continue
+				listitem = make_listitem()
+				listitem.setLabel(item.get('name', ''))
+				listitem.setLabel2(item.get('role', ''))
+				image = item.get('thumbnail') or default_image
+				listitem.setArt({'icon': image, 'poster': image, 'thumb': image, 'fanart': addon_fanart, 'banner': image})
+				listitem.setProperties({'tmdb_id': str(person_id), 'tmdb_type': 'person'})
+				yield ('', listitem, False)
+			except: pass
+	from modules.metadata import movie_meta, tvshow_meta
+	from modules.settings import tmdb_api_key, mpaa_region
+	from modules.utils import get_datetime
+	media_type = params.get('media_type', 'movie')
+	meta_function = movie_meta if media_type == 'movie' else tvshow_meta
+	try: cast_data = meta_function('tmdb_id', params['tmdb_id'], tmdb_api_key(), mpaa_region(), get_datetime()).get('cast') or []
+	except: cast_data = []
+	handle = int(sys.argv[1])
+	add_items(handle, list(_builder()))
+	set_content(handle, 'actors')
+	set_category(handle, 'Cast')
+	end_directory(handle, cacheToDisc=False)
 
-
+def build_person_credits_list(params):
+	def _builder():
+		for item in credits_data:
+			try:
+				media_type = item.get('media_type')
+				if media_type not in ('movie', 'tv'): continue
+				tmdb_id = item['id']
+				if tmdb_id in seen: continue
+				seen_add(tmdb_id)
+				title = item.get('title') or item.get('name') or ''
+				date = item.get('release_date') or item.get('first_air_date') or ''
+				poster_path = item.get('poster_path')
+				poster = tmdb_image_base % ('w500', poster_path) if poster_path else default_image
+				listitem = make_listitem()
+				listitem.setLabel(title)
+				listitem.setLabel2(item.get('job') or item.get('character') or '')
+				listitem.setArt({'poster': poster, 'thumb': poster, 'icon': poster, 'fanart': addon_fanart})
+				listitem.setProperties({'tmdb_id': str(tmdb_id), 'tmdb_type': media_type})
+				info_tag = listitem.getVideoInfoTag()
+				info_tag.setMediaType('movie' if media_type == 'movie' else 'tvshow')
+				info_tag.setTitle(title), info_tag.setPlot(item.get('overview') or '')
+				if date: info_tag.setYear(int(date.split('-')[0]))
+				info_tag.setUniqueIDs({'tmdb': str(tmdb_id)})
+				yield (media_details_url % (media_type, tmdb_id), listitem, True)
+			except: pass
+	media_details_url = 'plugin://plugin.video.themoviedb.helper/?info=details&tmdb_type=%s&tmdb_id=%s'
+	person_id, job = params['person_id'], params.get('job')
+	seen = set()
+	seen_add = seen.add
+	try:
+		data = tmdb_people_full_info(person_id)
+		# il layer cache puo restituire la response grezza o il dict gia decodificato
+		try: data = data.json()
+		except: pass
+		credits_data = data['combined_credits']['crew']
+		if job: credits_data = [i for i in credits_data if i.get('job') == job]
+		credits_data.sort(key=lambda k: k.get('release_date') or k.get('first_air_date') or '0', reverse=True)
+	except: credits_data = []
+	handle = int(sys.argv[1])
+	add_items(handle, list(_builder()))
+	set_content(handle, 'movies')
+	set_category(handle, 'Credits')
+	end_directory(handle, cacheToDisc=False)

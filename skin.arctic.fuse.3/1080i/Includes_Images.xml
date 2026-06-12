@@ -473,6 +473,7 @@
     </variable>
 
     <variable name="Image_DirectorIcon">
+        <value condition="!String.IsEmpty(Window(Home).Property(FenLight.ListItem.Director.1.Thumb))">$INFO[Window(Home).Property(FenLight.ListItem.Director.1.Thumb)]</value>
         <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Director.1.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Director.1.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Director.1.job),Director)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Director.1.Thumb)]</value>
         <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Director.2.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Director.2.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Director.2.job),Director)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Director.2.Thumb)]</value>
         <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Director.3.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Director.3.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Director.3.job),Director)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Director.3.Thumb)]</value>
@@ -495,6 +496,7 @@
         <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.5.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.5.job)) + [String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Writer.5.job),Writer) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Writer.5.job),Screenplay)]">$INFO[Window(Home).Property(TMDbHelper.ListItem.Writer.5.Thumb)]</value>
     </variable>
     <variable name="Image_OSD_WriterIcon">
+        <value condition="!String.IsEmpty(Window(Home).Property(FenLight.ListItem.Writer.1.Thumb))">$INFO[Window(Home).Property(FenLight.ListItem.Writer.1.Thumb)]</value>
         <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.1.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.1.job)) + [String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.1.job),Writer) | String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.1.job),Screenplay)]">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.1.Thumb)]</value>
         <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.2.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.2.job)) + [String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.2.job),Writer) | String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.2.job),Screenplay)]">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.2.Thumb)]</value>
         <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.3.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.3.job)) + [String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.3.job),Writer) | String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.3.job),Screenplay)]">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.3.Thumb)]</value>

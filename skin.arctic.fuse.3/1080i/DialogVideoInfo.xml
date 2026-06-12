@@ -8,6 +8,11 @@
     <include>DialogInfo_Onload</include>
     <onload>SetProperty(TMDbHelper.EnableExtendedProperties,True)</onload>
     <onload>SetProperty(BaseID,$INFO[ListItem.Label]$INFO[ListItem.FolderPath])</onload>
+    <onload>SetProperty(FenLight.TMDb_ID,$INFO[ListItem.UniqueID(tmdb)])</onload>
+    <onload>SetProperty(FenLight.DBType,$INFO[ListItem.DBType])</onload>
+    <onload>SetProperty(FenLight.Year,$INFO[ListItem.Year])</onload>
+    <onload condition="String.IsEqual(ListItem.DBType,movie) + !String.IsEmpty(ListItem.UniqueID(tmdb))">RunPlugin(plugin://plugin.video.fenlight/?mode=set_videoinfo_properties&amp;media_type=movie&amp;tmdb_id=$INFO[ListItem.UniqueID(tmdb)])</onload>
+    <onload condition="[String.IsEqual(ListItem.DBType,tvshow) | String.IsEqual(ListItem.DBType,season) | String.IsEqual(ListItem.DBType,episode)] + !String.IsEmpty(ListItem.UniqueID(tmdb))">RunPlugin(plugin://plugin.video.fenlight/?mode=set_videoinfo_properties&amp;media_type=tvshow&amp;tmdb_id=$INFO[ListItem.UniqueID(tmdb)])</onload>
 
     <controls>
 
@@ -18,12 +23,12 @@
             <texturefocus />
             <font />
             <ondown>5000</ondown>
-            <onfocus condition="!String.IsEqual(ListItem.Property(tmdb_type),person)">SetFocus(4001)</onfocus>
-            <onright condition="!String.IsEqual(ListItem.Property(tmdb_type),person)">4001</onright>
-            <onleft condition="!String.IsEqual(ListItem.Property(tmdb_type),person)">4001</onleft>
-            <onleft condition="String.IsEqual(ListItem.Property(tmdb_type),person) + $EXP[Exp_TMDbHelper_IsData]">ActivateWindow(1113)</onleft>
-            <onright condition="String.IsEqual(ListItem.Property(tmdb_type),person) + $EXP[Exp_TMDbHelper_IsData]">ActivateWindow(1113)</onright>
-            <onup condition="$EXP[Exp_TMDbHelper_IsData]">ActivateWindow(1113)</onup>
+            <onfocus condition="!String.IsEqual(ListItem.Property(tmdb_type),person) + !$EXP[Exp_IsFolder]">SetFocus(4001)</onfocus>
+            <onfocus condition="!String.IsEqual(ListItem.Property(tmdb_type),person) + $EXP[Exp_IsFolder]">SetFocus(9100)</onfocus>
+            <onright condition="!String.IsEqual(ListItem.Property(tmdb_type),person) + !$EXP[Exp_IsFolder]">4001</onright>
+            <onright condition="!String.IsEqual(ListItem.Property(tmdb_type),person) + $EXP[Exp_IsFolder]">9100</onright>
+            <onleft condition="!String.IsEqual(ListItem.Property(tmdb_type),person) + !$EXP[Exp_IsFolder]">4001</onleft>
+            <onleft condition="!String.IsEqual(ListItem.Property(tmdb_type),person) + $EXP[Exp_IsFolder]">9100</onleft>
             <onfocus>ClearProperty(Background.DialogInfo.HideArtwork,Home)</onfocus>
             <onclick condition="String.IsEqual(ListItem.Property(tmdb_type),person) + $EXP[Exp_TMDbHelper_IsData]">ActivateWindow(1113)</onclick>
             <onclick condition="!String.IsEqual(ListItem.Property(tmdb_type),person)">SendClick(8)</onclick>

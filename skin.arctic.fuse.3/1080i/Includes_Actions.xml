@@ -32,14 +32,9 @@
 
     <variable name="Action_DialogInfo_PlayMedia">
         <!-- Play FileNameAndPath -->
-        <value condition="!String.IsEmpty(ListItem.FileNameAndPath) + !$EXP[Exp_IsFolder]">RunScript(plugin.video.themoviedb.helper,close_dialog=1190,"playmedia=$INFO[ListItem.FileNameAndPath]")</value>
-
-        <!-- Browse Folder -->
-        <value condition="$EXP[Exp_IsFolder] + Window.IsVisible(videos)">RunScript(plugin.video.themoviedb.helper,close_dialog=1190,"call_update=$INFO[ListItem.FolderPath]")</value>
-        <value condition="$EXP[Exp_IsFolder]">RunScript(plugin.video.themoviedb.helper,close_dialog=1190,"call_path=$INFO[ListItem.FolderPath]")</value>
-
+        <value condition="!String.IsEmpty(ListItem.FileNameAndPath) + !$EXP[Exp_IsFolder]">PlayMedia($ESCINFO[ListItem.FileNameAndPath])</value>
         <!-- Play FolderPath -->
-        <value>RunScript(plugin.video.themoviedb.helper,close_dialog=1190,"playmedia=$INFO[ListItem.FolderPath]")</value>
+        <value>PlayMedia($ESCINFO[ListItem.FolderPath])</value>
     </variable>
 
     <variable name="Action_Sync">
