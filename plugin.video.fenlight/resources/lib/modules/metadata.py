@@ -8,7 +8,7 @@ from apis.skyhook_api import get_skyhook_season_data, get_skyhook_episodes, get_
 
 movie_details, tvshow_details, season_episodes_details = tmdb_api.movie_details, tmdb_api.tvshow_details, tmdb_api.season_episodes_details
 movie_set_details, movie_external_id, tvshow_external_id = tmdb_api.movie_set_details, tmdb_api.movie_external_id, tmdb_api.tvshow_external_id
-episode_groups_data, episode_group_details = tmdb_api.episode_groups_data, tmdb_api.episode_group_details
+episode_groups_data, episode_group_details, person_details = tmdb_api.episode_groups_data, tmdb_api.episode_group_details, tmdb_api.person_details
 metacache_get, metacache_set, metacache_get_season, metacache_set_season = meta_cache.get, meta_cache.set, meta_cache.get_season, meta_cache.set_season
 writer_credits = ('Author', 'Writer', 'Screenplay', 'Characters')
 alt_titles_check, finished_show_check, empty_value_check = ('US', 'GB', 'UK', ''), ('Ended', 'Canceled'), ('', 'None', None)
@@ -16,12 +16,44 @@ tmdb_image_url, youtube_url, date_format = 'https://image.tmdb.org/t/p/%s%s', 'p
 EXPIRES_1_DAYS, EXPIRES_4_DAYS, EXPIRES_7_DAYS, EXPIRES_14_DAYS, EXPIRES_30_DAYS, EXPIRES_182_DAYS = 24, 96, 168, 336, 720, 4368
 invalid_error_codes = (6, 34, 37)
 
-def _make_people(crew, job_check, single_job=False):
+def _has_cjk(value):
+	try:
+		return any(('\u3040' <= i <= '\u30ff') or ('\u3400' <= i <= '\u9fff') or ('\uac00' <= i <= '\ud7af') for i in value)
+	except: return False
+
+def _has_ascii_letter(value):
+	try: return any(('a' <= i.lower() <= 'z') for i in value)
+	except: return False
+
+def _name_key(value):
+	try: return ''.join([i.lower() for i in value if i.isalnum()])
+	except: return ''
+
+def _latin_alias(name, person, api_key):
+	try:
+		candidates = [person.get('original_name', '')]
+		person_id = person.get('id')
+		if person_id:
+			details = person_details(person_id, api_key) or {}
+			candidates += details.get('also_known_as') or []
+		name_key = _name_key(name)
+		for item in candidates:
+			if item and _has_ascii_letter(item) and not _has_cjk(item) and _name_key(item) != name_key: return item
+	except: pass
+	return ''
+
+def _crew_name(person, api_key=None):
+	name = person.get('name', '')
+	if not api_key or not _has_cjk(name): return name
+	alias = _latin_alias(name, person, api_key)
+	return '%s / %s' % (name, alias) if alias else name
+
+def _make_people(crew, job_check, single_job=False, api_key=None):
 	# job_check: stringa singola (Director) o tupla di job (writer_credits)
 	try:
 		if single_job: source = [i for i in crew if i['job'] == job_check]
 		else: source = [i for i in crew if i['job'] in job_check]
-		return [{'name': i['name'], 'id': i['id'], 'thumbnail': tmdb_image_url % ('h632', i['profile_path']) if i['profile_path'] else ''} for i in source][:3]
+		return [{'name': _crew_name(i, api_key), 'id': i['id'], 'thumbnail': tmdb_image_url % ('h632', i['profile_path']) if i['profile_path'] else ''} for i in source][:3]
 	except: return []
 
 def _make_studio_id(companies):
@@ -125,9 +157,9 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 			if crew:
 				try: writer = [i['name'] for i in crew if i['job'] in writer_credits]
 				except: pass
-				try: director = [i['name'] for i in crew if i['job'] == 'Director']
+				try: director = [_crew_name(i, api_key) for i in crew if i['job'] == 'Director']
 				except: pass
-				directors = _make_people(crew, 'Director', single_job=True)
+				directors = _make_people(crew, 'Director', single_job=True, api_key=api_key)
 				writers = _make_people(crew, writer_credits)
 		alternative_titles = []
 		alt_strings = set()
@@ -280,9 +312,9 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			if crew:
 				try: writer = [i['name'] for i in crew if i['job'] in writer_credits]
 				except: pass
-				try: director = [i['name'] for i in crew if i['job'] == 'Director']
+				try: director = [_crew_name(i, api_key) for i in crew if i['job'] == 'Director']
 				except: pass
-				directors = _make_people(crew, 'Director', single_job=True)
+				directors = _make_people(crew, 'Director', single_job=True, api_key=api_key)
 				writers = _make_people(crew, writer_credits)
 		alternative_titles = []
 		alt_strings = set()

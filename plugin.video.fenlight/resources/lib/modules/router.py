@@ -259,6 +259,9 @@ def routing(sys):
 	if mode == 'set_view':
 		from modules.kodi_utils import set_view
 		return kodi_utils.set_view(_get('view_type'))
+	if mode == 'fen_blur': 
+		from modules.blur_service import blur_image
+		return blur_image(params)
 	if mode == 'sync_settings':
 		from caches.settings_cache import sync_settings
 		return sync_settings(params)

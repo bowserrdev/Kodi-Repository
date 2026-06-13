@@ -118,7 +118,7 @@
     </variable>
 
     <include name="Action_BlurImage_SimpleBackground_Onload">
-        <onload>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground],prefix=SimpleBackground)</onload>
+        <onload>RunPlugin(plugin://plugin.video.fenlight/?mode=fen_blur&amp;prefix=SimpleBackground&amp;image=$VAR[Image_SimpleBackground])</onload>
         <onload>ClearProperty(Background.ShowOverlay,Home)</onload>
         <onload>ClearProperty(InfoPanel.FullSwitch,Home)</onload>
     </include>
@@ -282,7 +282,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.Reset(Background.DialogImage)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/blur/purple_blur.jpg)</onclick>
-        <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground])</onclick>
+        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
     </include>
 
     <include name="Action_Scheme_Onclick_Miami">
@@ -291,7 +291,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.Reset(Background.DialogImage)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/blur/purple_blur.jpg)</onclick>
-        <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground])</onclick>
+        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
     </include>
 
     <include name="Action_Scheme_Onclick_Aqua">
@@ -300,7 +300,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Green)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/blur/green_blur.jpg)</onclick>
-        <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground])</onclick>
+        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
     </include>
 
     <include name="Action_Scheme_Onclick_Sunset">
@@ -309,7 +309,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Blush)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/blur/pink_blur.jpg)</onclick>
-        <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground])</onclick>
+        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
     </include>
 
     <include name="Action_Scheme_Onclick_Slate">
@@ -318,7 +318,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Slate)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/blur/slate_blur.jpg)</onclick>
-        <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground])</onclick>
+        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
     </include>
 
     <include name="Action_Scheme_Onclick_Midnight">
@@ -327,7 +327,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Coal)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/blur/coal_blur.jpg)</onclick>
-        <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground])</onclick>
+        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
     </include>
 
     <variable name="Action_Shortcut_SetWidgetStyle">
