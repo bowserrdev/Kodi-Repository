@@ -11,7 +11,7 @@ from modules.kodi_utils import logger
 home_window = xbmcgui.Window(10000)
 blur_folder = xbmcvfs.translatePath('special://profile/addon_data/plugin.video.fenlight/blur/')
 default_size, default_radius = 480, 60
-jpeg_quality = 75
+jpeg_quality = 65
 max_cache_files = 200
 
 def _settings():
@@ -75,7 +75,7 @@ def _blur(source):
 			img = img.convert('RGB')
 			try: img.thumbnail((size, size), resample, reducing_gap=3.0)
 			except TypeError: img.thumbnail((size, size), resample)
-		img = img.filter(ImageFilter.GaussianBlur(radius))
+		img = img.filter(ImageFilter.BoxBlur(radius))
 		img.save(target, 'JPEG', quality=jpeg_quality)
 		_make_tiled(img, tiled_target)
 		return target
