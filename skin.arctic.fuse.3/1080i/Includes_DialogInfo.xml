@@ -126,7 +126,7 @@
                     <param name="condition">true</param>
                 </include>
                 <include content="Info_Panel" condition="!String.IsEqual(ListItem.Property(tmdb_type),person)">
-                    <param name="plotheight">120</param>
+                    <param name="plotheight">140</param>
                     <param name="plotwidth">$PARAM[plotwidth]</param>
                     <param name="include_title">true</param>
                     <param name="include_details">false</param>
@@ -149,7 +149,7 @@
                     <param name="condition">true</param>
                 </include>
                 <include content="Info_Panel" condition="!String.IsEqual(ListItem.Property(tmdb_type),person)">
-                    <param name="plotheight">120</param>
+                    <param name="plotheight">140</param>
                     <param name="plotwidth">$PARAM[plotwidth]</param>
                     <param name="include_title">false</param>
                 </include>

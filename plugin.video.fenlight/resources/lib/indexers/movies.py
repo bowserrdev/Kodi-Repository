@@ -200,6 +200,18 @@ class Movies:
 			listitem.setArt({'poster': poster, 'fanart': fanart, 'icon': poster, 'clearlogo': clearlogo, 'landscape': landscape, 'thumb': thumb})
 			set_properties({'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
 							'belongs_to_collection': belongs_to_movieset, 'fenlight.more_like_this_params': more_like_this_params})
+			extra_ratings = meta_get('extra_ratings')
+			if extra_ratings:
+				_rp = {}
+				for _k, _n in (('imdb', 'IMDb_Rating'), ('metascore', 'MetaCritic_Rating'), ('tomatometer', 'RottenTomatoes_Rating'), ('tomatousermeter', 'RottenTomatoes_UserMeter')):
+					_r = extra_ratings.get(_k, {})
+					_v = _r.get('rating', '').replace('%', '')
+					if _v: _rp[_n] = _v
+					_i = _r.get('icon', '')
+					if _i: _rp[_n + '_Icon'] = _i
+				_tmdb = meta_get('rating')
+				if _tmdb: _rp['TMDb_Rating'] = str(_tmdb)
+				if _rp: set_properties(_rp)
 			self.append(((url_params, listitem, False), _position))
 		except: pass
 

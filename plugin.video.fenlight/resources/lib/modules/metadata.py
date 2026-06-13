@@ -204,6 +204,13 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 				'duration': duration, 'rootname': rootname, 'country': country, 'country_codes': country_codes, 'mpaa': mpaa,'writer': writer, 'all_trailers': all_trailers,
 				'director': director, 'directors': directors, 'writers': writers, 'alternative_titles': alternative_titles, 'plot': plot, 'studio': studio, 'extra_info': extra_info,
 				'mediatype': 'movie', 'tvdb_id': 'None', 'clearlogo': clearlogo, 'landscape': landscape, 'spoken_language': spoken_language, 'meta_language': lang}
+		try:
+			from modules.settings import omdb_api_key
+			_omdb_key = omdb_api_key()
+			if _omdb_key not in ('empty_setting', '') and imdb_id:
+				from apis.omdb_api import fetch_ratings_info
+				fetch_ratings_info(meta, _omdb_key)
+		except: pass
 		metacache_set('movie', id_type, meta, movie_expiry(current_date, meta), current_time)
 	except: pass
 	return meta
@@ -370,6 +377,13 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			meta['total_aired_eps'] = sum(s['episode_count'] for s in _skyhook_seasons if s['season_number'] > 0)
 			meta['tvdb_to_tmdb_ep'] = get_tvdb_to_tmdb_map(tvdb_id, season_data)
 			meta['tmdb_to_tvdb_ep'] = {v: k for k, v in meta['tvdb_to_tmdb_ep'].items()}
+		try:
+			from modules.settings import omdb_api_key
+			_omdb_key = omdb_api_key()
+			if _omdb_key not in ('empty_setting', '') and imdb_id:
+				from apis.omdb_api import fetch_ratings_info
+				fetch_ratings_info(meta, _omdb_key)
+		except: pass
 		metacache_set('tvshow', id_type, meta, tvshow_expiry(current_date, meta), current_time)
 	except: pass
 	return meta
