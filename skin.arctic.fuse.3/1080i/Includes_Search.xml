@@ -56,6 +56,7 @@
                                     <param name="target">videos</param>
                                     <param name="visible">String.IsEqual(Container(601).ListItem.Property(guid),discover)</param>
                                     <param name="allowhiddenfocus">true</param>
+                                    <param name="hidden_button_enabled">true</param>
                                 </include>
                                 <include condition="!Skin.HasSetting(Search.DisableCombined)">skinvariables-searchwidgets-combined</include>
                                 <include condition="Skin.HasSetting(Search.DisableCombined)">skinvariables-searchwidgets-standard</include>

@@ -142,9 +142,11 @@
         <param name="visible">true</param>
         <param name="allowhiddenfocus">false</param>
         <param name="autoscroll">false</param>
+        <param name="hidden_button_enabled">$PARAM[allowhiddenfocus]</param>
         <definition>
             <include content="$PARAM[include]">
                 <param name="id">$PARAM[id]</param>
+                <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <top>510</top>
                 <bottom>-40</bottom>
                 <onup>601</onup>
