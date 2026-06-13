@@ -750,6 +750,10 @@
         <param name="condition">true</param>
         <definition>
             <onfocus condition="$PARAM[condition]">SetProperty(WidgetMeta.$PARAM[id].Label,$ESCINFO[$PARAM[container]ListItem.Label])</onfocus>
+            <onfocus condition="$PARAM[condition]">SetProperty(TMDbHelper.ListItem.base_label,$INFO[$PARAM[container]ListItem.Label],Home)</onfocus>
+            <onfocus condition="$PARAM[condition] + !String.IsEmpty($PARAM[container]ListItem.Art(poster))">SetProperty(TMDbHelper.ListItem.base_poster,$INFO[$PARAM[container]ListItem.Art(poster)],Home)</onfocus>
+            <onfocus condition="$PARAM[condition] + String.IsEmpty($PARAM[container]ListItem.Art(poster)) + !String.IsEmpty($PARAM[container]ListItem.Art(tvshow.poster))">SetProperty(TMDbHelper.ListItem.base_poster,$INFO[$PARAM[container]ListItem.Art(tvshow.poster)],Home)</onfocus>
+            <onfocus condition="$PARAM[condition] + String.IsEmpty($PARAM[container]ListItem.Art(poster)) + String.IsEmpty($PARAM[container]ListItem.Art(tvshow.poster))">ClearProperty(TMDbHelper.ListItem.base_poster,Home)</onfocus>
             <onfocus condition="$PARAM[condition]">SetProperty(WidgetMeta.$PARAM[id].Title,$ESCINFO[$PARAM[container]ListItem.Title])</onfocus>
             <onfocus condition="$PARAM[condition]">SetProperty(WidgetMeta.$PARAM[id].TVShowTitle,$ESCINFO[$PARAM[container]ListItem.TVShowTitle])</onfocus>
             <onfocus condition="$PARAM[condition]">SetProperty(WidgetMeta.$PARAM[id].Genre,$ESCINFO[$PARAM[container]ListItem.Genre])</onfocus>
