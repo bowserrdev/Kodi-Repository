@@ -1525,38 +1525,21 @@
                     <itemgap>40</itemgap>
                     <ondown>90001</ondown>
                     <control type="button" id="4001">
-                        <width>280</width>
+                        <width>240</width>
                         <height>72</height>
                         <texturefocus border="35" colordiffuse="FFFFFFFF">special://skin/extras/buttons/pill.png</texturefocus>
                         <texturenofocus border="35" colordiffuse="FFFFFFFF">special://skin/extras/buttons/pill-outline.png</texturenofocus>
                         <label>$VAR[Label_DialogInfo_PlayButton]</label>
-                        <font>font13</font>
+                        <font>font_main_bold</font>
                         <textcolor>FFFFFFFF</textcolor>
                         <focusedcolor>FF000000</focusedcolor>
                         <align>center</align>
-                        <textoffsetx>40</textoffsetx>
+                        <aligny>center</aligny>
+                        <scroll>false</scroll>
                         <onclick condition="String.IsEqual(ListItem.DBType,tvshow) | String.IsEqual(ListItem.DBType,season)">RunPlugin(plugin://plugin.video.fenlight/?mode=browse_media&amp;tmdb_id=$INFO[Window.Property(FenLight.TMDb_ID)])</onclick>
                         <onclick condition="!String.IsEqual(ListItem.DBType,tvshow) + !String.IsEqual(ListItem.DBType,season)">$VAR[Action_DialogInfo_PlayMedia]</onclick>
                         <onclick condition="!String.IsEqual(ListItem.DBType,tvshow) + !String.IsEqual(ListItem.DBType,season)">Dialog.Close(movieinformation,true)</onclick>
                     </control>
-                </control>
-                <control type="image">
-                    <left>64</left>
-                    <top>18</top>
-                    <width>36</width>
-                    <height>36</height>
-                    <aspectratio>keep</aspectratio>
-                    <texture colordiffuse="FF000000">special://skin/extras/icons/circle-play.png</texture>
-                    <visible>Control.HasFocus(4001)</visible>
-                </control>
-                <control type="image">
-                    <left>64</left>
-                    <top>18</top>
-                    <width>36</width>
-                    <height>36</height>
-                    <aspectratio>keep</aspectratio>
-                    <texture colordiffuse="FFFFFFFF">special://skin/extras/icons/circle-play.png</texture>
-                    <visible>!Control.HasFocus(4001)</visible>
                 </control>
             </control>
 

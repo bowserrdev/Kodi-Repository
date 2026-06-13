@@ -2,6 +2,7 @@
 import xbmc, xbmcgui
 import json
 from threading import Thread
+from modules.blur_service import BlurService
 
 pause_services_prop = 'fenlight.pause_services'
 current_skin_prop = 'fenlight.current_skin'
@@ -160,6 +161,7 @@ class FenLightMonitor(xbmc.Monitor):
 		DatabaseMaintenance().run()
 		SyncSettings().run()
 		Thread(target=CustomFonts().run).start()
+		Thread(target=BlurService().run).start()
 		Thread(target=TraktMonitor().run).start()
 		Thread(target=WidgetRefresher().run).start()
 		AutoStart().run()

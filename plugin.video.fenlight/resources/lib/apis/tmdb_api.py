@@ -548,6 +548,13 @@ def tmdb_people_full_info(actor_id):
 	url = '%s/person/%s?api_key=%s&language=en&append_to_response=external_ids,combined_credits,images,tagged_images' % (base_url, actor_id, api_key)
 	return cache_function(get_tmdb, string, url, expiration=EXPIRY_1_WEEK)
 
+def person_details(person_id, api_key=None):
+	api_key = api_key or tmdb_api_key()
+	if api_key in empty_setting_check: return no_api_key()
+	string = 'tmdb_person_details_%s' % person_id
+	url = '%s/person/%s?api_key=%s&language=en' % (base_url, person_id, api_key)
+	return cache_function(get_tmdb, string, url, expiration=EXPIRY_1_WEEK)
+
 def tmdb_people_info(query, page_no=1):
 	api_key = tmdb_api_key()
 	if api_key in empty_setting_check: return no_api_key()
