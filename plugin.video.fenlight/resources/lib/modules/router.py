@@ -5,6 +5,39 @@ from urllib.parse import parse_qsl
 
 def sys_exit_check(): return external()
 
+def _text_search_start(params, media_type):
+	search_scope = params.get('search_hub')
+	if search_scope not in ('true', 'combined', 'standard'): return None
+	if search_scope == 'true': search_scope = 'standard'
+	query = params.get('query', '')
+	if not query: return None
+	from xbmcgui import Window
+	win = Window(10000)
+	if win.getProperty('FenLight.TextSearch.Query') != query:
+		win.setProperty('FenLight.TextSearch.Query', query)
+		win.setProperty('FenLight.TextSearch.Scope', search_scope)
+		win.setProperty('FenLight.TextSearch.Movie.HasResults', 'false')
+		win.setProperty('FenLight.TextSearch.TV.HasResults', 'false')
+		win.clearProperty('FenLight.TextSearch.Movie.State')
+		win.clearProperty('FenLight.TextSearch.TV.State')
+		if search_scope == 'standard':
+			win.setProperty('FenLight.TextSearch.Movie.State', 'loading')
+			win.setProperty('FenLight.TextSearch.TV.State', 'loading')
+	win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'loading')
+	win.setProperty('FenLight.TextSearch.State', 'loading')
+	return win
+
+def _text_search_done(win, query, media_type, num_items):
+	if not win or win.getProperty('FenLight.TextSearch.Query') != query: return
+	win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'done')
+	win.setProperty('FenLight.TextSearch.%s.HasResults' % media_type, 'true' if num_items else 'false')
+	if win.getProperty('FenLight.TextSearch.Scope') == 'combined':
+		win.setProperty('FenLight.TextSearch.State', 'done')
+		return
+	movie_done = win.getProperty('FenLight.TextSearch.Movie.State') == 'done'
+	tv_done = win.getProperty('FenLight.TextSearch.TV.State') == 'done'
+	if movie_done and tv_done: win.setProperty('FenLight.TextSearch.State', 'done')
+
 def routing(sys):
 	params = dict(parse_qsl(sys.argv[2][1:], keep_blank_values=True))
 	_get = params.get
@@ -45,17 +78,27 @@ def routing(sys):
 		return getattr(mdblist_api, mode.split('.')[1])(params)
 	if 'build' in mode:
 		if mode == 'build_movie_list':
-			if _get('action') == 'tmdb_movies_search' and _get('query', ''):
+			if _get('action') == 'tmdb_movies_search' and _get('search_hub'): params['action'] = 'tmdb_movies_search_filtered'
+			search_win = _text_search_start(params, 'Movie') if _get('action') == 'tmdb_movies_search_filtered' else None
+			if _get('action') in ('tmdb_movies_search', 'tmdb_movies_search_filtered') and _get('query', ''):
 				from xbmcgui import Window
 				Window(10000).clearProperty('FenLight.Discover.ContentPath')
 			from indexers.movies import Movies
-			return Movies(params).fetch_list()
+			movies = Movies(params)
+			result = movies.fetch_list()
+			_text_search_done(search_win, _get('query', ''), 'Movie', len(movies.list))
+			return result
 		if mode == 'build_tvshow_list':
-			if _get('action') == 'tmdb_tv_search' and _get('query', ''):
+			if _get('action') == 'tmdb_tv_search' and _get('search_hub'): params['action'] = 'tmdb_tv_search_filtered'
+			search_win = _text_search_start(params, 'TV') if _get('action') == 'tmdb_tv_search_filtered' else None
+			if _get('action') in ('tmdb_tv_search', 'tmdb_tv_search_filtered') and _get('query', ''):
 				from xbmcgui import Window
 				Window(10000).clearProperty('FenLight.Discover.ContentPath')
 			from indexers.tvshows import TVShows
-			return TVShows(params).fetch_list()
+			tvshows = TVShows(params)
+			result = tvshows.fetch_list()
+			_text_search_done(search_win, _get('query', ''), 'TV', len(tvshows.list))
+			return result
 		if mode == 'build_season_list':
 			from indexers.seasons import build_season_list
 			return build_season_list(params)
