@@ -109,6 +109,18 @@ def routing(sys):
 		if mode == 'search.clear_all':
 			from modules.search import clear_all
 			return clear_all(_get('setting_id'), _get('refresh', 'false'))
+		if mode == 'search.select_discover_filter':
+			from modules.search import select_discover_filter
+			return select_discover_filter(params)
+		if mode == 'search.launch_discover':
+			from modules.search import launch_discover
+			return launch_discover(params)
+		if mode == 'search.clear_discover_filters':
+			from modules.search import clear_discover_filters
+			return clear_discover_filters(params)
+		if mode == 'search.add_to_history':
+			from modules.search import add_to_history
+			return add_to_history(params)
 	if 'real_debrid' in mode:
 		if mode == 'real_debrid.rd_cloud':
 			from indexers.real_debrid import rd_cloud
