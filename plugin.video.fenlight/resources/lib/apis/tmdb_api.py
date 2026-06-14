@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import datetime
-from urllib.parse import quote
 from caches.meta_cache import cache_function
 from caches.lists_cache import lists_cache_object
 from modules.meta_lists import oscar_winners, years_tvshows
@@ -286,13 +285,22 @@ def tmdb_movies_search(query, page_no):
 	return lists_cache_object(get_data, string, url)
 
 def tmdb_movies_search_filtered(query, page_no):
+	def _get_filtered(url):
+		data = get_tmdb(url).json()
+		results = []
+		for item in data.get('results', []):
+			release_date = item.get('release_date', '')
+			if release_date and release_date <= today and item.get('vote_count', 0) >= 50:
+				results.append(remove_keys(item, tmdb_dict_removals))
+		data['results'] = results
+		return data
 	api_key = tmdb_api_key()
 	if api_key in empty_setting_check: return no_api_key()
+	meta_filter = get_meta_filter()
 	today = get_current_date()
 	string = 'tmdb_movies_search_filtered_%s_%s_%s' % (query, today, page_no)
-	url = '%s/discover/movie?api_key=%s&language=it-IT&region=US&include_adult=false&with_text_query=%s&primary_release_date.lte=%s&vote_count.gte=100&page=%s' \
-							% (base_url, api_key, quote(query), today, page_no)
-	return lists_cache_object(get_data, string, url)
+	url = '%s/search/movie?api_key=%s&language=it-IT&include_adult=%s&query=%s&page=%s' % (base_url, api_key, meta_filter, query, page_no)
+	return lists_cache_object(_get_filtered, string, url)
 
 def tmdb_movies_companies(company_id, page_no):
 	api_key = tmdb_api_key()
@@ -428,13 +436,22 @@ def tmdb_tv_search(query, page_no):
 	return lists_cache_object(get_data, string, url)
 
 def tmdb_tv_search_filtered(query, page_no):
+	def _get_filtered(url):
+		data = get_tmdb(url).json()
+		results = []
+		for item in data.get('results', []):
+			first_air_date = item.get('first_air_date', '')
+			if first_air_date and first_air_date <= today and item.get('vote_count', 0) >= 50:
+				results.append(remove_keys(item, tmdb_dict_removals))
+		data['results'] = results
+		return data
 	api_key = tmdb_api_key()
 	if api_key in empty_setting_check: return no_api_key()
+	meta_filter = get_meta_filter()
 	today = get_current_date()
 	string = 'tmdb_tv_search_filtered_%s_%s_%s' % (query, today, page_no)
-	url = '%s/discover/tv?api_key=%s&language=it-IT&region=US&include_adult=false&with_text_query=%s&include_null_first_air_dates=false&first_air_date.lte=%s&vote_count.gte=100&page=%s' \
-							% (base_url, api_key, quote(query), today, page_no)
-	return lists_cache_object(get_data, string, url)
+	url = '%s/search/tv?api_key=%s&language=it-IT&include_adult=%s&query=%s&page=%s' % (base_url, api_key, meta_filter, query, page_no)
+	return lists_cache_object(_get_filtered, string, url)
 
 def tmdb_tv_reviews(tmdb_id, page_no):
 	api_key = tmdb_api_key()

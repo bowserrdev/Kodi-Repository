@@ -193,7 +193,7 @@
                 <include>Home_Animation</include>
                 <left>view_pad</left>
                 <top>280</top>
-	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + [String.IsEmpty(Control.GetLabel(3000).index(1)) | [!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),done) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Movie.HasResults),false) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.TV.HasResults),false)]]</visible>
+	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + [String.IsEmpty(Control.GetLabel(3000).index(1)) | [!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),done) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Movie.HasResults),false) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.TV.HasResults),false)]]</visible>
                 <!-- <visible>Skin.HasSetting(HomeSwitcher.DisableHeader)</visible> -->
             </control>
             <control type="label">
@@ -207,7 +207,7 @@
                 <include>Home_Animation</include>
                 <left>view_pad</left>
                 <top>360</top>
-	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + [String.IsEmpty(Control.GetLabel(3000).index(1)) | [!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),done) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Movie.HasResults),false) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.TV.HasResults),false)]]</visible>
+	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + [String.IsEmpty(Control.GetLabel(3000).index(1)) | [!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),done) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Movie.HasResults),false) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.TV.HasResults),false)]]</visible>
 	            </control>
 	            <control type="label">
 	                <font>font_head_bold</font>
@@ -833,8 +833,12 @@
                 <onunfocus condition="Skin.HasSetting(HomeSwitcher.Vertical)">ClearProperty(HomeSwitcher.IsVisible,Home)</onunfocus>
                 <onup>ClearProperty(RefocusMenu)</onup>
                 <onup>3001</onup>
-                <onback>SetProperty(RefocusMenu,True)</onback>
-                <onback>3001</onback>
+                <onback condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">ClearProperty(Search.ActivePanel)</onback>
+                <onback condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">ClearProperty(Background.HideArtwork)</onback>
+                <onback condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
+                <onback condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">3001</onback>
+                <onback condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">SetProperty(RefocusMenu,True)</onback>
+                <onback condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">3001</onback>
                 <onleft>3003</onleft>
                 <ondown condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">3009</ondown>
                 <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !Container(505).IsUpdating + ![Integer.IsEqual(Container(505).NumItems,0) | [Integer.IsEqual(Container(505).NumItems,1) + String.IsEqual(Container(505).ListItemAbsolute(0).Label,$LOCALIZE[31046])]]">SetProperty(Searchbar.IsHidden,True)</ondown>
@@ -978,7 +982,8 @@
                     <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
                     <onback>ClearProperty(Search.ActivePanel)</onback>
                     <onback>ClearProperty(Background.HideArtwork)</onback>
-                    <onback>3004</onback>
+                    <onback>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
+                    <onback>3001</onback>
                     <onup>$PARAM[onup]</onup>
                     <ondown>$PARAM[ondown]</ondown>
                     <onright>$PARAM[onright]</onright>
@@ -1055,7 +1060,8 @@
                     <onup>3004</onup>
                     <onback>ClearProperty(Search.ActivePanel)</onback>
                     <onback>ClearProperty(Background.HideArtwork)</onback>
-                    <onback>3004</onback>
+                    <onback>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
+                    <onback>3001</onback>
                 </control>
                 <control type="button" id="3010">
                     <left>200</left>
@@ -1075,7 +1081,8 @@
                     <onup>3004</onup>
                     <onback>ClearProperty(Search.ActivePanel)</onback>
                     <onback>ClearProperty(Background.HideArtwork)</onback>
-                    <onback>3004</onback>
+                    <onback>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
+                    <onback>3001</onback>
                 </control>
                 <control type="image">
                     <include>Texture_Highlight_Scrollbar_H</include>
@@ -1138,7 +1145,8 @@
                 <onup condition="!String.IsEqual(Window(Home).Property(Discover.MediaType),tvshow)">3024</onup>
                 <onback>ClearProperty(Search.ActivePanel)</onback>
                 <onback>ClearProperty(Background.HideArtwork)</onback>
-                <onback>3004</onback>
+                <onback>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
+                <onback>3001</onback>
                 <onclick condition="String.IsEqual(Window(Home).Property(Discover.MediaType),tvshow)">RunPlugin(plugin://plugin.video.fenlight/?mode=search.launch_discover&amp;media_type=tvshow)</onclick>
                 <onclick condition="!String.IsEqual(Window(Home).Property(Discover.MediaType),tvshow)">RunPlugin(plugin://plugin.video.fenlight/?mode=search.launch_discover&amp;media_type=movie)</onclick>
                 <onright>3016</onright>
@@ -1162,7 +1170,8 @@
                 <onleft>3015</onleft>
                 <onback>ClearProperty(Search.ActivePanel)</onback>
                 <onback>ClearProperty(Background.HideArtwork)</onback>
-                <onback>3004</onback>
+                <onback>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
+                <onback>3001</onback>
                 <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onclick>
             </control>
 
