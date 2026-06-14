@@ -194,12 +194,14 @@
         <param name="top">260</param>
         <param name="onup">300</param>
         <param name="home_switcher">false</param>
+        <param name="line_visible">true</param>
         <definition>
             <control type="group">
                 <top>$PARAM[top]</top>
                 <height>40</height>
                 <include condition="$PARAM[wall]">Hub_Spotlight_Content_Slide</include>
                 <control type="group">
+                    <visible>$PARAM[line_visible]</visible>
                     <left>view_pad</left>
                     <include>View_Line_Divider</include>
                 </control>
