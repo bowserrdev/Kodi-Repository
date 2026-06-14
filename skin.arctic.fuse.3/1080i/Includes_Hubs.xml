@@ -142,6 +142,7 @@
         <param name="visible">true</param>
         <param name="allowhiddenfocus">false</param>
         <param name="autoscroll">false</param>
+        <param name="clear_hideartwork_onfocus">false</param>
         <param name="hidden_button_enabled">$PARAM[allowhiddenfocus]</param>
         <definition>
             <include content="$PARAM[include]">
@@ -162,6 +163,7 @@
                 <include>Hub_Grouplist_OnLeftRight</include>
                 <ondown>ActivateWindow(1180)</ondown>
                 <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id])</onfocus>
+                <onfocus condition="$PARAM[clear_hideartwork_onfocus]">ClearProperty(Background.HideArtwork)</onfocus>
                 <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
                 <onfocus>ClearProperty(HomeSwitcher.IsVisible,Home)</onfocus>
                 <onfocus>ClearProperty(InfoPanel.FullSwitch,Home)</onfocus>
