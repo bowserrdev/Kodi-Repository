@@ -180,7 +180,7 @@
                 </include>
             </control>
             <control type="group">
-                <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
+                <visible>!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) + !String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),loading)</visible>
                 <include>skinvariables-searchwidgets-info</include>
             </control>
             <control type="label">
@@ -193,7 +193,7 @@
                 <include>Home_Animation</include>
                 <left>view_pad</left>
                 <top>280</top>
-	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))] + [String.IsEmpty(Control.GetLabel(3000).index(1)) | [!String.IsEmpty(Control.GetLabel(3000).index(1)) + System.IdleTime(3) + ![Container(501).IsUpdating | Container(601).IsUpdating | Container(602).IsUpdating] + [[Integer.IsEqual(Container(601).NumItems,0) + !Skin.HasSetting(Search.DisableCombined)] | [Skin.HasSetting(Search.DisableCombined) + Integer.IsEqual(Container(602).NumItems,0)]]]]</visible>
+	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + [String.IsEmpty(Control.GetLabel(3000).index(1)) | [!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),done) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Movie.HasResults),false) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.TV.HasResults),false)]]</visible>
                 <!-- <visible>Skin.HasSetting(HomeSwitcher.DisableHeader)</visible> -->
             </control>
             <control type="label">
@@ -207,7 +207,7 @@
                 <include>Home_Animation</include>
                 <left>view_pad</left>
                 <top>360</top>
-	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))] + [String.IsEmpty(Control.GetLabel(3000).index(1)) | [!String.IsEmpty(Control.GetLabel(3000).index(1)) + System.IdleTime(3) + ![Container(501).IsUpdating | Container(601).IsUpdating | Container(602).IsUpdating] + [[Integer.IsEqual(Container(601).NumItems,0) + !Skin.HasSetting(Search.DisableCombined)] | [Skin.HasSetting(Search.DisableCombined) + Integer.IsEqual(Container(602).NumItems,0)]]]]</visible>
+	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + [String.IsEmpty(Control.GetLabel(3000).index(1)) | [!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),done) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Movie.HasResults),false) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.TV.HasResults),false)]]</visible>
 	            </control>
 	            <control type="label">
 	                <font>font_head_bold</font>
@@ -219,7 +219,7 @@
 	                <include>Home_Animation</include>
 	                <left>view_pad</left>
 	                <top>280</top>
-		                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))] + [[Container(501).IsUpdating | Container(601).IsUpdating | Container(602).IsUpdating] | !System.IdleTime(1)] + [[Integer.IsEqual(Container(601).NumItems,0) + !Skin.HasSetting(Search.DisableCombined)] | [Skin.HasSetting(Search.DisableCombined) + Integer.IsEqual(Container(602).NumItems,0)]]</visible>
+		                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + [!String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) | String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),loading)]</visible>
 	            </control>
 	            <control type="label">
 	                <wrapmultiline>true</wrapmultiline>
@@ -232,7 +232,7 @@
 	                <include>Home_Animation</include>
 	                <left>view_pad</left>
 	                <top>360</top>
-		                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))] + [[Container(501).IsUpdating | Container(601).IsUpdating | Container(602).IsUpdating] | !System.IdleTime(1)] + [[Integer.IsEqual(Container(601).NumItems,0) + !Skin.HasSetting(Search.DisableCombined)] | [Skin.HasSetting(Search.DisableCombined) + Integer.IsEqual(Container(602).NumItems,0)]]</visible>
+		                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + [!String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) | String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),loading)]</visible>
 	            </control>
 	        </control>
 	    </include>
@@ -427,8 +427,8 @@
             <onup>3001</onup>
             <onback>SetProperty(RefocusMenu,True)</onback>
             <onback>3001</onback>
-            <ondown condition="!Skin.HasSetting(Search.DisableCombined)">601</ondown>
-            <ondown condition="Skin.HasSetting(Search.DisableCombined)">602</ondown>
+            <ondown condition="!Skin.HasSetting(Search.DisableCombined) + !Container(601).IsUpdating + !Integer.IsEqual(Container(601).NumItems,0)">601</ondown>
+            <ondown condition="Skin.HasSetting(Search.DisableCombined) + !Container(602).IsUpdating + !Integer.IsEqual(Container(602).NumItems,0)">602</ondown>
             <!-- <width>700</width> -->
             <width>750</width>
             <focusposition>7</focusposition>
@@ -677,17 +677,26 @@
                 <onback>3001</onback>
                 <onright>3003</onright>
                 <ondown condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">3009</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">SetProperty(Searchbar.IsHidden,True)</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))">SetProperty(Searchbar.IsHidden,True)</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))">505</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))]">601</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !Container(505).IsUpdating + ![Integer.IsEqual(Container(505).NumItems,0) | [Integer.IsEqual(Container(505).NumItems,1) + String.IsEqual(Container(505).ListItemAbsolute(0).Label,$LOCALIZE[31046])]]">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !Container(505).IsUpdating + ![Integer.IsEqual(Container(505).NumItems,0) | [Integer.IsEqual(Container(505).NumItems,1) + String.IsEqual(Container(505).ListItemAbsolute(0).Label,$LOCALIZE[31046])]]">505</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + !Skin.HasSetting(Search.DisableCombined) + !Container(601).IsUpdating + !Integer.IsEqual(Container(601).NumItems,0)">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + !Skin.HasSetting(Search.DisableCombined) + !Container(601).IsUpdating + !Integer.IsEqual(Container(601).NumItems,0)">601</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + Skin.HasSetting(Search.DisableCombined) + !Container(602).IsUpdating + !Integer.IsEqual(Container(602).NumItems,0)">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + Skin.HasSetting(Search.DisableCombined) + !Container(602).IsUpdating + !Integer.IsEqual(Container(602).NumItems,0)">602</ondown>
                 
                 <onleft>3003</onleft>
 	                <onclick>ClearProperty(FenLight.Discover.ContentPath,Home)</onclick>
+	                <onclick>ClearProperty(FenLight.TextSearch.Query,Home)</onclick>
+	                <onclick>ClearProperty(FenLight.TextSearch.State,Home)</onclick>
+	                <onclick>ClearProperty(FenLight.TextSearch.Scope,Home)</onclick>
+	                <onclick>ClearProperty(FenLight.TextSearch.Movie.State,Home)</onclick>
+	                <onclick>ClearProperty(FenLight.TextSearch.Movie.HasResults,Home)</onclick>
+	                <onclick>ClearProperty(FenLight.TextSearch.TV.State,Home)</onclick>
+	                <onclick>ClearProperty(FenLight.TextSearch.TV.HasResults,Home)</onclick>
 	                <onclick>ClearProperty(TMDbHelper.WidgetContainer)</onclick>
 	                <onclick>SetProperty(Background.HideArtwork,True)</onclick>
+                <onclick>SetFocus(3000)</onclick>
 	                <onclick>RunScript(script.skinvariables,set_editcontrol=3000,window_id=1105,text=)</onclick>
-                <onclick>SetFocus(3001)</onclick>
             </control>
             <control type="image">
                 <left>50</left>
@@ -754,10 +763,12 @@
                 <onleft>3002</onleft>
                 <onright>3004</onright>
                 <ondown condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">3009</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">SetProperty(Searchbar.IsHidden,True)</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))">SetProperty(Searchbar.IsHidden,True)</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))">505</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))]">601</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !Container(505).IsUpdating + ![Integer.IsEqual(Container(505).NumItems,0) | [Integer.IsEqual(Container(505).NumItems,1) + String.IsEqual(Container(505).ListItemAbsolute(0).Label,$LOCALIZE[31046])]]">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !Container(505).IsUpdating + ![Integer.IsEqual(Container(505).NumItems,0) | [Integer.IsEqual(Container(505).NumItems,1) + String.IsEqual(Container(505).ListItemAbsolute(0).Label,$LOCALIZE[31046])]]">505</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + !Skin.HasSetting(Search.DisableCombined) + !Container(601).IsUpdating + !Integer.IsEqual(Container(601).NumItems,0)">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + !Skin.HasSetting(Search.DisableCombined) + !Container(601).IsUpdating + !Integer.IsEqual(Container(601).NumItems,0)">601</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + Skin.HasSetting(Search.DisableCombined) + !Container(602).IsUpdating + !Integer.IsEqual(Container(602).NumItems,0)">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + Skin.HasSetting(Search.DisableCombined) + !Container(602).IsUpdating + !Integer.IsEqual(Container(602).NumItems,0)">602</ondown>
                 
                 <onclick>ClearProperty(Background.HideArtwork)</onclick>
                 <onclick>SetProperty(Search.ActivePanel,history)</onclick>
@@ -826,10 +837,12 @@
                 <onback>3001</onback>
                 <onleft>3003</onleft>
                 <ondown condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">3009</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">SetProperty(Searchbar.IsHidden,True)</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))">SetProperty(Searchbar.IsHidden,True)</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))">505</ondown>
-                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))]">601</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !Container(505).IsUpdating + ![Integer.IsEqual(Container(505).NumItems,0) | [Integer.IsEqual(Container(505).NumItems,1) + String.IsEqual(Container(505).ListItemAbsolute(0).Label,$LOCALIZE[31046])]]">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !Container(505).IsUpdating + ![Integer.IsEqual(Container(505).NumItems,0) | [Integer.IsEqual(Container(505).NumItems,1) + String.IsEqual(Container(505).ListItemAbsolute(0).Label,$LOCALIZE[31046])]]">505</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + !Skin.HasSetting(Search.DisableCombined) + !Container(601).IsUpdating + !Integer.IsEqual(Container(601).NumItems,0)">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + !Skin.HasSetting(Search.DisableCombined) + !Container(601).IsUpdating + !Integer.IsEqual(Container(601).NumItems,0)">601</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + Skin.HasSetting(Search.DisableCombined) + !Container(602).IsUpdating + !Integer.IsEqual(Container(602).NumItems,0)">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + Skin.HasSetting(Search.DisableCombined) + !Container(602).IsUpdating + !Integer.IsEqual(Container(602).NumItems,0)">602</ondown>
                 
                 <onclick>SetProperty(Background.HideArtwork,True)</onclick>
                 <onclick>SetProperty(Search.ActivePanel,advanced)</onclick>
@@ -1087,14 +1100,12 @@
                 <top>70</top>
                 <visible>String.IsEqual(Window(Home).Property(Discover.MediaType),movie) | String.IsEmpty(Window(Home).Property(Discover.MediaType))</visible>
                 <include content="Search_Discover_Filter"><param name="id">3020</param><param name="label">Year Start</param><param name="key">with_year_start</param><param name="top">0</param><param name="left">0</param><param name="width">430</param><param name="onup">3009</param><param name="ondown">3021</param><param name="onright">3025</param><param name="onleft">0</param><param name="media_type">movie</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3021</param><param name="label">Year End</param><param name="key">with_year_end</param><param name="top">55</param><param name="left">0</param><param name="width">430</param><param name="onup">3020</param><param name="ondown">3022</param><param name="onright">3026</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3021</param><param name="label">Year End</param><param name="key">with_year_end</param><param name="top">55</param><param name="left">0</param><param name="width">430</param><param name="onup">3020</param><param name="ondown">3022</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
                 <include content="Search_Discover_Filter"><param name="id">3022</param><param name="label">With Genres</param><param name="key">with_genres</param><param name="top">110</param><param name="left">0</param><param name="width">430</param><param name="onup">3021</param><param name="ondown">3023</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3023</param><param name="label">Without Genres</param><param name="key">without_genres</param><param name="top">165</param><param name="left">0</param><param name="width">430</param><param name="onup">3022</param><param name="ondown">3024</param><param name="onright">3028</param><param name="onleft">0</param><param name="media_type">movie</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3024</param><param name="label">Include Cast</param><param name="key">with_cast</param><param name="top">220</param><param name="left">0</param><param name="width">430</param><param name="onup">3023</param><param name="ondown">3015</param><param name="onright">3028</param><param name="onleft">0</param><param name="media_type">movie</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3025</param><param name="label">Min Rating</param><param name="key">with_rating</param><param name="top">0</param><param name="left">470</param><param name="width">400</param><param name="onup">3009</param><param name="ondown">3026</param><param name="onright">0</param><param name="onleft">3020</param><param name="media_type">movie</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3026</param><param name="label">Min Votes</param><param name="key">with_rating_votes</param><param name="top">55</param><param name="left">470</param><param name="width">400</param><param name="onup">3025</param><param name="ondown">3027</param><param name="onright">0</param><param name="onleft">3021</param><param name="media_type">movie</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3027</param><param name="label">Sort By</param><param name="key">with_sort</param><param name="top">110</param><param name="left">470</param><param name="width">400</param><param name="onup">3026</param><param name="ondown">3028</param><param name="onright">0</param><param name="onleft">3022</param><param name="media_type">movie</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3028</param><param name="label">Released Only</param><param name="key">with_released</param><param name="top">165</param><param name="left">470</param><param name="width">400</param><param name="onup">3027</param><param name="ondown">3016</param><param name="onright">0</param><param name="onleft">3023</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3023</param><param name="label">Without Genres</param><param name="key">without_genres</param><param name="top">165</param><param name="left">0</param><param name="width">430</param><param name="onup">3022</param><param name="ondown">3024</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3024</param><param name="label">Include Cast</param><param name="key">with_cast</param><param name="top">220</param><param name="left">0</param><param name="width">430</param><param name="onup">3023</param><param name="ondown">3015</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3025</param><param name="label">Min Rating</param><param name="key">with_rating</param><param name="top">0</param><param name="left">470</param><param name="width">400</param><param name="onup">3009</param><param name="ondown">3027</param><param name="onright">0</param><param name="onleft">3020</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3027</param><param name="label">Sort By</param><param name="key">with_sort</param><param name="top">55</param><param name="left">470</param><param name="width">400</param><param name="onup">3025</param><param name="ondown">3016</param><param name="onright">0</param><param name="onleft">3021</param><param name="media_type">movie</param></include>
             </control>
 
             <!-- Serie TV filters -->
@@ -1102,14 +1113,12 @@
                 <top>70</top>
                 <visible>String.IsEqual(Window(Home).Property(Discover.MediaType),tvshow)</visible>
                 <include content="Search_Discover_Filter"><param name="id">3030</param><param name="label">Year Start</param><param name="key">with_year_start</param><param name="top">0</param><param name="left">0</param><param name="width">430</param><param name="onup">3010</param><param name="ondown">3031</param><param name="onright">3035</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3031</param><param name="label">Year End</param><param name="key">with_year_end</param><param name="top">55</param><param name="left">0</param><param name="width">430</param><param name="onup">3030</param><param name="ondown">3032</param><param name="onright">3036</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3031</param><param name="label">Year End</param><param name="key">with_year_end</param><param name="top">55</param><param name="left">0</param><param name="width">430</param><param name="onup">3030</param><param name="ondown">3032</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
                 <include content="Search_Discover_Filter"><param name="id">3032</param><param name="label">With Genres</param><param name="key">with_genres</param><param name="top">110</param><param name="left">0</param><param name="width">430</param><param name="onup">3031</param><param name="ondown">3033</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3033</param><param name="label">Without Genres</param><param name="key">without_genres</param><param name="top">165</param><param name="left">0</param><param name="width">430</param><param name="onup">3032</param><param name="ondown">3034</param><param name="onright">3038</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3034</param><param name="label">Network</param><param name="key">with_network</param><param name="top">220</param><param name="left">0</param><param name="width">430</param><param name="onup">3033</param><param name="ondown">3015</param><param name="onright">3038</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3035</param><param name="label">Min Rating</param><param name="key">with_rating</param><param name="top">0</param><param name="left">470</param><param name="width">400</param><param name="onup">3010</param><param name="ondown">3036</param><param name="onright">0</param><param name="onleft">3030</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3036</param><param name="label">Min Votes</param><param name="key">with_rating_votes</param><param name="top">55</param><param name="left">470</param><param name="width">400</param><param name="onup">3035</param><param name="ondown">3037</param><param name="onright">0</param><param name="onleft">3031</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3037</param><param name="label">Sort By</param><param name="key">with_sort</param><param name="top">110</param><param name="left">470</param><param name="width">400</param><param name="onup">3036</param><param name="ondown">3038</param><param name="onright">0</param><param name="onleft">3032</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3038</param><param name="label">Released Only</param><param name="key">with_released</param><param name="top">165</param><param name="left">470</param><param name="width">400</param><param name="onup">3037</param><param name="ondown">3016</param><param name="onright">0</param><param name="onleft">3033</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3033</param><param name="label">Without Genres</param><param name="key">without_genres</param><param name="top">165</param><param name="left">0</param><param name="width">430</param><param name="onup">3032</param><param name="ondown">3034</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3034</param><param name="label">Network</param><param name="key">with_network</param><param name="top">220</param><param name="left">0</param><param name="width">430</param><param name="onup">3033</param><param name="ondown">3015</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3035</param><param name="label">Min Rating</param><param name="key">with_rating</param><param name="top">0</param><param name="left">470</param><param name="width">400</param><param name="onup">3010</param><param name="ondown">3037</param><param name="onright">0</param><param name="onleft">3030</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3037</param><param name="label">Sort By</param><param name="key">with_sort</param><param name="top">55</param><param name="left">470</param><param name="width">400</param><param name="onup">3035</param><param name="ondown">3016</param><param name="onright">0</param><param name="onleft">3031</param><param name="media_type">tvshow</param></include>
             </control>
 
             <!-- Cerca -->
@@ -1148,8 +1157,8 @@
                 <textcolor>main_fg_30</textcolor>
                 <focusedcolor>$VAR[ColorSelected]</focusedcolor>
                 <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
-                <onup condition="String.IsEqual(Window(Home).Property(Discover.MediaType),tvshow)">3038</onup>
-                <onup condition="!String.IsEqual(Window(Home).Property(Discover.MediaType),tvshow)">3028</onup>
+                <onup condition="String.IsEqual(Window(Home).Property(Discover.MediaType),tvshow)">3037</onup>
+                <onup condition="!String.IsEqual(Window(Home).Property(Discover.MediaType),tvshow)">3027</onup>
                 <onleft>3015</onleft>
                 <onback>ClearProperty(Search.ActivePanel)</onback>
                 <onback>ClearProperty(Background.HideArtwork)</onback>

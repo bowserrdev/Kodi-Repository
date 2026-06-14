@@ -159,12 +159,23 @@ def launch_discover(params):
 	is_movie = (mt == 'movie')
 	win = xbmcgui.Window(10000)
 	keys = ['with_year_start','with_year_end','with_genres','without_genres',
-			'with_cast','with_network','with_rating','with_rating_votes','with_sort','with_released']
-	fragments = ''.join(win.getProperty('Discover.%s.url' % k) for k in keys)
-	xbmc.log('###AF3_DISCOVER### media_type=%s fragments=[%s]' % (mt, fragments), xbmc.LOGINFO)
-	if not fragments: return notification('Set at least one filter', 2500)
+			'with_cast','with_network','with_rating','with_sort']
+	user_fragments = ''.join(win.getProperty('Discover.%s.url' % k) for k in keys)
+	xbmc.log('###AF3_DISCOVER### media_type=%s user_fragments=[%s]' % (mt, user_fragments), xbmc.LOGINFO)
+	if not user_fragments: return notification('Set at least one filter', 2500)
+	import re
 	from datetime import date
-	fragments = fragments.replace('[current_date]', date.today().strftime('%Y-%m-%d'))
+	today = date.today().strftime('%Y-%m-%d')
+	fragments = user_fragments
+	date_key = 'primary_release_date' if is_movie else 'first_air_date'
+	date_match = re.search(r'&%s\.lte=(\d{4})-12-31' % date_key, fragments)
+	if date_match and '%s-12-31' % date_match.group(1) > today:
+		fragments = fragments.replace('&%s.lte=%s-12-31' % (date_key, date_match.group(1)), '&%s.lte=%s' % (date_key, today))
+	elif not date_match:
+		fragments += '&%s.lte=%s' % (date_key, today)
+	if not is_movie:
+		fragments += '&include_null_first_air_dates=false'
+	fragments += '&vote_count.gte=100'
 	tmdb_url = 'https://api.themoviedb.org/3/discover/%s?language=en-US&region=US&with_original_language=en%s' % ('movie' if is_movie else 'tv', fragments)
 	mode = 'build_movie_list' if is_movie else 'build_tvshow_list'
 	action = 'tmdb_movies_discover' if is_movie else 'tmdb_tv_discover'
@@ -183,7 +194,7 @@ def clear_discover_filters(params):
 	import xbmcgui
 	win = xbmcgui.Window(10000)
 	keys = ['with_year_start','with_year_end','with_genres','without_genres',
-			'with_cast','with_network','with_rating','with_rating_votes','with_sort','with_released']
+				'with_cast','with_network','with_rating','with_rating_votes','with_sort','with_released']
 	for k in keys:
 		win.clearProperty('Discover.%s' % k)
 		win.clearProperty('Discover.%s.url' % k)
