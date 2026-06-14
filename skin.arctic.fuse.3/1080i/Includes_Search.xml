@@ -74,7 +74,7 @@
                             </control>
 
                             <control type="group" id="600">
-                                <visible>String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
+                                <visible>[String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))] + !String.IsEqual(Window.Property(Search.ActivePanel),advanced)</visible>
                                 <include content="Hub_Widget_Switcher" condition="!Skin.HasSetting(Search.DisableCombined)">
                                     <param name="include_content">Search_Switcher_Items</param>
                                     <param name="top">520</param>
