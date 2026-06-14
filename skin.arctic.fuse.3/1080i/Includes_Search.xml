@@ -34,7 +34,7 @@
                                     <include>Search_Bar_Defs</include>
                                     <include>Search_Bar_Edit</include>
                                     <include>Search_Bar_Icon</include>
-                                    <include>Search_Bar_Keys</include>
+                                    <include>Search_Bar_Actions</include>
                                 </control>
                                 <include condition="!Skin.HasSetting(HomeSwitcher.Vertical)">Home_Switcher_Right_Buttons</include>
                             </control>
@@ -49,6 +49,16 @@
                             <include>Animation_View_WindowChange</include>
 
                             <control type="group" id="500">
+                                <visible>!String.IsEqual(Window.Property(Search.ActivePanel),advanced)</visible>
+                                <include content="Hub_Combined_Widget">
+                                    <param name="id">505</param>
+                                    <param name="content">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]</param>
+                                    <param name="include">List_Poster_Row</param>
+                                    <param name="target">videos</param>
+                                    <param name="visible">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</param>
+                                </include>
+                                <control type="group">
+                                    <visible>String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
                                 <include content="Hub_Combined_Widget" condition="!Skin.HasSetting(Search.DisableDiscover) + !Skin.HasSetting(Search.DisableCombined)">
                                     <param name="id">501</param>
                                     <param name="content">$INFO[window(home).property(tmdbhelper.userdiscover.folderpath)]$INFO[Control.GetLabel(3000).index(1),&amp;with_text_query=,]</param>
@@ -60,9 +70,11 @@
                                 </include>
                                 <include condition="!Skin.HasSetting(Search.DisableCombined)">skinvariables-searchwidgets-combined</include>
                                 <include condition="Skin.HasSetting(Search.DisableCombined)">skinvariables-searchwidgets-standard</include>
+                                </control>
                             </control>
 
                             <control type="group" id="600">
+                                <visible>String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
                                 <include content="Hub_Widget_Switcher" condition="!Skin.HasSetting(Search.DisableCombined)">
                                     <param name="include_content">Search_Switcher_Items</param>
                                     <param name="top">520</param>
@@ -78,6 +90,42 @@
                             </control>
 
                             <include>Search_Info_Panel</include>
+                            <include>Search_Advanced_Panel</include>
+                        </control>
+                    </control>
+
+                    <control type="group">
+                        <visible>!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
+                        <include>Home_Animation</include>
+                        <left>view_pad</left>
+                        <top>480</top>
+                        <height>80</height>
+                        <control type="button" id="3050">
+                            <width>720</width>
+                            <height>80</height>
+                            <texturefocus></texturefocus>
+                            <texturenofocus></texturenofocus>
+                            <label> </label>
+                            <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
+                            <onup>3002</onup>
+                            <ondown>SetProperty(Searchbar.IsHidden,True)</ondown>
+                            <ondown>505</ondown>
+                        </control>
+                        <control type="label">
+                            <font>font_main_bold</font>
+                            <label>Risultati</label>
+                            <textcolor>main_fg_100</textcolor>
+                            <aligny>center</aligny>
+                            <align>left</align>
+                            <width>auto</width>
+                            <height>80</height>
+                        </control>
+                        <control type="image">
+                            <height>1</height>
+                            <centerbottom>10</centerbottom>
+                            <width>720</width>
+                            <left>0</left>
+                            <texture colordiffuse="main_fg_12" flipx="true">common/gradient-box.png</texture>
                         </control>
                     </control>
 
@@ -94,6 +142,12 @@
             <include content="Hub_Combined_Info" condition="!Skin.HasSetting(Search.DisableDiscover) + !Skin.HasSetting(Search.DisableCombined)">
                 <param name="id">501</param>
             </include>
+            <control type="group">
+                <visible>!String.IsEqual(Window.Property(Search.ActivePanel),advanced)</visible>
+                <include content="Hub_Combined_Info">
+                    <param name="id">505</param>
+                </include>
+            </control>
             <include>skinvariables-searchwidgets-info</include>
             <control type="label">
                 <font>font_head_bold</font>
@@ -101,10 +155,11 @@
                 <align>left</align>
                 <height>80</height>
                 <textcolor>main_fg_90</textcolor>
-                <visible>[String.IsEmpty(Window.Property(TMDBHelper.WidgetContainer)) | [Integer.IsEqual(Container(601).NumItems,0) + !Skin.HasSetting(Search.DisableCombined)] | [Skin.HasSetting(Search.DisableCombined) + Integer.IsEqual(Container(602).NumItems,0)]]</visible>
+                
                 <include>Home_Animation</include>
                 <left>view_pad</left>
                 <top>280</top>
+                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))] + [String.IsEmpty(Window.Property(TMDBHelper.WidgetContainer)) | [Integer.IsEqual(Container(601).NumItems,0) + !Skin.HasSetting(Search.DisableCombined)] | [Skin.HasSetting(Search.DisableCombined) + Integer.IsEqual(Container(602).NumItems,0)]]</visible>
                 <!-- <visible>Skin.HasSetting(HomeSwitcher.DisableHeader)</visible> -->
             </control>
             <control type="label">
@@ -114,10 +169,11 @@
                 <align>left</align>
                 <height>80</height>
                 <textcolor>main_fg_30</textcolor>
-                <visible>[String.IsEmpty(Window.Property(TMDBHelper.WidgetContainer)) | [Integer.IsEqual(Container(601).NumItems,0) + !Skin.HasSetting(Search.DisableCombined)] | [Skin.HasSetting(Search.DisableCombined) + Integer.IsEqual(Container(602).NumItems,0)]]</visible>
+                
                 <include>Home_Animation</include>
                 <left>view_pad</left>
                 <top>360</top>
+                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))] + [String.IsEmpty(Window.Property(TMDBHelper.WidgetContainer)) | [Integer.IsEqual(Container(601).NumItems,0) + !Skin.HasSetting(Search.DisableCombined)] | [Skin.HasSetting(Search.DisableCombined) + Integer.IsEqual(Container(602).NumItems,0)]]</visible>
             </control>
         </control>
     </include>
@@ -283,7 +339,7 @@
             <onright condition="!Skin.HasSetting(HomeSwitcher.Vertical)">$INFO[Container(399).ListItem(1).Property(action)]</onright>
 
             <onup condition="!Skin.HasSetting(Search.DisableDiscover) + !Skin.HasSetting(Search.DisableCombined)">RunPlugin(plugin://plugin.video.themoviedb.helper/?info=user_discover$INFO[Window(Home).Property(TMDbHelper.UserDiscover.Folderpath.ParamString),&amp;,])</onup>
-            <ondown>301</ondown>
+            <ondown>3002</ondown>
 
             <texturefocus />
             <texturenofocus />
@@ -544,5 +600,497 @@
         </control>
     </include>
 
+
+
+    <include name="Search_Bar_Actions">
+
+        <control type="group">
+            <left>40</left>
+            <top>83</top>
+            <width>200</width>
+            <height>45</height>
+            <control type="button" id="3002">
+                <texturefocus></texturefocus>
+                <texturenofocus></texturenofocus>
+                <width>200</width>
+                <height>45</height>
+                <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
+                <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
+                <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
+                <onunfocus condition="Skin.HasSetting(HomeSwitcher.Vertical)">ClearProperty(HomeSwitcher.IsVisible,Home)</onunfocus>
+                <onup>ClearProperty(RefocusMenu)</onup>
+                <onup>3001</onup>
+                <onback>SetProperty(RefocusMenu,True)</onback>
+                <onback>3001</onback>
+                <onright>3003</onright>
+                <ondown condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">3009</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))">3050</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))]">601</ondown>
+                
+                <onleft>3003</onleft>
+                <onclick>RunScript(script.skinvariables,set_editcontrol=3000,window_id=1105,text=)</onclick>
+                <onclick>SetFocus(3001)</onclick>
+            </control>
+            <control type="image">
+                <left>50</left>
+                <top>10</top>
+                <width>24</width>
+                <height>24</height>
+                <texture colordiffuse="main_fg_30">special://skin/extras/icons/trash.png</texture>
+                <visible>!Control.HasFocus(3002)</visible>
+            </control>
+            <control type="image">
+                <left>50</left>
+                <top>10</top>
+                <width>24</width>
+                <height>24</height>
+                <texture colordiffuse="$VAR[ColorSelected]">special://skin/extras/icons/trash.png</texture>
+                <visible>Control.HasFocus(3002)</visible>
+            </control>
+            <control type="label">
+                <left>82</left>
+                <top>7</top>
+                <font>font_main</font>
+                <label>Cancella</label>
+                <textcolor>main_fg_30</textcolor>
+                <visible>!Control.HasFocus(3002)</visible>
+            </control>
+            <control type="label">
+                <left>82</left>
+                <top>7</top>
+                <font>font_main</font>
+                <label>Cancella</label>
+                <textcolor>$VAR[ColorSelected]</textcolor>
+                <visible>Control.HasFocus(3002)</visible>
+            </control>
+            <control type="image">
+                <include>Texture_Highlight_Scrollbar_H</include>
+                <left>50</left>
+                <right>50</right>
+                <top>38</top>
+                <height>scrollbar_w</height>
+                <visible>Control.HasFocus(3002)</visible>
+            </control>
+        </control>
+
+        <control type="group">
+            <left>290</left>
+            <top>83</top>
+            <width>200</width>
+            <height>45</height>
+            <control type="button" id="3003">
+                <texturefocus></texturefocus>
+                <texturenofocus></texturenofocus>
+                <width>200</width>
+                <height>45</height>
+                <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
+                <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
+                <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
+                <onunfocus condition="Skin.HasSetting(HomeSwitcher.Vertical)">ClearProperty(HomeSwitcher.IsVisible,Home)</onunfocus>
+                <onup>ClearProperty(RefocusMenu)</onup>
+                <onup>3001</onup>
+                <onback>SetProperty(RefocusMenu,True)</onback>
+                <onback>3001</onback>
+                <onleft>3002</onleft>
+                <onright>3004</onright>
+                <ondown condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">3009</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))">3050</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))]">601</ondown>
+                
+                <onclick>SetProperty(Search.ActivePanel,history)</onclick>
+            </control>
+            <control type="image">
+                <left>50</left>
+                <top>10</top>
+                <width>24</width>
+                <height>24</height>
+                <texture colordiffuse="main_fg_30">special://skin/extras/icons/clock-rotate-left.png</texture>
+                <visible>!Control.HasFocus(3003) + !String.IsEqual(Window.Property(Search.ActivePanel),history)</visible>
+            </control>
+            <control type="image">
+                <left>50</left>
+                <top>10</top>
+                <width>24</width>
+                <height>24</height>
+                <texture colordiffuse="$VAR[ColorSelected]">special://skin/extras/icons/clock-rotate-left.png</texture>
+                <visible>Control.HasFocus(3003) | String.IsEqual(Window.Property(Search.ActivePanel),history)</visible>
+            </control>
+            <control type="label">
+                <left>82</left>
+                <top>7</top>
+                <font>font_main</font>
+                <label>Storico</label>
+                <textcolor>main_fg_30</textcolor>
+                <visible>!Control.HasFocus(3003) + !String.IsEqual(Window.Property(Search.ActivePanel),history)</visible>
+            </control>
+            <control type="label">
+                <left>82</left>
+                <top>7</top>
+                <font>font_main</font>
+                <label>Storico</label>
+                <textcolor>$VAR[ColorSelected]</textcolor>
+                <visible>Control.HasFocus(3003) | String.IsEqual(Window.Property(Search.ActivePanel),history)</visible>
+            </control>
+            <control type="image">
+                <include>Texture_Highlight_Scrollbar_H</include>
+                <left>50</left>
+                <right>50</right>
+                <top>38</top>
+                <height>scrollbar_w</height>
+                <visible>Control.HasFocus(3003) | String.IsEqual(Window.Property(Search.ActivePanel),history)</visible>
+            </control>
+        </control>
+
+        <control type="group">
+            <left>540</left>
+            <top>83</top>
+            <width>200</width>
+            <height>45</height>
+            <control type="button" id="3004">
+                <texturefocus></texturefocus>
+                <texturenofocus></texturenofocus>
+                <width>200</width>
+                <height>45</height>
+                <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
+                <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
+                <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
+                <onunfocus condition="Skin.HasSetting(HomeSwitcher.Vertical)">ClearProperty(HomeSwitcher.IsVisible,Home)</onunfocus>
+                <onup>ClearProperty(RefocusMenu)</onup>
+                <onup>3001</onup>
+                <onback>SetProperty(RefocusMenu,True)</onback>
+                <onback>3001</onback>
+                <onleft>3003</onleft>
+                <ondown condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">3009</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">SetProperty(Searchbar.IsHidden,True)</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))">3050</ondown>
+                <ondown condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1))]">601</ondown>
+                
+                <onclick>SetProperty(Search.ActivePanel,advanced)</onclick>
+            </control>
+            <control type="image">
+                <left>50</left>
+                <top>10</top>
+                <width>24</width>
+                <height>24</height>
+                <texture colordiffuse="main_fg_30">special://skin/extras/icons/binoculars.png</texture>
+                <visible>!Control.HasFocus(3004) + !String.IsEqual(Window.Property(Search.ActivePanel),advanced)</visible>
+            </control>
+            <control type="image">
+                <left>50</left>
+                <top>10</top>
+                <width>24</width>
+                <height>24</height>
+                <texture colordiffuse="$VAR[ColorSelected]">special://skin/extras/icons/binoculars.png</texture>
+                <visible>Control.HasFocus(3004) | String.IsEqual(Window.Property(Search.ActivePanel),advanced)</visible>
+            </control>
+            <control type="label">
+                <left>82</left>
+                <top>7</top>
+                <font>font_main</font>
+                <label>Avanzate</label>
+                <textcolor>main_fg_30</textcolor>
+                <visible>!Control.HasFocus(3004) + !String.IsEqual(Window.Property(Search.ActivePanel),advanced)</visible>
+            </control>
+            <control type="label">
+                <left>82</left>
+                <top>7</top>
+                <font>font_main</font>
+                <label>Avanzate</label>
+                <textcolor>$VAR[ColorSelected]</textcolor>
+                <visible>Control.HasFocus(3004) | String.IsEqual(Window.Property(Search.ActivePanel),advanced)</visible>
+            </control>
+            <control type="image">
+                <include>Texture_Highlight_Scrollbar_H</include>
+                <left>50</left>
+                <right>50</right>
+                <top>38</top>
+                <height>scrollbar_w</height>
+                <visible>Control.HasFocus(3004) | String.IsEqual(Window.Property(Search.ActivePanel),advanced)</visible>
+            </control>
+        </control>
+
+    </include>
+
+    <include name="Discover_Filter_Layout">
+        <param name="colwidth">430</param>
+        <definition>
+            <itemlayout width="$PARAM[colwidth]" height="55">
+                <control type="label">
+                    <left>10</left>
+                    <aligny>center</aligny>
+                    <font>font_main</font>
+                    <label>$INFO[ListItem.Label]</label>
+                    <textcolor>main_fg_30</textcolor>
+                </control>
+                <control type="label">
+                    <right>10</right>
+                    <align>right</align>
+                    <aligny>center</aligny>
+                    <font>font_main</font>
+                    <label>—</label>
+                    <textcolor>main_fg_30</textcolor>
+                    <visible>String.IsEmpty(ListItem.Label2)</visible>
+                </control>
+                <control type="label">
+                    <right>10</right>
+                    <align>right</align>
+                    <aligny>center</aligny>
+                    <font>font_main</font>
+                    <label>$INFO[ListItem.Label2]</label>
+                    <textcolor>main_fg_30</textcolor>
+                    <visible>!String.IsEmpty(ListItem.Label2)</visible>
+                </control>
+            </itemlayout>
+            <focusedlayout width="$PARAM[colwidth]" height="55">
+                <control type="label">
+                    <left>10</left>
+                    <aligny>center</aligny>
+                    <font>font_main_bold</font>
+                    <label>$INFO[ListItem.Label]</label>
+                    <textcolor>$VAR[ColorSelected]</textcolor>
+                </control>
+                <control type="label">
+                    <right>10</right>
+                    <align>right</align>
+                    <aligny>center</aligny>
+                    <font>font_main</font>
+                    <label>—</label>
+                    <textcolor>main_fg_30</textcolor>
+                    <visible>String.IsEmpty(ListItem.Label2)</visible>
+                </control>
+                <control type="label">
+                    <right>10</right>
+                    <align>right</align>
+                    <aligny>center</aligny>
+                    <font>font_main</font>
+                    <label>$INFO[ListItem.Label2]</label>
+                    <textcolor>$VAR[ColorSelected]</textcolor>
+                    <visible>!String.IsEmpty(ListItem.Label2)</visible>
+                </control>
+            </focusedlayout>
+        </definition>
+    </include>
+
+    <include name="Search_Discover_Filter">
+        <param name="id">0</param>
+        <param name="label">Filter</param>
+        <param name="key">key</param>
+        <param name="top">0</param>
+        <param name="left">0</param>
+        <param name="width">430</param>
+        <param name="onup">0</param>
+        <param name="ondown">0</param>
+        <param name="onright">0</param>
+        <param name="onleft">0</param>
+        <param name="media_type">movie</param>
+        <definition>
+            <control type="group">
+                <left>$PARAM[left]</left>
+                <top>$PARAM[top]</top>
+                <width>$PARAM[width]</width>
+                <height>55</height>
+                <control type="button" id="$PARAM[id]">
+                    <width>$PARAM[width]</width>
+                    <height>55</height>
+                    <texturefocus></texturefocus>
+                    <texturenofocus></texturenofocus>
+                    <label></label>
+                    <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
+                    <onback>ClearProperty(Search.ActivePanel)</onback>
+                    <onback>3004</onback>
+                    <onup>$PARAM[onup]</onup>
+                    <ondown>$PARAM[ondown]</ondown>
+                    <onright>$PARAM[onright]</onright>
+                    <onleft>$PARAM[onleft]</onleft>
+                    <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=search.select_discover_filter&amp;filter=$PARAM[key]&amp;media_type=$PARAM[media_type])</onclick>
+                </control>
+                <control type="label">
+                    <left>10</left>
+                    <height>55</height>
+                    <aligny>center</aligny>
+                    <font>font_main</font>
+                    <label>$PARAM[label]</label>
+                    <textcolor>main_fg_30</textcolor>
+                    <visible>!Control.HasFocus($PARAM[id])</visible>
+                </control>
+                <control type="label">
+                    <left>10</left>
+                    <height>55</height>
+                    <aligny>center</aligny>
+                    <font>font_main_bold</font>
+                    <label>$PARAM[label]</label>
+                    <textcolor>$VAR[ColorSelected]</textcolor>
+                    <visible>Control.HasFocus($PARAM[id])</visible>
+                </control>
+                <control type="label">
+                    <right>10</right>
+                    <align>right</align>
+                    <height>55</height>
+                    <aligny>center</aligny>
+                    <font>font_main</font>
+                    <label>—</label>
+                    <textcolor>main_fg_30</textcolor>
+                    <visible>String.IsEmpty(Window(Home).Property(Discover.$PARAM[key]))</visible>
+                </control>
+                <control type="label">
+                    <right>10</right>
+                    <align>right</align>
+                    <height>55</height>
+                    <aligny>center</aligny>
+                    <font>font_main</font>
+                    <label>$INFO[Window(Home).Property(Discover.$PARAM[key])]</label>
+                    <textcolor>$VAR[ColorSelected]</textcolor>
+                    <visible>!String.IsEmpty(Window(Home).Property(Discover.$PARAM[key]))</visible>
+                </control>
+            </control>
+        </definition>
+    </include>
+
+    <include name="Search_Advanced_Panel">
+        <control type="group">
+            <visible>String.IsEqual(Window.Property(Search.ActivePanel),advanced)</visible>
+            <left>view_pad</left>
+            <top>300</top>
+            <width>870</width>
+
+            <!-- Toggle -->
+            <control type="group">
+                <height>70</height>
+                <control type="button" id="3009">
+                    <left>0</left>
+                    <width>160</width>
+                    <height>55</height>
+                    <label>Film</label>
+                    <texturefocus></texturefocus>
+                    <texturenofocus></texturenofocus>
+                    <font>font_main_bold</font>
+                    <textcolor>main_fg_30</textcolor>
+                    <focusedcolor>$VAR[ColorSelected]</focusedcolor>
+                    <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
+                    <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onclick>
+                    <onclick>SetProperty(Discover.MediaType,movie)</onclick>
+                    <onright>3010</onright>
+                    <ondown>3020</ondown>
+                    <onup>3004</onup>
+                    <onback>ClearProperty(Search.ActivePanel)</onback>
+                    <onback>3004</onback>
+                </control>
+                <control type="button" id="3010">
+                    <left>200</left>
+                    <width>160</width>
+                    <height>55</height>
+                    <label>Serie TV</label>
+                    <texturefocus></texturefocus>
+                    <texturenofocus></texturenofocus>
+                    <font>font_main_bold</font>
+                    <textcolor>main_fg_30</textcolor>
+                    <focusedcolor>$VAR[ColorSelected]</focusedcolor>
+                    <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
+                    <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onclick>
+                    <onclick>SetProperty(Discover.MediaType,tvshow)</onclick>
+                    <onleft>3009</onleft>
+                    <ondown>3030</ondown>
+                    <onup>3004</onup>
+                    <onback>ClearProperty(Search.ActivePanel)</onback>
+                    <onback>3004</onback>
+                </control>
+                <control type="image">
+                    <include>Texture_Highlight_Scrollbar_H</include>
+                    <left>0</left>
+                    <top>58</top>
+                    <width>160</width>
+                    <height>scrollbar_w</height>
+                    <visible>String.IsEqual(Window.Property(Discover.MediaType),movie) | String.IsEmpty(Window.Property(Discover.MediaType))</visible>
+                </control>
+                <control type="image">
+                    <include>Texture_Highlight_Scrollbar_H</include>
+                    <left>200</left>
+                    <top>58</top>
+                    <width>160</width>
+                    <height>scrollbar_w</height>
+                    <visible>String.IsEqual(Window.Property(Discover.MediaType),tvshow)</visible>
+                </control>
+            </control>
+
+            <!-- Film filters -->
+            <control type="group">
+                <top>70</top>
+                <visible>String.IsEqual(Window.Property(Discover.MediaType),movie) | String.IsEmpty(Window.Property(Discover.MediaType))</visible>
+                <include content="Search_Discover_Filter"><param name="id">3020</param><param name="label">Year Start</param><param name="key">with_year_start</param><param name="top">0</param><param name="left">0</param><param name="width">430</param><param name="onup">3009</param><param name="ondown">3021</param><param name="onright">3025</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3021</param><param name="label">Year End</param><param name="key">with_year_end</param><param name="top">55</param><param name="left">0</param><param name="width">430</param><param name="onup">3020</param><param name="ondown">3022</param><param name="onright">3026</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3022</param><param name="label">With Genres</param><param name="key">with_genres</param><param name="top">110</param><param name="left">0</param><param name="width">430</param><param name="onup">3021</param><param name="ondown">3023</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3023</param><param name="label">Without Genres</param><param name="key">without_genres</param><param name="top">165</param><param name="left">0</param><param name="width">430</param><param name="onup">3022</param><param name="ondown">3024</param><param name="onright">3028</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3024</param><param name="label">Include Cast</param><param name="key">with_cast</param><param name="top">220</param><param name="left">0</param><param name="width">430</param><param name="onup">3023</param><param name="ondown">3015</param><param name="onright">3028</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3025</param><param name="label">Min Rating</param><param name="key">with_rating</param><param name="top">0</param><param name="left">470</param><param name="width">400</param><param name="onup">3009</param><param name="ondown">3026</param><param name="onright">0</param><param name="onleft">3020</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3026</param><param name="label">Min Votes</param><param name="key">with_rating_votes</param><param name="top">55</param><param name="left">470</param><param name="width">400</param><param name="onup">3025</param><param name="ondown">3027</param><param name="onright">0</param><param name="onleft">3021</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3027</param><param name="label">Sort By</param><param name="key">with_sort</param><param name="top">110</param><param name="left">470</param><param name="width">400</param><param name="onup">3026</param><param name="ondown">3028</param><param name="onright">0</param><param name="onleft">3022</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3028</param><param name="label">Released Only</param><param name="key">with_released</param><param name="top">165</param><param name="left">470</param><param name="width">400</param><param name="onup">3027</param><param name="ondown">3015</param><param name="onright">0</param><param name="onleft">3023</param><param name="media_type">movie</param></include>
+            </control>
+
+            <!-- Serie TV filters -->
+            <control type="group">
+                <top>70</top>
+                <visible>String.IsEqual(Window.Property(Discover.MediaType),tvshow)</visible>
+                <include content="Search_Discover_Filter"><param name="id">3030</param><param name="label">Year Start</param><param name="key">with_year_start</param><param name="top">0</param><param name="left">0</param><param name="width">430</param><param name="onup">3010</param><param name="ondown">3031</param><param name="onright">3035</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3031</param><param name="label">Year End</param><param name="key">with_year_end</param><param name="top">55</param><param name="left">0</param><param name="width">430</param><param name="onup">3030</param><param name="ondown">3032</param><param name="onright">3036</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3032</param><param name="label">With Genres</param><param name="key">with_genres</param><param name="top">110</param><param name="left">0</param><param name="width">430</param><param name="onup">3031</param><param name="ondown">3033</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3033</param><param name="label">Without Genres</param><param name="key">without_genres</param><param name="top">165</param><param name="left">0</param><param name="width">430</param><param name="onup">3032</param><param name="ondown">3034</param><param name="onright">3038</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3034</param><param name="label">Network</param><param name="key">with_network</param><param name="top">220</param><param name="left">0</param><param name="width">430</param><param name="onup">3033</param><param name="ondown">3015</param><param name="onright">3038</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3035</param><param name="label">Min Rating</param><param name="key">with_rating</param><param name="top">0</param><param name="left">470</param><param name="width">400</param><param name="onup">3010</param><param name="ondown">3036</param><param name="onright">0</param><param name="onleft">3030</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3036</param><param name="label">Min Votes</param><param name="key">with_rating_votes</param><param name="top">55</param><param name="left">470</param><param name="width">400</param><param name="onup">3035</param><param name="ondown">3037</param><param name="onright">0</param><param name="onleft">3031</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3037</param><param name="label">Sort By</param><param name="key">with_sort</param><param name="top">110</param><param name="left">470</param><param name="width">400</param><param name="onup">3036</param><param name="ondown">3038</param><param name="onright">0</param><param name="onleft">3032</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3038</param><param name="label">Released Only</param><param name="key">with_released</param><param name="top">165</param><param name="left">470</param><param name="width">400</param><param name="onup">3037</param><param name="ondown">3015</param><param name="onright">0</param><param name="onleft">3033</param><param name="media_type">tvshow</param></include>
+            </control>
+
+            <!-- Cerca -->
+            <control type="button" id="3015">
+                <left>620</left>
+                <top>365</top>
+                <width>250</width>
+                <height>60</height>
+                <label>Cerca</label>
+                <texturefocus colordiffuse="$VAR[ColorHighlight]" border="40">common/menu.png</texturefocus>
+                <texturenofocus colordiffuse="main_fg_12" border="40">common/menu-outlined.png</texturenofocus>
+                <font>font_main</font>
+                <textcolor>main_fg_30</textcolor>
+                <focusedcolor>$VAR[ColorSelected]</focusedcolor>
+                <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
+                <onup condition="String.IsEqual(Window.Property(Discover.MediaType),tvshow)">3038</onup>
+                <onup condition="!String.IsEqual(Window.Property(Discover.MediaType),tvshow)">3028</onup>
+                <onback>ClearProperty(Search.ActivePanel)</onback>
+                <onback>3004</onback>
+                <onclick>RunScript(script.skinvariables,set_editcontrol=3000,window_id=1105,text=)</onclick>
+                <onclick condition="String.IsEqual(Window.Property(Discover.MediaType),tvshow)">RunPlugin(plugin://plugin.video.fenlight/?mode=search.launch_discover&amp;media_type=tvshow)</onclick>
+                <onclick condition="!String.IsEqual(Window.Property(Discover.MediaType),tvshow)">RunPlugin(plugin://plugin.video.fenlight/?mode=search.launch_discover&amp;media_type=movie)</onclick>
+                <onclick>ClearProperty(Search.ActivePanel)</onclick>
+                <onclick>SetFocus(3050)</onclick>
+                <onleft>3016</onleft>
+            </control>
+
+            <!-- Reset -->
+            <control type="button" id="3016">
+                <left>340</left>
+                <top>365</top>
+                <width>250</width>
+                <height>60</height>
+                <label>Reset</label>
+                <texturefocus colordiffuse="$VAR[ColorHighlight]" border="40">common/menu.png</texturefocus>
+                <texturenofocus colordiffuse="main_fg_12" border="40">common/menu-outlined.png</texturenofocus>
+                <font>font_main</font>
+                <textcolor>main_fg_30</textcolor>
+                <focusedcolor>$VAR[ColorSelected]</focusedcolor>
+                <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
+                <onup condition="String.IsEqual(Window.Property(Discover.MediaType),tvshow)">3014</onup>
+                <onup condition="!String.IsEqual(Window.Property(Discover.MediaType),tvshow)">3012</onup>
+                <onright>3015</onright>
+                <onback>ClearProperty(Search.ActivePanel)</onback>
+                <onback>3004</onback>
+                <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onclick>
+            </control>
+
+        </control>
+    </include>
 
 </includes>

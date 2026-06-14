@@ -83,4 +83,103 @@ def clear_all(setting_id, refresh='false'):
 	notification('Success', 2500)
 	if refresh == 'true': kodi_refresh()
 
-	
+def select_discover_filter(params):
+    import json, xbmcgui
+    from modules import meta_lists as ml
+    fk = params.get('filter', '')
+    mt = params.get('media_type', 'movie')
+    is_movie = (mt == 'movie')
+    win = xbmcgui.Window(10000)
+    prop_d = 'Discover.%s' % fk
+    prop_u = 'Discover.%s.url' % fk
+    if fk == 'with_released':
+        if win.getProperty(prop_d):
+            win.clearProperty(prop_d); win.clearProperty(prop_u)
+        else:
+            url = ('&primary_release_date.lte=[current_date]' if is_movie
+                   else '&include_null_first_air_dates=false&first_air_date.lte=[current_date]')
+            win.setProperty(prop_d, 'Yes'); win.setProperty(prop_u, url)
+        return
+    if fk == 'with_cast':
+        name = kodi_dialog().input('Include Cast')
+        if not name: return
+        try:
+            from apis.tmdb_api import tmdb_people_info
+            results = tmdb_people_info(name)['results']
+        except: return notification('No Results', 2500)
+        if not results: return notification('No Results', 2500)
+        items = [{'line1': r['name'], 'name': r['name'], 'id': str(r['id'])} for r in results]
+        choice = select_dialog(items, **{'items': json.dumps(items), 'heading': 'Include Cast', 'enumerate': 'false', 'narrow_window': 'true'})
+        if choice:
+            win.setProperty(prop_d, choice['name'])
+            win.setProperty(prop_u, '&with_cast=%s' % choice['id'])
+        return
+    multi = False
+    if fk == 'with_year_start':
+        items = [{'name': str(i['name']), 'id': str(i['id'])} for i in (ml.years_movies if is_movie else ml.years_tvshows)]
+        url_t = '&primary_release_date.gte=%s-01-01' if is_movie else '&first_air_date.gte=%s-01-01'
+    elif fk == 'with_year_end':
+        items = [{'name': str(i['name']), 'id': str(i['id'])} for i in (ml.years_movies if is_movie else ml.years_tvshows)]
+        url_t = '&primary_release_date.lte=%s-12-31' if is_movie else '&first_air_date.lte=%s-12-31'
+    elif fk in ('with_genres', 'without_genres'):
+        items = [{'name': i['name'], 'id': str(i['id'])} for i in (ml.movie_genres if is_movie else ml.tvshow_genres)]
+        url_t = '&with_genres=%s' if fk == 'with_genres' else '&without_genres=%s'
+        multi = True
+    elif fk == 'with_network':
+        items = [{'name': i['name'], 'id': str(i['id'])} for i in sorted(ml.networks, key=lambda k: k['name'])]
+        url_t = '&with_networks=%s'
+    elif fk == 'with_rating':
+        items = [{'name': str(float(i)), 'id': str(i)} for i in range(1, 11)]
+        url_t = '&vote_average.gte=%s'
+    elif fk == 'with_rating_votes':
+        items = [{'name': '1', 'id': '1'}] + [{'name': str(i), 'id': str(i)} for i in range(50, 1001, 50)]
+        url_t = '&vote_count.gte=%s'
+    elif fk == 'with_sort':
+        items = [{'name': i['name'], 'id': i['id']} for i in (ml.movie_sorts if is_movie else ml.tvshow_sorts)]
+        url_t = '%s'
+    else:
+        return
+    heading = fk.replace('with_', '').replace('without_', 'Exclude ').replace('_', ' ').title()
+    kwargs = {'items': json.dumps([{'line1': i['name']} for i in items]), 'heading': heading, 'narrow_window': 'true'}
+    if multi:
+        kwargs['multi_choice'] = 'true'
+        choice = select_dialog(items, **kwargs)
+        if choice is not None:
+            win.setProperty(prop_d, ', '.join(i['name'] for i in choice))
+            win.setProperty(prop_u, url_t % ','.join(i['id'] for i in choice))
+    else:
+        choice = select_dialog(items, **kwargs)
+        if choice is not None:
+            win.setProperty(prop_d, choice['name'])
+            win.setProperty(prop_u, url_t % choice['id'])
+
+def launch_discover(params):
+	import xbmc, xbmcgui
+	mt = params.get('media_type', 'movie')
+	is_movie = (mt == 'movie')
+	win = xbmcgui.Window(10000)
+	keys = ['with_year_start','with_year_end','with_genres','without_genres',
+			'with_cast','with_network','with_rating','with_rating_votes','with_sort','with_released']
+	fragments = ''.join(win.getProperty('Discover.%s.url' % k) for k in keys)
+	xbmc.log('###AF3_DISCOVER### media_type=%s fragments=[%s]' % (mt, fragments), xbmc.LOGINFO)
+	if not fragments: return notification('Set at least one filter', 2500)
+	from datetime import date
+	fragments = fragments.replace('[current_date]', date.today().strftime('%Y-%m-%d'))
+	tmdb_url = 'https://api.themoviedb.org/3/discover/%s?language=en-US&region=US&with_original_language=en%s' % ('movie' if is_movie else 'tv', fragments)
+	mode = 'build_movie_list' if is_movie else 'build_tvshow_list'
+	action = 'tmdb_movies_discover' if is_movie else 'tmdb_tv_discover'
+	content_path = build_url({'mode': mode, 'action': action, 'url': tmdb_url, 'name': 'Discover'})
+	xbmc.log('###AF3_DISCOVER### content_path=[%s]' % content_path, xbmc.LOGINFO)
+	win.setProperty('FenLight.Discover.ContentPath', content_path)
+
+def clear_discover_filters(params):
+	import xbmcgui
+	win = xbmcgui.Window(10000)
+	keys = ['with_year_start','with_year_end','with_genres','without_genres',
+			'with_cast','with_network','with_rating','with_rating_votes','with_sort','with_released']
+	for k in keys:
+		win.clearProperty('Discover.%s' % k)
+		win.clearProperty('Discover.%s.url' % k)
+		win.clearProperty('FenLight.Discover.ContentPath')
+	if params.get('reset_type') == 'true':
+		win.clearProperty('Discover.MediaType')
