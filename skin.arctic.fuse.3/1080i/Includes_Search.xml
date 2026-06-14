@@ -56,6 +56,7 @@
                                     <param name="target">videos</param>
                                     <param name="visible">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</param>
                                     <param name="clear_hideartwork_onfocus">true</param>
+                                    <param name="hidden_button_enabled">true</param>
                                 </include>
                                 <control type="group">
 	                                    <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
