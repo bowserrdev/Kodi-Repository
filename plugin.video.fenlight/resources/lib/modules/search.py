@@ -170,7 +170,14 @@ def launch_discover(params):
 	action = 'tmdb_movies_discover' if is_movie else 'tmdb_tv_discover'
 	content_path = build_url({'mode': mode, 'action': action, 'url': tmdb_url, 'name': 'Discover'})
 	xbmc.log('###AF3_DISCOVER### content_path=[%s]' % content_path, xbmc.LOGINFO)
+	execute_builtin('ClearProperty(Search.ActivePanel)')
+	execute_builtin('SetProperty(Background.HideArtwork,True)')
+	execute_builtin('SetFocus(3000)')
+	xbmc.sleep(100)
+	xbmc.log('###AF3_DISCOVER### clear_edit_result=[%s]' % xbmc.executeJSONRPC(json.dumps({'jsonrpc': '2.0', 'method': 'Input.SendText', 'params': {'text': '', 'done': True}, 'id': 1})), xbmc.LOGINFO)
+	xbmc.sleep(100)
 	win.setProperty('FenLight.Discover.ContentPath', content_path)
+	execute_builtin('SetFocus(3050)')
 
 def clear_discover_filters(params):
 	import xbmcgui
@@ -180,6 +187,6 @@ def clear_discover_filters(params):
 	for k in keys:
 		win.clearProperty('Discover.%s' % k)
 		win.clearProperty('Discover.%s.url' % k)
-		win.clearProperty('FenLight.Discover.ContentPath')
+	win.clearProperty('FenLight.Discover.ContentPath')
 	if params.get('reset_type') == 'true':
 		win.clearProperty('Discover.MediaType')

@@ -45,9 +45,15 @@ def routing(sys):
 		return getattr(mdblist_api, mode.split('.')[1])(params)
 	if 'build' in mode:
 		if mode == 'build_movie_list':
+			if _get('action') == 'tmdb_movies_search' and _get('query', ''):
+				from xbmcgui import Window
+				Window(10000).clearProperty('FenLight.Discover.ContentPath')
 			from indexers.movies import Movies
 			return Movies(params).fetch_list()
 		if mode == 'build_tvshow_list':
+			if _get('action') == 'tmdb_tv_search' and _get('query', ''):
+				from xbmcgui import Window
+				Window(10000).clearProperty('FenLight.Discover.ContentPath')
 			from indexers.tvshows import TVShows
 			return TVShows(params).fetch_list()
 		if mode == 'build_season_list':
