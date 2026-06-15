@@ -115,13 +115,15 @@ def blur_image(params):
 	home_window.setProperty('TMDbHelper.%s.BlurImage.Original' % prefix, source)
 
 class BlurService:
-	def _resolve(self, spec):
-		container = xbmc.getInfoLabel('Window.Property(TMDbHelper.WidgetContainer)')
+	def _resolve(self, spec, container=None, use_focused=True):
+		# use_focused=False (dentro un dialog) salta ListItem "nudo" — che nel contesto del
+		# dialog punta all'elemento del dialog — e risolve solo tramite il container ricordato.
 		for token in spec.split('|'):
 			token = token.strip().replace('{x}', '')
 			if not token: continue
-			value = xbmc.getInfoLabel('ListItem.%s' % token)
-			if value: return value
+			if use_focused:
+				value = xbmc.getInfoLabel('ListItem.%s' % token)
+				if value: return value
 			if container:
 				value = xbmc.getInfoLabel('Container(%s).ListItem.%s' % (container, token))
 				if value: return value
@@ -132,19 +134,27 @@ class BlurService:
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		pause_string = 'fenlight.pause_services'
-		last_source, failed = None, {}
+		last_source, last_container, failed = None, '', {}
 		_cleanup()
 		while not monitor.abortRequested():
 			if wait_for_abort(0.3): break
 			if is_playing() or home_window.getProperty(pause_string) == 'true': continue
 			try: dlg_id = xbmcgui.getCurrentWindowDialogId()
 			except: dlg_id = 9999
-			if dlg_id != 9999: continue  # un dialog (es. menù contestuale 10106) è aperto: non aggiornare lo sfondo
+			in_dialog = (dlg_id != 9999)
 			if not xbmc.getCondVisibility('Skin.HasSetting(TMDbHelper.EnableBlur)'): continue
 			spec = home_window.getProperty('TMDbHelper.Blur.SourceImage') or 'Art(fanart)'
-			source = self._resolve(spec) or home_window.getProperty('TMDbHelper.Blur.Fallback')
-			if source == last_source: continue
+			if in_dialog:
+				# Un dialog (es. menù contestuale 10106) è aperto: prova comunque ad agganciare
+				# l'elemento in focus tramite il container ricordato (così un elemento appena
+				# selezionato viene "recuperato" anche a menù aperto), ma non usare mai il
+				# fallback viola: se non risolviamo nulla congeliamo, senza cancellare la landscape.
+				source = self._resolve(spec, container=last_container, use_focused=False)
+			else:
+				last_container = xbmc.getInfoLabel('Window.Property(TMDbHelper.WidgetContainer)')
+				source = self._resolve(spec, container=last_container) or home_window.getProperty('TMDbHelper.Blur.Fallback')
 			if not source: continue
+			if source == last_source: continue
 			if failed.get(source, 0) > 4: continue
 			result = _blur(source)
 			if not result:
