@@ -144,13 +144,14 @@
         <param name="autoscroll">false</param>
         <param name="clear_hideartwork_onfocus">false</param>
         <param name="hidden_button_enabled">$PARAM[allowhiddenfocus]</param>
+        <param name="onup">601</param>
         <definition>
             <include content="$PARAM[include]">
                 <param name="id">$PARAM[id]</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <top>510</top>
                 <bottom>-40</bottom>
-                <onup>601</onup>
+                <onup>$PARAM[onup]</onup>
                 <include content="Action_Widget_OnBack">
                     <param name="id">$PARAM[id]</param>
                     <param name="grouplistid">500</param>

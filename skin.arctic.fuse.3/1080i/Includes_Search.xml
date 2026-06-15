@@ -57,6 +57,7 @@
                                     <param name="visible">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</param>
                                     <param name="clear_hideartwork_onfocus">true</param>
                                     <param name="hidden_button_enabled">true</param>
+                                    <param name="onup">3001</param>
                                 </include>
                                 <control type="group">
 	                                    <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
@@ -836,6 +837,7 @@
                 <onup>3001</onup>
                 <onback condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">ClearProperty(Search.ActivePanel)</onback>
                 <onback condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">ClearProperty(Background.HideArtwork)</onback>
+                <onback condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">ClearProperty(FenLight.Discover.ContentPath,Home)</onback>
                 <onback condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
                 <onback condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">3001</onback>
                 <onback condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">SetProperty(RefocusMenu,True)</onback>
@@ -983,6 +985,7 @@
                     <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
                     <onback>ClearProperty(Search.ActivePanel)</onback>
                     <onback>ClearProperty(Background.HideArtwork)</onback>
+                    <onback>ClearProperty(FenLight.Discover.ContentPath,Home)</onback>
                     <onback>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
                     <onback>3001</onback>
                     <onup>$PARAM[onup]</onup>
@@ -1061,6 +1064,7 @@
                     <onup>3004</onup>
                     <onback>ClearProperty(Search.ActivePanel)</onback>
                     <onback>ClearProperty(Background.HideArtwork)</onback>
+                    <onback>ClearProperty(FenLight.Discover.ContentPath,Home)</onback>
                     <onback>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
                     <onback>3001</onback>
                 </control>
@@ -1082,6 +1086,7 @@
                     <onup>3004</onup>
                     <onback>ClearProperty(Search.ActivePanel)</onback>
                     <onback>ClearProperty(Background.HideArtwork)</onback>
+                    <onback>ClearProperty(FenLight.Discover.ContentPath,Home)</onback>
                     <onback>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
                     <onback>3001</onback>
                 </control>
@@ -1146,6 +1151,7 @@
                 <onup condition="!String.IsEqual(Window(Home).Property(Discover.MediaType),tvshow)">3024</onup>
                 <onback>ClearProperty(Search.ActivePanel)</onback>
                 <onback>ClearProperty(Background.HideArtwork)</onback>
+                <onback>ClearProperty(FenLight.Discover.ContentPath,Home)</onback>
                 <onback>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
                 <onback>3001</onback>
                 <onclick condition="String.IsEqual(Window(Home).Property(Discover.MediaType),tvshow)">RunPlugin(plugin://plugin.video.fenlight/?mode=search.launch_discover&amp;media_type=tvshow)</onclick>
@@ -1171,6 +1177,7 @@
                 <onleft>3015</onleft>
                 <onback>ClearProperty(Search.ActivePanel)</onback>
                 <onback>ClearProperty(Background.HideArtwork)</onback>
+                <onback>ClearProperty(FenLight.Discover.ContentPath,Home)</onback>
                 <onback>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onback>
                 <onback>3001</onback>
                 <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=search.clear_discover_filters&amp;reset_type=true)</onclick>
