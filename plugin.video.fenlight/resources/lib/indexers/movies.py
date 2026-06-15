@@ -2,6 +2,7 @@
 import sys
 from modules import meta_lists
 from modules import kodi_utils, settings
+from modules import paginator
 from modules.metadata import movie_meta, movieset_meta
 from modules.utils import manual_function_import, get_datetime, make_thread_list_enumerate, make_thread_list_multi_arg, get_current_timestamp, paginate_list, jsondate_to_datetime
 from modules.watched_status import get_database, watched_info_movie, get_watched_status_movie, get_bookmarks_movie, get_progress_status_movie
@@ -36,6 +37,7 @@ class Movies:
 		self.category_name = self.params_get('category_name', None) or self.params_get('name', None) or 'Movies'
 		self.id_type, self.list, self.action = self.params_get('id_type', 'tmdb_id'), self.params_get('list', []), self.params_get('action', None)
 		self.items, self.new_page, self.total_pages, self.is_external, self.is_home = [], {}, None, external(), home()
+		self.interactive = False
 		self.widget_hide_next_page = self.is_home and widget_hide_next_page()
 		self.widget_hide_watched = self.is_home and widget_hide_watched()
 		self.custom_order = self.params_get('custom_order', 'false') == 'true'
@@ -54,7 +56,18 @@ class Movies:
 			else: var_module, import_function = 'apis.%s_api' % self.action.split('_')[0], self.action
 			try: function = manual_function_import(var_module, import_function)
 			except: pass
-			if self.action in main:
+			fetch_page = self.build_fetch_page(function) if (paginator.interactive_enabled() and self.is_external) else None
+			paginator.log('movies fetch_list action=%s is_home=%s is_external=%s setting=%s -> interactive=%s' %
+						(self.action, self.is_home, self.is_external, paginator.interactive_enabled(), bool(fetch_page)))
+			if fetch_page:
+				self.interactive = True
+				self.pg_key = paginator.make_key(self.params)
+				paginator.log('movies BUILD action=%s key=%s params=%s' % (self.action, paginator.short(self.pg_key),
+						{k: self.params.get(k) for k in ('mode', 'action', 'category_name', 'key_id', 'url', 'query') if self.params.get(k)}))
+				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch())
+				self.list, has_more, _last = paginator.load_cumulative(fetch_page, pages_to_load)
+				paginator.set_state(self.pg_key, pages_to_load, has_more)
+			elif self.action in main:
 				data = function(page_no)
 				self.list = [i['id'] for i in data['results']]
 				if data['total_pages'] > page_no: self.new_page = {'new_page': string(data['page'] + 1)}
@@ -242,3 +255,56 @@ class Movies:
 			if self.is_home: self.paginate_start = limit
 		else: total_pages = 1
 		return data, total_pages
+
+	def build_fetch_page(self, function):
+		# Returns fetch_page(page_no) -> (ids, has_more) for interactive (cumulative) widget pagination,
+		# or None for non-paginable/single-page actions (which fall back to the legacy single-page path).
+		action = self.action
+		limit = page_limit(True)
+		if action in main:
+			def fetch_page(page_no):
+				data = function(page_no)
+				return [i['id'] for i in data['results']], data['total_pages'] > page_no
+			return fetch_page
+		if action in special:
+			key_id = self.params_get('key_id') or self.params_get('query')
+			if not key_id: return None
+			def fetch_page(page_no):
+				data = function(key_id, page_no)
+				return [i['id'] for i in data['results']], data['total_pages'] > page_no
+			return fetch_page
+		if action == 'tmdb_movies_discover':
+			url = self.params_get('url')
+			def fetch_page(page_no):
+				data = function(url, page_no)
+				return [i['id'] for i in data['results']], data['total_pages'] > page_no
+			return fetch_page
+		if action in personal:
+			if action == 'recent_watched_movies': return None
+			full = [i['media_id'] for i in function('movie', 1)]
+			def fetch_page(page_no):
+				return full[(page_no - 1) * limit:page_no * limit], len(full) > page_no * limit
+			return fetch_page
+		if action in trakt_main:
+			if action == 'trakt_movies_top10_boxoffice': return None
+			self.id_type = 'trakt_dict'
+			def fetch_page(page_no):
+				data = function(page_no)
+				try: ids = [i['movie']['ids'] for i in data]
+				except: ids = [i['ids'] for i in data]
+				return ids, bool(ids)
+			return fetch_page
+		if action in trakt_personal:
+			if action in ('trakt_collection_lists', 'trakt_watchlist_lists', 'trakt_favorites'): return None
+			self.id_type = 'trakt_dict'
+			full = [i['media_ids'] for i in function('movies', 1)]
+			def fetch_page(page_no):
+				return full[(page_no - 1) * limit:page_no * limit], len(full) > page_no * limit
+			return fetch_page
+		if action == 'trakt_recommendations':
+			self.id_type = 'trakt_dict'
+			full = [i['ids'] for i in function('movies')]
+			def fetch_page(page_no):
+				return full[(page_no - 1) * limit:page_no * limit], len(full) > page_no * limit
+			return fetch_page
+		return None

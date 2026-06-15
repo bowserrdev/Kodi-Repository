@@ -9,6 +9,7 @@ from indexers.tvshows import TVShows
 from indexers.seasons import single_seasons
 from indexers.episodes import build_single_episode
 from modules import kodi_utils
+from modules import paginator
 from modules.utils import paginate_list
 from modules.settings import paginate, page_limit
 # logger = kodi_utils.logger
@@ -222,7 +223,20 @@ def build_trakt_list(params):
 			user, slug, list_type = params.get('user'), params.get('slug'), params.get('list_type')
 			with_auth = list_type == 'my_lists'
 			result = get_trakt_list_contents(list_type, user, slug, with_auth)
-		process_list, total_pages, paginate_start = _paginate_list(result, page_no, paginate_start)
+		interactive = (not use_result) and paginator.interactive_enabled() and is_external
+		paginator.log('trakt build list_type=%s name=%s is_home=%s use_result=%s setting=%s paginate_enabled=%s result=%s -> interactive=%s' %
+					(params.get('list_type'), list_name, is_home, use_result, paginator.interactive_enabled(), paginate_enabled, len(result), interactive))
+		if interactive:
+			pg_key = paginator.make_key(params)
+			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch())
+			cut = pages_to_load * page_limit(True)
+			process_list = result[:cut]
+			has_more = len(result) > cut
+			paginator.log('trakt BUILD key=%s pages=%s cut=%s shown=%s has_more=%s' %
+					(paginator.short(pg_key), pages_to_load, cut, len(process_list), has_more))
+			paginator.set_state(pg_key, pages_to_load, has_more)
+		else:
+			process_list, total_pages, paginate_start = _paginate_list(result, page_no, paginate_start)
 		all_movies = [i for i in process_list if i['type'] == 'movie']
 		all_tvshows = [i for i in process_list if i['type'] == 'show']
 		all_seasons = [i for i in process_list if i['type'] == 'season']
@@ -241,7 +255,7 @@ def build_trakt_list(params):
 		item_list.sort(key=lambda k: k[1])
 		if use_result: return [i[0] for i in item_list]
 		add_items(handle, [i[0] for i in item_list])
-		if total_pages > page_no:
+		if not interactive and total_pages > page_no:
 			new_page = str(page_no + 1)
 			new_params = {'mode': 'trakt.list.build_trakt_list', 'list_type': list_type, 'list_name': list_name,
 							'user': user, 'slug': slug, 'paginate_start': paginate_start, 'new_page': new_page}
