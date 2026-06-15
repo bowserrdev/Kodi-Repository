@@ -275,7 +275,15 @@ def reload_skin():
 	execute_builtin('ReloadSkin()')
 
 def kodi_refresh():
+	# Global soft refresh (Trakt monitor / periodic WidgetRefresher). Flag the rebuild as an in-place
+	# refresh so interactive widgets keep their already-expanded page count instead of collapsing back to
+	# the initial batch (which would shrink the container and bounce the focus). The flag is held only for
+	# the short window in which the widget builds read it, then cleared. A genuine fresh open carries no
+	# flag, so it still starts from the initial batch. Mirrors the existing 'fenlight.refresh_widgets' hold.
+	set_property('fenlight.pg.refresh', 'true')
 	execute_builtin('UpdateLibrary(video,special://skin/foo)')
+	sleep(2000)
+	clear_property('fenlight.pg.refresh')
 
 def refresh_widgets(show_notification='false'):
 	set_property('fenlight.refresh_widgets', 'true')

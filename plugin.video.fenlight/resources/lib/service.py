@@ -171,6 +171,14 @@ class WidgetPaginator:
 						or is_playing() or window.getProperty(pause_services_prop) == 'true':
 					log_change('idle (off/playing/paused)')
 					wait_for_abort(1); continue
+				# Never paginate a widget inside an overlay dialog (e.g. the video-info card). Its related
+				# lists (cast/recommendations/credits/sets) are bounded, not meant for infinite scroll, and the
+				# only widget-refresh primitive available is the GLOBAL UpdateLibrary hack -- it would rebuild
+				# every DirectoryProvider in the dialog at once and flicker the whole card. Home/hubs/search,
+				# the intended browsing contexts, all live in non-modal windows, so this never gates them.
+				if xbmc.getCondVisibility('System.HasActiveModalDialog'):
+					log_change('idle (modal dialog open)')
+					wait_for_abort(0.5); continue
 				# Identify the focused Fen Light widget by container id (skin sets fenlight.active_widget on focus
 				# for every widget) and resolve its key via the universal first-item bridge: the plugin published
 				# first-item-path -> key, and we read that same path from the container here.
