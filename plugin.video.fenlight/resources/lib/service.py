@@ -159,7 +159,6 @@ class WidgetPaginator:
 		window = xbmcgui.Window(10000)
 		get_infolabel = xbmc.getInfoLabel
 		pending = {}  # key -> time the loading flag was set, to self-heal a build that never finishes
-		triggered_at = {}  # key -> NumItems at last trigger; guards against runaway if a refresh doesn't grow the list
 		stuck_timeout = 8
 		last_log = None  # dedup: only log when the observed state actually changes
 		def log_change(state):
@@ -172,34 +171,34 @@ class WidgetPaginator:
 						or is_playing() or window.getProperty(pause_services_prop) == 'true':
 					log_change('idle (off/playing/paused)')
 					wait_for_abort(1); continue
-				# Identify the focused Fen Light widget. The skin sets fenlight.active_widget (the container id)
-				# and fenlight.active_widget_path (its plugin path) on focus. Hub widgets load in 'browse' mode,
-				# so Container(id).FolderPath is empty for them -> we fall back to the stored path.
+				# Identify the focused Fen Light widget by container id (skin sets fenlight.active_widget on focus
+				# for every widget) and resolve its key via the universal first-item bridge: the plugin published
+				# first-item-path -> key, and we read that same path from the container here.
 				cur_ctrl = get_infolabel('System.CurrentControlID')
 				prop_id = window.getProperty('fenlight.active_widget')
-				prop_path = window.getProperty('fenlight.active_widget_path')
-				widget_id, folderpath = None, ''
+				widget_id = None
 				if prop_id and xbmc.getCondVisibility('Control.HasFocus(%s)' % prop_id):
 					widget_id = prop_id
-					folderpath = get_infolabel('Container(%s).FolderPath' % prop_id) or prop_path
-				else:
-					for c in (cur_ctrl, '501', '502', '503', '504', '505', '506', '301'):
-						if not c: continue
-						fp = get_infolabel('Container(%s).FolderPath' % c)
-						if 'plugin.video.fenlight' in fp and xbmc.getCondVisibility('Control.HasFocus(%s)' % c):
-							widget_id, folderpath = c, fp; break
-				if widget_id is None or not folderpath:
-					log_change('idle cur_ctrl=%s prop=%s picked=%s' % (cur_ctrl, prop_id, widget_id))
+				elif cur_ctrl and xbmc.getCondVisibility('Control.HasFocus(%s)' % cur_ctrl) \
+						and 'plugin.video.fenlight' in get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % cur_ctrl):
+					widget_id = cur_ctrl
+				if widget_id is None:
+					log_change('idle cur_ctrl=%s prop=%s' % (cur_ctrl, prop_id))
+					wait_for_abort(0.3); continue
+				first_url = get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % widget_id)
+				key = paginator.head_lookup(first_url)
+				if not key:
+					log_change('idle id=%s no-head first=%s' % (widget_id, (first_url[:50] or '-')))
 					wait_for_abort(0.3); continue
 				numitems = int(get_infolabel('Container(%s).NumItems' % widget_id) or 0)
 				current = int(get_infolabel('Container(%s).CurrentItem' % widget_id) or 0)
 				if numitems and current:
-					key = paginator.make_key(paginator.query_from_path(folderpath))
 					loading = window.getProperty(paginator.LOADING_PROP % key) == 'true'
 					hasmore = window.getProperty(paginator.HASMORE_PROP % key) == 'true'
+					built = int(window.getProperty(paginator.BUILT_PROP % key) or 0)
 					runway = page_limit(True) * paginator.lookahead_pages()
-					log_change('id=%s key=%s current=%s/%s remaining=%s runway=%s hasmore=%s loading=%s' %
-								(widget_id, paginator.short(key), current, numitems, numitems - current, runway, hasmore, loading))
+					log_change('id=%s key=%s current=%s/%s remaining=%s runway=%s built=%s hasmore=%s loading=%s' %
+								(widget_id, paginator.short(key), current, numitems, numitems - current, runway, built, hasmore, loading))
 					if loading:
 						# A refresh is in flight; clear a flag left stuck by a build that errored out.
 						if time() - pending.get(key, 0) > stuck_timeout:
@@ -207,16 +206,19 @@ class WidgetPaginator:
 							paginator.log('watcher STUCK loading flag cleared key=%s after %ss' % (paginator.short(key), stuck_timeout))
 					else:
 						pending.pop(key, None)
-						# Anti-runaway: only fire if the container grew since our last trigger for this key.
-						# If a previous refresh at this exact NumItems didn't add items, stop hammering it.
-						if hasmore and numitems - current <= runway and triggered_at.get(key) != numitems:
+						# Load ahead only when (a) more pages exist, (b) the focus is within one page of the
+						# end of the VISIBLE items, and (c) the container has caught up to everything already
+						# built (numitems >= built). Gate (c) is the anti-runaway: while a just-loaded page
+						# hasn't surfaced yet -- Kodi coalesces the soft widget refreshes, so NumItems lags the
+						# real build -- we wait instead of piling up loads. An empty filtered page leaves
+						# built == numitems, so heavily-filtered searches still keep advancing.
+						if hasmore and numitems - current <= runway and numitems >= built:
 							pages = paginator.raw_pages(key, paginator.initial_batch())
 							window.setProperty(paginator.LOADING_PROP % key, 'true')
 							window.setProperty(paginator.PAGES_PROP % key, str(pages + 1))
 							pending[key] = time()
-							triggered_at[key] = numitems
-							paginator.log('watcher TRIGGER key=%s pages %s->%s current=%s/%s -> kodi_refresh(%s)' %
-										(paginator.short(key), pages, pages + 1, current, numitems, widget_id))
+							paginator.log('watcher TRIGGER key=%s pages %s->%s current=%s/%s built=%s -> kodi_refresh(%s)' %
+										(paginator.short(key), pages, pages + 1, current, numitems, built, widget_id))
 							# Same focus-preserving primitive the Trakt monitor uses: a soft widget reload that
 							# appends the new page in place without rebuilding/flickering the container.
 							execute_builtin('UpdateLibrary(video,special://skin/foo)')
