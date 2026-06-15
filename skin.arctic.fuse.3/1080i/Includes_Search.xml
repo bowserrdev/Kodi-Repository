@@ -111,7 +111,7 @@
 	                            <texturenofocus></texturenofocus>
 	                            <label> </label>
 	                            <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
-	                            <onfocus>SetProperty(Background.HideArtwork,True)</onfocus>
+	                            <onfocus>ClearProperty(Background.HideArtwork)</onfocus>
 	                            <onup>3002</onup>
 	                            <ondown>SetProperty(Searchbar.IsHidden,True)</ondown>
 	                            <ondown>505</ondown>
@@ -167,7 +167,7 @@
 
     <include name="Search_Info_Panel">
         <control type="group">
-            <visible>!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1)) | ControlGroup(500).HasFocus]</visible>
+            <visible>!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))]</visible>
             <control type="group">
                 <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
                 <include content="Hub_Combined_Info" condition="!Skin.HasSetting(Search.DisableDiscover) + !Skin.HasSetting(Search.DisableCombined)">
@@ -175,7 +175,7 @@
                 </include>
             </control>
             <control type="group">
-                <visible>!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + ControlGroup(500).HasFocus</visible>
+                <visible>!String.IsEqual(Window.Property(Search.ActivePanel),advanced) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
                 <include content="Hub_Combined_Info">
                     <param name="id">505</param>
                 </include>
@@ -353,8 +353,8 @@
         <control type="button" id="3001">
 
 	            <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
-	            <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1))">SetProperty(Background.HideArtwork,True)</onfocus>
-	            <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1))">ClearProperty(Background.HideArtwork)</onfocus>
+	            <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onfocus>
+	            <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(Background.HideArtwork)</onfocus>
 	            <onfocus condition="Skin.HasSetting(HomeSwitcher.Vertical)">ClearProperty(HomeSwitcher.IsVisible,Home)</onfocus>
 	            <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
 
@@ -375,10 +375,10 @@
             <textcolor>main_fg_30</textcolor>
             <focusedcolor>$VAR[ColorSelected]</focusedcolor>
 	            <align>left</align>
-	            <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1))">SetProperty(Background.HideArtwork,True)</onfocus>
-	            <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1))">ClearProperty(Background.HideArtwork)</onfocus>
-	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1))">ClearProperty(TMDbHelper.WidgetContainer)</onunfocus>
-	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1))">SetProperty(Background.HideArtwork,True)</onunfocus>
+	            <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onfocus>
+	            <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(Background.HideArtwork)</onfocus>
+	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(TMDbHelper.WidgetContainer)</onunfocus>
+	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onunfocus>
 
 	            <onleft condition="Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(RefocusMenu,True)</onleft>
             <onleft condition="Skin.HasSetting(HomeSwitcher.Vertical)">3001</onleft>
@@ -667,8 +667,8 @@
                 <width>200</width>
 	                <height>45</height>
 	                <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
-	                <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1))">SetProperty(Background.HideArtwork,True)</onfocus>
-	                <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1))">ClearProperty(Background.HideArtwork)</onfocus>
+	                <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onfocus>
+	                <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(Background.HideArtwork)</onfocus>
 	                <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
                 <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
                 <onunfocus condition="Skin.HasSetting(HomeSwitcher.Vertical)">ClearProperty(HomeSwitcher.IsVisible,Home)</onunfocus>
@@ -752,8 +752,8 @@
                 <width>200</width>
 	                <height>45</height>
 	                <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
-	                <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1))">SetProperty(Background.HideArtwork,True)</onfocus>
-	                <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1))">ClearProperty(Background.HideArtwork)</onfocus>
+	                <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onfocus>
+	                <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(Background.HideArtwork)</onfocus>
 	                <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
                 <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
                 <onunfocus condition="Skin.HasSetting(HomeSwitcher.Vertical)">ClearProperty(HomeSwitcher.IsVisible,Home)</onunfocus>
@@ -827,8 +827,8 @@
                 <width>200</width>
 	                <height>45</height>
 	                <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
-	                <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1))">SetProperty(Background.HideArtwork,True)</onfocus>
-	                <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1))">ClearProperty(Background.HideArtwork)</onfocus>
+	                <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onfocus>
+	                <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(Background.HideArtwork)</onfocus>
 	                <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
                 <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
                 <onunfocus condition="Skin.HasSetting(HomeSwitcher.Vertical)">ClearProperty(HomeSwitcher.IsVisible,Home)</onunfocus>

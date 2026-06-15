@@ -154,7 +154,7 @@ def select_discover_filter(params):
             win.setProperty(prop_u, url_t % choice['id'])
 
 def launch_discover(params):
-	import xbmc, xbmcgui
+	import xbmc, xbmcgui, xbmcaddon
 	mt = params.get('media_type', 'movie')
 	is_movie = (mt == 'movie')
 	win = xbmcgui.Window(10000)
@@ -189,6 +189,19 @@ def launch_discover(params):
 	xbmc.sleep(100)
 	win.setProperty('FenLight.Discover.ContentPath', content_path)
 	execute_builtin('SetFocus(3050)')
+	# Attendi il caricamento dei risultati: se la ricerca non produce risultati,
+	# riporta il focus sulla barra di ricerca (evita di restare su un elemento invisibile)
+	try: no_results_label = xbmcaddon.Addon('skin.arctic.fuse.3').getLocalizedString(31046)
+	except: no_results_label = ''
+	xbmc.sleep(300)
+	for _ in range(150):
+		if not xbmc.getCondVisibility('Window.IsActive(1105)'): return
+		if not xbmc.getCondVisibility('Container(1105,505).IsUpdating'): break
+		xbmc.sleep(100)
+	num = xbmc.getInfoLabel('Container(1105,505).NumItems') or '0'
+	first = xbmc.getInfoLabel('Container(1105,505).ListItemAbsolute(0).Label')
+	if num in ('0', '') or (num == '1' and no_results_label and first == no_results_label):
+		execute_builtin('SetFocus(3001)')
 
 def clear_discover_filters(params):
 	import xbmcgui
