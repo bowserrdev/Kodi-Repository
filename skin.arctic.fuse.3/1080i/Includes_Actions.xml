@@ -133,17 +133,20 @@
     <include name="Action_Widget_OnBack">
         <param name="enable">True</param>
         <param name="ondisabled">noop</param>
-        <param name="onprevious">$EXP[Exp_Navigation_OnPrevious]</param>
-        <param name="onparent">$EXP[Exp_Navigation_OnParent]</param>
         <definition>
 
-            <!-- Previous: Return to First Item -->
-            <onback condition="$PARAM[enable] + $PARAM[onprevious] + !Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">$PARAM[grouplistid]</onback>
-            <onback condition="$PARAM[enable] + $PARAM[onprevious] + !Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">SetFocus($PARAM[id],0,absolute)</onback>
+            <!-- Widgets are now infinite-scroll, so back navigation is deterministic (independent of the
+                 Navigation.OnBack skin toggle): from any item past the first, back returns to the first item
+                 of the widget; only on the first item does back leave the widget (to the hub icon / search box
+                 via refocus). Lets the user climb back to the top of a long widget without spamming back. -->
 
-            <!-- Parent: Return to Top Focus (Previous on First Item = Parent Back) -->
-            <onback condition="$PARAM[enable] + [[Integer.IsEqual(Container($PARAM[id]).CurrentItem,1) + $PARAM[onprevious]] | $PARAM[onparent]]">$PARAM[grouplistid]</onback>
-            <onback condition="$PARAM[enable] + [[Integer.IsEqual(Container($PARAM[id]).CurrentItem,1) + $PARAM[onprevious]] | $PARAM[onparent]]">AlarmClock(refocus2,$PARAM[refocus],00:00,silent)</onback>
+            <!-- Not on first item: return to the first item of the widget. -->
+            <onback condition="$PARAM[enable] + !Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">$PARAM[grouplistid]</onback>
+            <onback condition="$PARAM[enable] + !Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">SetFocus($PARAM[id],0,absolute)</onback>
+
+            <!-- On first item: leave the widget (parent / hub icon / search box, via refocus). -->
+            <onback condition="$PARAM[enable] + Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">$PARAM[grouplistid]</onback>
+            <onback condition="$PARAM[enable] + Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">AlarmClock(refocus2,$PARAM[refocus],00:00,silent)</onback>
 
         </definition>
     </include>

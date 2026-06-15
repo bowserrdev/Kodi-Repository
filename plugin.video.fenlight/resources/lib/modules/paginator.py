@@ -20,6 +20,12 @@ BUILT_PROP = 'fenlight.pg.%s.built'
 # the watcher reads Container(id).ListItemAbsolute(0).FolderPath and looks the key up here. This works
 # for every widget (home, hubs, text/advanced search) regardless of how the skin builds the path.
 HEAD_PROP = 'fenlight.pg.head.%s'
+# Bounded registry of recently-built widget keys, to clean up stale per-widget properties over long
+# sessions (each distinct search query mints a new key and leaks its prop set). Entry = 'key:headhash'.
+# Pruning only ever drops the OLDEST entries; the focused widget is always newest, and a pruned widget
+# simply republishes from scratch if reopened -- so this is behavior-neutral.
+REGISTRY_PROP = 'fenlight.pg.registry'
+REGISTRY_CAP = 60
 
 # Params that change between cumulative reloads of the SAME widget and must not affect its key.
 _VOLATILE_PARAMS = ('new_page', 'paginate_start', 'refreshed', 'pages', 'reload', 'reload_property')
@@ -76,6 +82,26 @@ def _first_item_url(items):
 	try: return first[0]
 	except: return None
 
+def _register(key, headhash):
+	# Append this build's key to the registry (newest last, no duplicates) and prune the oldest
+	# entries past REGISTRY_CAP, clearing each dropped widget's leftover properties. Best-effort:
+	# the read-modify-write isn't locked, but a lost/duplicate entry only ever leaves a stale prop
+	# behind -- it can never break a live widget's pagination.
+	from modules.kodi_utils import get_property, set_property, clear_property
+	entry = '%s:%s' % (key, headhash or '')
+	raw = get_property(REGISTRY_PROP)
+	entries = [e for e in raw.split(',') if e] if raw else []
+	if entry in entries: entries.remove(entry)
+	entries.append(entry)
+	while len(entries) > REGISTRY_CAP:
+		old_key, _, old_head = entries.pop(0).partition(':')
+		clear_property(PAGES_PROP % old_key)
+		clear_property(HASMORE_PROP % old_key)
+		clear_property(BUILT_PROP % old_key)
+		clear_property(LOADING_PROP % old_key)
+		if old_head: clear_property(HEAD_PROP % old_head)
+	set_property(REGISTRY_PROP, ','.join(entries))
+
 def set_head(key, items):
 	# Final step of an interactive build (called right after add_items). Publishes:
 	#  - the first item's path -> widget key, so the watcher can identify the focused container;
@@ -86,9 +112,11 @@ def set_head(key, items):
 	count = len(items) if items else 0
 	set_property(BUILT_PROP % key, str(count))
 	url = _first_item_url(items)
-	if url:
-		set_property(HEAD_PROP % md5(url.encode('utf-8')).hexdigest(), key)
+	headhash = md5(url.encode('utf-8')).hexdigest() if url else None
+	if headhash:
+		set_property(HEAD_PROP % headhash, key)
 	clear_property(LOADING_PROP % key)
+	_register(key, headhash)
 	log('set_head key=%s built=%s first_url=%s' % (short(key), count, (url[:90] if url else '-')))
 
 def head_lookup(first_url):
