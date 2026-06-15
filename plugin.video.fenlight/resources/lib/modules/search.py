@@ -5,7 +5,12 @@ from caches.main_cache import main_cache
 from indexers.people import person_search
 from indexers.easynews import search_easynews_image
 from modules import kodi_utils
-# logger = kodi_utils.logger
+logger = kodi_utils.logger
+
+def _slog(msg):
+	# Log verboso dedicato alla logica dello 'storico' ricerche (grep 'FenLight Storico' nel kodi.log).
+	try: logger('FenLight Storico', msg)
+	except: pass
 
 close_all_dialog, external = kodi_utils.close_all_dialog, kodi_utils.external
 build_url, kodi_dialog, execute_builtin, select_dialog = kodi_utils.build_url, kodi_utils.kodi_dialog, kodi_utils.execute_builtin, kodi_utils.select_dialog
@@ -60,6 +65,54 @@ def add_to_search(search_name, search_list):
 		main_cache.set(search_list, result, expiration=8760)
 	except: return
 
+def save_text_query(query, sealed_pick=False):
+	# Salva il testo dell'hub di ricerca (solo ricerche testuali) nelle ultime 10.
+	# Digitando si generano molte ricerche intermedie ('s','sh','shr'...): le
+	# raggruppiamo per tempo. Ricerche entro SESSION_GAP secondi l'una dall'altra
+	# sono la stessa "sessione di digitazione" e SOVRASCRIVONO la voce in cima
+	# (resta solo la query finale). Una nuova ricerca dopo una pausa apre invece
+	# una nuova voce, senza mai toccare quelle gia' completate.
+	#
+	# Seal one-shot: quando l'utente sceglie una voce dallo storico (sealed_pick=True)
+	# quella e' una ricerca committata; armiamo 'text_search_seal' cosi' la PRIMA
+	# digitazione successiva forza una voce NUOVA invece di sovrascrivere quella scelta
+	# (es. scelgo 'shrek' e lo cambio in 'star wars': restano entrambe, distinte).
+	try:
+		from time import time as _now
+		query = query.strip()
+		if not query:
+			_slog('save_text_query: query vuota, ignoro')
+			return
+		SESSION_GAP = 3
+		now = _now()
+		result = main_cache.get('text_search_queries') or []
+		last_ts = main_cache.get('text_search_last_ts') or 0
+		pending_new = main_cache.get('text_search_seal') == 1
+		gap = now - float(last_ts)
+		_slog('save_text_query: query="%s" sealed_pick=%s pending_new=%s gap=%.2fs lista_prima=%s'
+			% (query, sealed_pick, pending_new, gap, result))
+		if pending_new:
+			result.insert(0, query)
+			main_cache.set('text_search_seal', '', expiration=8760)
+			_slog('save_text_query: AZIONE=insert (seal armato consumato)')
+		elif result and gap < SESSION_GAP:
+			result[0] = query
+			_slog('save_text_query: AZIONE=overwrite (stessa sessione, gap<%ss)' % SESSION_GAP)
+		else:
+			result.insert(0, query)
+			_slog('save_text_query: AZIONE=insert (nuova sessione)')
+		seen, deduped = set(), []
+		for q in result:
+			if q in seen: continue
+			seen.add(q); deduped.append(q)
+		main_cache.set('text_search_queries', deduped[:10], expiration=8760)
+		main_cache.set('text_search_last_ts', now, expiration=8760)
+		if sealed_pick: main_cache.set('text_search_seal', 1, expiration=8760)
+		_slog('save_text_query: lista_dopo=%s seal_armato=%s' % (deduped[:10], sealed_pick))
+	except Exception as e:
+		_slog('save_text_query: ECCEZIONE %s' % e)
+		return
+
 def remove_from_search(params):
 	try:
 		result = main_cache.get(params['setting_id'])
@@ -82,6 +135,39 @@ def clear_all(setting_id, refresh='false'):
 	main_cache.set(setting_id, '', expiration=365)
 	notification('Success', 2500)
 	if refresh == 'true': kodi_refresh()
+
+def clear_text_history():
+	# Cancellazione diretta (un click) dello storico delle ricerche testuali dell'hub.
+	if not kodi_utils.confirm_dialog(text='Clear text search history?'):
+		_slog('clear_text_history: annullato dall\'utente')
+		return
+	main_cache.set('text_search_queries', '', expiration=365)
+	main_cache.set('text_search_last_ts', '', expiration=365)
+	main_cache.set('text_search_seal', '', expiration=365)
+	_slog('clear_text_history: storico testuale svuotato')
+	notification('Success', 2500)
+
+def close_search_panel(source='?'):
+	# Regola generale: appena l'utente va a digitare una nuova ricerca, eventuali pannelli
+	# 'storico'/'avanzate' aperti vanno chiusi (i container risultati sono nascosti finche'
+	# Search.ActivePanel e' valorizzato). Le proprieta' vivono sulla finestra attiva (l'hub di
+	# ricerca 1105): la finestra custom dello skin non e' istanziabile via xbmcgui.Window() dal
+	# processo del plugin, quindi agiamo sulla finestra attiva via executebuiltin + getCurrentWindowId.
+	# Log sempre (anche wid e valore letto) per diagnosticare comportamenti insoliti.
+	try:
+		import xbmc, xbmcgui
+		wid = xbmcgui.getCurrentWindowId()
+		panel = xbmc.getInfoLabel('Window(%s).Property(Search.ActivePanel)' % wid)
+		_slog('close_search_panel: source=%s wid=%s ActivePanel_letto="%s"' % (source, wid, panel))
+		# Chiudo comunque su piu' scope per robustezza: finestra attiva (no id) e wid esplicito.
+		xbmc.executebuiltin('ClearProperty(Search.ActivePanel)')
+		xbmc.executebuiltin('ClearProperty(Background.HideArtwork)')
+		xbmc.executebuiltin('ClearProperty(Search.LabelAtOpen)')
+		xbmc.executebuiltin('ClearProperty(Search.ActivePanel,%s)' % wid)
+		xbmc.executebuiltin('ClearProperty(Background.HideArtwork,%s)' % wid)
+		xbmc.executebuiltin('ClearProperty(Search.LabelAtOpen,%s)' % wid)
+	except Exception as e:
+		_slog('close_search_panel: ECCEZIONE %s' % e)
 
 def select_discover_filter(params):
     import json, xbmcgui

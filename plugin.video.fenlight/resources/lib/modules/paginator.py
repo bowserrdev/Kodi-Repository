@@ -20,6 +20,11 @@ BUILT_PROP = 'fenlight.pg.%s.built'
 # the watcher reads Container(id).ListItemAbsolute(0).FolderPath and looks the key up here. This works
 # for every widget (home, hubs, text/advanced search) regardless of how the skin builds the path.
 HEAD_PROP = 'fenlight.pg.head.%s'
+# Set during a global soft refresh (kodi_refresh: Trakt monitor / periodic WidgetRefresher) so the
+# rebuild preserves each widget's already-expanded page count instead of collapsing to the initial batch.
+# Distinguishes an in-place refresh of a live, expanded widget from a genuine fresh open (which has no
+# flag and starts from the initial batch). The watcher's own pagination refresh uses LOADING instead.
+PG_REFRESH_PROP = 'fenlight.pg.refresh'
 # Bounded registry of recently-built widget keys, to clean up stale per-widget properties over long
 # sessions (each distinct search query mints a new key and leaks its prop set). Entry = 'key:headhash'.
 # Pruning only ever drops the OLDEST entries; the focused widget is always newest, and a pruned widget
@@ -30,9 +35,32 @@ REGISTRY_CAP = 60
 # Params that change between cumulative reloads of the SAME widget and must not affect its key.
 _VOLATILE_PARAMS = ('new_page', 'paginate_start', 'refreshed', 'pages', 'reload', 'reload_property')
 
+# Text-search hub debounce + anti-stale. The skin rebuilds the search widgets on EVERY keystroke, so a
+# burst of typing (or deleting) launches many overlapping builds for the same container; because each
+# build takes ~1s (TMDB + per-item metadata) they finish OUT OF ORDER and an older query's build can be
+# the last to publish, overwriting the live container and the head/built bridge with a stale (often
+# longer) list -- which is what makes the widget jump to "item N" instead of the first result.
+#
+# The authoritative "what is the user searching right now" is the live search-box text: the skin builds
+# every search widget path from $INFO[Control.GetLabel(3000).index(1)] (Path_SearchTerm). We compare a
+# build's own query against that live label. We deliberately do NOT use a window property as the signal:
+# builds are dispatched OUT OF ORDER by Kodi, so a late old build would overwrite a property backwards
+# and wrongly consider itself current (that was the first attempt's flaw). The live label can't be
+# corrupted by build ordering.
+SEARCH_EDIT_INFOLABEL = 'Control.GetLabel(3000).index(1)'
+# How long a search build waits before doing any expensive work. If the live label no longer matches this
+# build's query after the wait, a newer keystroke has superseded it and it bails -- so the API/metadata
+# work only runs once the user pauses typing.
+SEARCH_DEBOUNCE_MS = 500
+
+def _search_live_query():
+	from modules.kodi_utils import get_infolabel
+	try: return get_infolabel(SEARCH_EDIT_INFOLABEL)
+	except: return None
+
 # Verbose diagnostic logging for the interactive pagination flow. Grep the Kodi log for FENLIGHT_PG.
 # Flip to True to re-enable tracing when debugging pagination.
-PG_DEBUG = False
+PG_DEBUG = True
 
 def log(msg):
 	if not PG_DEBUG: return
@@ -56,6 +84,36 @@ def lookahead_pages():
 	try: value = int(get_setting('fenlight.paginate.lookahead', '1'))
 	except: value = 1
 	return max(1, value)
+
+def search_should_abort(query):
+	# Debounce gate, called BEFORE any skin-state change / TMDB / metadata work for a text-search build.
+	# Waits SEARCH_DEBOUNCE_MS, then returns True if the live search-box text no longer matches this
+	# build's query -- a newer keystroke has superseded it, so it should bail cheaply. An empty query or
+	# a non-search build (query is None) never debounces.
+	from modules.kodi_utils import sleep
+	if not query: return False
+	live = _search_live_query()
+	if live != query:
+		log('search_should_abort: superseded before wait query="%s" live="%s"' % (query, live))
+		return True
+	sleep(SEARCH_DEBOUNCE_MS)
+	live = _search_live_query()
+	if live != query:
+		log('search_should_abort: superseded after %sms query="%s" live="%s"' % (SEARCH_DEBOUNCE_MS, query, live))
+		return True
+	return False
+
+def search_is_stale(query):
+	# Post-build guard, called right before publishing (add_items/set_head). The build itself takes ~1s,
+	# so a newer keystroke may have arrived while it ran. If the live label no longer matches, do NOT
+	# publish: stale results would overwrite the live container and corrupt the head/built bridge,
+	# jumping the widget to "item N".
+	if not query: return False
+	live = _search_live_query()
+	if live != query:
+		log('search_is_stale: skip publish query="%s" live="%s"' % (query, live))
+		return True
+	return False
 
 def make_key(params):
 	# Builds a stable per-widget key from the identifying params, ignoring volatile ones, so that
@@ -134,13 +192,16 @@ def raw_pages(key, default):
 	return value if value >= default else default
 
 def get_pages(key, default):
-	# A fresh widget open (or the periodic WidgetRefresher rebuild) starts from the initial batch.
-	# Only a watcher-driven pagination refresh (LOADING flag set) uses the accumulated page count,
-	# so re-opening a widget never loads its whole previously-expanded history at once.
+	# A genuine fresh widget open starts from the initial batch, so re-opening a widget never reloads its
+	# whole previously-expanded history at once. The accumulated page count is used only when this rebuild
+	# is either a watcher-driven pagination step (LOADING set) or an in-place soft refresh of the live
+	# widget (PG_REFRESH set by kodi_refresh: Trakt monitor / periodic WidgetRefresher) -- in both cases
+	# the container must keep its current length so the items stay put and the focus is preserved.
 	from modules.kodi_utils import get_property
 	loading = get_property(LOADING_PROP % key) == 'true'
-	result = raw_pages(key, default) if loading else default
-	log('get_pages key=%s loading=%s -> pages_to_load=%s (default=%s)' % (short(key), loading, result, default))
+	soft_refresh = get_property(PG_REFRESH_PROP) == 'true'
+	result = raw_pages(key, default) if (loading or soft_refresh) else default
+	log('get_pages key=%s loading=%s soft_refresh=%s -> pages_to_load=%s (default=%s)' % (short(key), loading, soft_refresh, result, default))
 	return result
 
 def set_state(key, pages, has_more):
@@ -151,15 +212,33 @@ def set_state(key, pages, has_more):
 	set_property(HASMORE_PROP % key, 'true' if has_more else 'false')
 	log('set_state key=%s pages=%s has_more=%s' % (short(key), pages, has_more))
 
+def _id_signature(item):
+	# Hashable de-dup key for an id. Plain TMDB ids are ints/strings (hashable as-is); Trakt ids are
+	# dicts ({'trakt':..,'tmdb':..,'imdb':..,'slug':..}) -- the same title always carries the same dict,
+	# so a tuple of its sorted items is a safe, exact signature (no risk of merging distinct titles).
+	if isinstance(item, dict):
+		return tuple(sorted((k, str(v)) for k, v in item.items()))
+	return item
+
 def load_cumulative(fetch_page, pages_to_load):
 	# fetch_page(page_no) -> (ids: list, has_more: bool). Stops early when a page reports no more.
 	# Returns (concatenated_ids, has_more, last_loaded_page).
-	all_ids, has_more, last_page = [], False, 0
+	# De-duplicates across pages keeping the FIRST occurrence: "live" feeds (Trending/Popular) reorder
+	# between requests, so a title loaded on page N can resurface on a later page and would otherwise be
+	# shown twice. Dropping only the later (tail) duplicate keeps every already-shown item at its index,
+	# so the append-only invariant -- and the focus -- are preserved.
+	all_ids, seen, has_more, last_page = [], set(), False, 0
 	for page_no in range(1, pages_to_load + 1):
 		ids, has_more = fetch_page(page_no)
 		last_page = page_no
-		count = len(ids) if ids else 0
-		if ids: all_ids.extend(ids)
-		log('load_cumulative page=%s items=%s has_more=%s (total so far=%s)' % (page_no, count, has_more, len(all_ids)))
+		added = 0
+		if ids:
+			for item in ids:
+				sig = _id_signature(item)
+				if sig in seen: continue
+				seen.add(sig)
+				all_ids.append(item)
+				added += 1
+		log('load_cumulative page=%s items=%s new=%s has_more=%s (total so far=%s)' % (page_no, len(ids) if ids else 0, added, has_more, len(all_ids)))
 		if not has_more: break
 	return all_ids, has_more, last_page

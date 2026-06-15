@@ -45,6 +45,9 @@ class Movies:
 		self.append = self.items.append
 		self.movieset_list_active = False
 		self.fanart_empty = kodi_utils.addon_fanart()
+		# Text-search hub builds are debounced + guarded against stale (out-of-order) completion; for any
+		# other build search_query is None and these guards are no-ops. See paginator.search_should_abort.
+		self.search_query = self.params_get('query') if (self.action == 'tmdb_movies_search_filtered' and self.params_get('search_hub')) else None
 
 	def fetch_list(self):
 		handle = int(sys.argv[1])
@@ -124,11 +127,16 @@ class Movies:
 				self.id_type = 'imdb_id'
 				self.list = function(self.params_get('key_id'))
 			items = self.worker()
-			add_items(handle, items)
-			if self.interactive: paginator.set_head(self.pg_key, items)
-			if self.new_page and not self.widget_hide_next_page:
-					self.new_page.update({'mode': 'build_movie_list', 'action': self.action, 'category_name': self.category_name})
-					add_dir(self.new_page, 'Next Page (%s) >>' % self.new_page['new_page'], handle, 'nextpage', nextpage_landscape)
+			if self.search_query and paginator.search_is_stale(self.search_query):
+				# A newer keystroke arrived while this build ran: drop the result so it can't overwrite
+				# the live container / head bridge. The directory is closed empty in the tail below.
+				pass
+			else:
+				add_items(handle, items)
+				if self.interactive: paginator.set_head(self.pg_key, items)
+				if self.new_page and not self.widget_hide_next_page:
+						self.new_page.update({'mode': 'build_movie_list', 'action': self.action, 'category_name': self.category_name})
+						add_dir(self.new_page, 'Next Page (%s) >>' % self.new_page['new_page'], handle, 'nextpage', nextpage_landscape)
 		except: pass
 		set_content(handle, content_type)
 		set_category(handle, self.category_name)

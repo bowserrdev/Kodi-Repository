@@ -6,7 +6,10 @@
     <param name="sortby">{widget_sortby}</param>
     <param name="sortorder">{widget_sortorder}</param>
     <param name="limit">{widget_limit}</param>
-    <param name="visible">String.IsEqual(Container(601).ListItem.Property(guid),{widget_guid})</param>
+    <!-- Settled == testo vivo: il row appare solo quando i risultati pubblicati corrispondono a cio' che e'
+         scritto adesso, cosi' al cambio query si nasconde e si ricostruisce da capo (posizione 0); la
+         paginazione mantiene Settled==query e non viene toccata. -->
+    <param name="visible">String.IsEqual(Container(601).ListItem.Property(guid),{widget_guid}) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Settled),Control.GetLabel(3000).index(1))</param>
     <param name="allowhiddenfocus">true</param>
     <param name="hidden_button_enabled">true</param>
 </include>

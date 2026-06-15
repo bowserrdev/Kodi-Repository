@@ -14,6 +14,14 @@ def _text_search_start(params, media_type):
 	from xbmcgui import Window
 	win = Window(10000)
 	if win.getProperty('FenLight.TextSearch.Query') != query:
+		try:
+			from modules.search import save_text_query, _slog
+			sealed_pick = win.getProperty('FenLight.TextSearch.SealNext') == '1'
+			_slog('_text_search_start: nuova query="%s" scope=%s sealed_pick=%s' % (query, search_scope, sealed_pick))
+			if sealed_pick: win.clearProperty('FenLight.TextSearch.SealNext')
+			save_text_query(query, sealed_pick=sealed_pick)
+			win.setProperty('FenLight.SearchHistory.Token', query)
+		except: pass
 		win.setProperty('FenLight.TextSearch.Query', query)
 		win.setProperty('FenLight.TextSearch.Scope', search_scope)
 		win.setProperty('FenLight.TextSearch.Movie.HasResults', 'false')
@@ -27,10 +35,35 @@ def _text_search_start(params, media_type):
 	win.setProperty('FenLight.TextSearch.State', 'loading')
 	return win
 
+def _search_debounce_abort(sys, params, action_filtered):
+	# Debounce gate for the live search hub, run BEFORE _text_search_start so a superseded keystroke's
+	# build never touches the skin state nor builds anything. paginator.search_should_abort waits the
+	# debounce window and compares this build's query against the live search-box text; if they differ
+	# the user has moved on -> close the (now-irrelevant) directory empty and bail.
+	if params.get('action') != action_filtered or not params.get('search_hub'): return False
+	from modules import paginator
+	from modules.kodi_utils import get_property, end_directory
+	# A watcher-driven pagination step or a global soft refresh rebuilds the SAME query in place; never
+	# debounce those -- it would lag infinite-scroll and (via the Settled gate) hide the row mid-scroll.
+	# Only a genuine query change is debounced.
+	key = paginator.make_key(params)
+	if get_property(paginator.LOADING_PROP % key) == 'true' or get_property(paginator.PG_REFRESH_PROP) == 'true':
+		return False
+	if not paginator.search_should_abort(params.get('query', '')): return False
+	try: end_directory(int(sys.argv[1]), cacheToDisc=False)
+	except: pass
+	return True
+
 def _text_search_done(win, query, media_type, num_items):
 	if not win or win.getProperty('FenLight.TextSearch.Query') != query: return
 	win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'done')
 	win.setProperty('FenLight.TextSearch.%s.HasResults' % media_type, 'true' if num_items else 'false')
+	# Settled = the query whose results are actually on screen now. The skin shows the result rows only
+	# while Settled matches the live search box, so a query change hides the (stale-positioned) row and
+	# lets it rebuild fresh at item 0; a pagination refresh keeps Settled == query, so scrolling is
+	# untouched. Set here (build done & current) rather than at _text_search_start, which also fires for
+	# in-place pagination refreshes.
+	win.setProperty('FenLight.TextSearch.Settled', query)
 	if win.getProperty('FenLight.TextSearch.Scope') == 'combined':
 		win.setProperty('FenLight.TextSearch.State', 'done')
 		return
@@ -79,6 +112,7 @@ def routing(sys):
 	if 'build' in mode:
 		if mode == 'build_movie_list':
 			if _get('action') == 'tmdb_movies_search' and _get('search_hub'): params['action'] = 'tmdb_movies_search_filtered'
+			if _search_debounce_abort(sys, params, 'tmdb_movies_search_filtered'): return
 			search_win = _text_search_start(params, 'Movie') if _get('action') == 'tmdb_movies_search_filtered' else None
 			if _get('action') in ('tmdb_movies_search', 'tmdb_movies_search_filtered') and _get('query', ''):
 				from xbmcgui import Window
@@ -90,6 +124,7 @@ def routing(sys):
 			return result
 		if mode == 'build_tvshow_list':
 			if _get('action') == 'tmdb_tv_search' and _get('search_hub'): params['action'] = 'tmdb_tv_search_filtered'
+			if _search_debounce_abort(sys, params, 'tmdb_tv_search_filtered'): return
 			search_win = _text_search_start(params, 'TV') if _get('action') == 'tmdb_tv_search_filtered' else None
 			if _get('action') in ('tmdb_tv_search', 'tmdb_tv_search_filtered') and _get('query', ''):
 				from xbmcgui import Window
@@ -152,6 +187,18 @@ def routing(sys):
 		if mode == 'search.clear_search':
 			from modules.search import clear_search
 			return clear_search()
+		if mode == 'search.clear_text_history':
+			from modules.search import clear_text_history
+			return clear_text_history()
+		if mode == 'search.close_panel':
+			from modules.search import close_search_panel
+			close_search_panel(params.get('source', '?'))
+			# Invocato come content-directory dal container rilevatore: chiudo la directory (vuota).
+			try:
+				import xbmcplugin
+				xbmcplugin.endOfDirectory(int(sys.argv[1]), succeeded=True, cacheToDisc=False)
+			except: pass
+			return
 		if mode == 'search.remove':
 			from modules.search import remove_from_search
 			return remove_from_search(params)
