@@ -116,7 +116,7 @@
                     <ondown>ActivateWindow(1180)</ondown>
                     <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id])</onfocus>
                     <onfocus>SetProperty(fenlight.active_widget,$PARAM[id],Home)</onfocus>
-                    <onfocus>SetProperty(fenlight.active_widget_path,$PARAM[widgetpath],Home)</onfocus>
+                    <onfocus>SetProperty(fenlight.active_widget_path,"$PARAM[widgetpath]",Home)</onfocus>
                     <onfocus>SetProperty(Background.ShowOverlay,True,Home)</onfocus>
                     <onfocus condition="![$PARAM[home_switcher]]">ClearProperty(HomeSwitcher.IsVisible,Home)</onfocus>
                     <onfocus condition="$PARAM[home_switcher]">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
@@ -169,7 +169,7 @@
                 <ondown>ActivateWindow(1180)</ondown>
                 <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id])</onfocus>
                 <onfocus>SetProperty(fenlight.active_widget,$PARAM[id],Home)</onfocus>
-                <onfocus>SetProperty(fenlight.active_widget_path,$PARAM[widgetpath],Home)</onfocus>
+                <onfocus>SetProperty(fenlight.active_widget_path,"$PARAM[widgetpath]",Home)</onfocus>
                 <onfocus condition="$PARAM[clear_hideartwork_onfocus]">ClearProperty(Background.HideArtwork)</onfocus>
                 <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
                 <onfocus>ClearProperty(HomeSwitcher.IsVisible,Home)</onfocus>

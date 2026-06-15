@@ -254,7 +254,9 @@ def build_trakt_list(params):
 		[i.join() for i in threads]
 		item_list.sort(key=lambda k: k[1])
 		if use_result: return [i[0] for i in item_list]
-		add_items(handle, [i[0] for i in item_list])
+		final_items = [i[0] for i in item_list]
+		add_items(handle, final_items)
+		if interactive: paginator.set_head(pg_key, final_items)
 		if not interactive and total_pages > page_no:
 			new_page = str(page_no + 1)
 			new_params = {'mode': 'trakt.list.build_trakt_list', 'list_type': list_type, 'list_name': list_name,

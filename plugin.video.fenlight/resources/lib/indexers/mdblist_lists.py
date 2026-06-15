@@ -86,7 +86,9 @@ def build_mdblist_list(params):
 			threads.append(t)
 		[t.join() for t in threads]
 		item_list.sort(key=lambda k: k[1])
-		add_items(handle, [i[0] for i in item_list])
+		final_items = [i[0] for i in item_list]
+		add_items(handle, final_items)
+		if interactive: paginator.set_head(pg_key, final_items)
 		if not interactive and total_pages > page_no:
 			new_page = str(page_no + 1)
 			add_dir({'mode': 'mdblist.list.build_mdblist_list', 'list_id': list_id, 'list_name': list_name,

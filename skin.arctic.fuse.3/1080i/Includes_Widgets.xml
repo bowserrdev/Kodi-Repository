@@ -571,7 +571,7 @@
 
                 <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id])</onfocus>
                 <onfocus>SetProperty(fenlight.active_widget,$PARAM[id],Home)</onfocus>
-                <onfocus>SetProperty(fenlight.active_widget_path,$PARAM[widgetpath],Home)</onfocus>
+                <onfocus>SetProperty(fenlight.active_widget_path,"$PARAM[widgetpath]",Home)</onfocus>
                 <nested />
 
             </include>

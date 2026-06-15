@@ -123,7 +123,9 @@ class Movies:
 					self.params['key_id'] = movie_meta('tmdb_id', self.params_get('key_id'), tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp())['imdb_id']
 				self.id_type = 'imdb_id'
 				self.list = function(self.params_get('key_id'))
-			add_items(handle, self.worker())
+			items = self.worker()
+			add_items(handle, items)
+			if self.interactive: paginator.set_head(self.pg_key, items)
 			if self.new_page and not self.widget_hide_next_page:
 					self.new_page.update({'mode': 'build_movie_list', 'action': self.action, 'category_name': self.category_name})
 					add_dir(self.new_page, 'Next Page (%s) >>' % self.new_page['new_page'], handle, 'nextpage', nextpage_landscape)
