@@ -542,6 +542,7 @@
     <include name="Widget_Row">
         <param name="grouplistid">5000</param>
         <param name="widgetconstants_affix" />
+        <param name="widgetpath" />
         <definition>
             <include content="_Widget_Row">
                 <param name="id">$PARAM[id]</param>
@@ -569,6 +570,8 @@
                 </include>
 
                 <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id])</onfocus>
+                <onfocus>SetProperty(fenlight.active_widget,$PARAM[id],Home)</onfocus>
+                <onfocus>SetProperty(fenlight.active_widget_path,$PARAM[widgetpath],Home)</onfocus>
                 <nested />
 
             </include>
@@ -606,6 +609,7 @@
                     <param name="onback">[Integer.IsEqual(Container($PARAM[baseid]$PARAM[id]).CurrentItem,1)]</param>
                 </include>
                 <onfocus condition="$PARAM[set_widgetcontainer]">SetProperty(TMDbHelper.WidgetContainer,$PARAM[baseid]$PARAM[id])</onfocus>
+                <onfocus condition="$PARAM[set_widgetcontainer]">SetProperty(fenlight.active_widget,$PARAM[baseid]$PARAM[id],Home)</onfocus>
                 <nested />
             </include>
         </definition>

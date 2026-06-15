@@ -5,6 +5,7 @@ from apis.mdblist_api import mdblist_get_my_lists, mdblist_get_list_contents
 from indexers.movies import Movies
 from indexers.tvshows import TVShows
 from modules import kodi_utils
+from modules import paginator
 from modules.utils import paginate_list
 from modules.settings import paginate, page_limit
 
@@ -60,7 +61,20 @@ def build_mdblist_list(params):
 		page_no, paginate_start = int(params.get('new_page', '1')), int(params.get('paginate_start', '0'))
 		if page_no == 1 and not is_external: set_property('fenlight.exit_params', folder_path())
 		result = mdblist_get_list_contents(list_id)
-		process_list, total_pages, paginate_start = _paginate_list(result, page_no, paginate_start)
+		interactive = paginator.interactive_enabled() and is_external
+		paginator.log('mdblist build list_id=%s is_home=%s is_external=%s setting=%s result=%s -> interactive=%s' %
+					(list_id, is_home, is_external, paginator.interactive_enabled(), len(result), interactive))
+		if interactive:
+			pg_key = paginator.make_key(params)
+			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch())
+			cut = pages_to_load * page_limit(True)
+			process_list = result[:cut]
+			has_more = len(result) > cut
+			paginator.log('mdblist BUILD key=%s pages=%s cut=%s shown=%s has_more=%s' %
+						(paginator.short(pg_key), pages_to_load, cut, len(process_list), has_more))
+			paginator.set_state(pg_key, pages_to_load, has_more)
+		else:
+			process_list, total_pages, paginate_start = _paginate_list(result, page_no, paginate_start)
 		all_movies = [i for i in process_list if i['type'] == 'movie']
 		all_tvshows = [i for i in process_list if i['type'] == 'show']
 		movie_list = {'list': [(i['order'], i['media_ids']) for i in all_movies], 'id_type': 'trakt_dict', 'custom_order': 'true'}
@@ -73,7 +87,7 @@ def build_mdblist_list(params):
 		[t.join() for t in threads]
 		item_list.sort(key=lambda k: k[1])
 		add_items(handle, [i[0] for i in item_list])
-		if total_pages > page_no:
+		if not interactive and total_pages > page_no:
 			new_page = str(page_no + 1)
 			add_dir({'mode': 'mdblist.list.build_mdblist_list', 'list_id': list_id, 'list_name': list_name,
 					'paginate_start': str(paginate_start), 'new_page': new_page},

@@ -2,6 +2,7 @@
 import sys
 from modules import meta_lists
 from modules import kodi_utils, settings
+from modules import paginator
 from modules.metadata import tvshow_meta
 from modules.utils import manual_function_import, get_datetime, make_thread_list_enumerate, make_thread_list_multi_arg, get_current_timestamp, paginate_list
 from modules.watched_status import get_database, watched_info_tvshow, get_watched_status_tvshow, get_progress_status_tvshow
@@ -37,6 +38,7 @@ class TVShows:
 		self.category_name = self.params_get('category_name', None) or self.params_get('name', None) or 'TV Shows'
 		self.id_type, self.list, self.action = self.params_get('id_type', 'tmdb_id'), self.params_get('list', []), self.params_get('action', None)
 		self.items, self.new_page, self.total_pages, self.is_external, self.is_home = [], {}, None, external(), home()
+		self.interactive = False
 		self.widget_hide_next_page = self.is_home and widget_hide_next_page()
 		self.widget_hide_watched = self.is_home and widget_hide_watched()
 		self.custom_order = self.params_get('custom_order', 'false') == 'true'
@@ -59,7 +61,18 @@ class TVShows:
 			else: var_module, import_function = 'apis.%s_api' % self.action.split('_')[0], self.action
 			try: function = manual_function_import(var_module, import_function)
 			except: pass
-			if self.action in main:
+			fetch_page = self.build_fetch_page(function) if (paginator.interactive_enabled() and self.is_external and not is_random) else None
+			paginator.log('tvshows fetch_list action=%s is_home=%s is_external=%s random=%s setting=%s -> interactive=%s' %
+						(self.action, self.is_home, self.is_external, is_random, paginator.interactive_enabled(), bool(fetch_page)))
+			if fetch_page:
+				self.interactive = True
+				self.pg_key = paginator.make_key(self.params)
+				paginator.log('tvshows BUILD action=%s key=%s params=%s' % (self.action, paginator.short(self.pg_key),
+						{k: self.params.get(k) for k in ('mode', 'action', 'category_name', 'key_id', 'url', 'query') if self.params.get(k)}))
+				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch())
+				self.list, has_more, _last = paginator.load_cumulative(fetch_page, pages_to_load)
+				paginator.set_state(self.pg_key, pages_to_load, has_more)
+			elif self.action in main:
 				data = function(page_no)
 				self.list = [i['id'] for i in data['results']]
 				if not is_random and  data['total_pages'] > page_no: self.new_page = {'new_page': string(page_no + 1)}
@@ -243,3 +256,62 @@ class TVShows:
 			if self.is_home: self.paginate_start = limit
 		else: total_pages = 1
 		return data, total_pages
+
+	def build_fetch_page(self, function):
+		# Returns fetch_page(page_no) -> (ids, has_more) for interactive (cumulative) widget pagination,
+		# or None for non-paginable/single-page actions (which fall back to the legacy single-page path).
+		action = self.action
+		limit = page_limit(True)
+		if action in main:
+			def fetch_page(page_no):
+				data = function(page_no)
+				return [i['id'] for i in data['results']], data['total_pages'] > page_no
+			return fetch_page
+		if action in special:
+			key_id = self.params_get('key_id') or self.params_get('query')
+			if not key_id: return None
+			def fetch_page(page_no):
+				data = function(key_id, page_no)
+				return [i['id'] for i in data['results']], data['total_pages'] > page_no
+			return fetch_page
+		if action == 'tmdb_tv_discover':
+			url = self.params_get('url')
+			def fetch_page(page_no):
+				data = function(url, page_no)
+				return [i['id'] for i in data['results']], data['total_pages'] > page_no
+			return fetch_page
+		if action in personal:
+			full = [i['media_id'] for i in function('anime' if self.is_anime else 'tvshow', 1)]
+			def fetch_page(page_no):
+				return full[(page_no - 1) * limit:page_no * limit], len(full) > page_no * limit
+			return fetch_page
+		if action in trakt_main:
+			self.id_type = 'trakt_dict'
+			def fetch_page(page_no):
+				data = function(page_no)
+				try: ids = [i['show']['ids'] for i in data]
+				except: ids = [i['ids'] for i in data]
+				return ids, bool(ids)
+			return fetch_page
+		if action in trakt_special:
+			key_id = self.params_get('key_id', None)
+			if not key_id: return None
+			self.id_type = 'trakt_dict'
+			def fetch_page(page_no):
+				data = function(key_id, page_no)
+				return [i['show']['ids'] for i in data], bool(data)
+			return fetch_page
+		if action in trakt_personal:
+			if action in ('trakt_collection_lists', 'trakt_watchlist_lists', 'trakt_favorites'): return None
+			self.id_type = 'trakt_dict'
+			full = [i['media_ids'] for i in function('shows', 1)]
+			def fetch_page(page_no):
+				return full[(page_no - 1) * limit:page_no * limit], len(full) > page_no * limit
+			return fetch_page
+		if action == 'trakt_recommendations':
+			self.id_type = 'trakt_dict'
+			full = [i['ids'] for i in function('shows')]
+			def fetch_page(page_no):
+				return full[(page_no - 1) * limit:page_no * limit], len(full) > page_no * limit
+			return fetch_page
+		return None
