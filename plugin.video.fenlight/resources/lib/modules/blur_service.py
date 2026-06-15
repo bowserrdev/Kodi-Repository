@@ -137,19 +137,22 @@ class BlurService:
 		while not monitor.abortRequested():
 			if wait_for_abort(0.3): break
 			if is_playing() or home_window.getProperty(pause_string) == 'true': continue
+			try: dlg_id = xbmcgui.getCurrentWindowDialogId()
+			except: dlg_id = 9999
+			if dlg_id != 9999: continue  # un dialog (es. menù contestuale 10106) è aperto: non aggiornare lo sfondo
 			if not xbmc.getCondVisibility('Skin.HasSetting(TMDbHelper.EnableBlur)'): continue
 			spec = home_window.getProperty('TMDbHelper.Blur.SourceImage') or 'Art(fanart)'
 			source = self._resolve(spec) or home_window.getProperty('TMDbHelper.Blur.Fallback')
 			if source == last_source: continue
-			logger('BlurDebug', 'source=%s' % source)
 			if not source: continue
 			if failed.get(source, 0) > 4: continue
 			result = _blur(source)
-			logger('BlurDebug', 'result=%s' % result)
 			if not result:
 				failed[source] = failed.get(source, 0) + 1
 				continue
 			last_source = source
+			local_fanart = _local_copy(source)
+			if local_fanart: home_window.setProperty('FenLight.Background.Fanart', local_fanart)
 			home_window.setProperty('TMDbHelper.ListItem.BlurImage', result)
 			home_window.setProperty('TMDbHelper.ListItem.BlurImage.Original', source)
 			home_window.setProperty('TMDbHelper.ListItem.Current.BlurImage', result)
