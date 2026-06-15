@@ -148,6 +148,7 @@
         <param name="clear_hideartwork_onfocus">false</param>
         <param name="hidden_button_enabled">$PARAM[allowhiddenfocus]</param>
         <param name="onup">601</param>
+        <param name="refocus">SetFocus(601)</param>
         <param name="widgetpath" />
         <definition>
             <include content="$PARAM[include]">
@@ -159,7 +160,7 @@
                 <include content="Action_Widget_OnBack">
                     <param name="id">$PARAM[id]</param>
                     <param name="grouplistid">500</param>
-                    <param name="refocus">SetFocus(601)</param>
+                    <param name="refocus">$PARAM[refocus]</param>
                     <param name="enable">!Player.HasMedia</param>
                 </include>
                 <onback condition="Player.HasMedia">SetProperty(FullscreenRefocus,SetFocus($PARAM[id]))</onback>

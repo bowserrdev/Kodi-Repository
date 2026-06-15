@@ -58,6 +58,7 @@
                                     <param name="clear_hideartwork_onfocus">true</param>
                                     <param name="hidden_button_enabled">true</param>
                                     <param name="onup">3001</param>
+                                    <param name="refocus">SetFocus(3001)</param>
                                 </include>
                                 <control type="group">
 	                                    <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
@@ -70,6 +71,7 @@
                                     <param name="allowhiddenfocus">true</param>
                                     <param name="hidden_button_enabled">true</param>
                                     <param name="clear_hideartwork_onfocus">true</param>
+                                    <param name="refocus">SetFocus(3001)</param>
                                 </include>
                                 <include condition="!Skin.HasSetting(Search.DisableCombined)">skinvariables-searchwidgets-combined</include>
                                 <include condition="Skin.HasSetting(Search.DisableCombined)">skinvariables-searchwidgets-standard</include>
