@@ -142,9 +142,11 @@ class source(BaseTorrentScraper):
 			log_utils.log('DMM pagination stopped after page 0: no proxy configured')
 			return results
 
-		batch_size = 3
+		# Batch a dimensione predefinita: 5 + 3 + 3 = max 11 pagine totali (pagina 0 inclusa).
+		# Primo batch da 4 (pagine 1-4) per completare le 5 pagine iniziali, poi batch da 3.
+		batch_sizes = [4, 3, 3]
 		page = 1
-		while True:
+		for batch_size in batch_sizes:
 			pages = list(range(page, page + batch_size))
 			batch_results = [None] * len(pages)
 
