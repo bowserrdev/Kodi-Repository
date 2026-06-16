@@ -460,7 +460,7 @@ class Sources():
 		return search_title
 
 	def get_search_year(self):
-		year = self.meta.get('custom_year', None) or self.meta.get('year')
+		year = self.meta.get('custom_year', None) or self.meta.get('imdb_year') or self.meta.get('year')
 		return year
 
 	def get_season(self):
