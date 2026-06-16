@@ -27,10 +27,11 @@ timeout = 10.0
 session = make_session('https://')
 
 def imdb_data(imdb_id, lang):
-	if get_setting('fenlight.imdb_data') != 'true': return {}
+	# IMDb is always-on (its ratings/votes are more reliable than TMDb's, see metadata merge). No setting gate.
 	if not imdb_id or imdb_id == 'tt0000000': return {}
 	ietf_lang = '%s-%s' % (lang, lang.upper())
-	string = 'imdb_data_%s_%s' % (lang, imdb_id)
+	# v2: query now also returns title_type (used to filter out music videos in advanced search).
+	string = 'imdb_data_v2_%s_%s' % (lang, imdb_id)
 	params = {'imdb_id': imdb_id, 'lang': ietf_lang}
 	return cache_object(get_imdb_graphql, string, params, False, 720)
 
@@ -38,7 +39,7 @@ def get_imdb_graphql(params):
 	data = {}
 	try:
 		query = {
-			'query': 'query GetData($id: ID!) { title(id: $id) { plot { plotText { plainText } } ratingsSummary { aggregateRating voteCount } releaseYear { year } '
+			'query': 'query GetData($id: ID!) { title(id: $id) { titleType { id } plot { plotText { plainText } } ratingsSummary { aggregateRating voteCount } releaseYear { year } '
 					 'directors: credits(first: 5, filter: { categories: ["director"] }) { edges { node { name { nameText { text } } } } } '
 					 'writers: credits(first: 5, filter: { categories: ["writer"] }) { edges { node { name { nameText { text } } } } } } }',
 			'variables': {'id': params['imdb_id']}
@@ -61,6 +62,10 @@ def get_imdb_graphql(params):
 			if year: data['year'] = year
 		except: pass
 		try:
+			title_type = title['titleType']['id']
+			if title_type: data['title_type'] = title_type
+		except: pass
+		try:
 			directors = [e['node']['name']['nameText']['text'] for e in title['directors']['edges']]
 			directors = list(dict.fromkeys([n for n in directors if n]))
 			if directors: data['directors'] = directors
@@ -74,7 +79,7 @@ def get_imdb_graphql(params):
 	return data
 
 def imdb_episode_ratings(imdb_id, season):
-	if get_setting('fenlight.imdb_data') != 'true': return {}
+	# IMDb is always-on (no setting gate); episode ratings/votes come straight from IMDb.
 	if not imdb_id or imdb_id == 'tt0000000': return {}
 	string = 'imdb_ep_ratings_%s_%s' % (imdb_id, season)
 	params = {'imdb_id': imdb_id, 'season': str(season)}

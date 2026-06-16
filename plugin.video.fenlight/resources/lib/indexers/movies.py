@@ -3,7 +3,7 @@ import sys
 from modules import meta_lists
 from modules import kodi_utils, settings
 from modules import paginator
-from modules.metadata import movie_meta, movieset_meta
+from modules.metadata import movie_meta, movieset_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url
 from modules.utils import manual_function_import, get_datetime, make_thread_list_enumerate, make_thread_list_multi_arg, get_current_timestamp, paginate_list, jsondate_to_datetime
 from modules.watched_status import get_database, watched_info_movie, get_watched_status_movie, get_bookmarks_movie, get_progress_status_movie
 logger = kodi_utils.logger
@@ -68,10 +68,10 @@ class Movies:
 				paginator.log('movies BUILD action=%s key=%s params=%s' % (self.action, paginator.short(self.pg_key),
 						{k: self.params.get(k) for k in ('mode', 'action', 'category_name', 'key_id', 'url', 'query') if self.params.get(k)}))
 				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch())
-				# Filtered text searches yield only a few items per TMDB page; fill the first build to a full
-				# screen so the focus starts clear of the watcher's runway (no arrival-cascade). Other widgets
-				# pass min_items=0 and keep the exact page-count behavior.
-				min_items = paginator.search_fill_target() if self.search_query else 0
+				# Fill every build to a full screen: server- or post-build filtering (text search, advanced
+				# search) can thin a TMDB page down to a few items, so keep loading until a page's worth is
+				# gathered. Neutral for unfiltered widgets (a single page already meets the target).
+				min_items = paginator.fill_target()
 				self.list, has_more, _last = paginator.load_cumulative(fetch_page, pages_to_load, min_items)
 				paginator.set_state(self.pg_key, _last, has_more)
 			elif self.action in main:
@@ -289,9 +289,16 @@ class Movies:
 			return fetch_page
 		if action == 'tmdb_movies_discover':
 			url = self.params_get('url')
+			# Advanced search: re-qualify each TMDb page via IMDb (drop music videos / low-vote junk) and,
+			# when the user sorts by rating or picks no sort, re-order the page by IMDb rating (direction
+			# derived from the URL's sort_by). See discover_filter_sort; per-item resolution is threaded/cached.
+			imdb_sort, min_rating = discover_imdb_sort_from_url(url), discover_min_rating_from_url(url)
+			api_key, mpaa, cdate, ctime = tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp()
 			def fetch_page(page_no):
 				data = function(url, page_no)
-				return [i['id'] for i in data['results']], data['total_pages'] > page_no
+				ids = [i['id'] for i in data['results']]
+				ids = discover_filter_sort('movie', ids, imdb_sort, min_rating, api_key, mpaa, cdate, ctime)
+				return ids, data['total_pages'] > page_no
 			return fetch_page
 		if action in personal:
 			if action == 'recent_watched_movies': return None

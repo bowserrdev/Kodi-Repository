@@ -262,6 +262,12 @@ def launch_discover(params):
 	if not is_movie:
 		fragments += '&include_null_first_air_dates=false'
 	fragments += '&vote_count.gte=100'
+	# When the user picks no sort, force vote_average.desc as the TMDb candidate pool (TMDb would otherwise
+	# default to popularity, surfacing what's trending now instead of the best films). The indexer then
+	# re-orders each page by the more reliable IMDb rating (it derives the direction from this sort_by; see
+	# discover_imdb_sort_from_url). Explicit non-rating sorts and Random keep the pure TMDb order.
+	if '[random]' not in user_fragments and 'sort_by=' not in user_fragments:
+		fragments += '&sort_by=vote_average.desc'
 	tmdb_url = 'https://api.themoviedb.org/3/discover/%s?language=en-US&region=US&with_original_language=en%s' % ('movie' if is_movie else 'tv', fragments)
 	mode = 'build_movie_list' if is_movie else 'build_tvshow_list'
 	action = 'tmdb_movies_discover' if is_movie else 'tmdb_tv_discover'

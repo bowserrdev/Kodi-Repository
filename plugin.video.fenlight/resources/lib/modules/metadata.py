@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
+import re
 from apis import tmdb_api
 from apis.imdb_api import imdb_data, imdb_episode_ratings
 from caches.meta_cache import meta_cache
 from modules.settings import meta_language
-from modules.utils import jsondate_to_datetime, subtract_dates
+from modules.utils import jsondate_to_datetime, subtract_dates, make_thread_list
 from apis.skyhook_api import get_skyhook_season_data, get_skyhook_episodes, get_tvdb_to_tmdb_map
 
 movie_details, tvshow_details, season_episodes_details = tmdb_api.movie_details, tmdb_api.tvshow_details, tmdb_api.season_episodes_details
@@ -70,6 +71,71 @@ def _merge_imdb_people(imdb_names, tmdb_people):
 			else: merged.append({'name': name, 'id': '', 'thumbnail': ''})
 		return merged
 	except: return tmdb_people
+
+# --- Advanced search (Discover) quality filter --------------------------------------------------
+# TMDb's discover ranks on its own (unreliable) vote_average and happily returns non-film entries
+# catalogued as movies (e.g. the Michael Jackson "Thriller" music video). We re-qualify each page
+# using the IMDb data we already fetch per item (see movie_meta merge): drop music videos, drop
+# titles with too few IMDb votes (junk), and optionally re-sort the page by the (IMDb-or-TMDb) rating.
+# Done PER TMDb PAGE so the interactive paginator's append-only invariant holds (already-shown pages
+# never reshuffle); the only cost is a small rating discontinuity at page boundaries.
+DISCOVER_MIN_IMDB_VOTES = 1000
+# IMDb titleType ids that are not films. Shorts (Un chien andalou, Le Voyage dans la Lune) are kept.
+DISCOVER_EXCLUDED_SUBTYPES = ('musicVideo', 'video')
+
+def discover_imdb_sort_from_url(url):
+	# Derive the IMDb re-sort direction from a discover URL's sort_by, so every discover entry point
+	# (advanced search, saved lists in navigator, etc.) behaves identically without threading a param.
+	# Rating sort -> match its direction; no sort_by -> default best-first ('desc'); Random or any other
+	# sort (release date, revenue, title, popularity) -> no IMDb re-sort (''), keep the pure TMDb order.
+	url = url or ''
+	if '[random]' in url: return ''
+	match = re.search(r'sort_by=([a-z_]+)\.(asc|desc)', url)
+	if not match: return 'desc'
+	if match.group(1) == 'vote_average': return match.group(2)
+	return ''
+
+def discover_min_rating_from_url(url):
+	# The advanced-search "minimum rating" filter (&vote_average.gte=N) is applied by TMDb on its own
+	# (unreliable) vote_average. Re-apply the SAME threshold to the IMDb rating so a title TMDb scores 8
+	# but IMDb scores 4.7 is dropped. Returns the threshold as float, or 0.0 when no min rating is set.
+	try: return float(re.search(r'vote_average\.gte=([\d.]+)', url or '').group(1))
+	except: return 0.0
+
+def _rating_sort_key(value):
+	try: return float(value)
+	except: return 0.0
+
+def discover_filter_sort(media_type, ids, imdb_sort, min_rating, api_key, mpaa_region, current_date, current_time):
+	# Resolve each TMDb id's meta (threaded; movie_meta/tvshow_meta cache the result, so the indexer's
+	# later build is a cache hit and pays no extra network). Returns the surviving ids, rating-sorted when
+	# imdb_sort is 'asc'/'desc' (otherwise the TMDb page order is preserved). The IMDb gates (vote count,
+	# min rating) re-apply the reliable IMDb figure; a title missing from IMDb is never dropped by them --
+	# it falls back to the TMDb gates already applied server-side (vote_count.gte / vote_average.gte).
+	is_movie = media_type == 'movie'
+	meta_func = movie_meta if is_movie else tvshow_meta
+	resolved = {}
+	def _resolve(media_id):
+		try:
+			meta = meta_func('tmdb_id', media_id, api_key, mpaa_region, current_date, current_time)
+			if meta: resolved[media_id] = meta
+		except: pass
+	make_thread_list(_resolve, ids)
+	survivors = []
+	for media_id in ids:
+		meta = resolved.get(media_id)
+		if not meta or meta.get('blank_entry'): continue
+		if is_movie and meta.get('media_subtype') in DISCOVER_EXCLUDED_SUBTYPES: continue
+		imdb_votes = meta.get('imdb_votes')
+		if imdb_votes is not None and imdb_votes < DISCOVER_MIN_IMDB_VOTES: continue
+		# meta['rating'] is the IMDb rating when available (TMDb otherwise); the TMDb fallback already
+		# cleared vote_average.gte server-side, so this only ever drops titles IMDb itself rates too low.
+		rating = meta.get('rating')
+		if min_rating and _rating_sort_key(rating) < min_rating: continue
+		survivors.append((media_id, rating))
+	if imdb_sort in ('asc', 'desc'):
+		survivors.sort(key=lambda item: _rating_sort_key(item[1]), reverse=(imdb_sort == 'desc'))
+	return [item[0] for item in survivors]
 
 def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_time=None):
 	if id_type == 'trakt_dict':
@@ -224,6 +290,10 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 			if imdb_data_result.get('writers'): meta['writer'] = imdb_data_result['writers']
 			if imdb_data_result.get('directors'): meta['directors'] = _merge_imdb_people(imdb_data_result['directors'], meta.get('directors') or [])
 			if imdb_data_result.get('writers'): meta['writers'] = _merge_imdb_people(imdb_data_result['writers'], meta.get('writers') or [])
+			# Kept distinct from the merged 'votes'/'rating' so advanced search can gate on the IMDb vote
+			# count specifically (more reliable than TMDb) and filter out non-film entries (music videos).
+			meta['imdb_votes'] = imdb_data_result.get('votes')
+			meta['media_subtype'] = imdb_data_result.get('title_type')
 		metacache_set('movie', id_type, meta, movie_expiry(current_date, meta), current_time)
 	except: pass
 	return meta
@@ -389,6 +459,9 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			if imdb_data_result.get('writers'): meta['writer'] = imdb_data_result['writers']
 			if imdb_data_result.get('directors'): meta['directors'] = _merge_imdb_people(imdb_data_result['directors'], meta.get('directors') or [])
 			if imdb_data_result.get('writers'): meta['writers'] = _merge_imdb_people(imdb_data_result['writers'], meta.get('writers') or [])
+			# See movie_meta: advanced search gates on the IMDb vote count (title_type filtering is movies-only).
+			meta['imdb_votes'] = imdb_data_result.get('votes')
+			meta['media_subtype'] = imdb_data_result.get('title_type')
 		meta['original_language'] = data_get('original_language', '')
 		_is_anime = data_get('original_language', '') in ('ja', 'ko', 'zh')
 		_skyhook_seasons = get_skyhook_season_data(tvdb_id, season_data) if _is_anime else None
