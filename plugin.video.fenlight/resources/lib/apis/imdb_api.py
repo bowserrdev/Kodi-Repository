@@ -73,6 +73,38 @@ def get_imdb_graphql(params):
 	except: pass
 	return data
 
+def imdb_episode_ratings(imdb_id, season):
+	if get_setting('fenlight.imdb_data') != 'true': return {}
+	if not imdb_id or imdb_id == 'tt0000000': return {}
+	string = 'imdb_ep_ratings_%s_%s' % (imdb_id, season)
+	params = {'imdb_id': imdb_id, 'season': str(season)}
+	return cache_object(get_imdb_episode_ratings, string, params, False, 720)
+
+def get_imdb_episode_ratings(params):
+	data = {}
+	try:
+		query = {
+			'query': 'query GetEps($id: ID!, $season: [String!]) { title(id: $id) { episodes { episodes(first: 250, filter: { includeSeasons: $season }) '
+					 '{ edges { node { series { episodeNumber { episodeNumber seasonNumber } } ratingsSummary { aggregateRating voteCount } } } } } } }',
+			'variables': {'id': params['imdb_id'], 'season': [params['season']]}
+		}
+		graphql_headers = {'Content-Type': 'application/json', 'User-Agent': headers['User-Agent']}
+		r = session.post(graphql_url, json=query, headers=graphql_headers, timeout=timeout)
+		if r.status_code != 200: return data
+		edges = r.json()['data']['title']['episodes']['episodes']['edges']
+		for e in edges:
+			try:
+				node = e['node']
+				ep_num = node['series']['episodeNumber']
+				s, ep = ep_num['seasonNumber'], ep_num['episodeNumber']
+				if s is None or ep is None: continue
+				ratings = node.get('ratingsSummary') or {}
+				rating, votes = ratings.get('aggregateRating'), ratings.get('voteCount')
+				if rating: data['%s_%s' % (s, ep)] = {'rating': rating, 'votes': votes or 0}
+			except: pass
+	except: pass
+	return data
+
 
 def imdb_more_like_this(imdb_id):
 	url = base_url % more_like_this_url % imdb_id
