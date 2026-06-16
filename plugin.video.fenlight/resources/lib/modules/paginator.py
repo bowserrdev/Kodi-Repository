@@ -85,32 +85,57 @@ def lookahead_pages():
 	except: value = 1
 	return max(1, value)
 
+# Hard ceiling on the EXTRA raw pages a fill (see load_cumulative min_items) may fetch beyond the
+# requested count. A sparse query -- one whose results are mostly filtered out server-side -- must not be
+# able to spin through dozens of TMDB pages chasing the target; it just hands back whatever it gathered.
+_FILL_PAGE_CAP = 6
+
+def search_fill_target():
+	# Filtered text-search pages apply the vote_count/release-date gates server-side, so each TMDB page
+	# yields only a handful of display items -- far short of a normal widget page. The FIRST build fills up
+	# to this many items so the initial screen is full and the focus starts well clear of the watcher's
+	# load-ahead runway. Otherwise landing on item 1 of a 6-item list is already "within a page of the end"
+	# and the watcher cascades pages 3,4,... just from arriving. See load_cumulative(min_items=...).
+	from modules.settings import page_limit
+	return page_limit(True)
+
+# A genuine supersede always produces a NON-EMPTY different live label (the user typed more letters:
+# "av" -> "avenger"). An EMPTY live label means the search box just isn't readable right now -- focus
+# moved off the search window, e.g. into the modal scraping dialog (sources_results) -- NOT that the
+# query changed. Treating empty as "superseded" wrongly drops a legitimate build of the current query:
+# a watcher-driven pagination refresh that finishes while a scraping dialog is open would publish an
+# empty directory and make the whole search widget vanish. So empty live is never a supersede signal.
+def _live_supersedes(query, live):
+	return bool(live) and live != query
+
 def search_should_abort(query):
 	# Debounce gate, called BEFORE any skin-state change / TMDB / metadata work for a text-search build.
 	# Waits SEARCH_DEBOUNCE_MS, then returns True if the live search-box text no longer matches this
 	# build's query -- a newer keystroke has superseded it, so it should bail cheaply. An empty query or
-	# a non-search build (query is None) never debounces.
+	# a non-search build (query is None) never debounces; an empty/unreadable live label never aborts.
 	from modules.kodi_utils import sleep
 	if not query: return False
 	live = _search_live_query()
-	if live != query:
+	if _live_supersedes(query, live):
 		log('search_should_abort: superseded before wait query="%s" live="%s"' % (query, live))
 		return True
 	sleep(SEARCH_DEBOUNCE_MS)
 	live = _search_live_query()
-	if live != query:
+	if _live_supersedes(query, live):
 		log('search_should_abort: superseded after %sms query="%s" live="%s"' % (SEARCH_DEBOUNCE_MS, query, live))
 		return True
 	return False
 
 def search_is_stale(query):
 	# Post-build guard, called right before publishing (add_items/set_head). The build itself takes ~1s,
-	# so a newer keystroke may have arrived while it ran. If the live label no longer matches, do NOT
+	# so a newer keystroke may have arrived while it ran. If a NEWER query superseded this build, do NOT
 	# publish: stale results would overwrite the live container and corrupt the head/built bridge,
-	# jumping the widget to "item N".
+	# jumping the widget to "item N". An empty/unreadable live label is NOT a supersede (see
+	# _live_supersedes) -- otherwise a pagination refresh that completes while a modal dialog is open
+	# would skip publishing and blank the widget.
 	if not query: return False
 	live = _search_live_query()
-	if live != query:
+	if _live_supersedes(query, live):
 		log('search_is_stale: skip publish query="%s" live="%s"' % (query, live))
 		return True
 	return False
@@ -220,15 +245,24 @@ def _id_signature(item):
 		return tuple(sorted((k, str(v)) for k, v in item.items()))
 	return item
 
-def load_cumulative(fetch_page, pages_to_load):
-	# fetch_page(page_no) -> (ids: list, has_more: bool). Stops early when a page reports no more.
-	# Returns (concatenated_ids, has_more, last_loaded_page).
+def load_cumulative(fetch_page, pages_to_load, min_items=0):
+	# fetch_page(page_no) -> (ids: list, has_more: bool). Loads cumulative pages 1..N and stops early when a
+	# page reports no more. Normally stops at pages_to_load; when min_items > 0 (heavily-filtered text
+	# search, whose pages each yield only a few display items) it keeps fetching PAST pages_to_load until the
+	# accumulated count reaches min_items -- bounded by _FILL_PAGE_CAP extra pages. This hands back a full
+	# screen in a single build instead of letting the watcher discover the shortfall and cascade many tiny
+	# load-ahead refreshes just because item 1 of a short list already sits within the runway.
+	# Returns (concatenated_ids, has_more, last_loaded_page) -- last_page is the REAL count fetched, so the
+	# caller records it (set_state) and the watcher bumps the page count from reality, not from the request.
 	# De-duplicates across pages keeping the FIRST occurrence: "live" feeds (Trending/Popular) reorder
 	# between requests, so a title loaded on page N can resurface on a later page and would otherwise be
 	# shown twice. Dropping only the later (tail) duplicate keeps every already-shown item at its index,
 	# so the append-only invariant -- and the focus -- are preserved.
 	all_ids, seen, has_more, last_page = [], set(), False, 0
-	for page_no in range(1, pages_to_load + 1):
+	page_cap = pages_to_load + (_FILL_PAGE_CAP if min_items else 0)
+	page_no = 0
+	while page_no < page_cap:
+		page_no += 1
 		ids, has_more = fetch_page(page_no)
 		last_page = page_no
 		added = 0
@@ -239,6 +273,9 @@ def load_cumulative(fetch_page, pages_to_load):
 				seen.add(sig)
 				all_ids.append(item)
 				added += 1
-		log('load_cumulative page=%s items=%s new=%s has_more=%s (total so far=%s)' % (page_no, len(ids) if ids else 0, added, has_more, len(all_ids)))
+		log('load_cumulative page=%s items=%s new=%s has_more=%s (total so far=%s, min_items=%s)' % (page_no, len(ids) if ids else 0, added, has_more, len(all_ids), min_items))
 		if not has_more: break
+		# Past the requested pages, stop as soon as the fill target is met (min_items=0 -> stop exactly at
+		# pages_to_load, the legacy behavior for every non-search widget).
+		if page_no >= pages_to_load and len(all_ids) >= min_items: break
 	return all_ids, has_more, last_page

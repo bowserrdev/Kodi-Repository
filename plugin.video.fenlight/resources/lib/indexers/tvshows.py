@@ -73,8 +73,12 @@ class TVShows:
 				paginator.log('tvshows BUILD action=%s key=%s params=%s' % (self.action, paginator.short(self.pg_key),
 						{k: self.params.get(k) for k in ('mode', 'action', 'category_name', 'key_id', 'url', 'query') if self.params.get(k)}))
 				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch())
-				self.list, has_more, _last = paginator.load_cumulative(fetch_page, pages_to_load)
-				paginator.set_state(self.pg_key, pages_to_load, has_more)
+				# Filtered text searches yield only a few items per TMDB page; fill the first build to a full
+				# screen so the focus starts clear of the watcher's runway (no arrival-cascade). Other widgets
+				# pass min_items=0 and keep the exact page-count behavior.
+				min_items = paginator.search_fill_target() if self.search_query else 0
+				self.list, has_more, _last = paginator.load_cumulative(fetch_page, pages_to_load, min_items)
+				paginator.set_state(self.pg_key, _last, has_more)
 			elif self.action in main:
 				data = function(page_no)
 				self.list = [i['id'] for i in data['results']]
