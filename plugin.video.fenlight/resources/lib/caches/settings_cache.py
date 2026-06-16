@@ -216,7 +216,6 @@ default_settings = [
 #====================================FEATURES====================================#
 #================================================================================#
 #==================== Extras
-{'setting_id': 'extras.enable_extra_ratings', 'setting_type': 'boolean', 'setting_default': 'true'},
 {'setting_id': 'extras.enable_scrollbars', 'setting_type': 'boolean', 'setting_default': 'false'},
 #==================== Special Open Actions
 {'setting_id': 'media_open_action_movie', 'setting_type': 'action', 'setting_default': '0', 'settings_options': {'0': 'None', '1': 'Open Extras', '2': 'Open Movie Set', '3': 'Both'}},
@@ -295,9 +294,7 @@ default_settings = [
 #==================== TMDb
 {'setting_id': 'tmdb_api', 'setting_type': 'string', 'setting_default': tmdb_default_api},
 {'setting_id': 'meta_language', 'setting_type': 'string', 'setting_default': 'en'},
-{'setting_id': 'imdb_plot', 'setting_type': 'boolean', 'setting_default': 'false'},
-#==================== OMDb
-{'setting_id': 'omdb_api', 'setting_type': 'string', 'setting_default': 'empty_setting'},
+{'setting_id': 'imdb_data', 'setting_type': 'boolean', 'setting_default': 'false'},
 #==================== MDBList
 {'setting_id': 'mdblist_api', 'setting_type': 'string', 'setting_default': 'empty_setting'},
 #==================== External

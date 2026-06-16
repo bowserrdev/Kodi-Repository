@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from apis import tmdb_api
-from apis.imdb_api import imdb_plot
+from apis.imdb_api import imdb_data
 from caches.meta_cache import meta_cache
 from modules.settings import meta_language
 from modules.utils import jsondate_to_datetime, subtract_dates
@@ -60,6 +60,17 @@ def _make_studio_id(companies):
 	try: return next((i['id'] for i in companies if i['logo_path'] not in empty_value_check), companies[0]['id'])
 	except: return None
 
+def _merge_imdb_people(imdb_names, tmdb_people):
+	try:
+		by_key = {_name_key(p.get('name', '')): p for p in (tmdb_people or [])}
+		merged = []
+		for name in imdb_names[:3]:
+			match = by_key.get(_name_key(name))
+			if match: merged.append({'name': name, 'id': match.get('id', ''), 'thumbnail': match.get('thumbnail', '')})
+			else: merged.append({'name': name, 'id': '', 'thumbnail': ''})
+		return merged
+	except: return tmdb_people
+
 def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_time=None):
 	if id_type == 'trakt_dict':
 		if media_id.get('tmdb', None): id_type, media_id = 'tmdb_id', media_id['tmdb']
@@ -87,9 +98,10 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 		studio_id = None
 		mpaa, trailer, spoken_language = '', '', ''
 		tmdb_id, imdb_id = data_get('id', ''), data_get('imdb_id', '')
+		imdb_data_result = imdb_data(imdb_id, lang)
 		rating, votes = data_get('vote_average', ''), data_get('vote_count', '')
 		tagline, premiered = data_get('tagline', ''), data_get('release_date', '')
-		plot = imdb_plot(imdb_id, lang) or data_get('overview', '')
+		plot = imdb_data_result.get('plot') or data_get('overview', '')
 		poster_path = data_get('poster_path', '')
 		if poster_path: poster = tmdb_image_url % ('w780', poster_path)
 		else: poster = ''
@@ -204,13 +216,14 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 				'duration': duration, 'rootname': rootname, 'country': country, 'country_codes': country_codes, 'mpaa': mpaa,'writer': writer, 'all_trailers': all_trailers,
 				'director': director, 'directors': directors, 'writers': writers, 'alternative_titles': alternative_titles, 'plot': plot, 'studio': studio, 'extra_info': extra_info,
 				'mediatype': 'movie', 'tvdb_id': 'None', 'clearlogo': clearlogo, 'landscape': landscape, 'spoken_language': spoken_language, 'meta_language': lang}
-		try:
-			from modules.settings import omdb_api_key
-			_omdb_key = omdb_api_key()
-			if _omdb_key not in ('empty_setting', '') and imdb_id:
-				from apis.omdb_api import fetch_ratings_info
-				fetch_ratings_info(meta, _omdb_key)
-		except: pass
+		if imdb_data_result:
+			if imdb_data_result.get('rating'): meta['rating'] = imdb_data_result['rating']
+			if imdb_data_result.get('votes'): meta['votes'] = imdb_data_result['votes']
+			if imdb_data_result.get('year'): meta['year'] = str(imdb_data_result['year'])
+			if imdb_data_result.get('directors'): meta['director'] = imdb_data_result['directors'][:1]
+			if imdb_data_result.get('writers'): meta['writer'] = imdb_data_result['writers']
+			if imdb_data_result.get('directors'): meta['directors'] = _merge_imdb_people(imdb_data_result['directors'], meta.get('directors') or [])
+			if imdb_data_result.get('writers'): meta['writers'] = _merge_imdb_people(imdb_data_result['writers'], meta.get('writers') or [])
 		metacache_set('movie', id_type, meta, movie_expiry(current_date, meta), current_time)
 	except: pass
 	return meta
@@ -244,9 +257,10 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 		mpaa, trailer, spoken_language = '', '', ''
 		external_ids = data_get('external_ids')
 		tmdb_id, imdb_id, tvdb_id = data_get('id', ''), external_ids.get('imdb_id', ''), external_ids.get('tvdb_id', 'None')
+		imdb_data_result = imdb_data(imdb_id, lang)
 		rating, votes = data_get('vote_average', ''), data_get('vote_count', '')
 		tagline, premiered = data_get('tagline', ''), data_get('first_air_date', '')
-		plot = imdb_plot(imdb_id, lang) or data_get('overview', '')
+		plot = imdb_data_result.get('plot') or data_get('overview', '')
 		season_data, total_seasons = data_get('seasons'), data_get('number_of_seasons')
 		poster_path = data_get('poster_path', '')
 		if poster_path: poster = tmdb_image_url % ('w780', poster_path)
@@ -367,6 +381,14 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 				'country_codes': country_codes, 'writer': writer, 'director': director, 'directors': directors, 'writers': writers, 'all_trailers': all_trailers, 'cast': cast,
 				'studio': studio, 'extra_info': extra_info, 'total_aired_eps': total_aired_eps, 'mediatype': 'tvshow', 'total_seasons': total_seasons, 'tvshowtitle': title,
 				'status': status, 'clearlogo': clearlogo, 'landscape': landscape, 'spoken_language': spoken_language, 'meta_language': lang}
+		if imdb_data_result:
+			if imdb_data_result.get('rating'): meta['rating'] = imdb_data_result['rating']
+			if imdb_data_result.get('votes'): meta['votes'] = imdb_data_result['votes']
+			if imdb_data_result.get('year'): meta['year'] = str(imdb_data_result['year'])
+			if imdb_data_result.get('directors'): meta['director'] = imdb_data_result['directors'][:1]
+			if imdb_data_result.get('writers'): meta['writer'] = imdb_data_result['writers']
+			if imdb_data_result.get('directors'): meta['directors'] = _merge_imdb_people(imdb_data_result['directors'], meta.get('directors') or [])
+			if imdb_data_result.get('writers'): meta['writers'] = _merge_imdb_people(imdb_data_result['writers'], meta.get('writers') or [])
 		meta['original_language'] = data_get('original_language', '')
 		_is_anime = data_get('original_language', '') in ('ja', 'ko', 'zh')
 		_skyhook_seasons = get_skyhook_season_data(tvdb_id, season_data) if _is_anime else None
@@ -377,13 +399,6 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			meta['total_aired_eps'] = sum(s['episode_count'] for s in _skyhook_seasons if s['season_number'] > 0)
 			meta['tvdb_to_tmdb_ep'] = get_tvdb_to_tmdb_map(tvdb_id, season_data)
 			meta['tmdb_to_tvdb_ep'] = {v: k for k, v in meta['tvdb_to_tmdb_ep'].items()}
-		try:
-			from modules.settings import omdb_api_key
-			_omdb_key = omdb_api_key()
-			if _omdb_key not in ('empty_setting', '') and imdb_id:
-				from apis.omdb_api import fetch_ratings_info
-				fetch_ratings_info(meta, _omdb_key)
-		except: pass
 		metacache_set('tvshow', id_type, meta, tvshow_expiry(current_date, meta), current_time)
 	except: pass
 	return meta

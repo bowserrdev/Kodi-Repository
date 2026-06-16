@@ -26,26 +26,52 @@ people_search_url = 'https://sg.media-imdb.com/suggests/%s/%s.json'
 timeout = 10.0
 session = make_session('https://')
 
-def imdb_plot(imdb_id, lang):
-	if get_setting('fenlight.imdb_plot') != 'true': return ''
-	if not imdb_id or imdb_id == 'tt0000000': return ''
+def imdb_data(imdb_id, lang):
+	if get_setting('fenlight.imdb_data') != 'true': return {}
+	if not imdb_id or imdb_id == 'tt0000000': return {}
 	ietf_lang = '%s-%s' % (lang, lang.upper())
-	string = 'imdb_plot_%s_%s' % (lang, imdb_id)
+	string = 'imdb_data_%s_%s' % (lang, imdb_id)
 	params = {'imdb_id': imdb_id, 'lang': ietf_lang}
 	return cache_object(get_imdb_graphql, string, params, False, 720)
 
 def get_imdb_graphql(params):
+	data = {}
 	try:
 		query = {
-			'query': 'query GetPlot($id: ID!) { title(id: $id) { plot { plotText { plainText } } } }',
+			'query': 'query GetData($id: ID!) { title(id: $id) { plot { plotText { plainText } } ratingsSummary { aggregateRating voteCount } releaseYear { year } '
+					 'directors: credits(first: 5, filter: { categories: ["director"] }) { edges { node { name { nameText { text } } } } } '
+					 'writers: credits(first: 5, filter: { categories: ["writer"] }) { edges { node { name { nameText { text } } } } } } }',
 			'variables': {'id': params['imdb_id']}
 		}
 		graphql_headers = {'Content-Type': 'application/json', 'User-Agent': headers['User-Agent'], 'X-Imdb-User-Language': params['lang']}
 		r = session.post(graphql_url, json=query, headers=graphql_headers, timeout=timeout)
-		if r.status_code == 200:
-			return r.json()['data']['title']['plot']['plotText']['plainText']
+		if r.status_code != 200: return data
+		title = r.json()['data']['title']
+		try:
+			plot = title['plot']['plotText']['plainText']
+			if plot: data['plot'] = plot
+		except: pass
+		try:
+			ratings = title['ratingsSummary']
+			if ratings.get('aggregateRating'): data['rating'] = ratings['aggregateRating']
+			if ratings.get('voteCount'): data['votes'] = ratings['voteCount']
+		except: pass
+		try:
+			year = title['releaseYear']['year']
+			if year: data['year'] = year
+		except: pass
+		try:
+			directors = [e['node']['name']['nameText']['text'] for e in title['directors']['edges']]
+			directors = list(dict.fromkeys([n for n in directors if n]))
+			if directors: data['directors'] = directors
+		except: pass
+		try:
+			writers = [e['node']['name']['nameText']['text'] for e in title['writers']['edges']]
+			writers = list(dict.fromkeys([n for n in writers if n]))
+			if writers: data['writers'] = writers
+		except: pass
 	except: pass
-	return ''
+	return data
 
 
 def imdb_more_like_this(imdb_id):

@@ -583,15 +583,6 @@
                       </item>
                       <item>
                           <visible>Container(2000).HasFocus(20)</visible>
-                          <visible>!String.IsEqual(Window(10000).Property(fenlight.omdb_api),empty_setting)</visible>
-                          <property name="setting_label">Enable Extra Ratings</property>
-                          <property name="setting_type">boolean</property>
-                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.extras.enable_extra_ratings)]</property>
-                          <property name="setting_description">Enable this and the Extras menu will show ratings from more services than just TMDb. Must have a valid OMDb API assigned in the Accounts settings for this to show</property>
-                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_boolean&amp;setting_id=extras.enable_extra_ratings)</onclick>
-                      </item>
-                      <item>
-                          <visible>Container(2000).HasFocus(20)</visible>
                           <property name="setting_label">Enable Scrollbars for Extras Lists</property>
                           <property name="setting_type">boolean</property>
                           <property name="setting_value">$INFO[Window(10000).Property(fenlight.extras.enable_scrollbars)]</property>
@@ -1159,26 +1150,11 @@
                       </item>
                       <item>
                           <visible>Container(2000).HasFocus(50)</visible>
-                          <property name="setting_label">Use IMDb for Plot</property>
+                          <property name="setting_label">Use IMDb for Data</property>
                           <property name="setting_type">boolean</property>
-                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.imdb_plot)]</property>
-                          <property name="setting_description">Enable this and Fen Light will fetch plot descriptions from IMDb instead of TMDb. Requires one additional network call per item on cold start. After changing, clear the Meta Cache from Tools</property>
-                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_boolean&amp;setting_id=imdb_plot)</onclick>
-                      </item>
-        <!-- OMDb -->
-                      <item>
-                          <visible>Container(2000).HasFocus(50)</visible>
-                          <property name="setting_label">OMDb</property>
-                          <property name="setting_type">separator</property>
-                          <onclick>noop</onclick>
-                      </item>
-                      <item>
-                          <visible>Container(2000).HasFocus(50)</visible>
-                          <property name="setting_label">API Key</property>
-                          <property name="setting_type">numeric</property>
-                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.omdb_api)]</property>
-                          <property name="setting_description">Enter here your OMDb API key. This will allow you to utilize extra ratings information in Fen Lights Extras window</property>
-                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_string&amp;setting_id=omdb_api)</onclick>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.imdb_data)]</property>
+                          <property name="setting_description">Enable this and Fen Light will fetch plot, director, writer, release year and rating from IMDb instead of TMDb (TMDb is kept as fallback). Requires one additional network call per item on cold start. After changing, clear the Meta Cache from Tools</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_boolean&amp;setting_id=imdb_data)</onclick>
                       </item>
         <!-- MDBList -->
                       <item>
