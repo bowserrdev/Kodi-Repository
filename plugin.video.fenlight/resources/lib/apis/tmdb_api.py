@@ -652,3 +652,26 @@ def get_tmdb(url):
 	try: response = session.get(url, timeout=timeout)
 	except: response = None
 	return response
+
+def streaming_available(media_type, tmdb_id, country, api_key):
+	# Used by the widget "dubbed content" filter (the streaming half of its OR check). Returns:
+	#   True  -> the title is on at least one platform (TMDb/JustWatch) in `country`
+	#   False -> conclusively NOT on any platform in `country`
+	#   None  -> network/parse/API error: INCONCLUSIVE (caller fails open + does not cache).
+	# TMDb's watch/providers lists a country under `results` ONLY when it has providers there, so the mere
+	# presence of the country key (with any flatrate/free/ads/rent/buy bucket) means it's available -- where
+	# exactly is irrelevant. A country with no providers is simply absent from `results`.
+	media = 'tv' if media_type in ('tvshow', 'tv', 'episode') else 'movie'
+	country = country.upper()
+	url = '%s/%s/%s/watch/providers?api_key=%s' % (base_url, media, tmdb_id, api_key)
+	try:
+		response = session.get(url, timeout=timeout)
+		if response is None: return None
+		data = response.json()
+	except: return None
+	if not isinstance(data, dict) or data.get('success') is False: return None
+	results = data.get('results')
+	if results is None: return None
+	country_data = results.get(country)
+	if not country_data: return False
+	return any(country_data.get(bucket) for bucket in ('flatrate', 'free', 'ads', 'rent', 'buy'))

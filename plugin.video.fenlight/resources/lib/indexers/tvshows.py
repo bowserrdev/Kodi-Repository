@@ -3,7 +3,7 @@ import sys
 from modules import meta_lists
 from modules import kodi_utils, settings
 from modules import paginator
-from modules.metadata import tvshow_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url
+from modules.metadata import tvshow_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url, dub_filter
 from modules.utils import manual_function_import, get_datetime, make_thread_list_enumerate, make_thread_list_multi_arg, get_current_timestamp, paginate_list
 from modules.watched_status import get_database, watched_info_tvshow, get_watched_status_tvshow, get_progress_status_tvshow
 # logger = kodi_utils.logger
@@ -30,6 +30,10 @@ trakt_special = ('trakt_tv_certifications', 'trakt_anime_certifications')
 trakt_personal = ('trakt_collection', 'trakt_watchlist', 'trakt_collection_lists', 'trakt_watchlist_lists', 'trakt_favorites')
 view_mode, content_type = 'view.tvshows', 'tvshows'
 internal_nav_check = ('build_season_list', 'build_episode_list')
+# Actions the "dubbed content" filter must NEVER touch: the user's own personal lists (in-progress,
+# watched, favorites, Trakt collection/watchlist/favorites). Everything else (tmdb/trakt/anime discovery,
+# searches) is filtered. continue_watching / next-episode bypass this path (they call worker() directly).
+dub_filter_excluded = set(personal) | set(trakt_personal)
 
 class TVShows:
 	def __init__(self, params):
@@ -65,6 +69,8 @@ class TVShows:
 			try: function = manual_function_import(var_module, import_function)
 			except: pass
 			fetch_page = self.build_fetch_page(function) if (paginator.interactive_enabled() and self.is_external and not is_random) else None
+			if fetch_page and settings.dub_filter_enabled() and self.action not in dub_filter_excluded:
+				fetch_page = self._apply_dub_filter(fetch_page)
 			paginator.log('tvshows fetch_list action=%s is_home=%s is_external=%s random=%s setting=%s -> interactive=%s' %
 						(self.action, self.is_home, self.is_external, is_random, paginator.interactive_enabled(), bool(fetch_page)))
 			if fetch_page:
@@ -270,6 +276,20 @@ class TVShows:
 			if self.is_home: self.paginate_start = limit
 		else: total_pages = 1
 		return data, total_pages
+
+	def _apply_dub_filter(self, fetch_page):
+		# Wraps an interactive fetch_page so each page's ids are filtered to those with a localised release
+		# (streaming or home video) in the chosen language's country. Applied per page so the paginator's
+		# fill (min_items) keeps loading until a full screen of survivors is gathered. self.id_type is read
+		# here (after build_fetch_page has set it, e.g. 'trakt_dict' for Trakt lists) so meta resolves right.
+		country = settings.dub_filter_country()
+		if not country: return fetch_page
+		api_key, mpaa, cdate, ctime = tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp()
+		def wrapped(page_no):
+			ids, has_more = fetch_page(page_no)
+			ids = dub_filter('tvshow', self.id_type, ids, country, api_key, mpaa, cdate, ctime)
+			return ids, has_more
+		return wrapped
 
 	def build_fetch_page(self, function):
 		# Returns fetch_page(page_no) -> (ids, has_more) for interactive (cumulative) widget pagination,

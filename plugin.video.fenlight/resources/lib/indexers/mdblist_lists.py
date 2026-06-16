@@ -4,6 +4,7 @@ from threading import Thread
 from apis.mdblist_api import mdblist_get_my_lists, mdblist_get_list_contents
 from indexers.movies import Movies
 from indexers.tvshows import TVShows
+from indexers.trakt_lists import _dub_filter_items, _dub_paginate
 from modules import kodi_utils
 from modules import paginator
 from modules.utils import paginate_list
@@ -67,16 +68,18 @@ def build_mdblist_list(params):
 		if interactive:
 			pg_key = paginator.make_key(params)
 			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch())
-			cut = pages_to_load * page_limit(True)
-			process_list = result[:cut]
-			has_more = len(result) > cut
-			paginator.log('mdblist BUILD key=%s pages=%s cut=%s shown=%s has_more=%s' %
-						(paginator.short(pg_key), pages_to_load, cut, len(process_list), has_more))
-			paginator.set_state(pg_key, pages_to_load, has_more)
+			# Fill past the requested window when the dub filter thins the list (see _dub_paginate).
+			# process_list is already dub-filtered here -> no second _dub_filter_items.
+			process_list, pages_consumed, has_more = _dub_paginate(result, pages_to_load, is_external)
+			paginator.log('mdblist BUILD key=%s pages=%s consumed=%s shown=%s has_more=%s' %
+						(paginator.short(pg_key), pages_to_load, pages_consumed, len(process_list), has_more))
+			paginator.set_state(pg_key, pages_consumed, has_more)
+			all_movies = [i for i in process_list if i['type'] == 'movie']
+			all_tvshows = [i for i in process_list if i['type'] == 'show']
 		else:
 			process_list, total_pages, paginate_start = _paginate_list(result, page_no, paginate_start)
-		all_movies = [i for i in process_list if i['type'] == 'movie']
-		all_tvshows = [i for i in process_list if i['type'] == 'show']
+			all_movies = _dub_filter_items([i for i in process_list if i['type'] == 'movie'], 'movie', is_external)
+			all_tvshows = _dub_filter_items([i for i in process_list if i['type'] == 'show'], 'tvshow', is_external)
 		movie_list = {'list': [(i['order'], i['media_ids']) for i in all_movies], 'id_type': 'trakt_dict', 'custom_order': 'true'}
 		tvshow_list = {'list': [(i['order'], i['media_ids']) for i in all_tvshows], 'id_type': 'trakt_dict', 'custom_order': 'true'}
 		content = max([('movies', len(all_movies)), ('tvshows', len(all_tvshows))], key=lambda k: k[1])[0]

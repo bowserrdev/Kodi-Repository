@@ -17,6 +17,27 @@ tmdb_image_url, youtube_url, date_format = 'https://image.tmdb.org/t/p/%s%s', 'p
 EXPIRES_1_DAYS, EXPIRES_4_DAYS, EXPIRES_7_DAYS, EXPIRES_14_DAYS, EXPIRES_30_DAYS, EXPIRES_182_DAYS = 24, 96, 168, 336, 720, 4368
 invalid_error_codes = (6, 34, 37)
 
+# Diagnostic logging for the widget "dubbed content" filter. Grep the Kodi log for FENLIGHT_DUB.
+DUB_DEBUG = False
+def _dub_log(msg):
+	if not DUB_DEBUG: return
+	try:
+		import xbmc
+		xbmc.log('### FENLIGHT_DUB ### %s' % msg, 1)
+	except: pass
+
+# A title released (in cinemas) within this many days may have only an ANNOUNCED / pre-order home-video
+# listing on blu-ray.com, not one actually on sale. For such titles the blu-ray check is asked to verify
+# the release is really out (extra heavy fetches); older titles skip that, so the cost stays rare.
+DUB_RECENT_DAYS = 120
+def _is_recent_release(premiered, current_date):
+	if not premiered: return False
+	try:
+		pdate = jsondate_to_datetime(premiered, '%Y-%m-%d', True)
+		if not pdate: return False
+		return (current_date - pdate).days <= DUB_RECENT_DAYS
+	except: return False
+
 def _has_cjk(value):
 	try:
 		return any(('\u3040' <= i <= '\u30ff') or ('\u3400' <= i <= '\u9fff') or ('\uac00' <= i <= '\ud7af') for i in value)
@@ -136,6 +157,74 @@ def discover_filter_sort(media_type, ids, imdb_sort, min_rating, api_key, mpaa_r
 	if imdb_sort in ('asc', 'desc'):
 		survivors.sort(key=lambda item: _rating_sort_key(item[1]), reverse=(imdb_sort == 'desc'))
 	return [item[0] for item in survivors]
+
+def dub_filter(media_type, id_type, ids, country, api_key, mpaa_region, current_date, current_time):
+	# Widget "dubbed content" filter. Keeps only ids with a localised release in `country`: present on a
+	# streaming platform (TMDb/JustWatch) OR on home video (blu-ray.com) -- the heuristic for "a dubbed
+	# edition probably exists". Mirrors discover_filter_sort: resolve each id's meta threaded (movie_meta/
+	# tvshow_meta cache it, so the indexer's later build is a cache hit and pays no extra network), then
+	# decide per item. ORDER IS PRESERVED (append-only invariant for the interactive paginator).
+	#
+	# Per item: dub_cache hit -> instant, 0 network. Miss -> cheap streaming check first; ONLY if not on
+	# streaming do we fall back to the slower blu-ray.com home-video check (the short-circuit that keeps
+	# blu-ray calls rare). The combined verdict is cached with asymmetric TTL (see dub_cache). INCONCLUSIVE
+	# lookups (network errors from either source) FAIL OPEN -- the item is kept and NOT cached, so it is
+	# retried on the next build rather than wrongly hidden.
+	if not country or not ids: return ids
+	keep = dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, current_date, current_time)
+	return [ids[i] for i in range(len(ids)) if keep[i]]
+
+def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, current_date, current_time):
+	# Same evaluation as dub_filter but returns a parallel list[bool] (True == keep) instead of the filtered
+	# ids. Used by builders that carry per-item objects alongside the ids (Trakt/MDbList lists, which pass
+	# {'media_ids':...} dicts to worker) so they can drop the matching items. See dub_filter for the logic.
+	if not country or not ids: return [True] * len(ids)
+	from caches.dub_cache import dub_cache
+	from apis.bluray_api import has_home_video_release
+	meta_func = movie_meta if media_type == 'movie' else tvshow_meta
+	# Default True == keep, so any unevaluated/errored/inconclusive item survives (fail open).
+	keep = [True] * len(ids)
+	def _evaluate(index):
+		try:
+			meta = meta_func(id_type, ids[index], api_key, mpaa_region, current_date, current_time)
+			if not meta or meta.get('blank_entry'):
+				_dub_log('item idx=%s no-meta -> KEEP (fail open)' % index); return
+			tmdb_id = meta.get('tmdb_id')
+			title_dbg = meta.get('english_title') or meta.get('original_title') or meta.get('title')
+			if not tmdb_id:
+				_dub_log('item "%s" no-tmdb_id -> KEEP (fail open)' % title_dbg); return
+			cached = dub_cache.get_availability(country, media_type, tmdb_id)
+			if cached is not None:
+				keep[index] = cached
+				_dub_log('item "%s" tmdb=%s CACHE -> %s' % (title_dbg, tmdb_id, 'KEEP' if cached else 'DROP')); return
+			streaming = tmdb_api.streaming_available(media_type, tmdb_id, country, api_key)
+			if streaming is True:
+				dub_cache.set_availability(country, media_type, tmdb_id, True)
+				_dub_log('item "%s" tmdb=%s STREAMING -> KEEP' % (title_dbg, tmdb_id)); return
+			if streaming is None:
+				_dub_log('item "%s" tmdb=%s streaming INCONCLUSIVE -> KEEP (fail open)' % (title_dbg, tmdb_id)); return
+			# Not on streaming -> home-video fallback. blu-ray.com wants the IMDb title/year; we use the
+			# IMDb release year (already merged into meta) and the English/original title as the closest
+			# proxy for the IMDb title (blu-ray.com indexes international/original titles).
+			title = meta.get('english_title') or meta.get('original_title') or meta.get('title')
+			year = meta.get('imdb_year') or meta.get('year')
+			# Recently-released titles: verify the blu-ray.com listing is actually on sale, not just an
+			# announced/pre-order edition (which doesn't mean a dubbed copy is available yet).
+			verify = _is_recent_release(meta.get('premiered'), current_date)
+			home_video = has_home_video_release(title, year, country, verify_released=verify)
+			if home_video is None:
+				_dub_log('item "%s" tmdb=%s bluray("%s" %s verify=%s) INCONCLUSIVE -> KEEP (fail open)' % (title_dbg, tmdb_id, title, year, verify)); return
+			available = bool(home_video)
+			dub_cache.set_availability(country, media_type, tmdb_id, available)
+			keep[index] = available
+			_dub_log('item "%s" tmdb=%s no-streaming, bluray("%s" %s verify=%s)=%s -> %s' % (title_dbg, tmdb_id, title, year, verify, available, 'KEEP' if available else 'DROP'))
+		except Exception as e:
+			_dub_log('item idx=%s EXCEPTION %s -> KEEP (fail open)' % (index, e))
+	_dub_log('dub_filter START media=%s id_type=%s country=%s items=%s' % (media_type, id_type, country, len(ids)))
+	make_thread_list(_evaluate, range(len(ids)))
+	dropped = sum(1 for k in keep if not k)
+	_dub_log('dub_filter END media=%s in=%s out=%s (dropped %s)' % (media_type, len(ids), len(ids) - dropped, dropped))
+	return keep
 
 def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_time=None):
 	if id_type == 'trakt_dict':

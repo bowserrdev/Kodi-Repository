@@ -3,7 +3,7 @@ import sys
 from modules import meta_lists
 from modules import kodi_utils, settings
 from modules import paginator
-from modules.metadata import movie_meta, movieset_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url
+from modules.metadata import movie_meta, movieset_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url, dub_filter
 from modules.utils import manual_function_import, get_datetime, make_thread_list_enumerate, make_thread_list_multi_arg, get_current_timestamp, paginate_list, jsondate_to_datetime
 from modules.watched_status import get_database, watched_info_movie, get_watched_status_movie, get_bookmarks_movie, get_progress_status_movie
 logger = kodi_utils.logger
@@ -29,6 +29,11 @@ trakt_personal = ('trakt_collection', 'trakt_watchlist', 'trakt_collection_lists
 meta_list_dict = {'tmdb_movies_languages': meta_lists.languages, 'tmdb_movies_providers': meta_lists.watch_providers_movies, 'tmdb_movies_year': meta_lists.years_movies,
 			'tmdb_movies_decade': meta_lists.decades_movies, 'tmdb_movies_certifications': meta_lists.movie_certifications, 'tmdb_movies_genres': meta_lists.movie_genres}
 view_mode, content_type = 'view.movies', 'movies'
+# Actions the "dubbed content" filter must NEVER touch: the user's own personal lists (in-progress,
+# watched, favorites, Trakt collection/watchlist/favorites). Everything else (tmdb/trakt discovery,
+# searches, discover) is filtered. continue_watching / next-episode bypass this path entirely (they call
+# worker() directly, not fetch_page), so they're excluded automatically.
+dub_filter_excluded = set(personal) | set(trakt_personal)
 
 class Movies:
 	def __init__(self, params):
@@ -60,6 +65,8 @@ class Movies:
 			try: function = manual_function_import(var_module, import_function)
 			except: pass
 			fetch_page = self.build_fetch_page(function) if (paginator.interactive_enabled() and self.is_external) else None
+			if fetch_page and settings.dub_filter_enabled() and self.action not in dub_filter_excluded:
+				fetch_page = self._apply_dub_filter(fetch_page)
 			paginator.log('movies fetch_list action=%s is_home=%s is_external=%s setting=%s -> interactive=%s' %
 						(self.action, self.is_home, self.is_external, paginator.interactive_enabled(), bool(fetch_page)))
 			if fetch_page:
@@ -269,6 +276,21 @@ class Movies:
 			if self.is_home: self.paginate_start = limit
 		else: total_pages = 1
 		return data, total_pages
+
+	def _apply_dub_filter(self, fetch_page):
+		# Wraps an interactive fetch_page so each page's ids are filtered to those with a localised release
+		# (streaming or home video) in the chosen language's country. Applied per page so the paginator's
+		# fill (min_items) keeps loading until a full screen of survivors is gathered -- same model the
+		# advanced-search re-qualification (discover_filter_sort) relies on. self.id_type is read here (after
+		# build_fetch_page has set it, e.g. 'trakt_dict' for Trakt lists) so meta resolves correctly.
+		country = settings.dub_filter_country()
+		if not country: return fetch_page
+		api_key, mpaa, cdate, ctime = tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp()
+		def wrapped(page_no):
+			ids, has_more = fetch_page(page_no)
+			ids = dub_filter('movie', self.id_type, ids, country, api_key, mpaa, cdate, ctime)
+			return ids, has_more
+		return wrapped
 
 	def build_fetch_page(self, function):
 		# Returns fetch_page(page_no) -> (ids, has_more) for interactive (cumulative) widget pagination,
