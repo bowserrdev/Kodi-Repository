@@ -694,6 +694,23 @@
                           <property name="setting_description">Enable this and the "Next Page" item will be hidden in Fen Light widgets</property>
                           <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_boolean&amp;setting_id=widget_hide_next_page)</onclick>
                       </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(30)</visible>
+                          <property name="setting_label">Filter Widgets by Dubbed Availability</property>
+                          <property name="setting_type">boolean</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.dub_filter.enabled)]</property>
+                          <property name="setting_description">Enable this and Fen Light will hide widget items that are not released (on streaming platforms or home video) in the chosen language's country. Useful if you only want content likely to have a dubbed edition. Personal lists (Continue Watching, Next Episodes, Watchlist, Collection, Favorites) are never filtered.</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_boolean&amp;setting_id=dub_filter.enabled)</onclick>
+                      </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(30)</visible>
+                          <visible>String.IsEqual(Window(10000).Property(fenlight.dub_filter.enabled),true)</visible>
+                          <property name="setting_label">    - Language</property>
+                          <property name="setting_type">action</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.dub_filter.language_name)]</property>
+                          <property name="setting_description">Choose the language whose country is used to check streaming and home-video availability for the dubbed-content filter</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_from_list&amp;setting_id=dub_filter.language)</onclick>
+                      </item>
         <!-- General -->
                       <item>
                           <visible>Container(2000).HasFocus(30)</visible>

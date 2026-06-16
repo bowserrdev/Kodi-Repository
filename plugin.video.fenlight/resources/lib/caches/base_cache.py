@@ -25,14 +25,16 @@ debridcache_db = translatePath(path_join(database_path_raw, 'debridcache.db'))
 external_db = translatePath(path_join(database_path_raw, 'external.db'))
 settings_db = translatePath(path_join(database_path_raw, 'settings.db'))
 episode_groups_db = translatePath(path_join(database_path_raw, 'episode_groups.db'))
+dub_db = translatePath(path_join(database_path_raw, 'dub.db'))
 
 database_timeout = 20
 current_dbs = ('navigator.db', 'watched.db', 'favourites.db', 'traktcache.db', 'maincache.db', 'lists.db',
-				'discover.db', 'metacache.db', 'debridcache.db', 'external.db', 'settings.db', 'episode_groups.db')
+				'discover.db', 'metacache.db', 'debridcache.db', 'external.db', 'settings.db', 'episode_groups.db', 'dub.db')
 database_locations = {
 	'navigator_db': navigator_db, 'watched_db': watched_db, 'favorites_db': favorites_db, 'settings_db': settings_db,
 	'trakt_db': trakt_db, 'maincache_db': maincache_db, 'metacache_db': metacache_db, 'debridcache_db': debridcache_db,
-	'lists_db': lists_db, 'discover_db': discover_db, 'external_db': external_db, 'episode_groups_db': episode_groups_db
+	'lists_db': lists_db, 'discover_db': discover_db, 'external_db': external_db, 'episode_groups_db': episode_groups_db,
+	'dub_db': dub_db
 }
 integrity_check = {
 	'settings_db': ('settings',),
@@ -46,7 +48,8 @@ integrity_check = {
 	'discover_db': ('discover',),
 	'debridcache_db': ('debrid_data',),
 	'external_db': ('results_data',),
-	'episode_groups_db': ('groups_data',)
+	'episode_groups_db': ('groups_data',),
+	'dub_db': ('dubcache',)
 }
 table_creators = {
 	'navigator_db': (
@@ -86,7 +89,9 @@ table_creators = {
 	'discover_db': (
 		'CREATE TABLE IF NOT EXISTS discover (id text not null unique, db_type text not null, data text)',),
 	'episode_groups_db': (
-		'CREATE TABLE IF NOT EXISTS groups_data (tmdb_id text not null unique, data text)',)
+		'CREATE TABLE IF NOT EXISTS groups_data (tmdb_id text not null unique, data text)',),
+	'dub_db': (
+		'CREATE TABLE IF NOT EXISTS dubcache (id text unique, data text, expires integer)',)
 }
 
 media_prop = 'fenlight.%s'
@@ -260,6 +265,10 @@ def clear_cache(cache_type, silent=False):
 		if not _confirm(): return
 		from caches.lists_cache import lists_cache
 		success = lists_cache.delete_all_lists()
+	elif cache_type == 'dub':
+		if not _confirm(): return
+		from caches.dub_cache import dub_cache
+		success = dub_cache.delete_all()
 	else:  # main
 		if not _confirm(): return
 		from caches.main_cache import main_cache
@@ -275,7 +284,7 @@ def clear_all_cache():
 	caches = (
 		('meta', 'Meta Cache'), ('internal_scrapers', 'Internal Scrapers Cache'),
 		('external_scrapers', 'External Scrapers Cache'), ('trakt', 'Trakt Cache'),
-		('imdb', 'IMDb Cache'), ('list', 'List Data Cache'), ('main', 'Main Cache'),
+		('imdb', 'IMDb Cache'), ('list', 'List Data Cache'), ('dub', 'Dubbed Filter Cache'), ('main', 'Main Cache'),
 		('pm_cloud', 'Premiumize Cloud'), ('rd_cloud', 'Real Debrid Cloud'),
 		('ad_cloud', 'All Debrid Cloud'), ('oc_cloud', 'OffCloud Cloud'),
 		('ed_cloud', 'Easy Debrid Cloud'), ('tb_cloud', 'TorBox Cloud')

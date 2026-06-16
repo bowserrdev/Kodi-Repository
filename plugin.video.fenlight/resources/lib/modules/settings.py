@@ -305,6 +305,23 @@ def widget_hide_next_page():
 def widget_hide_watched():
 	return get_setting('fenlight.widget_hide_watched', 'false') == 'true'
 
+# Widget "dubbed content" filter: keep only items released (streaming or home video) in the chosen
+# language's primary country, so users who only want likely-dubbed content aren't shown unlocalised titles.
+dub_filter_country_dict = {'it': 'IT'}
+
+def dub_filter_enabled():
+	return get_setting('fenlight.dub_filter.enabled', 'false') == 'true'
+
+def dub_filter_language():
+	lang = get_setting('fenlight.dub_filter.language', 'it')
+	if not lang or lang in ('empty_setting', ''): return 'it'
+	return lang.lower().strip()
+
+def dub_filter_country():
+	# Primary country for the chosen language (e.g. it -> IT). Both TMDb watch/providers and blu-ray.com
+	# are country-keyed; for multi-country languages we only check this primary country (see step notes).
+	return dub_filter_country_dict.get(dub_filter_language(), '')
+
 def calendar_sort_order():
 	return int(get_setting('fenlight.trakt.calendar_sort_order', '0'))
 

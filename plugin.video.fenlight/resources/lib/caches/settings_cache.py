@@ -235,6 +235,8 @@ default_settings = [
 {'setting_id': 'widget_refresh_notification', 'setting_type': 'boolean', 'setting_default': 'true'},
 {'setting_id': 'widget_hide_watched', 'setting_type': 'boolean', 'setting_default': 'false'},
 {'setting_id': 'widget_hide_next_page', 'setting_type': 'boolean', 'setting_default': 'false'},
+{'setting_id': 'dub_filter.enabled', 'setting_type': 'boolean', 'setting_default': 'false'},
+{'setting_id': 'dub_filter.language', 'setting_type': 'action', 'setting_default': 'it', 'settings_options': {'it': 'Italiano'}},
 #==================== General
 {'setting_id': 'paginate.lists', 'setting_type': 'action', 'setting_default': '0', 'settings_options': {'0': 'Off', '1': 'Within Addon Only', '2': 'Widgets Only', '3': 'Both'}},
 {'setting_id': 'paginate.limit_addon', 'setting_type': 'action', 'setting_default': '20'},
