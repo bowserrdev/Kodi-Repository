@@ -86,16 +86,19 @@ def lookahead_pages():
 	return max(1, value)
 
 # Hard ceiling on the EXTRA raw pages a fill (see load_cumulative min_items) may fetch beyond the
-# requested count. A sparse query -- one whose results are mostly filtered out server-side -- must not be
-# able to spin through dozens of TMDB pages chasing the target; it just hands back whatever it gathered.
-_FILL_PAGE_CAP = 6
+# requested count. A sparse query -- one whose results are mostly filtered out (server-side for text
+# search, post-build for advanced search) -- must not spin through dozens of TMDB pages chasing the
+# target; it just hands back whatever it gathered. Generous because advanced search re-qualifies pages
+# against IMDb (votes>=1000 + non-film removal) and can discard most of an early vote_average.desc page.
+_FILL_PAGE_CAP = 12
 
-def search_fill_target():
-	# Filtered text-search pages apply the vote_count/release-date gates server-side, so each TMDB page
-	# yields only a handful of display items -- far short of a normal widget page. The FIRST build fills up
-	# to this many items so the initial screen is full and the focus starts well clear of the watcher's
-	# load-ahead runway. Otherwise landing on item 1 of a 6-item list is already "within a page of the end"
-	# and the watcher cascades pages 3,4,... just from arriving. See load_cumulative(min_items=...).
+def fill_target():
+	# Filtered pages (text search server-side; advanced search post-build against IMDb) yield only a
+	# handful of display items -- far short of a normal widget page. Every build fills up to this many
+	# items so the initial screen is full and the focus starts well clear of the watcher's load-ahead
+	# runway. Otherwise landing on item 1 of a 6-item list is already "within a page of the end" and the
+	# watcher cascades pages 3,4,... just from arriving. Neutral for unfiltered widgets (a single page
+	# already meets the target). See load_cumulative(min_items=...).
 	from modules.settings import page_limit
 	return page_limit(True)
 
