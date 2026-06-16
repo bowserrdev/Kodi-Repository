@@ -160,6 +160,7 @@ class WidgetPaginator:
 		get_infolabel = xbmc.getInfoLabel
 		pending = {}  # key -> time the loading flag was set, to self-heal a build that never finishes
 		stuck_timeout = 8
+		last_current = {}  # key -> last observed focus index, so we load ahead on real downward movement only
 		last_log = None  # dedup: only log when the observed state actually changes
 		def log_change(state):
 			nonlocal last_log
@@ -214,13 +215,22 @@ class WidgetPaginator:
 							paginator.log('watcher STUCK loading flag cleared key=%s after %ss' % (paginator.short(key), stuck_timeout))
 					else:
 						pending.pop(key, None)
+						# (d) Only load ahead on genuine DOWNWARD movement, never on arrival. The first time a
+						# widget is seen we just record its focus index (moved=False) so merely landing on it --
+						# or on item 1 of a short list that already sits within the runway -- can't trigger a load.
+						# A load fires only once the user actually scrolls toward the end (current increases);
+						# staying put or scrolling up never does. This is what keeps a freshly-opened search from
+						# auto-paginating, and stops a just-loaded page (numitems grows, current unchanged) from
+						# immediately re-firing.
+						moved = current > last_current.get(key, current)
+						last_current[key] = current
 						# Load ahead only when (a) more pages exist, (b) the focus is within one page of the
 						# end of the VISIBLE items, and (c) the container has caught up to everything already
 						# built (numitems >= built). Gate (c) is the anti-runaway: while a just-loaded page
 						# hasn't surfaced yet -- Kodi coalesces the soft widget refreshes, so NumItems lags the
 						# real build -- we wait instead of piling up loads. An empty filtered page leaves
 						# built == numitems, so heavily-filtered searches still keep advancing.
-						if hasmore and numitems - current <= runway and numitems >= built:
+						if hasmore and numitems - current <= runway and numitems >= built and moved:
 							pages = paginator.raw_pages(key, paginator.initial_batch())
 							window.setProperty(paginator.LOADING_PROP % key, 'true')
 							window.setProperty(paginator.PAGES_PROP % key, str(pages + 1))
