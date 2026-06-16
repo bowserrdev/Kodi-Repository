@@ -135,6 +135,7 @@ class BlurService:
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		pause_string = 'fenlight.pause_services'
 		last_source, last_container, failed = None, '', {}
+		empty_streak, fallback_threshold = 0, 4
 		_cleanup()
 		while not monitor.abortRequested():
 			if wait_for_abort(0.3): break
@@ -151,8 +152,33 @@ class BlurService:
 				# fallback viola: se non risolviamo nulla congeliamo, senza cancellare la landscape.
 				source = self._resolve(spec, container=last_container, use_focused=False)
 			else:
-				last_container = xbmc.getInfoLabel('Window.Property(TMDbHelper.WidgetContainer)')
-				source = self._resolve(spec, container=last_container) or home_window.getProperty('TMDbHelper.Blur.Fallback')
+				cont = xbmc.getInfoLabel('Window.Property(TMDbHelper.WidgetContainer)')
+				if cont: last_container = cont  # non sovrascrivere con il vuoto transitorio della navigazione
+				# Ripubblica poster + label dell'elemento in focus per il pannello del menù
+				# contestuale (base_poster guida lo spazio artwork, base_label guida l'header).
+				# Confrontiamo col VALORE ATTUALE della proprietà — non una variabile locale — così
+				# da RIPRISTINARLI se l'onfocus della skin li ha azzerati al ri-focus dopo la chiusura
+				# del menù (item vuoto per un istante -> ClearProperty, poi l'onfocus non riscatta più).
+				# Letto dal vivo dall'item corrente: mai un valore vecchio. Solo getInfoLabel/
+				# getProperty, nessun download. Il caso "nessun poster reale" lo lascia all'onfocus
+				# (qui poster esce vuoto e non sovrascriviamo).
+				poster = self._resolve('Art(poster)|Art(tvshow.poster)', container=last_container)
+				if poster and poster != home_window.getProperty('TMDbHelper.ListItem.base_poster'):
+					home_window.setProperty('TMDbHelper.ListItem.base_poster', poster)
+				label = self._resolve('Label', container=last_container)
+				if label and label != home_window.getProperty('TMDbHelper.ListItem.base_label'):
+					home_window.setProperty('TMDbHelper.ListItem.base_label', label)
+				source = self._resolve(spec, container=last_container)
+				if source:
+					empty_streak = 0
+				else:
+					# Risoluzione vuota: durante una navigazione rapida è un transitorio (il
+					# WidgetContainer viene azzerato per un attimo). Non latchare subito lo sfondo
+					# viola di fallback sopra l'ultima landscape valida: aspetta qualche ciclo
+					# di vuoto consecutivo prima di considerare che abbiamo davvero lasciato il contenuto.
+					empty_streak += 1
+					if empty_streak < fallback_threshold: continue
+					source = home_window.getProperty('TMDbHelper.Blur.Fallback')
 			if not source: continue
 			if source == last_source: continue
 			if failed.get(source, 0) > 4: continue
