@@ -2,7 +2,7 @@
 from threading import Thread
 from datetime import datetime, timedelta
 from windows.base_window import BaseDialog, window_manager, window_player, ok_dialog
-from apis import tmdb_api, imdb_api, omdb_api, trakt_api
+from apis import tmdb_api, imdb_api, trakt_api
 from indexers import dialogs, people
 from indexers.images import Images
 from modules import kodi_utils, settings, watched_status
@@ -18,8 +18,8 @@ addon_fanart, empty_poster = kodi_utils.addon_fanart(), kodi_utils.empty_poster
 extras_button_label_values, show_busy_dialog, hide_busy_dialog = kodi_utils.extras_button_label_values, kodi_utils.show_busy_dialog, kodi_utils.hide_busy_dialog
 container_update, activate_window, clear_property = kodi_utils.container_update, kodi_utils.activate_window, kodi_utils.clear_property
 default_all_episodes, extras_enabled_menus, tmdb_api_key = settings.default_all_episodes, settings.extras_enabled_menus, settings.tmdb_api_key
-enable_extra_ratings, nextep_method, watched_indicators = settings.extras_enable_extra_ratings, settings.nextep_method, settings.watched_indicators
-extras_enable_scrollbars, omdb_api_key, date_offset, mpaa_region = settings.extras_enable_scrollbars, settings.omdb_api_key, settings.date_offset, settings.mpaa_region
+nextep_method, watched_indicators = settings.nextep_method, settings.watched_indicators
+extras_enable_scrollbars, date_offset, mpaa_region = settings.extras_enable_scrollbars, settings.date_offset, settings.mpaa_region
 options_menu_choice, extras_menu_choice = dialogs.options_menu_choice, dialogs.extras_menu_choice
 trakt_manager_choice, random_choice, playback_choice, favorites_choice = dialogs.trakt_manager_choice, dialogs.random_choice, dialogs.playback_choice, dialogs.favorites_choice
 get_next_episodes, get_watched_status_movie, watched_info_movie = watched_status.get_next_episodes, watched_status.get_watched_status_movie, watched_status.watched_info_movie
@@ -31,10 +31,10 @@ tmdb_movies_year, tmdb_tv_year, tmdb_movies_genres, tmdb_tv_genres = tmdb_api.tm
 tmdb_movies_recommendations, tmdb_tv_recommendations, tmdb_company_id = tmdb_api.tmdb_movies_recommendations, tmdb_api.tmdb_tv_recommendations, tmdb_api.tmdb_company_id
 tmdb_movies_companies, tmdb_tv_networks = tmdb_api.tmdb_movies_companies, tmdb_api.tmdb_tv_networks
 imdb_reviews, imdb_trivia, imdb_blunders, imdb_parentsguide = imdb_api.imdb_reviews, imdb_api.imdb_trivia, imdb_api.imdb_blunders, imdb_api.imdb_parentsguide
-fetch_ratings_info, trakt_comments, like_a_list, unlike_a_list = omdb_api.fetch_ratings_info, trakt_api.trakt_comments, trakt_api.trakt_like_a_list, trakt_api.trakt_unlike_a_list
+trakt_comments, like_a_list, unlike_a_list = trakt_api.trakt_comments, trakt_api.trakt_like_a_list, trakt_api.trakt_unlike_a_list
 tmdb_image_base, count_insert = 'https://image.tmdb.org/t/p/%s%s', 'x%s'
 youtube_check = 'plugin.video.youtube'
-setting_base, label_base, ratings_icon_base = 'fenlight.extras.%s.button', 'button%s.label', 'fenlight_flags/ratings/%s'
+setting_base, label_base = 'fenlight.extras.%s.button', 'button%s.label'
 separator = '[B]  •  [/B]'
 button_ids = (10, 11, 12, 13, 14, 15, 16, 17, 50)
 plot_id, cast_id, recommended_id, more_like_this_id, reviews_id, comments_id, trivia_id = 2000, 2050, 2051, 2052, 2053, 2054, 2055
@@ -45,8 +45,6 @@ open_folder_list_ids = (in_lists_id,)
 finished_tvshow = ('', 'Ended', 'Canceled')
 parentsguide_icons = {'Sex & Nudity': get_icon('sex_nudity'), 'Violence & Gore': get_icon('genre_war'), 'Profanity': get_icon('bad_language'),
 						'Alcohol, Drugs & Smoking': get_icon('drugs_alcohol'), 'Frightening & Intense Scenes': get_icon('genre_horror')}
-meta_ratings_values = (('metascore', 1), ('tomatometer', 2), ('tomatousermeter', 3), ('imdb', 4), ('tmdb', 5))
-ratings_null = ('', '%')
 missing_image_check = ('', None, empty_poster, addon_fanart)
 _images = Images().run
 youtube_thumb_url, youtube_url = 'https://img.youtube.com/vi/%s/0.jpg', 'plugin://plugin.video.youtube/play/?video_id=%s'
@@ -57,7 +55,7 @@ class Extras(BaseDialog):
 		self.control_id = None
 		self.set_starting_constants(kwargs)
 		self.set_properties()
-		self.tasks = (self.set_artwork, self.set_infoline1, self.set_infoline2, self.make_ratings, self.make_cast, self.make_recommended,
+		self.tasks = (self.set_artwork, self.set_infoline1, self.set_infoline2, self.make_cast, self.make_recommended,
 					self.make_more_like_this, self.make_reviews, self.make_comments, self.make_in_lists, self.make_trivia, self.make_blunders, self.make_parentsguide,
 					self.make_videos, self.make_year, self.make_genres, self.make_network, self.make_collection)
 
@@ -141,19 +139,6 @@ class Extras(BaseDialog):
 					self.close()
 				except: return
 			else: return
-
-	def make_ratings(self, win_prop=4000):
-		data = self.get_omdb_ratings()
-		if not data: return
-		active_extra_ratings = False
-		if self.rating: data['tmdb']['rating'] = self.rating
-		for prop, _id in meta_ratings_values:
-			rating, icon = data[prop]['rating'], data[prop]['icon']
-			if rating in ratings_null: continue
-			if prop == 'tmdb' and not active_extra_ratings: continue
-			self.setProperty('%s_rating' % prop, 'true'), self.set_label(win_prop + _id, rating), self.set_image(win_prop + 100 + _id, ratings_icon_base % icon)
-			active_extra_ratings = True
-		if win_prop == 4000 and self.getProperty('tmdb_rating') == 'true': self.set_infoline1(remove_rating=True)
 
 	def make_plot_and_tagline(self):
 		self.plot = self.meta_get('tvshow_plot', '') or self.meta_get('plot', '') or ''
@@ -427,11 +412,6 @@ class Extras(BaseDialog):
 			self.add_items(collection_id, item_list)
 		except: pass
 
-	def get_omdb_ratings(self):
-		if not self.display_extra_ratings: return None
-		data = self.meta_get('extra_ratings', None) or fetch_ratings_info(self.meta, self.omdb_api)
-		return data
-
 	def get_release_year(self, release_data):
 		try:
 			if release_data in ('', None): release_data = 'N/A'
@@ -693,8 +673,7 @@ class Extras(BaseDialog):
 		self.tmdb_id, self.imdb_id = self.meta_get('tmdb_id'), self.meta_get('imdb_id')
 		self.folder_runner = activate_window if self.is_external == 'true' else container_update
 		self.enabled_lists, self.enable_scrollbars = extras_enabled_menus(), extras_enable_scrollbars()
-		self.tmdb_api_key, self.omdb_api, self.mpaa_region = tmdb_api_key(), omdb_api_key(), mpaa_region()
-		self.display_extra_ratings = self.imdb_id and self.omdb_api not in ('empty_setting', '') and enable_extra_ratings()
+		self.tmdb_api_key, self.mpaa_region = tmdb_api_key(), mpaa_region()
 		self.title, self.year, self.rootname = self.meta_get('title'), str(self.meta_get('year')), self.meta_get('rootname')
 		self.poster = self.meta_get('poster') or empty_poster
 		self.fanart = self.meta_get('fanart') or addon_fanart
@@ -711,7 +690,6 @@ class Extras(BaseDialog):
 		self.assign_buttons()
 		self.setProperty('media_type', self.media_type), self.setProperty('title', self.title), self.setProperty('year', self.year), self.setProperty('plot', self.plot)
 		self.setProperty('genre', ', '.join(self.genre)), self.setProperty('network', ', '.join(self.network)), self.setProperty('enable_scrollbars', self.enable_scrollbars)
-		self.setProperty('display_extra_ratings', 'true' if self.display_extra_ratings else 'false')
 
 	def make_status_infoline(self):
 		status_str = self.status
@@ -721,8 +699,8 @@ class Extras(BaseDialog):
 			if next_aired_date: status_str = '%s %s' % (self.status, adjust_premiered_date(next_aired_date, date_offset())[0].strftime('%d %B %Y'))
 		return status_str
 
-	def set_infoline1(self, remove_rating=False):
-		self.set_label(2001, separator.join([i for i in (self.year, None if remove_rating else self.rating, self.mpaa, self.spoken_language,
+	def set_infoline1(self):
+		self.set_label(2001, separator.join([i for i in (self.year, self.rating, self.mpaa, self.spoken_language,
 											self.get_duration(), self.status_infoline_value) if i]))
 
 	def set_infoline2(self):

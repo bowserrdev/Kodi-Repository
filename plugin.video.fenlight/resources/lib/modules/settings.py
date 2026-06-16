@@ -174,9 +174,6 @@ def easynews_authorized():
 	else: easynews_status = True
 	return easynews_status
 
-def extras_enable_extra_ratings():
-	return get_setting('fenlight.extras.enable_extra_ratings', 'true') == 'true'
-
 def extras_enable_scrollbars():
 	return get_setting('fenlight.extras.enable_scrollbars', 'true')
 
@@ -280,9 +277,6 @@ def scraping_settings():
 			'offcloud': oc_highlight, 'easydebrid': ed_highlight, 'torbox': tb_highlight, 'rd_cloud': debrid_cloud_highlight,
 			'pm_cloud': debrid_cloud_highlight, 'ad_cloud': debrid_cloud_highlight, 'oc_cloud': debrid_cloud_highlight, 'tb_cloud': debrid_cloud_highlight,
 			'easynews': easynews_highlight, 'folders': folders_highlight, '4k': highlight_4K, '1080p': highlight_1080P, '720p': highlight_720P, 'sd': highlight_SD}
-
-def omdb_api_key():
-	return get_setting('fenlight.omdb_api', 'empty_setting')
 
 def mdblist_api_key():
     return get_setting('fenlight.mdblist_api', '')
