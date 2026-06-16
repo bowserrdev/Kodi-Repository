@@ -80,7 +80,8 @@ tvshow_list = [
 {'name': 'In Progress', 'mode': 'build_tvshow_list', 'action': 'in_progress_tvshows', 'iconImage': 'in_progress_tvshow'},
 {'name': 'Recently Watched Episodes', 'mode': 'build_recently_watched_episode', 'iconImage': 'watched_recent'},
 {'name': 'In Progress Episodes', 'mode': 'build_in_progress_episode', 'iconImage': 'player'},
-{'name': 'Next Episodes', 'mode': 'build_next_episode', 'iconImage': 'next_episodes'}
+{'name': 'Next Episodes', 'mode': 'build_next_episode', 'iconImage': 'next_episodes'},
+{'name': 'Continue Watching', 'mode': 'build_continue_watching', 'iconImage': 'player'}
 			]
 
 anime_list = [

@@ -138,7 +138,7 @@ def build_episode_list(params):
 	end_directory(handle, cacheToDisc=False if is_external else True)
 	set_view_mode(list_view, content_type, is_external)
 
-def build_single_episode(list_type, params={}):
+def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaired=False):
 	def _get_category_name():
 		try:
 			cat_name = category_name_dict[list_type]
@@ -164,6 +164,7 @@ def build_single_episode(list_type, params={}):
 			if list_type_starts_with('next_'):
 				orig_season, orig_episode = get_next(orig_season, orig_episode, watched_info, season_data, nextep_content)
 				if not orig_season or not orig_episode: return
+				if exclude_keys and (int(tmdb_id), int(orig_season), int(orig_episode)) in exclude_keys: return
 				playcount = 0
 			episodes_data = episodes_meta(orig_season, meta)
 			if not episodes_data: return
@@ -277,6 +278,8 @@ def build_single_episode(list_type, params={}):
 	watched_db = get_database(watched_indicators)
 	watched_title = 'Trakt' if watched_indicators == 1 else 'Fen Light'
 	category_name = _get_category_name()
+	nextep_content, include_unaired, include_airdate = nextep_method(), nextep_include_unaired(), nextep_include_airdate()
+	if exclude_unaired: include_unaired = False
 	if list_type == 'episode.next':
 		include_unwatched, include_unaired, nextep_content = nextep_include_unwatched(), nextep_include_unaired(), nextep_method()
 		sort_key, sort_direction = nextep_sort_key(), nextep_sort_direction()

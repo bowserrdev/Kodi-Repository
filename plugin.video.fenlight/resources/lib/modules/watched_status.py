@@ -451,7 +451,7 @@ def get_in_progress_episodes():
 	data = dbcon.execute('SELECT media_id, season, episode, resume_point, last_played, title FROM progress WHERE db_type = ?', ('episode',)).fetchall()
 	if lists_sort_order('progress') == 0: data = sort_for_article(data, 5)
 	else: data.sort(key=lambda k: k[4], reverse=True)
-	episode_list = [{'media_ids': {'tmdb': i[0]}, 'season': int(i[1]), 'episode': int(i[2]), 'resume_point': float(i[3])} for i in data]
+	episode_list = [{'media_ids': {'tmdb': i[0]}, 'season': int(i[1]), 'episode': int(i[2]), 'resume_point': float(i[3]), 'last_played': i[4]} for i in data]
 	return episode_list
 
 def get_watched_items(media_type, page_no):

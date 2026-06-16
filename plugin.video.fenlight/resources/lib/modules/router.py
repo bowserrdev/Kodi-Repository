@@ -149,6 +149,9 @@ def routing(sys):
 		if mode == 'build_next_episode':
 			from indexers.episodes import build_single_episode
 			return build_single_episode('episode.next', params)
+		if mode == 'build_continue_watching':
+			from indexers.continue_watching import build_continue_watching
+			return build_continue_watching(params)
 		if mode == 'build_my_calendar':
 			from indexers.episodes import build_single_episode
 			return build_single_episode('episode.trakt', params)
