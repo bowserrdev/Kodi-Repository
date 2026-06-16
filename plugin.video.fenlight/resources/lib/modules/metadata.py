@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from apis import tmdb_api
-from apis.imdb_api import imdb_data
+from apis.imdb_api import imdb_data, imdb_episode_ratings
 from caches.meta_cache import meta_cache
 from modules.settings import meta_language
 from modules.utils import jsondate_to_datetime, subtract_dates
@@ -473,6 +473,13 @@ def episodes_meta(season, meta):
 	prop_string = '%s_%s_%s' % (media_id, season, lang) if lang != 'en' else '%s_%s' % (media_id, season)
 	data = metacache_get_season(prop_string)
 	if data is not None: return data
+	_imdb_ep_ratings = imdb_episode_ratings(meta.get('imdb_id'), season)
+	def _apply_imdb_ep_ratings(eps):
+		if not _imdb_ep_ratings or not eps: return
+		for _e in eps:
+			_r = _imdb_ep_ratings.get('%s_%s' % (_e.get('season'), _e.get('episode')))
+			if _r:
+				_e['rating'], _e['votes'] = _r['rating'], _r['votes']
 	_skyhook_eps = get_skyhook_episodes(meta.get('tvdb_id'), season, meta)
 	if _skyhook_eps is not None and meta.get('original_language', '') in ('ja', 'ko', 'zh'):
 		try:
@@ -513,6 +520,7 @@ def episodes_meta(season, meta):
 				meta['tmdb_to_tvdb_ep'] = {v: k for k, v in _corrected.items()}
 				metacache_set('tvshow', 'tmdb_id', meta, EXPIRES_182_DAYS, None)
 		except: pass
+		_apply_imdb_ep_ratings(_skyhook_eps)
 		metacache_set_season(prop_string, _skyhook_eps, _expiry)
 		return _skyhook_eps
 	try:
@@ -525,6 +533,7 @@ def episodes_meta(season, meta):
 			details = season_episodes_details(media_id, season, lang)['episodes']
 			total_episodes = len(details)
 			data = list(_process())
+			_apply_imdb_ep_ratings(data)
 		except: data, expiration = [], EXPIRES_4_DAYS
 	except: data, expiration = [], EXPIRES_4_DAYS
 	metacache_set_season(prop_string, data, expiration)
