@@ -219,7 +219,7 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 		if imdb_data_result:
 			if imdb_data_result.get('rating'): meta['rating'] = imdb_data_result['rating']
 			if imdb_data_result.get('votes'): meta['votes'] = imdb_data_result['votes']
-			if imdb_data_result.get('year'): meta['year'] = str(imdb_data_result['year'])
+			if imdb_data_result.get('year'): meta['imdb_year'] = str(imdb_data_result['year'])
 			if imdb_data_result.get('directors'): meta['director'] = imdb_data_result['directors'][:1]
 			if imdb_data_result.get('writers'): meta['writer'] = imdb_data_result['writers']
 			if imdb_data_result.get('directors'): meta['directors'] = _merge_imdb_people(imdb_data_result['directors'], meta.get('directors') or [])
@@ -384,7 +384,7 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 		if imdb_data_result:
 			if imdb_data_result.get('rating'): meta['rating'] = imdb_data_result['rating']
 			if imdb_data_result.get('votes'): meta['votes'] = imdb_data_result['votes']
-			if imdb_data_result.get('year'): meta['year'] = str(imdb_data_result['year'])
+			if imdb_data_result.get('year'): meta['imdb_year'] = str(imdb_data_result['year'])
 			if imdb_data_result.get('directors'): meta['director'] = imdb_data_result['directors'][:1]
 			if imdb_data_result.get('writers'): meta['writer'] = imdb_data_result['writers']
 			if imdb_data_result.get('directors'): meta['directors'] = _merge_imdb_people(imdb_data_result['directors'], meta.get('directors') or [])
