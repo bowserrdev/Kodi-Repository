@@ -1,0 +1,3 @@
+# I pacchetti degli addon sono binari: mai normalizzare CRLF/LF (corromperebbe lo zip)
+*.zip binary
+*.md5 -text
