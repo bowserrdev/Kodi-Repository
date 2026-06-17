@@ -34,18 +34,24 @@ def mdblist_get_liked_lists():
 		return data or []
 	return cache_object(_fetch, 'mdblist_liked_lists', 'x', False, 1)
 
+# Liste che vanno ordinate per data di aggiunta (date added, dal piu' recente) invece che per rank
+MDBLIST_DATE_ADDED_LISTS = {'91378'}  # amything/latest-releases-gary
+
 def mdblist_get_list_contents(list_id):
 	def _process(lid):
-		raw = call_mdblist('lists/%s/items/' % lid, params={'unified': 'true', 'limit': 1000})
+		params = {'unified': 'true', 'limit': 1000}
+		by_date_added = str(lid) in MDBLIST_DATE_ADDED_LISTS
+		if by_date_added: params.update({'sort': 'added', 'order': 'asc'})
+		raw = call_mdblist('lists/%s/items/' % lid, params=params)
 		if not raw: return []
 		results = []
-		for item in raw:
+		for idx, item in enumerate(raw):
 			try:
 				ids = item['ids']
 				results.append({
 					'media_ids': {'tmdb': ids.get('tmdb'), 'imdb': ids.get('imdb'), 'tvdb': ids.get('tvdb')},
 					'type': item['mediatype'],
-					'order': item.get('rank', 0)
+					'order': idx if by_date_added else item.get('rank', 0)
 				})
 			except: pass
 		return results
