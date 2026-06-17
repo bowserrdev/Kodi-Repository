@@ -497,7 +497,7 @@
                 <param name="window">1108</param>
                 <param name="id">3108</param>
             </include>
-            <include condition="!$EXP[Exp_Hubs_Menu_Loopback]">Home_Settings_Button</include>
+            <include condition="!$EXP[Exp_Hubs_Menu_Loopback]">Home_Trailing_Button</include>
             <control type="group">
                 <width>0</width>
             </control>
@@ -521,6 +521,31 @@
                 </include>
             </control>
         </definition>
+    </include>
+
+    <!-- Pulsante in alto a destra: nell'hub di ricerca (1105) mostra l'icona scelta per la
+         schermata principale e porta alla home; in tutti gli altri hub resta l'ingranaggio. -->
+    <include name="Home_Trailing_Button">
+        <control type="group">
+            <width>80</width>
+            <height>80</height>
+            <control type="group">
+                <visible>Window.IsVisible(1105)</visible>
+                <include content="Home_Settings_Button">
+                    <param name="icon">$VAR[Home_Icon_home]</param>
+                    <param name="window">home</param>
+                    <param name="id">3171</param>
+                </include>
+            </control>
+            <control type="group">
+                <visible>!Window.IsVisible(1105)</visible>
+                <include content="Home_Settings_Button">
+                    <param name="icon">special://skin/extras/icons/settings.png</param>
+                    <param name="window">1170</param>
+                    <param name="id">3170</param>
+                </include>
+            </control>
+        </control>
     </include>
 
     <include name="Home_Submenu_Panel_VertReposition">
