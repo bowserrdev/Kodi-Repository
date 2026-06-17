@@ -833,6 +833,9 @@
                 <control type="button" id="$PARAM[id]">
                     <onclick>ReplaceWindow($PARAM[window])</onclick>
                     <texturenofocus />
+                    <!-- Navigando a sinistra dalla home icon si torna sempre all'edit di ricerca,
+                         mai alla X di clear (3005), anche se c'e' testo nel box. -->
+                    <onleft>3001</onleft>
                 </control>
                 <control type="group">
                     <visible>![Window.IsVisible($PARAM[window]) + Integer.IsEqual(System.CurrentControlID,300)]</visible>
