@@ -204,7 +204,19 @@ class Navigator:
 		self.add({'mode': 'build_next_episode_manager'}, 'TV Shows Progress Manager', 'settings2')
 		self.add({'mode': 'navigator.shortcut_folders'}, 'Shortcut Folders Manager', 'settings2')
 		self.add({'mode': 'navigator.maintenance'}, 'Database & Cache Maintenance', 'settings2')
+		self.add({'mode': 'navigator.advanced_cache'}, 'Cache & Streaming Optimization', 'settings2')
 		self.add({'mode': 'toggle_language_invoker', 'isFolder': 'false'}, 'Toggle Language Invoker (ADVANCED!!)', 'settings2')
+		self.end_directory()
+
+	def advanced_cache(self):
+		self.add({'mode': 'advancedsettings.network_test', 'isFolder': 'false'}, 'Test di Rete e Ottimizza (consigliato)', 'settings')
+		self.add({'mode': 'advancedsettings.apply', 'preset': 'slow', 'isFolder': 'false'}, 'Preset: Lenta / Mobile (< 10 Mbps)', 'settings')
+		self.add({'mode': 'advancedsettings.apply', 'preset': 'medium', 'isFolder': 'false'}, 'Preset: ADSL / Media (10-30 Mbps)', 'settings')
+		self.add({'mode': 'advancedsettings.apply', 'preset': 'fast', 'isFolder': 'false'}, 'Preset: Fibra / Veloce (30-100 Mbps)', 'settings')
+		self.add({'mode': 'advancedsettings.apply', 'preset': 'ultra', 'isFolder': 'false'}, 'Preset: Gigabit / Ultraveloce (> 100 Mbps)', 'settings')
+		self.add({'mode': 'advancedsettings.hide_parent', 'isFolder': 'false'}, 'Nascondi cartella superiore (..) nelle liste', 'settings')
+		self.add({'mode': 'advancedsettings.show', 'isFolder': 'false'}, 'Mostra advancedsettings.xml attuale', 'settings')
+		self.add({'mode': 'advancedsettings.reset', 'isFolder': 'false'}, 'Rimuovi ottimizzazione cache', 'settings')
 		self.end_directory()
 
 	def maintenance(self):
