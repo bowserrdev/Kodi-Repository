@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import sys
 from threading import Thread
-from apis.mdblist_api import mdblist_get_my_lists, mdblist_get_list_contents
+from apis.mdblist_api import mdblist_get_my_lists, mdblist_get_liked_lists, mdblist_get_list_contents
 from indexers.movies import Movies
 from indexers.tvshows import TVShows
 from indexers.trakt_lists import _dub_filter_items, _dub_paginate
@@ -15,9 +15,9 @@ fanart, set_property = kodi_utils.get_addon_fanart(), kodi_utils.set_property
 set_content, set_view_mode, end_directory = kodi_utils.set_content, kodi_utils.set_view_mode, kodi_utils.end_directory
 make_listitem, build_url, add_items = kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.add_items
 nextpage_landscape, set_category, home, folder_path = kodi_utils.nextpage_landscape, kodi_utils.set_category, kodi_utils.home, kodi_utils.folder_path
-mdblist_icon = get_icon('lists')
+mdblist_icon = 'special://home/addons/plugin.video.fenlight/resources/media/icons/mdblist.png'
 
-def get_mdblist_lists(params):
+def _build_mdblist_lists(params, lists):
 	def _process():
 		for item in lists:
 			try:
@@ -34,13 +34,22 @@ def get_mdblist_lists(params):
 			except: pass
 	handle = int(sys.argv[1])
 	try:
-		lists = mdblist_get_my_lists()
 		add_items(handle, list(_process()))
 	except: pass
 	set_content(handle, 'files')
 	set_category(handle, params.get('category_name', 'MDBList'))
 	end_directory(handle)
 	set_view_mode('view.main')
+
+def get_mdblist_lists(params):
+	try: lists = mdblist_get_my_lists()
+	except: lists = []
+	_build_mdblist_lists(params, lists)
+
+def get_mdblist_liked_lists(params):
+	try: lists = mdblist_get_liked_lists()
+	except: lists = []
+	_build_mdblist_lists(params, lists)
 
 def build_mdblist_list(params):
 	def _process(function, _list):
