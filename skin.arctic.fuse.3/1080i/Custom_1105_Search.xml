@@ -4,6 +4,9 @@
     <onload condition="String.IsEmpty(Window(Home).Property(TMDbHelper.UserDiscover.FolderPath))">SetProperty(TMDbHelper.UserDiscover.FolderPath.Name,$LOCALIZE[467] $LOCALIZE[342],Home)</onload>
 
     <onload>ClearProperty(Background.ShowOverlay,Home)</onload>
+    <!-- Forza il focus sull'edit di ricerca all'apertura, evitando che Kodi atterri sulla X di clear (3005)
+         quando c'e' testo nel box e 3005 e' il primo controllo focusabile trovato spazialmente. -->
+    <onload>SetFocus(3001)</onload>
 
     <include content="Hub_Onload">
         <param name="window_id">1105</param>
