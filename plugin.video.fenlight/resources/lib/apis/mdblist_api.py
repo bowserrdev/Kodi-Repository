@@ -27,6 +27,13 @@ def mdblist_get_my_lists():
 		return call_mdblist('lists/user/')
 	return cache_object(_fetch, 'mdblist_my_lists', 'x', False, 1)
 
+def mdblist_get_liked_lists():
+	def _fetch(dummy):
+		data = call_mdblist('lists/liked/')
+		if isinstance(data, dict): return data.get('lists') or []
+		return data or []
+	return cache_object(_fetch, 'mdblist_liked_lists', 'x', False, 1)
+
 def mdblist_get_list_contents(list_id):
 	def _process(lid):
 		raw = call_mdblist('lists/%s/items/' % lid, params={'unified': 'true', 'limit': 1000})
