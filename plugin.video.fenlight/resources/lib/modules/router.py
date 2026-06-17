@@ -97,6 +97,9 @@ def routing(sys):
 	if 'custom_key.' in mode:
 		from modules import custom_keys
 		return getattr(custom_keys, mode.split('custom_key.')[1])()
+	if 'advancedsettings.' in mode:
+		from modules import advanced_settings
+		return getattr(advanced_settings, mode.split('.')[1])(params)
 	if 'trakt.' in mode:
 		if '.list' in mode:
 			from indexers import trakt_lists
