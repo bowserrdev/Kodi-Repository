@@ -41,11 +41,15 @@ class MainCache(BaseCache):
 
 main_cache = MainCache()
 
-def cache_object(function, string, args, json=True, expiration=24):
+def cache_object(function, string, args, json=True, expiration=24, cache_empty=True):
+	# cache_empty=False per le sorgenti in cui "vuoto" significa quasi sempre "la chiamata e' fallita"
+	# e non "questo titolo non ha il dato". Serve perche' il risultato veniva memorizzato comunque: un
+	# 403 di IMDb lasciava un {} valido per l'intera expiration (720h = 30 giorni), quindi anche dopo
+	# aver riparato la chiamata i titoli gia' visitati sarebbero rimasti senza trama per un mese.
 	cache = main_cache.get(string)
 	if cache is not None: return cache
 	if isinstance(args, list): args = tuple(args)
 	else: args = (args,)
 	result = function(*args).json() if json else function(*args)
-	main_cache.set(string, result, expiration=expiration)
+	if result or cache_empty: main_cache.set(string, result, expiration=expiration)
 	return result
