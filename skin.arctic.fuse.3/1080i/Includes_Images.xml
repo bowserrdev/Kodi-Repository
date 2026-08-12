@@ -321,7 +321,11 @@
         <value condition="!$EXP[Exp_TMDbHelper_IsBlur]">$VAR[Image_Foreground_NoService]</value>
         <value condition="!String.IsEmpty(Window.Property(TMDbHelper.ListItem.BlurImage.Original))">$INFO[Window.Property(TMDbHelper.ListItem.BlurImage.Original)]</value>
         <value condition="!String.IsEmpty(Window(Home).Property(FenLight.Background.Fanart))">$INFO[Window(Home).Property(FenLight.Background.Fanart)]</value>
-        <value>$INFO[Window(Home).Property(TMDbHelper.ListItem.Current.BlurImage.Original)]</value>
+        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Current.BlurImage.Original))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Current.BlurImage.Original)]</value>
+        <!-- Ultima spiaggia: con il blur attivo ma il servizio fermo (Pillow assente su Android) tutte le
+             proprieta' sopra sono vuote e il FlixArt in primo piano restava nero. Ricade sull'artwork letto
+             dal vivo dal container, lo stesso percorso usato quando il blur e' disattivato. -->
+        <value>$VAR[Image_Foreground_NoService]</value>
     </variable>
 
     <variable name="Image_OtherIcon">

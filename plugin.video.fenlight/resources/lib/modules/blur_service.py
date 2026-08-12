@@ -53,11 +53,27 @@ def _local_copy(source):
 		except: return None
 	return None
 
+_pil_available = None
+
+def pil_available():
+	# Verificato una sola volta per sessione: senza questa memoizzazione l'import fallito veniva
+	# ritentato (e loggato) a ogni immagine. Se Pillow manca il servizio continua comunque a girare --
+	# ripubblica base_poster/base_label per il menu contestuale -- ma non produce blur, e la skin
+	# ricade sullo sfondo semplice + artwork nitido invece che sul nero (Exp_Blur_IsUnavailable).
+	global _pil_available
+	if _pil_available is None:
+		try:
+			from PIL import Image, ImageFilter
+			_pil_available = True
+		except ImportError:
+			_pil_available = False
+			logger('FenLight BlurService', 'Pillow NON disponibile: blur disattivato, la skin usa lo sfondo di fallback. '
+					'Verificare che script.module.pil sia installato e dichiarato in addon.xml.')
+	return _pil_available
+
 def _blur(source):
-	try: from PIL import Image, ImageFilter
-	except ImportError:
-		logger('FenLight BlurService', 'PIL/Pillow non disponibile, blur disattivato')
-		return None
+	if not pil_available(): return None
+	from PIL import Image, ImageFilter
 	size, radius = _settings()
 	key = hashlib.md5(('%s_%s_%s' % (source, size, radius)).encode()).hexdigest()
 	target = os.path.join(blur_folder, '%s.jpg' % key)
@@ -130,7 +146,7 @@ class BlurService:
 		return ''
 	
 	def run(self):
-		logger('Fen Light', 'BlurService Starting')
+		logger('Fen Light', 'BlurService Starting (Pillow: %s)' % ('OK' if pil_available() else 'ASSENTE'))
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		pause_string = 'fenlight.pause_services'

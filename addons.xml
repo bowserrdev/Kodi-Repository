@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addons>
-<addon id="plugin.video.fenlight" name="Fen Light" provider-name="Tikipeter" version="3.0.2">
+<addon id="plugin.video.fenlight" name="Fen Light" provider-name="Tikipeter" version="3.0.3">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
         <import addon="script.module.requests" version="2.19.1"/>
+        <!-- Pillow, usato dal BlurService. Kodi lo impacchetta nel proprio Python solo sui build
+             desktop (macOS/Windows/Linux); su Android (Firestick, Shield) arriva da questo modulo.
+             Va comunque dichiarato qui su OGNI piattaforma: Kodi aggiunge un xbmc.python.module al
+             sys.path solo degli addon che lo importano esplicitamente. -->
+        <import addon="script.module.pil" version="1.1.7"/>
     </requires>
     <extension point="xbmc.python.pluginsource" library="resources/lib/fenlight.py">
         <provides>video</provides>
@@ -24,7 +29,7 @@
         <news>INFO: For latest changes see Changelog within Tools of add-on.</news>
     </extension>
 </addon>
-<addon id="repository.bowserr" name="Bowserr Repo" version="1.1.2" provider-name="Bowserr">
+<addon id="repository.bowserr" name="Bowserr Repo" version="1.1.3" provider-name="Bowserr">
     <requires>
         <import addon="xbmc.addon" version="12.0.0"/>
     </requires>
@@ -44,7 +49,7 @@
         </assets>
     </extension>
 </addon>
-<addon id="skin.arctic.fuse.3" name="Arctic Fuse 3" provider-name="jurialmunkey" version="3.3.3">
+<addon id="skin.arctic.fuse.3" name="Arctic Fuse 3" provider-name="jurialmunkey" version="3.3.4">
     <requires>
         <import addon="xbmc.gui" version="5.17.0" />
         <import addon="script.skinvariables" version="2.2.1" />

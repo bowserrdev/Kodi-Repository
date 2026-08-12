@@ -1,7 +1,12 @@
-<addon id="plugin.video.fenlight" name="Fen Light" provider-name="Tikipeter" version="3.0.2">
+<addon id="plugin.video.fenlight" name="Fen Light" provider-name="Tikipeter" version="3.0.3">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
         <import addon="script.module.requests" version="2.19.1"/>
+        <!-- Pillow, usato dal BlurService. Kodi lo impacchetta nel proprio Python solo sui build
+             desktop (macOS/Windows/Linux); su Android (Firestick, Shield) arriva da questo modulo.
+             Va comunque dichiarato qui su OGNI piattaforma: Kodi aggiunge un xbmc.python.module al
+             sys.path solo degli addon che lo importano esplicitamente. -->
+        <import addon="script.module.pil" version="1.1.7"/>
     </requires>
     <extension point="xbmc.python.pluginsource" library="resources/lib/fenlight.py">
         <provides>video</provides>
