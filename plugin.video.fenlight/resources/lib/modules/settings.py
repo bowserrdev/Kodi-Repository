@@ -19,11 +19,17 @@ internal_scrapers_clouds_list = [('rd', 'provider.rd_cloud'), ('pm', 'provider.p
 def tmdb_api_key():
 	return get_setting('fenlight.tmdb_api', '')
 
+# Le credenziali dell'applicazione Trakt vivono NEL CODICE, non nel settings cache. Prima venivano lette
+# dal DB, dove sync_settings() semina un valore la prima volta e poi non lo tocca mai piu' (settings_cache.py:
+# "if setting_id in currentsettings: continue"). Risultato: aggiornare l'addon cambiava il default in
+# kodi_utils.py ma NON raggiungeva nessun dispositivo gia' installato, che continuava a mandare a Trakt una
+# client_id revocata -> "client not found" al momento di autorizzare, senza alcun modo di correggerla
+# dall'interfaccia (queste due voci non sono mai state esposte nel menu impostazioni).
 def trakt_client():
-	return get_setting('fenlight.trakt.client', '')
+	return kodi_utils.trakt_default_id
 
 def trakt_secret():
-	return get_setting('fenlight.trakt.secret', '')
+	return kodi_utils.trakt_default_secret
 
 def trakt_user_active():
 	return get_setting('fenlight.trakt.user', 'empty_setting') not in ('empty_setting', '')
