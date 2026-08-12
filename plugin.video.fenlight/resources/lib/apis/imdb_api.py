@@ -7,12 +7,18 @@ from caches.main_cache import cache_object
 from caches.settings_cache import get_setting
 from modules.dom_parser import parseDOM
 from modules.utils import remove_accents, replace_html_codes, normalize
-from modules.kodi_utils import make_session
+from modules.kodi_utils import make_session, logger
 
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.64 Safari/537.36 Edge/101.0.1210.53',
 			'Accept-Language':'en-us,en;q=0.5'}
 base_url = 'https://www.imdb.com/%s'
 graphql_url = 'https://api.graphql.imdb.com/'
+# IMDb ha iniziato a rispondere 403 alle chiamate GraphQL prive di Referer: l'endpoint ora accetta solo
+# richieste che si presentano come provenienti dal sito. Misurato sul campo: il Referer da solo basta,
+# l'Origin da solo no, e lo User-Agent e' indifferente (anche uno del 2022 passa). Origin lo mandiamo
+# comunque perche' e' cio' che accompagna il Referer in un browser reale.
+graphql_headers = {'Content-Type': 'application/json', 'User-Agent': headers['User-Agent'],
+			'Origin': 'https://www.imdb.com', 'Referer': 'https://www.imdb.com/'}
 more_like_this_url = 'title/%s'
 reviews_url = 'title/%s/reviews/?sort=num_votes,desc'
 trivia_url = 'title/%s/trivia'
@@ -33,7 +39,7 @@ def imdb_data(imdb_id, lang):
 	# v2: query now also returns title_type (used to filter out music videos in advanced search).
 	string = 'imdb_data_v2_%s_%s' % (lang, imdb_id)
 	params = {'imdb_id': imdb_id, 'lang': ietf_lang}
-	return cache_object(get_imdb_graphql, string, params, False, 720)
+	return cache_object(get_imdb_graphql, string, params, False, 720, cache_empty=False)
 
 def get_imdb_graphql(params):
 	data = {}
@@ -44,9 +50,11 @@ def get_imdb_graphql(params):
 					 'writers: credits(first: 5, filter: { categories: ["writer"] }) { edges { node { name { nameText { text } } } } } } }',
 			'variables': {'id': params['imdb_id']}
 		}
-		graphql_headers = {'Content-Type': 'application/json', 'User-Agent': headers['User-Agent'], 'X-Imdb-User-Language': params['lang']}
-		r = session.post(graphql_url, json=query, headers=graphql_headers, timeout=timeout)
-		if r.status_code != 200: return data
+		request_headers = dict(graphql_headers, **{'X-Imdb-User-Language': params['lang']})
+		r = session.post(graphql_url, json=query, headers=request_headers, timeout=timeout)
+		if r.status_code != 200:
+			logger('FenLight IMDb', 'GraphQL data %s -> HTTP %s' % (params['imdb_id'], r.status_code))
+			return data
 		title = r.json()['data']['title']
 		try:
 			plot = title['plot']['plotText']['plainText']
@@ -83,7 +91,7 @@ def imdb_episode_ratings(imdb_id, season):
 	if not imdb_id or imdb_id == 'tt0000000': return {}
 	string = 'imdb_ep_ratings_%s_%s' % (imdb_id, season)
 	params = {'imdb_id': imdb_id, 'season': str(season)}
-	return cache_object(get_imdb_episode_ratings, string, params, False, 720)
+	return cache_object(get_imdb_episode_ratings, string, params, False, 720, cache_empty=False)
 
 def get_imdb_episode_ratings(params):
 	data = {}
@@ -93,9 +101,10 @@ def get_imdb_episode_ratings(params):
 					 '{ edges { node { series { episodeNumber { episodeNumber seasonNumber } } ratingsSummary { aggregateRating voteCount } } } } } } }',
 			'variables': {'id': params['imdb_id'], 'season': [params['season']]}
 		}
-		graphql_headers = {'Content-Type': 'application/json', 'User-Agent': headers['User-Agent']}
 		r = session.post(graphql_url, json=query, headers=graphql_headers, timeout=timeout)
-		if r.status_code != 200: return data
+		if r.status_code != 200:
+			logger('FenLight IMDb', 'GraphQL episode ratings %s S%s -> HTTP %s' % (params['imdb_id'], params['season'], r.status_code))
+			return data
 		edges = r.json()['data']['title']['episodes']['episodes']['edges']
 		for e in edges:
 			try:
