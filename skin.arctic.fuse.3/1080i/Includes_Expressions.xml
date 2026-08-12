@@ -8,6 +8,14 @@
     <expression name="Exp_TMDbHelper_IsBlur">[Skin.HasSetting(TMDbHelper.EnableBlur)]</expression>
     <expression name="Exp_TMDbHelper_IsCrop">[Skin.HasSetting(TMDbHelper.EnableCrop)]</expression>
 
+    <!-- Vero quando il blur e' ATTIVO come impostazione ma il servizio non ha prodotto nulla: tipicamente
+         Pillow assente (Kodi lo impacchetta solo sui build desktop, non su Android). Rispecchia esattamente
+         la catena di Image_Background: se quella variabile e' vuota non c'e' texture da disegnare e lo
+         sfondo resterebbe nero. Va valutata per frame, quindi usarla solo dentro un tag visible e MAI in
+         una condition di include: quelle Kodi le risolve una volta sola al caricamento della finestra, e
+         andrebbero in corsa con l'avvio asincrono del servizio. -->
+    <expression name="Exp_Blur_IsUnavailable">[[$EXP[Exp_BackgroundArtwork_IsSimple] + String.IsEmpty(Window(Home).Property(TMDbHelper.SimpleBackground.BlurImage))] | [!$EXP[Exp_BackgroundArtwork_IsSimple] + String.IsEmpty(Window.Property(TMDbHelper.ListItem.BlurImage)) + String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Current.BlurImage))]]</expression>
+
 
     <!-- ============== -->
     <!-- Colour Schemes -->

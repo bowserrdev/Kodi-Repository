@@ -78,6 +78,14 @@
         <definition>
             <control type="group">
                 <include>Background_NotVideo</include>
+                <!-- Strato di riserva SOTTO ai quadranti sfocati: disegnato solo quando il servizio blur non
+                     ha prodotto nulla (Pillow assente). La condition dell'include resta quella di sempre,
+                     perche' Kodi la risolve al caricamento della finestra e non puo' quindi dipendere dallo
+                     stato del servizio; il tag visible invece e' per frame e regge la partenza asincrona. -->
+                <include content="Background_Image" condition="$EXP[Exp_TMDbHelper_IsBlur]">
+                    <param name="fadetime">$PARAM[fadetime]</param>
+                    <param name="visible">$EXP[Exp_Blur_IsUnavailable]</param>
+                </include>
                 <include content="Background_Blur_Quadrants" condition="$EXP[Exp_TMDbHelper_IsBlur]">
                     <param name="flixart_size_w">$PARAM[flixart_size_w]</param>
                     <param name="flixart_size_h">$PARAM[flixart_size_h]</param>
@@ -108,8 +116,10 @@
 
     <include name="Background_Image">
         <param name="texture">$VAR[Image_SimpleBackground]</param>
+        <param name="visible">true</param>
         <definition>
             <control type="image">
+                <visible>$PARAM[visible]</visible>
                 <fadetime>$PARAM[fadetime]</fadetime>
                 <aspectratio align="left">scale</aspectratio>
                 <texture background="true">$PARAM[texture]</texture>

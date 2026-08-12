@@ -8,6 +8,8 @@ SELECT = 'SELECT id FROM trakt_data'
 DELETE = 'DELETE FROM trakt_data WHERE id=?'
 DELETE_LIKE = 'DELETE FROM trakt_data WHERE id LIKE ?'
 WATCHED_INSERT = 'INSERT OR IGNORE INTO watched VALUES (?, ?, ?, ?, ?, ?)'
+WATCHED_UPSERT = 'INSERT OR REPLACE INTO watched VALUES (?, ?, ?, ?, ?, ?)'
+WATCHED_LAST_PLAYED = 'SELECT MAX(last_played) FROM watched WHERE db_type = ?'
 WATCHED_DELETE = 'DELETE FROM watched WHERE db_type = ?'
 PROGRESS_INSERT = 'INSERT OR IGNORE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
 PROGRESS_DELETE = 'DELETE FROM progress WHERE db_type = ?'
@@ -66,6 +68,16 @@ class TraktWatched:
 	def set_bulk_tvshow_progress(self, insert_list):
 		self._delete(PROGRESS_DELETE, ('episode',))
 		self._executemany(PROGRESS_INSERT, insert_list)
+
+	def add_tvshow_watched(self, insert_list):
+		# used by the incremental sync: keeps the existing rows and refreshes last_played on rewatches
+		self._executemany(WATCHED_UPSERT, insert_list)
+
+	def last_watched_episode_date(self):
+		try:
+			dbcon = connect_database('trakt_db')
+			return dbcon.execute(WATCHED_LAST_PLAYED, ('episode',)).fetchone()[0]
+		except: return None
 
 	def has_any_progress(self):
 		try:

@@ -2,6 +2,7 @@
 import json
 import time
 import requests
+from threading import Lock
 from urllib.parse import unquote
 from caches import trakt_cache
 from caches.settings_cache import get_setting, set_setting
@@ -29,6 +30,8 @@ empty_setting_check = (None, 'empty_setting', '')
 standby_date = '2050-01-01T01:00:00.000Z'
 res_format = '%Y-%m-%dT%H:%M:%S.%fZ'
 API_ENDPOINT = 'https://api.trakt.tv/%s'
+refresh_lock = Lock()
+history_page_limit = 250
 timeout = 20
 EXPIRY_1_DAY, EXPIRY_1_WEEK = 24, 168
 
@@ -49,7 +52,7 @@ def call_trakt(path, params=None, data=None, is_delete=False, with_auth=True, me
 				if token and token not in empty_setting_check:
 					try:
 						expires_at = float(get_setting('fenlight.trakt.expires', '0'))
-						if expires_at > 0 and time.time() > expires_at: trakt_refresh_token()
+						if expires_at > 0 and time.time() > (expires_at - 86400): trakt_refresh_token()
 					except: pass
 					token = get_setting('fenlight.trakt.token')
 				if token and token not in empty_setting_check: headers['Authorization'] = 'Bearer ' + token
@@ -78,11 +81,22 @@ def call_trakt(path, params=None, data=None, is_delete=False, with_auth=True, me
 	try: status_code = response.status_code
 	except: return None
 	if status_code == 401:
-		if not xbmc_player().isPlaying():
-			if with_auth and confirm_dialog(heading='Authorize Trakt', text='You must authenticate with Trakt. Do you want to authenticate now?') and trakt_authenticate():
-				response = send_query()
-			else: pass
-		else: return None
+		logger('FenLight Trakt', 'received 401 for path=%s - attempting token refresh' % path)
+		refreshed = trakt_refresh_token() if with_auth else False
+		if refreshed:
+			response = send_query()
+			try: status_code = response.status_code
+			except: return None
+		elif refreshed is None:
+			# transient failure (no network, Trakt unreachable): the stored tokens may still be good,
+			# so fail quietly instead of asking the user to authorize again.
+			return logger('FenLight Trakt', 'token refresh could not be completed for path=%s - not prompting' % path)
+		if status_code == 401:
+			if not xbmc_player().isPlaying():
+				if with_auth and confirm_dialog(heading='Authorize Trakt', text='You must authenticate with Trakt. Do you want to authenticate now?') and trakt_authenticate():
+					response = send_query()
+				else: pass
+			else: return None
 	elif status_code == 429:
 		retry_headers = response.headers
 		if 'Retry-After' in retry_headers:
@@ -103,7 +117,13 @@ def trakt_get_device_code():
 	CLIENT_ID = trakt_client()
 	if CLIENT_ID in empty_setting_check: return no_client_key()
 	data = {'client_id': CLIENT_ID}
-	return call_trakt('oauth/device/code', data=data, with_auth=False)
+	result = call_trakt('oauth/device/code', data=data, with_auth=False)
+	if not result or 'device_code' not in result:
+		error = (result or {}).get('error_description') or (result or {}).get('error') or 'no response from Trakt'
+		logger('FenLight Trakt', 'device code request FAILED: %s' % error)
+		notification('Trakt: %s' % error, 4000)
+		return None
+	return result
 
 def trakt_get_device_token(device_codes):
 	CLIENT_ID = trakt_client()
@@ -136,34 +156,56 @@ def trakt_get_device_token(device_codes):
 					time_passed = time.time() - start
 					progress = int(100 * time_passed/expires_in)
 					progressDialog.update(content, progress)
-				else: break
-		except: pass
+				else:
+					logger('FenLight Trakt', 'device token poll returned %s: %s' % (status_code, response.text[:200]))
+					break
+		except Exception as e: logger('FenLight Trakt', 'device token poll error: %s' % e)
 		try: progressDialog.close()
 		except: pass
-	except: pass
+	except Exception as e: logger('FenLight Trakt', 'device token request FAILED: %s' % e)
 	return result
 
 def trakt_refresh_token():
 	CLIENT_ID = trakt_client()
-	if CLIENT_ID in empty_setting_check: return no_client_key()
+	if CLIENT_ID in empty_setting_check: return False
 	CLIENT_SECRET = trakt_secret()
-	if CLIENT_SECRET in empty_setting_check: return no_secret_key()
-	data = {        
+	if CLIENT_SECRET in empty_setting_check: return False
+	refresh_token = get_setting('fenlight.trakt.refresh')
+	if not refresh_token or refresh_token in empty_setting_check or refresh_token == '0': return False
+	with refresh_lock:
+		# Trakt rotates the refresh token on use, so a concurrent call may already have replaced it.
+		if get_setting('fenlight.trakt.refresh') != refresh_token: return True
+		return _trakt_refresh_token(CLIENT_ID, CLIENT_SECRET, refresh_token)
+
+def _trakt_refresh_token(CLIENT_ID, CLIENT_SECRET, refresh_token):
+	data = {
 		'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob',
-		'grant_type': 'refresh_token', 'refresh_token': get_setting('fenlight.trakt.refresh')}
+		'grant_type': 'refresh_token', 'refresh_token': refresh_token}
 	response = call_trakt("oauth/token", data=data, with_auth=False)
 	if response and 'access_token' in response:
-		set_setting('trakt.token', response["access_token"])
+		# the refresh token is single use, so store the replacement first: a crash after this point
+		# still leaves a usable token pair behind.
 		set_setting('trakt.refresh', response["refresh_token"])
-		set_setting('trakt.expires', str(time.time() + 7776000))
+		set_setting('trakt.token', response["access_token"])
+		expires_in = int(response.get('expires_in', 604800))
+		set_setting('trakt.expires', str(time.time() + expires_in))
+		logger('FenLight Trakt', 'token refresh SUCCESS - new token valid for %s seconds' % expires_in)
+		return True
+	error = response.get('error') if isinstance(response, dict) else None
+	if error in ('invalid_grant', 'invalid_client'):
+		logger('FenLight Trakt', 'token refresh REJECTED (%s) - the account must be authorized again' % error)
+		return False
+	logger('FenLight Trakt', 'token refresh could not be completed - Trakt unreachable or unexpected response: %s' % str(response)[:120])
+	return None
 
 def trakt_authenticate(dummy=''):
 	code = trakt_get_device_code()
+	if not code: return False
 	token = trakt_get_device_token(code)
 	if token:
 		set_setting('trakt.token', token["access_token"])
 		set_setting('trakt.refresh', token["refresh_token"])
-		set_setting('trakt.expires', str(time.time() + 7776000))
+		set_setting('trakt.expires', str(time.time() + int(token.get('expires_in', 604800))))
 		set_setting('watched_indicators', '1')
 		sleep(1000)
 		try:
@@ -305,7 +347,8 @@ def trakt_watched_status_mark(action, media, media_id, tvdb_id=0, season=None, e
 		elif media =='shows': data = {'shows': [{'ids': {key: media_id}}]}
 		else: data = {'shows': [{'ids': {key: media_id}, 'seasons': [{'number': int(season)}]}]}#season
 	result = call_trakt(url, data=data)
-	success = result[result_key][success_key] > 0
+	if not result: return logger('FenLight Trakt', 'watched status update FAILED for %s %s' % (media, media_id))
+	success = result.get(result_key, {}).get(success_key, 0) > 0
 	if not success:
 		if media != 'movies' and tvdb_id != 0 and key != 'tvdb': return trakt_watched_status_mark(action, media, tvdb_id, 0, season, episode, 'tvdb')
 	return success
@@ -652,33 +695,76 @@ def trakt_indicators_movies():
 	trakt_watched_cache.set_bulk_movie_watched(insert_list)
 
 def trakt_indicators_tv():
-	def _process(item):
-		reset_at = item.get('reset_at', None)
-		if reset_at: reset_at = js2date(reset_at, res_format)
-		show = item['show']
-		seasons = item['seasons']
-		title = show['title']
-		tmdb_id = get_trakt_tvshow_id(show['ids'])
-		if not tmdb_id: return
+	# Trakt no longer returns the seasons/episodes breakdown in sync/watched/shows, so the watched episodes
+	# are rebuilt from the play history (250 per page). The newest page is fetched first: when it only holds
+	# plays that are newer than what is already stored, those are appended and the rebuild is skipped.
+	remap_cache = {}
+	def _episode_remap(tmdb_id):
+		# looked up once per show, not once per play
+		if tmdb_id in remap_cache: return remap_cache[tmdb_id]
 		try:
 			from modules.metadata import tvshow_meta as _tm
 			from modules.settings import mpaa_region as _mr
 			_meta = _tm('tmdb_id', tmdb_id, tmdb_api_key(), _mr(), get_datetime())
-			_ep_remap = _meta.get('tmdb_to_tvdb_ep', {}) if _meta else {}
-		except: _ep_remap = {}
-		for s in seasons:
-			season_no, episodes = s['number'], s['episodes']
-			for e in episodes:
-				last_watched_at = e['last_watched_at']
-				if reset_at and reset_at > js2date(last_watched_at, res_format): continue
-				tvdb_s, tvdb_e = _ep_remap.get((season_no, e['number']), (season_no, e['number']))
-				insert_append(('episode', tmdb_id, tvdb_s, tvdb_e, last_watched_at, title))
-	insert_list = []
-	insert_append = insert_list.append
-	params = {'path': 'users/me/watched/shows?extended=full%s', 'with_auth': True, 'pagination': False}
-	result = get_trakt(params)
-	threads = list(make_thread_list(_process, result))
-	[i.join() for i in threads]
+			remap_cache[tmdb_id] = _meta.get('tmdb_to_tvdb_ep', {}) if _meta else {}
+		except: remap_cache[tmdb_id] = {}
+		return remap_cache[tmdb_id]
+	def _make_row(item, tmdb_id, title, ep_remap):
+		season_no, episode_no = item['episode']['season'], item['episode']['number']
+		tvdb_s, tvdb_e = ep_remap.get((season_no, episode_no), (season_no, episode_no))
+		return ('episode', tmdb_id, tvdb_s, tvdb_e, item['watched_at'], title)
+	def _process_show(item):
+		show = item['show']
+		trakt_id = show['ids'].get('trakt')
+		tmdb_id = get_trakt_tvshow_id(show['ids'])
+		if not tmdb_id or not trakt_id: return
+		shows_info[trakt_id] = (tmdb_id, show['title'], item.get('reset_at') or None, _episode_remap(tmdb_id))
+	def _get_history_page(page_no):
+		params = {'path': 'sync/history/episodes%s', 'params': {'limit': history_page_limit}, 'with_auth': True, 'pagination': True, 'page_no': page_no}
+		try: history_extend(get_trakt(params) or [])
+		except: logger('FenLight Trakt', 'watched history page %s FAILED' % page_no)
+	try: first_page = call_trakt('sync/history/episodes', params={'limit': history_page_limit}, with_auth=True, pagination=True, page_no=1)
+	except: first_page = None
+	if not first_page: return logger('FenLight Trakt', 'watched history request FAILED - watched episodes left untouched')
+	history = list(first_page[0] or [])
+	history_extend = history.extend
+	try: page_count = int(first_page[1])
+	except: page_count = 1
+	# Trakt returns the history newest first, so anything above the newest stored play is what changed.
+	last_synced = trakt_watched_cache.last_watched_episode_date()
+	new_plays = [i for i in history if i.get('watched_at', '') > last_synced] if last_synced else []
+	if new_plays and len(new_plays) < len(history):
+		insert_list = []
+		for item in new_plays:
+			try:
+				tmdb_id = get_trakt_tvshow_id(item['show']['ids'])
+				if not tmdb_id: continue
+				insert_list.append(_make_row(item, tmdb_id, item['show']['title'], _episode_remap(tmdb_id)))
+			except: pass
+		if insert_list:
+			trakt_watched_cache.add_tvshow_watched(insert_list)
+			return logger('FenLight Trakt', 'watched episodes sync: %s new plays added, no rebuild needed' % len(insert_list))
+	# full rebuild: no stored history, plays were removed, or more new plays than a single page holds
+	shows_info = {}
+	shows = get_trakt({'path': 'sync/watched/shows%s', 'with_auth': True, 'pagination': False}) or []
+	if not shows: return trakt_watched_cache.set_bulk_tvshow_watched([])
+	make_thread_list(_process_show, shows)
+	if page_count > 1: make_thread_list(_get_history_page, range(2, page_count + 1))
+	watched_episodes = {}
+	for item in history:
+		try:
+			info = shows_info.get(item['show']['ids'].get('trakt'))
+			if not info: continue
+			tmdb_id, title, reset_at, ep_remap = info
+			watched_at = item['watched_at']
+			if reset_at and watched_at < reset_at: continue
+			key = (item['episode']['season'], item['episode']['number'], tmdb_id)
+			if key in watched_episodes and watched_episodes[key][4] >= watched_at: continue
+			watched_episodes[key] = _make_row(item, tmdb_id, title, ep_remap)
+		except: pass
+	insert_list = list(watched_episodes.values())
+	logger('FenLight Trakt', 'watched episodes rebuild: %s shows, %s history plays over %s pages, %s episodes' \
+			% (len(shows), len(history), page_count, len(insert_list)))
 	trakt_watched_cache.set_bulk_tvshow_watched(insert_list)
 
 def trakt_playback_progress():
@@ -722,41 +808,36 @@ def trakt_progress_movies(progress_info):
 	trakt_watched_cache.set_bulk_movie_progress(insert_list)
 
 def trakt_progress_tv(progress_info):
-	def _process_tmdb_ids(item):
-		tmdb_id = get_trakt_tvshow_id(item['ids'])
-		tmdb_list_append((tmdb_id, item['title']))
+	def _process_show(show):
+		tmdb_id = get_trakt_tvshow_id(show['ids'])
+		if not tmdb_id: return
+		try:
+			from modules.metadata import tvshow_meta as _tm
+			from modules.settings import mpaa_region as _mr
+			_meta = _tm('tmdb_id', tmdb_id, tmdb_api_key(), _mr(), get_datetime())
+			_ep_remap = _meta.get('tmdb_to_tvdb_ep', {}) if _meta else {}
+		except: _ep_remap = {}
+		shows_info[show['ids'].get('trakt')] = (tmdb_id, _ep_remap)
 	def _process():
-		for item in tmdb_list:
+		for p_item in progress_items:
 			try:
-				tmdb_id = item[0]
-				if not tmdb_id: continue
-				title = item[1]
-				try:
-					from modules.metadata import tvshow_meta as _tm
-					from modules.settings import mpaa_region as _mr
-					_meta = _tm('tmdb_id', tmdb_id, tmdb_api_key(), _mr(), get_datetime())
-					_ep_remap = _meta.get('tmdb_to_tvdb_ep', {}) if _meta else {}
-				except: _ep_remap = {}
-				for p_item in progress_items:
-					if p_item['show']['title'] == title:
-						season = p_item['episode']['season']
-						ep_num = p_item['episode']['number']
-						tvdb_s, tvdb_e = _ep_remap.get((season, ep_num), (season, ep_num))
-						if tvdb_s > 0: yield ('episode', str(tmdb_id), tvdb_s, tvdb_e, str(round(p_item['progress'], 1)),
-											0, p_item['paused_at'], p_item['id'], p_item['show']['title'])
+				# matched on the trakt id: two different shows can share the same title
+				info = shows_info.get(p_item['show']['ids'].get('trakt'))
+				if not info: continue
+				tmdb_id, ep_remap = info
+				season, ep_num = p_item['episode']['season'], p_item['episode']['number']
+				tvdb_s, tvdb_e = ep_remap.get((season, ep_num), (season, ep_num))
+				if tvdb_s > 0: yield ('episode', str(tmdb_id), tvdb_s, tvdb_e, str(round(p_item['progress'], 1)),
+									0, p_item['paused_at'], p_item['id'], p_item['show']['title'])
 			except: pass
-	tmdb_list = []
-	tmdb_list_append = tmdb_list.append
+	shows_info = {}
 	progress_items = [i for i in progress_info if i['type'] == 'episode' and i['progress'] > 1]
 	if not progress_items:
 		trakt_watched_cache.set_bulk_tvshow_progress([])
 		return
-	all_shows = [i['show'] for i in progress_items]
-	all_shows = [i for n, i in enumerate(all_shows) if not i in all_shows[n + 1:]] # remove duplicates
-	threads = list(make_thread_list(_process_tmdb_ids, all_shows))
-	[i.join() for i in threads]
-	insert_list = list(_process())
-	trakt_watched_cache.set_bulk_tvshow_progress(insert_list)
+	all_shows = {i['show']['ids'].get('trakt'): i['show'] for i in progress_items}
+	make_thread_list(_process_show, list(all_shows.values()))
+	trakt_watched_cache.set_bulk_tvshow_progress(list(_process()))
 
 def trakt_official_status(media_type):
 	if not addon_installed('script.trakt'): return True
