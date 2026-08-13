@@ -35,17 +35,6 @@
         <value>PlayMedia($ESCINFO[ListItem.FolderPath])</value>
     </variable>
 
-    <variable name="Action_Sync">
-        <value condition="[String.IsEqual(ListItem.DBType,movie) | String.IsEqual(ListItem.DBType,tvshow)] + !String.IsEmpty(ListItem.Property(tmdb_id))">RunScript(plugin.video.themoviedb.helper,sync_trakt,tmdb_id=$INFO[ListItem.Property(tmdb_id)],$VAR[Path_Param_Type],cache_refresh)</value>
-        <value condition="[String.IsEqual(ListItem.DBType,movie) | String.IsEqual(ListItem.DBType,tvshow)] + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID))">RunScript(plugin.video.themoviedb.helper,sync_trakt,tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)],$VAR[Path_Param_Type],cache_refresh)</value>
-
-        <value condition="[String.IsEqual(ListItem.DBType,season)] + !String.IsEmpty(ListItem.Property(tvshow.tmdb_id))">RunScript(plugin.video.themoviedb.helper,sync_trakt,tmdb_id=$INFO[ListItem.Property(tvshow.tmdb_id)],$VAR[Path_Param_Type],season=$INFO[ListItem.Season],cache_refresh)</value>
-        <value condition="[String.IsEqual(ListItem.DBType,season)] + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.tvshow.tmdb_id))">RunScript(plugin.video.themoviedb.helper,sync_trakt,tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.tvshow.tmdb_id)],$VAR[Path_Param_Type],season=$INFO[ListItem.Season],cache_refresh)</value>
-
-        <value condition="[String.IsEqual(ListItem.DBType,episode)] + !String.IsEmpty(ListItem.Property(tvshow.tmdb_id))">RunScript(plugin.video.themoviedb.helper,sync_trakt,tmdb_id=$INFO[ListItem.Property(tvshow.tmdb_id)],$VAR[Path_Param_Type],season=$INFO[ListItem.Season],episode=$INFO[ListItem.Episode],cache_refresh)</value>
-        <value condition="[String.IsEqual(ListItem.DBType,episode)] + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.tvshow.tmdb_id))">RunScript(plugin.video.themoviedb.helper,sync_trakt,tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.tvshow.tmdb_id)],$VAR[Path_Param_Type],season=$INFO[ListItem.Season],episode=$INFO[ListItem.Episode],cache_refresh)</value>
-    </variable>
-
     <include name="Action_ButtonMenu_Onload">
         <onload condition="String.IsEmpty(Skin.String(OptionsTiles.Layout))">Skin.SetString(OptionsTiles.Layout,$NUMBER[3])</onload>
 
@@ -233,8 +222,6 @@
             <param name="sourceimage">Art(tvshow.fanart{x})|Art(fanart{x})|Property(fanart)||EPGEventIcon||PicturePath</param>
         </include>
 
-        <onload condition="Skin.HasSetting(TMDbHelper.EnableData)">Skin.SetBool(TMDbHelper.Service)</onload>
-        <onload condition="!Skin.HasSetting(TMDbHelper.EnableData)">Skin.Reset(TMDbHelper.Service)</onload>
     </include>
     <include name="_Action_Blur_OnUnload">
         <param name="sourceimage">Art(fanart)</param>
@@ -271,13 +258,6 @@
         <value condition="String.IsEqual(Window(Home).Property(ColorPicker_Type),mid_season_finale)">Skin.SetString(mid_season_finale_color.name,$VAR[Color_PC_to_Hex])</value>
     </variable>
 
-    <include name="Action_PlayTrailer_OnClick">
-        <onclick condition="String.IsEmpty($PARAM[trailer]) + !String.IsEmpty($PARAM[trailer_fallback])">SetProperty(PlayTrailer,$ESCINFO[$PARAM[trailer_fallback]],Home)</onclick>
-        <onclick condition="!String.IsEmpty($PARAM[trailer])">SetProperty(PlayTrailer,$ESCINFO[$PARAM[trailer]],Home)</onclick>
-        <onclick condition="!String.IsEmpty($PARAM[trailer]) | !String.IsEmpty($PARAM[trailer_fallback])">SetProperty(PlayTrailerTitle,$PARAM[title],Home)</onclick>
-        <onclick condition="!String.IsEmpty($PARAM[trailer]) | !String.IsEmpty($PARAM[trailer_fallback])">SetProperty(PlayTrailerItems,$PARAM[items],Home)</onclick>
-        <onclick condition="!String.IsEmpty($PARAM[trailer]) | !String.IsEmpty($PARAM[trailer_fallback])">ActivateWindow(1123)</onclick>
-    </include>
 
     <include name="Action_Scheme_Onclick_Bright">
         <onclick>Skin.Reset(focuscolor.name)</onclick>
@@ -341,49 +321,5 @@
     <variable name="Action_FullscreenWidget_InfoButton">
         <value condition="Skin.HasSetting(Spotlight.UseMenuButton) + $EXP[Exp_Hubs_Spotlight_HasItems]">Action(contextmenu)</value>
         <value>Action(info)</value>
-    </variable>
-
-    <variable name="Action_RatingsMonitor">
-        <value condition="Skin.String(CustomRating.Movies.Item01,TMDb)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item01,Trakt)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item01,IMDb)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item01,Metacritic)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item01,RottenTomatoesCritic)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item01,RottenTomatoesUser)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item01,MDBList)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item01,Letterboxd)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item01,Awards)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-
-        <value condition="Skin.String(CustomRating.Movies.Item02,TMDb)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item02,Trakt)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item02,IMDb)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item02,Metacritic)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item02,RottenTomatoesCritic)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item02,RottenTomatoesUser)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item02,MDBList)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item02,Letterboxd)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.Movies.Item02,Awards)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-
-        <value condition="Skin.String(CustomRating.TVShows.Item01,TMDb)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item01,Trakt)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item01,IMDb)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item01,Metacritic)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item01,RottenTomatoesCritic)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item01,RottenTomatoesUser)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item01,MDBList)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item01,Letterboxd)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item01,Awards)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-
-        <value condition="Skin.String(CustomRating.TVShows.Item02,TMDb)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item02,Trakt)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item02,IMDb)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item02,Metacritic)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item02,RottenTomatoesCritic)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item02,RottenTomatoesUser)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item02,MDBList)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item02,Letterboxd)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-        <value condition="Skin.String(CustomRating.TVShows.Item02,Awards)">Skin.Reset(TMDbHelper.DisableRatings)</value>
-
-        <value>Skin.SetBool(TMDbHelper.DisableRatings)</value>
     </variable>
 </includes>

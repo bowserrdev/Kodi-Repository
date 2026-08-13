@@ -114,24 +114,7 @@
         <content>favourites://</content>
     </include>
 
-    <include name="DialogCustom_Trailers">
-        <include content="DialogCustom_Favourites">
-            <param name="header">$LOCALIZE[10025]</param>
-            <param name="include_content">DialogCustom_Trailers_Content</param>
-        </include>
-    </include>
 
-    <include name="DialogCustom_Trailers_Content">
-        <onclick>Close</onclick>
-        <onclick>Dialog.Close(1123,true)</onclick>
-        <include content="Action_PlayTrailer_OnClick">
-            <param name="trailer">Container(450).ListItem.FileNameAndPath</param>
-            <param name="trailer_fallback" />
-            <param name="title">$INFO[Container(450).ListItem.Label]</param>
-            <param name="items">$INFO[Window(Home).Property(PlayTrailerItems)]</param>
-        </include>
-        <content>$INFO[Window(Home).Property(PlayTrailerItems)]</content>
-    </include>
 
     <include name="DialogCustom_Reload_1118">
         <param name="condition_service">false</param>

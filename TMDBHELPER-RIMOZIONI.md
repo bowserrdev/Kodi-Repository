@@ -247,6 +247,134 @@ scrive. Lo script è stato corretto; la superficie viva reale è **258 rif. / 29
 
 ---
 
+## Lotto 5 — Crew, studio e valutazioni (Images + Labels)
+
+Riferimenti morti rimossi: **291**, su 99 righe in 31 variabili. Il lotto più grande dell'intera
+operazione. `Includes_Labels.xml` è sceso a **zero** riferimenti morti, `Includes_Images.xml` a 3.
+
+Stessa forma del lotto 2 — riga viva più righe con condizione irraggiungibile — e il classificatore
+ha confermato **99 righe di tipo A, zero miste, zero della forma pericolosa** (condizione viva con
+valore morto). Nessuna sorpresa in esecuzione.
+
+### Ridotte alla sola riga viva
+
+`Label_Studio`, `Label_Country`, `Label_Genre`, `Label_Director`, `Label_Writer`, `Label_Creator`,
+`Label_OSD_FromDirector`, `Label_OSD_FromWriter`, `Label_OSD_DirectorName`, `Label_OSD_WriterName`,
+`Label_OSD_StudioName`, `Image_Clearlogo_Title`, `Image_Overlay_Poster`, `Image_OSD_Clearart`,
+`Image_OSD_Clearlogo`, `Image_PVRPoster`, `Image_PVREpgLandscapeArt`, `Image_CombinedStudio`, più le
+quattro varianti `*_RottenTomatoes*`.
+
+### Eliminate perché orfane
+
+`Image_OSD_CombinedStudio`, `Image_FromWriter`, `Image_OSD_DirectorIcon`, `Image_CreatorIcon`,
+`Image_OSD_CreatorIcon`, `Image_OSD_StudioIcon`, `Label_FromCreator`.
+
+### Svuotate perché ancora consumate
+
+`Image_FromDirector` (alimenta un `<icon>`) e `Image_WriterIcon` (param `shot`): entrambe alimentano
+un'immagine, non un container, quindi ricevono `<value />` e **non** `Null.xsp` — regola del lotto 2.
+
+### Da ricostruire nell'helper
+
+- **Crew nell'OSD durante la riproduzione**: nomi e ritratti di regista, sceneggiatore, creatore,
+  studio (`Player.Director.*`, `Player.Writer.*`, `Player.Studio.*`, `Player.Network.*`).
+  Fonte: `/movie/{id}/credits`, `/tv/{id}/credits`.
+- **Valutazioni Rotten Tomatoes**, icona critica e icona pubblico, sia per l'elemento selezionato
+  sia per quello in riproduzione. Non sono su TMDb: servono OMDb o MDBList.
+- **Icone studio/network combinate**.
+
+---
+
+## Lotto 6a — Scheda info: sezione crew e righe permanentemente nascoste
+
+Riferimenti morti rimossi: **27** (114 → 87). `Includes_DialogInfo.xml` è sceso da 35 a 8.
+
+### Due forme di `<visible>`, trattate in modo opposto
+
+- **OR con un'alternativa viva** (`FenLight… | TMDbHelper… | ListItem…`): il termine morto è sempre
+  falso e in un OR non contribuisce, quindi si toglie solo quello. 7 condizioni ripulite.
+- **Dipendente solo da proprietà morte**: il controllo è *permanentemente nascosto*. Qui togliere la
+  `<visible>` lo farebbe **comparire**: va rimosso il controllo intero. Così per Provider, Incassi/
+  Budget, Premi, Tagline e il pulsante Trakt.
+
+### Rimossi
+
+Sezione **Crew Lists** completa (8 widget × 10 voci: Regista, Sceneggiatore, Produzione, Suono,
+Reparto artistico, Fotografia, Montaggio, Creatore) — qui `altvisible` era **morto**, a differenza
+del lotto 4, quindi la sezione non disegnava nulla e la rimozione è neutra.
+
+Righe metadati permanentemente nascoste: Provider streaming, Incassi/Budget, Premi, Tagline.
+
+Pulsante **Trakt** del menu video: nascosto da `TMDbHelper.TraktIsAuth` e comunque inerte, perché il
+suo `onclick` è `$VAR[Action_Sync]`, interamente `RunScript(plugin.video.themoviedb.helper,…)`.
+
+### Lasciati di proposito
+
+I due `<param name="croplogo">Window(Home).Property(TMDbHelper.ListItem.Current.CropImage)</param>`.
+Il valore viene sostituito **testualmente** dentro `String.IsEmpty($PARAM[croplogo])`
+([Includes_Info.xml:393](skin.arctic.fuse.3/1080i/Includes_Info.xml#L393)): rimuovere il param
+produrrebbe `String.IsEmpty()` senza argomento, che è peggio del riferimento morto. Vanno tolti
+quando l'helper ripopolerà `CropImage`.
+
+### Due errori commessi, entrambi intercettati dalle verifiche
+
+**1. Blocco sbagliato rimosso.** Per isolare il controllo da eliminare cercavo «l'`<include content=>`
+più vicino sopra il marcatore». Ma `TraktIsAuth` sta dentro una *definizione* `<include name=>`, non
+dentro un `<include content=>`: la ricerca ha agganciato un blocco estraneo e ha cancellato l'azione
+«riproduci trailer» di un pulsante video — che era **viva** (`<param name="trailer">ListItem.Trailer`).
+Ripristinata dal blob git, senza il solo `trailer_fallback` morto.
+
+**2. Definizioni cancellate come orfane pur non essendolo.** Kodi ammette **due sintassi** di
+riferimento a un include: `<include content="Nome">` e `<include>Nome</include>`. Il controllo
+cercava solo la prima, così `DialogInfo_Widget_Grouplist` (usato da `DialogVideoInfo.xml` e
+`DialogMusicInfo.xml` con la seconda forma) e `DialogInfo_CrewItems` (usato da `Dialog_DialogView.xml`)
+risultavano orfani. Tutte e tre le definizioni sono state ripristinate.
+
+**Da qui in avanti il controllo di orfanità cerca entrambe le sintassi e ignora i commenti.**
+
+Nota: `DialogPlotFake`, `Hub_Disabled_Onload`, `Settings_InfoText`, `View_Furniture_Scrollbar_V`
+risultano usati ma non definiti — è così **da prima** di questo lavoro, non è una regressione.
+
+---
+
+## Fuori lotto — rimozione della funzione "riproduci trailer"
+
+Richiesta dall'utente: funzione mai usata. Non è codice morto ma **funzionalità viva rimossa per
+scelta**, quindi va in una categoria a sé rispetto ai lotti.
+
+È un sottosistema autonomo, e rimuovere solo il pulsante avrebbe lasciato tre finestre orfane.
+
+### File eliminati
+
+`Custom_1122_Dialog_SelectTrailer.xml`, `Custom_1123_Dialog_Trailer.xml`, `Dialog_DialogTrailer.xml`,
+`shortcuts/builtins/skinvariables-playtrailer.json` (192 righe in totale).
+
+Rimossa anche la riga `<include file="Dialog_DialogTrailer.xml" />` da `Includes.xml`: senza quella,
+Kodi avrebbe cercato un file inesistente.
+
+### Definizioni e riferimenti rimossi
+
+`Action_PlayTrailer_OnClick`, `DialogInfo_VideoButtons_Trailer` (+2 referenze), `DialogCustom_Trailers`,
+`DialogCustom_Trailers_Content`, `Path_VideoInfo_Trailers`, `Image_Trailer_PlayPause`,
+`Label_Trailer_PlayPause`, la voce "riproduci trailer" del menu contestuale (già nascosta), il
+pannello **Videos** della scheda info e il `SetProperty(trailer,…,1114)` rimasto inerte.
+
+### Residuo innocuo
+
+`Window.IsVisible(1123)` compare ancora in `Includes_Background.xml`, `Includes_Defaults.xml` e
+`Includes_Expressions.xml` come guardia sulla finestra video. Con la finestra 1123 inesistente la
+condizione è sempre falsa, quindi le guardie diventano no-op: è il comportamento corretto in assenza
+del dialog trailer. Lasciate perché toccare `Includes_Background.xml` significherebbe rimettere mano
+al layer del blur senza alcun guadagno.
+
+### Nota sull'invariante
+
+La superficie viva è scesa da 258 a 256 perché due riferimenti a `TMDbHelper.ContextMenu` vivevano
+dentro i file trailer eliminati. Non è una regressione: sparisce la funzione che li usava. Verificato
+che il meccanismo resti coerente — 12 scritture e 12 letture della proprietà.
+
+---
+
 ## Fuori lotto — prompt "installa TMDbHelper" nell'OSD video
 
 Anticipato rispetto al piano perché era un disturbo attivo durante la riproduzione, non codice
@@ -286,3 +414,96 @@ Con l'addon assente, Kodi apre il prompt di installazione. Bastava passare sul b
 dialog info (non durante la riproduzione) ed è dentro un `$INFO[Window.Property(tmdb_id),...]`,
 che non emette nulla se la proprietà è vuota. Va trattato insieme al resto di
 `Includes_DialogInfo.xml`.
+
+---
+
+## Lotto 6b — chiusura: impostazioni scrittura-sola, overlay di debug, ContextMenu
+
+Il lotto che chiude la caccia ai riferimenti morti. La novità metodologica è che qui la
+distinzione "vivo / morto" non si decide più guardando le proprietà di finestra, ma
+**contando letture e scritture di ogni impostazione skin**.
+
+### Il criterio: chi legge, non chi scrive
+
+Molte impostazioni si chiamano `TMDbHelper.*` ma sono *impostazioni della skin*, scritte
+dalla skin stessa con `Skin.SetBool` / `Skin.SetString`. Il nome non dice nulla sul fatto
+che siano vive. Quello che conta è se **qualcuno le legge**:
+
+| Impostazione | Letture | Verdetto |
+|---|---|---|
+| `EnableData` | `Exp_TMDbHelper_IsData`, usata 52 volte | **viva** |
+| `EnableBlur` | `Exp_TMDbHelper_IsBlur` (27 usi) + `blur_service.py:162` | **viva** |
+| `EnableCrop` | `Exp_TMDbHelper_IsCrop` (8 usi) | **viva** |
+| `Blur.Size`, `Blur.Radius` | `blur_service.py:18-20` | **vive** |
+| `DisableRatings` | nessuna (37 scritture) | morta |
+| `Service` | solo la regola che riscrive `EnableData` | morta (anello chiuso) |
+| `UseLocalWidgetContainer`, `DisableExtendedProperties`, `EnableCurrentWindowImages`, `DirectCallAuto`, `MonitorContainer`, `DisableArtwork`, `Corner.Radius`, `UseLocalWindowIDs` | nessuna | morte |
+| `DisablePVR` | solo il proprio `<selected>` | morta (interruttore su sé stesso) |
+
+Le prime cinque restano e vanno solo rinominate al punto 6. Le altre sono sparite.
+
+### Rimossi
+
+| File | Cosa | Perché |
+|---|---|---|
+| `Includes_Actions.xml` | `Action_RatingsMonitor` (42 righe) | 37 condizioni valutate a ogni ingresso in Home per scrivere un booleano che nessuno legge |
+| `Includes_Actions.xml` | `Action_Sync` (10 righe) | variabile mai referenziata; tutti i valori chiamavano `RunScript(themoviedb.helper)` |
+| `Includes_Actions.xml` | ponte `EnableData` → `Service` | l'altra metà dell'anello |
+| `Home.xml`, `SkinSettings.xml` | le due chiamate a `Action_RatingsMonitor` | |
+| `Home.xml` | `Corner.Radius`, `UseLocalWindowIDs` | |
+| `skinvariables-startup.json` | 7 `Skin.Set*` + la regola `Service` | giravano **a ogni avvio** |
+| `Includes_Overlay.xml` | 2 label di debug + `Overlay_IsUpdating`, `_Overlay_IsUpdating`, `Overlay_WidgetContainer` | overlay diagnostico su stato del servizio TMDbHelper |
+| `Includes_Info.xml` | blocchi *Status* e *Awards* | entrambi gated su proprietà mai scritte: mai visibili |
+| `Includes_Images.xml`, `Includes_Labels.xml` | le 6 variabili `*_Status` / `*_StatusDate` | diventate orfane con il blocco Status (vedi sotto) |
+| `Dialog_DialogPVRInfo.xml` | bottone info | `<visible>` su `Monitor.TMDb_ID`: mai mostrato |
+| `Includes_SkinSettings.xml` | radiobutton "TMDbHelper for PVR" | interruttore senza alcun effetto |
+| 12 finestre | `SetProperty(TMDbHelper.ContextMenu,True)` | vedi sotto |
+
+### Le variabili del lotto 1, finalmente eliminabili
+
+Nel lotto 1 avevo cancellato per errore `Label_$PARAM[service]_Status` e compagne, raggiunte
+dinamicamente da `Includes_Info.xml:255`, e avevo dovuto ripristinarle collassate sul loro
+fallback. Rimosso ora il blocco *Status* che le consumava, sono diventate orfane per davvero
+e sono uscite tutte e sei. L'ordine giusto era questo: **prima il consumatore, poi la variabile.**
+
+### Una correzione: `TMDbHelper.ContextMenu`
+
+Nel lotto precedente avevo dichiarato questa proprietà "bilanciata, 12 scritture e 12 letture".
+Era sbagliato: avevo contato due volte le scritture. Il conto reale è **12 scritture e nessuna
+lettura**, né nella skin né in Fen Light. Era il segnale con cui la skin diceva a TMDbHelper di
+sospendere il monitoraggio mentre un dialog era aperto. Rimosse tutte e 12.
+
+### Lasciati di proposito
+
+- **`croplogo`** (5 punti: `Includes_Info`, `Includes_DialogInfo` ×2, `Includes_OSD` ×2).
+  `CropImage` non è mai scritta, quindi il ramo "logo ritagliato" non è mai visibile e i
+  7 rami alternativi si comportano già come oggi. È il gancio naturale per l'helper.
+- **`Custom_1141_OSD_Cast.xml`**: il parametro `text` è stato svuotato invece che rimosso.
+  L'include `OSD_Info_Tray` ha come default `$INFO[VideoPlayer.Plot]`: togliere il parametro
+  avrebbe mostrato la trama del film sotto il nome di un attore.
+
+### Trovato e non toccato: la scheda crew è irraggiungibile
+
+`Custom_1120_Dialog_SelectCrew.xml` (finestra 1120) è alimentata da
+`TMDbHelper.ListItem.<ruolo>.<n>.Name/Role/Thumb/TMDb_ID`, che nessuno scrive. In più
+**nessuno attiva mai la finestra 1120**: gli unici riferimenti, in `Includes_DialogInfo.xml:1196`
+e `:1210`, fanno `SetProperty(type,Director,1120)` senza `ActivateWindow`. Con `EnableData`
+attivo — cioè sempre — il bottone *Regista* nella scheda info **non fa nulla al clic**.
+
+Non è una rimozione di riferimenti morti ma una decisione di funzionalità, quindi è rimasta
+in sospeso. Le due strade:
+
+1. **Eliminare**: via finestra 1120, `DialogViewCrew_*`, `DialogInfo_CrewItem(s)`, e i bottoni
+   Regista/Sceneggiatore usano il ramo `!IsData` che già funziona (`SendClick(13)`).
+2. **Ricostruire su Fen Light**: `skin_properties.py` pubblica già
+   `FenLight.ListItem.{Director,Writer}.{1..3}.{Name,TMDb_ID,Thumb}` — basterebbe riscrivere
+   `DialogInfo_CrewItem` su quelle proprietà e aggiungere l'`ActivateWindow(1120)` mancante.
+   Restano fuori Producer, Photography e Sound_Department, che Fen Light non pubblica.
+
+### Conteggio
+
+Riferimenti morti: **129 → 6** (i soli della scheda crew, in sospeso). Tutto il resto di ciò
+che il classificatore segnala è per scelta: 30 impostazioni skin vive da rinominare al punto 6,
+5 ganci `croplogo`, 1 commento.
+
+`WidgetContainer` resta a 31 scritture / 91 letture, intatto.

@@ -22,7 +22,7 @@
                     <param name="icon">$INFO[Container(6501).ListItem.Icon]</param>
                     <param name="role">$INFO[Container(6501).ListItem.Label]</param>
                     <param name="name">$VAR[Label_OSD_CastMember_Appearances]</param>
-                    <param name="text">$INFO[Window(Home).Property(TMDbHelper.ListItem.Plot)]</param>
+                    <param name="text"></param>
                 </include>
 
                 <!-- Cast List -->
