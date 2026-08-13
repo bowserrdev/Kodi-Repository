@@ -60,7 +60,7 @@ def _search_live_query():
 
 # Verbose diagnostic logging for the interactive pagination flow. Grep the Kodi log for FENLIGHT_PG.
 # Flip to True to re-enable tracing when debugging pagination.
-PG_DEBUG = True
+PG_DEBUG = False
 
 def log(msg):
 	if not PG_DEBUG: return

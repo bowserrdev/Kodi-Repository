@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 from caches.base_cache import connect_database, get_timestamp
-from modules.kodi_utils import get_property, set_property, clear_property
+from modules.kodi_utils import clear_property
 
 all_tables = ('metadata', 'season_metadata', 'function_cache')
 id_types = ('tmdb_id', 'imdb_id', 'tvdb_id')
@@ -22,39 +22,40 @@ DELETE_ALL = 'DELETE FROM %s'
 CLEAN = 'DELETE from %s WHERE CAST(expires AS INT) <= ?'
 string = str
 
+# Lo strato di cache "in memoria" che stava qui teneva il metadato completo di ogni titolo dentro una
+# proprieta' di Window(10000), in JSON. Serviva perche' ogni build del widget e' un processo Python
+# nuovo (reuselanguageinvoker=false) e un dizionario non sopravviverebbe -- ma SQLite sopravvive
+# ugualmente, e in WAL la lettura e' gia' servita dalla cache di pagina del sistema. In cambio quello
+# strato costava: crescita ILLIMITATA (nessuno rimuoveva le voci finche' Kodi non si chiudeva, quindi
+# megabyte di stringhe su un dispositivo da 1 GB) e un json.dumps + setProperty per OGNI elemento a
+# ogni ricostruzione. Rimosso: la lettura passa direttamente da SQLite.
 class MetaCache:
 	def get(self, media_type, id_type, media_id, current_time=None):
 		try:
 			media_id = string(media_id)
 			if not current_time: current_time = get_timestamp()
-			meta = self.get_memory_cache(media_type, id_type, media_id, current_time)
-			if meta is None:
-				dbcon = connect_database('metacache_db')
-				row = dbcon.execute(GET_MOVIE_SHOW % id_type, (media_type, media_id)).fetchone()
-				if row:
-					meta, expiry = json.loads(row[0]), row[1]
-					if expiry < current_time:
-						self.delete(media_type, id_type, media_id, meta=meta)
-						meta = None
-					else:
-						self.set_memory_cache(media_type, id_type, meta, expiry, media_id)
+			meta = None
+			dbcon = connect_database('metacache_db')
+			row = dbcon.execute(GET_MOVIE_SHOW % id_type, (media_type, media_id)).fetchone()
+			if row:
+				meta, expiry = json.loads(row[0]), row[1]
+				if expiry < current_time:
+					self.delete(media_type, id_type, media_id, meta=meta)
+					meta = None
 		except: meta = None
 		return meta
 
 	def get_season(self, prop_string):
 		try:
 			current_time = get_timestamp()
-			meta = self.get_memory_cache_season(prop_string, current_time)
-			if meta is None:
-				dbcon = connect_database('metacache_db')
-				row = dbcon.execute(GET_SEASON, (prop_string,)).fetchone()
-				if row:
-					meta, expiry = json.loads(row[0]), row[1]
-					if expiry < current_time:
-						self.delete_season(prop_string)
-						meta = None
-					else:
-						self.set_memory_cache_season(prop_string, meta, expiry)
+			meta = None
+			dbcon = connect_database('metacache_db')
+			row = dbcon.execute(GET_SEASON, (prop_string,)).fetchone()
+			if row:
+				meta, expiry = json.loads(row[0]), row[1]
+				if expiry < current_time:
+					self.delete_season(prop_string)
+					meta = None
 		except: meta = None
 		return meta
 
@@ -63,9 +64,7 @@ class MetaCache:
 			dbcon = connect_database('metacache_db')
 			meta_get = meta.get
 			expires = (current_time + (expiration * 3600)) if current_time else get_timestamp(expiration)
-			media_id = string(meta_get(id_type))
 			dbcon.execute(SET_MOVIE_SHOW, (media_type, string(meta_get('tmdb_id')), meta_get('imdb_id'), string(meta_get('tvdb_id')), json.dumps(meta, ensure_ascii=False), expires))
-			self.set_memory_cache(media_type, id_type, meta, expires, media_id)
 		except: pass
 
 	def set_season(self, prop_string, meta, expiration=168):
@@ -73,7 +72,6 @@ class MetaCache:
 			dbcon = connect_database('metacache_db')
 			expires = get_timestamp(expiration)
 			dbcon.execute(SET_SEASON, (prop_string, json.dumps(meta, ensure_ascii=False), int(expires)))
-			self.set_memory_cache_season(prop_string, meta, expires)
 		except: pass
 
 	def delete(self, media_type, id_type, media_id, meta=None):
@@ -92,34 +90,6 @@ class MetaCache:
 			dbcon.execute(DELETE_SEASON, (prop_string,))
 			self.delete_memory_cache_season(prop_string)
 		except: return
-
-	def get_memory_cache(self, media_type, id_type, media_id, current_time):
-		try:
-			prop_string = media_prop % (media_type, id_type, media_id)
-			cachedata = json.loads(get_property(prop_string))
-			if cachedata[0] > current_time:
-				return cachedata[1]
-		except: pass
-		return None
-
-	def get_memory_cache_season(self, prop_string, current_time):
-		try:
-			cachedata = json.loads(get_property(season_prop % prop_string))
-			if cachedata[0] > current_time:
-				return cachedata[1]
-		except: pass
-		return None
-
-	def set_memory_cache(self, media_type, id_type, meta, expires, media_id):
-		try:
-			prop_string = media_prop % (media_type, id_type, media_id)
-			set_property(prop_string, json.dumps([expires, meta], ensure_ascii=False))
-		except: pass
-
-	def set_memory_cache_season(self, prop_string, meta, expires):
-		try:
-			set_property(season_prop % prop_string, json.dumps([expires, meta], ensure_ascii=False))
-		except: pass
 
 	def delete_memory_cache(self, media_type, id_type, media_id):
 		try: clear_property(media_prop % (media_type, id_type, media_id))

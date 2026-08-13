@@ -19,6 +19,12 @@ invalid_error_codes = (6, 34, 37)
 
 # Diagnostic logging for the widget "dubbed content" filter. Grep the Kodi log for FENLIGHT_DUB.
 DUB_DEBUG = False
+
+# TMDb restituisce il cast COMPLETO: per un film grosso sono 100+ voci, ognuna con nome, ruolo, id e
+# URL immagine. Finivano tutte nel blob salvato in cache e poi in setCast() su OGNI riga dei widget --
+# con 200 elementi in lista sono decine di migliaia di oggetti attore creati per mostrarne sei.
+# Nessuna interfaccia ne mostra piu' di una ventina. Il resto era peso puro.
+CAST_LIMIT = 20
 def _dub_log(msg):
 	if not DUB_DEBUG: return
 	try:
@@ -318,7 +324,7 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 			all_cast = credits.get('cast', None)
 			if all_cast:
 				try: cast = [{'name': i['name'], 'role': i['character'], 'id': i['id'], 'thumbnail': tmdb_image_url % ('h632', i['profile_path']) if i['profile_path'] else ''}\
-							for i in all_cast]
+							for i in all_cast[:CAST_LIMIT]]
 				except: pass
 			crew = credits.get('crew', None)
 			if crew:
@@ -486,7 +492,7 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			all_cast = credits.get('cast', None)
 			if all_cast:
 				try: cast = [{'name': i['name'], 'role': i['character'], 'id': i['id'], 'thumbnail': tmdb_image_url % ('h632', i['profile_path']) if i['profile_path'] else ''}\
-							for i in all_cast]
+							for i in all_cast[:CAST_LIMIT]]
 				except: pass
 			crew = credits.get('crew', None)
 			if crew:

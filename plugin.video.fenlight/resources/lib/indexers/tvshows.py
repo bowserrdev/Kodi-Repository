@@ -6,7 +6,7 @@ from modules import paginator
 from modules.metadata import tvshow_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url, dub_filter
 from modules.utils import manual_function_import, get_datetime, make_thread_list_enumerate, make_thread_list_multi_arg, get_current_timestamp, paginate_list
 from modules.watched_status import get_database, watched_info_tvshow, get_watched_status_tvshow, get_progress_status_tvshow
-# logger = kodi_utils.logger
+logger = kodi_utils.logger
 
 string, external, add_items, add_dir = str, kodi_utils.external, kodi_utils.add_items, kodi_utils.add_dir
 sleep, add_item, xbmc_actor, home, tmdb_api_key = kodi_utils.sleep, kodi_utils.add_item, kodi_utils.xbmc_actor, kodi_utils.home, settings.tmdb_api_key
@@ -154,7 +154,12 @@ class TVShows:
 				if self.new_page and not self.widget_hide_next_page:
 							self.new_page.update({'mode': 'build_tvshow_list', 'action': self.action, 'category_name': self.category_name})
 							add_dir(self.new_page, 'Next Page (%s) >>' % self.new_page['new_page'], handle, 'nextpage', nextpage_landscape)
-		except: pass
+		except Exception as e:
+			# MAI silenzioso: una build che esplode chiude la directory VUOTA, e il container
+			# torna a ricostruirsi da capo -- e' il meccanismo per cui "spariscono le pagine
+			# dopo la prima". Senza questo log il fallimento e' invisibile.
+			import traceback
+			logger('FenLight BUILD FALLITA', 'tvshows action=%s: %s\n%s' % (self.action, e, traceback.format_exc()))
 		set_content(handle, content_type)
 		set_category(handle, self.category_name)
 		end_directory(handle, cacheToDisc=False if self.is_external else True)
