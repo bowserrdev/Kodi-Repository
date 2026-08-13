@@ -43,17 +43,7 @@
         <value condition="VideoPlayer.Content(episodes)">tv</value>
     </variable>
 
-    <variable name="Path_VideoOSD_TMDbQuery">
-        <value condition="VideoPlayer.Content(movies) + !String.IsEmpty(VideoPlayer.IMDBNumber) + String.StartsWith(VideoPlayer.IMDBNumber,tt)">$INFO[VideoPlayer.IMDBNumber,&amp;imdb_id=,]</value>
-
-        <value condition="VideoPlayer.Content(movies)">$INFO[Window(Home).Property(TMDbHelper.Player.TMDb_ID),&amp;tmdb_id=,]$INFO[Player.Title,&amp;query=,]$INFO[VideoPlayer.Year,&amp;year=,]</value>
-
-        <value condition="VideoPlayer.Content(episodes)">$INFO[Window(Home).Property(TMDbHelper.Player.TVShow.TMDb_ID),&amp;tmdb_id=,]$INFO[VideoPlayer.TVShowTitle,&amp;query=,]$INFO[VideoPlayer.Season,&amp;season=,]$INFO[VideoPlayer.Episode,&amp;episode=,]$INFO[VideoPlayer.Year,&amp;episode_year=,]</value>
-    </variable>
-  
     <variable name="Path_Param_Query">
-        <value condition="[String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),movie) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),tvshow)] + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID))">&amp;tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]</value>
-        <value condition="[String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),season) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),episode)] + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.tvshow.tmdb_id))">&amp;tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.tvshow.tmdb_id)]</value>
         <value condition="[String.IsEqual(Window.Property(FenLight.DBType),movie) | String.IsEqual(Window.Property(FenLight.DBType),tvshow)] + !String.IsEmpty(Window.Property(FenLight.TMDb_ID))">&amp;tmdb_id=$INFO[Window.Property(FenLight.TMDb_ID)]</value>
         <value condition="[String.IsEqual(Window.Property(FenLight.DBType),season) | String.IsEqual(Window.Property(FenLight.DBType),episode)] + !String.IsEmpty(ListItem.UniqueID(tvshow.tmdb))">&amp;tmdb_id=$INFO[ListItem.UniqueID(tvshow.tmdb)]</value>
         <value condition="String.IsEqual(Window.Property(FenLight.DBType),movie) + !String.IsEmpty(ListItem.Property(imdb_id))">&amp;imdb_id=$INFO[ListItem.Property(imdb_id)]</value>
@@ -64,8 +54,6 @@
     </variable>
 
     <variable name="Path_Param_Type">
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),movie)">type=movie</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),tvshow) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),season) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),episode)">type=tv</value>
         <value condition="String.IsEqual(Window.Property(FenLight.DBType),movie)">type=movie</value>
         <value condition="String.IsEqual(Window.Property(FenLight.DBType),tvshow) | String.IsEqual(Window.Property(FenLight.DBType),season) | String.IsEqual(Window.Property(FenLight.DBType),episode)">type=tv</value>
         <value condition="$EXP[Exp_IsPersonInfo]">type=person</value>
@@ -79,33 +67,30 @@
     <variable name="Path_OSD_Episodes">
         <value condition="!Integer.IsEqual(VideoPlayer.PlaylistLength,1) + !Integer.IsEqual(VideoPlayer.PlaylistLength,0) + Integer.IsLess(VideoPlayer.PlaylistPosition,VideoPlayer.PlaylistLength)">playlistvideo://?reload=$INFO[VideoPlayer.Season,,_]$INFO[VideoPlayer.Episode,,_]$INFO[VideoPlayer.PlaylistPosition,,_]</value>
         <value condition="VideoPlayer.Content(episodes) + !String.IsEmpty(VideoPlayer.TvShowDBID) + !String.IsEmpty(VideoPlayer.Season)">videodb://tvshows/titles/$INFO[VideoPlayer.TvShowDBID]/$INFO[VideoPlayer.Season]/?tvshowid=$INFO[VideoPlayer.TvShowDBID]</value>
-        <value condition="VideoPlayer.Content(episodes)">plugin://plugin.video.themoviedb.helper/?info=episodes&amp;nextpage=false&amp;cacheonly=true&amp;length=1&amp;tmdb_type=tv$INFO[Window(Home).Property(TMDbHelper.Player.TVShow.TMDb_ID),&amp;tmdb_id=,]$INFO[VideoPlayer.TVShowTitle,&amp;query=,]$INFO[VideoPlayer.Season,&amp;season=,]</value>
+        <!-- I valori TMDbHelper sono stati rimossi: il container li risolveva come plugin:// di un
+             addon non installato e Kodi apriva il prompt "installa addon" al solo focus del bottone
+             OSD. Null.xsp lascia il container vuoto, che e' gia' il risultato di oggi. -->
+        <value>special://skin/extras/playlists/Null.xsp</value>
     </variable>
 
     <variable name="Path_OSD_Cast">
-        <value condition="VideoPlayer.Content(movies) + !String.IsEmpty(VideoPlayer.IMDBNumber) + String.StartsWith(VideoPlayer.IMDBNumber,tt)">plugin://plugin.video.themoviedb.helper/?info=$INFO[Skin.String(VideoOSD.PersonCredits.CastCrew)]&amp;tmdb_type=movie$INFO[VideoPlayer.IMDBNumber,&amp;imdb_id=,]</value>
-
-        <value condition="VideoPlayer.Content(movies)">plugin://plugin.video.themoviedb.helper/?info=$INFO[Skin.String(VideoOSD.PersonCredits.CastCrew)]&amp;tmdb_type=movie$INFO[Window(Home).Property(TMDbHelper.Player.TMDb_ID),&amp;tmdb_id=,]$INFO[Player.Title,&amp;query=,]$INFO[VideoPlayer.Year,&amp;year=,]</value>
-
-        <value condition="VideoPlayer.Content(episodes)">plugin://plugin.video.themoviedb.helper/?info=$INFO[Skin.String(VideoOSD.PersonCredits.CastCrew)]&amp;tmdb_type=tv$INFO[Window(Home).Property(TMDbHelper.Player.TVShow.TMDb_ID),&amp;tmdb_id=,]$INFO[VideoPlayer.TVShowTitle,&amp;query=,]$INFO[VideoPlayer.Season,&amp;season=,]$INFO[VideoPlayer.Episode,&amp;episode=,]$INFO[VideoPlayer.Year,&amp;episode_year=,]</value>
+        <!-- I valori TMDbHelper sono stati rimossi: il container li risolveva come plugin:// di un
+             addon non installato e Kodi apriva il prompt "installa addon" al solo focus del bottone
+             OSD. Null.xsp lascia il container vuoto, che e' gia' il risultato di oggi. -->
+        <value>special://skin/extras/playlists/Null.xsp</value>
     </variable>
 
     <variable name="Path_OSD_NextRecommendation">
         <value condition="Integer.IsLess(VideoPlayer.PlaylistPosition,VideoPlayer.PlaylistLength)">playlistvideo://?reload=$INFO[VideoPlayer.Season,,_]$INFO[VideoPlayer.Episode,,_]$INFO[VideoPlayer.PlaylistPosition,,_]</value>
-        <value condition="VideoPlayer.Content(movies) + !String.IsEmpty(VideoPlayer.IMDBNumber) + String.StartsWith(VideoPlayer.IMDBNumber,tt)">plugin://plugin.video.themoviedb.helper/?info=next_recommendation&amp;tmdb_type=movie$INFO[VideoPlayer.IMDBNumber,&amp;imdb_id=,]</value>
-        <value condition="VideoPlayer.Content(movies)">plugin://plugin.video.themoviedb.helper/?info=next_recommendation&amp;tmdb_type=movie$INFO[Window(Home).Property(TMDbHelper.Player.TMDb_ID),&amp;tmdb_id=,]$INFO[Player.Title,&amp;query=,]$INFO[VideoPlayer.Year,&amp;year=,]</value>
-        <value condition="VideoPlayer.Content(episodes)">plugin://plugin.video.themoviedb.helper/?info=next_recommendation&amp;tmdb_type=tv$INFO[Window(Home).Property(TMDbHelper.Player.TVShow.TMDb_ID),&amp;tmdb_id=,]$INFO[VideoPlayer.TVShowTitle,&amp;query=,]$INFO[VideoPlayer.Season,&amp;season=,]$INFO[VideoPlayer.Episode,&amp;episode=,]$INFO[VideoPlayer.Year,&amp;episode_year=,]</value>
+        <!-- I valori TMDbHelper sono stati rimossi: il container li risolveva come plugin:// di un
+             addon non installato e Kodi apriva il prompt "installa addon" al solo focus del bottone
+             OSD. Null.xsp lascia il container vuoto, che e' gia' il risultato di oggi. -->
+        <value>special://skin/extras/playlists/Null.xsp</value>
     </variable>
 
     <variable name="Path_VideoInfo_OnlineSeasons">
         <value condition="[String.IsEqual(Window.Property(FenLight.DBType),tvshow) | String.IsEqual(Window.Property(FenLight.DBType),season) | String.IsEqual(Window.Property(FenLight.DBType),episode)] + !String.IsEmpty(Window.Property(FenLight.TMDb_ID))">plugin://plugin.video.fenlight/?mode=build_season_list&amp;tmdb_id=$INFO[Window.Property(FenLight.TMDb_ID)]</value>
         <value condition="String.IsEqual(Window.Property(FenLight.DBType),tvshow) | String.IsEqual(Window.Property(FenLight.DBType),season) | String.IsEqual(Window.Property(FenLight.DBType),episode)">special://skin/extras/playlists/Null.xsp</value>
-    </variable>
-
-    <variable name="Path_VideoInfo_OnlineFlatSeasons">
-        <value condition="String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID))">special://skin/extras/playlists/Null.xsp</value>
-        <value condition="String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type))">special://skin/extras/playlists/Null.xsp</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type),tv)">plugin://plugin.video.themoviedb.helper/?info=flatseasons&amp;nextpage=false&amp;cacheonly=true&amp;tmdb_type=tv&amp;tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]</value>
     </variable>
 
     <variable name="Path_VideoInfo_OnlineYear">
@@ -120,13 +105,6 @@
         <value condition="String.IsEqual(Window.Property(FenLight.DBType),tvshow) | String.IsEqual(Window.Property(FenLight.DBType),season) | String.IsEqual(Window.Property(FenLight.DBType),episode)">plugin://plugin.video.fenlight/?mode=build_tvshow_list&amp;action=tmdb_tv_discover&amp;url=https%3A%2F%2Fapi.themoviedb.org%2F3%2Fdiscover%2Ftv%3Fsort_by%3Dpopularity.desc%26with_networks%3D$INFO[Window(Home).Property(FenLight.ListItem.Studio.1.TMDb_ID)]</value>
     </variable>
 
-    <variable name="Path_VideoInfo_OnlineComments">
-        <value condition="String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID))">special://skin/extras/playlists/Null.xsp</value>
-        <value condition="String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type))">special://skin/extras/playlists/Null.xsp</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type),movie)">plugin://plugin.video.themoviedb.helper/?info=trakt_comments&amp;tmdb_type=movie&amp;tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type),tv)">plugin://plugin.video.themoviedb.helper/?info=trakt_comments&amp;tmdb_type=tv&amp;tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]</value>
-    </variable>
-
     <variable name="Path_VideoInfo_OnlineRecommendations">
         <value condition="String.IsEqual(Window.Property(FenLight.DBType),movie) + !String.IsEmpty(Window.Property(FenLight.TMDb_ID))">plugin://plugin.video.fenlight/?mode=build_movie_list&amp;action=tmdb_movies_recommendations&amp;key_id=$INFO[Window.Property(FenLight.TMDb_ID)]</value>
         <value condition="String.IsEqual(Window.Property(FenLight.DBType),tvshow) + !String.IsEmpty(Window.Property(FenLight.TMDb_ID))">plugin://plugin.video.fenlight/?mode=build_tvshow_list&amp;action=tmdb_tv_recommendations&amp;key_id=$INFO[Window.Property(FenLight.TMDb_ID)]</value>
@@ -135,15 +113,10 @@
     </variable>
 
     <variable name="Path_FromWriter">
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.1.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.1.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Writer.1.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Writer.1.TMDb_ID)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.2.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.2.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Writer.2.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Writer.2.TMDb_ID)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.3.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.3.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Writer.3.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Writer.3.TMDb_ID)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.4.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.4.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Writer.4.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Writer.4.TMDb_ID)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.5.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.5.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Writer.5.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Writer.5.TMDb_ID)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.6.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.6.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Writer.6.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Writer.6.TMDb_ID)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.7.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.7.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Writer.7.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Writer.7.TMDb_ID)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.8.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.8.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Writer.8.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Writer.8.TMDb_ID)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.9.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer.9.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Writer.9.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Writer.9.TMDb_ID)]</value>
+        <!-- Tutti i valori erano su proprieta' TMDbHelper mai popolate: la variabile risolveva
+             gia' sempre in stringa vuota. Alimenta SetProperty/param, non un container, quindi
+             NON va messo Null.xsp: il vuoto e' il valore corretto. -->
+        <value />
     </variable>
 
 
@@ -219,21 +192,31 @@
     </variable>
 
     <variable name="Path_InfoParams_TMDbType">
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type),movie)">movie</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type),tv)">tv</value>
+        <!-- Tutti i valori erano su proprieta' TMDbHelper mai popolate: la variabile risolveva
+             gia' sempre in stringa vuota. Alimenta SetProperty/param, non un container, quindi
+             NON va messo Null.xsp: il vuoto e' il valore corretto. -->
+        <value />
     </variable>
 
     <variable name="Path_InfoParams_TMDbID">
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type),movie)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type),tv)">$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]</value>
+        <!-- Tutti i valori erano su proprieta' TMDbHelper mai popolate: la variabile risolveva
+             gia' sempre in stringa vuota. Alimenta SetProperty/param, non un container, quindi
+             NON va messo Null.xsp: il vuoto e' il valore corretto. -->
+        <value />
     </variable>
 
     <variable name="Path_InfoParams_Season">
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type),tv) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Monitor.Season))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.Season)]</value>
+        <!-- Tutti i valori erano su proprieta' TMDbHelper mai popolate: la variabile risolveva
+             gia' sempre in stringa vuota. Alimenta SetProperty/param, non un container, quindi
+             NON va messo Null.xsp: il vuoto e' il valore corretto. -->
+        <value />
     </variable>
 
     <variable name="Path_InfoParams_Episode">
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type),tv) + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Monitor.Episode))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.Episode)]</value>
+        <!-- Tutti i valori erano su proprieta' TMDbHelper mai popolate: la variabile risolveva
+             gia' sempre in stringa vuota. Alimenta SetProperty/param, non un container, quindi
+             NON va messo Null.xsp: il vuoto e' il valore corretto. -->
+        <value />
     </variable>
 
     <variable name="Path_ContextParams_Query">
@@ -263,21 +246,12 @@
 
     <variable name="Path_VideoInfo_Trailers">
         <value condition="String.IsEqual(Window.Property(FenLight.DBType),musicvideo)">$VAR[Path_Youtube_Query,plugin://plugin.video.youtube/kodion/search/query/?q=,&amp;search_type=notvalid]</value>
-        <value condition="String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID))">special://skin/extras/playlists/Null.xsp</value>
-        <value condition="String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type))">special://skin/extras/playlists/Null.xsp</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type),movie)">plugin://plugin.video.themoviedb.helper/?info=videos&amp;nextpage=false&amp;cacheonly=true&amp;length=1&amp;tmdb_type=movie&amp;tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_Type),tv)">plugin://plugin.video.themoviedb.helper/?info=videos&amp;nextpage=false&amp;cacheonly=true&amp;length=1&amp;tmdb_type=tv&amp;tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]</value>
     </variable>
 
     <variable name="Path_VideoInfo_OnlineFanart">
-        <value condition="String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID))">special://skin/extras/playlists/Null.xsp</value>
-        <value condition="String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.DBType))">special://skin/extras/playlists/Null.xsp</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.DBType),movie)">plugin://plugin.video.themoviedb.helper?info=fanart&amp;aggregate=true&amp;nextpage=false&amp;cacheonly=true&amp;tmdb_type=movie&amp;tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.DBType),tvshow)">plugin://plugin.video.themoviedb.helper?info=fanart&amp;aggregate=true&amp;nextpage=false&amp;cacheonly=true&amp;tmdb_type=tv&amp;tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]</value>
-        <value condition="Integer.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.Season),0)">special://skin/extras/playlists/Null.xsp</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.DBType),season)">plugin://plugin.video.themoviedb.helper?info=fanart&amp;aggregate=true&amp;nextpage=false&amp;cacheonly=true&amp;tmdb_type=tv&amp;tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]&amp;season=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.Season)]</value>
-        <value condition="Integer.IsEqual(Window(Home).Property(TMDbHelper.ListItem.Monitor.Episode),0)">special://skin/extras/playlists/Null.xsp</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.DBType),episode)">plugin://plugin.video.themoviedb.helper?info=fanart&amp;aggregate=true&amp;nextpage=false&amp;cacheonly=true&amp;tmdb_type=tv&amp;tmdb_id=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.TMDb_ID)]&amp;season=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.Season)]&amp;episode=$INFO[Window(Home).Property(TMDbHelper.ListItem.Monitor.Episode)]</value>
+        <!-- Tutti i valori erano path TMDbHelper. Alimenta il container della galleria fanart:
+             Null.xsp lo lascia vuoto senza far scattare il prompt "installa addon". -->
+        <value>special://skin/extras/playlists/Null.xsp</value>
     </variable>
 
     <variable name="Path_VideoInfo_OnlineCast">

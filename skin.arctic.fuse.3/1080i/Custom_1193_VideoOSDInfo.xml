@@ -31,7 +31,12 @@
 
         <include content="Object_Hidden_List" condition="String.IsEmpty(Window(Home).Property(VideoOSD.InfoDialog.Path))">
             <param name="id">50</param>
-            <content limit="1">$VAR[Path_VideoOSD_TMDbType,plugin://plugin.video.themoviedb.helper/?info=details&amp;tmdb_type=,]$VAR[Path_VideoOSD_TMDbQuery]</content>
+            <!-- Era un plugin:// di TMDbHelper: al focus del bottone info dell'OSD Kodi apriva il prompt
+                 "installa addon". Con Null.xsp il container resta vuoto e il controllo 9002 qui sotto lo
+                 gestisce gia' (NumItems=0 -> PreviousMenu), quindi il dialog si chiude invece di bloccarsi.
+                 Il ramo alternativo qui sotto, pilotato da Window(Home).Property(VideoOSD.InfoDialog.Path),
+                 resta intatto: e' il punto di aggancio per l'helper. -->
+            <content limit="1">special://skin/extras/playlists/Null.xsp</content>
             <onfocus>Action(Info)</onfocus>
             <onfocus>Dialog.Close(1193,force)</onfocus>
         </include>
