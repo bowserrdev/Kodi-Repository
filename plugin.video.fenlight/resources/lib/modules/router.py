@@ -47,7 +47,7 @@ def _search_debounce_abort(sys, params, action_filtered):
 	# debounce those -- it would lag infinite-scroll and (via the Settled gate) hide the row mid-scroll.
 	# Only a genuine query change is debounced.
 	key = paginator.make_key(params)
-	if get_property(paginator.LOADING_PROP % key) == 'true' or get_property(paginator.PG_REFRESH_PROP) == 'true':
+	if paginator.is_loading(key) or get_property(paginator.PG_REFRESH_PROP) == 'true':
 		return False
 	if not paginator.search_should_abort(params.get('query', '')): return False
 	try: end_directory(int(sys.argv[1]), cacheToDisc=False)

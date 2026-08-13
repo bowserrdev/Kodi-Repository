@@ -159,7 +159,14 @@ class WidgetPaginator:
 		window = xbmcgui.Window(10000)
 		get_infolabel = xbmc.getInfoLabel
 		pending = {}  # key -> time the loading flag was set, to self-heal a build that never finishes
-		stuck_timeout = 8
+		# Timeout di autoguarigione per una build che non finisce mai. NON abbassarlo senza misurare:
+		# se scade MENTRE la build sta ancora lavorando, il flag LOADING viene tolto sotto i piedi e
+		# get_pages() -- che lo legge per decidere se ricostruire N pagine o solo il lotto iniziale --
+		# fa collassare il widget alla prima pagina. Sul Mi Stick una ricostruzione cumulativa supera
+		# regolarmente gli 8 secondi originali (interprete Python nuovo a ogni build + tutti i widget
+		# ricostruiti insieme dall'UpdateLibrary globale): era questa la ragione per cui in home la
+		# paginazione non avanzava mai e in cerca si fermava dopo qualche pagina.
+		stuck_timeout = 90
 		last_current = {}  # key -> last observed focus index, so we load ahead on real downward movement only
 		last_log = None  # dedup: only log when the observed state actually changes
 		def log_change(state):
@@ -202,17 +209,22 @@ class WidgetPaginator:
 				numitems = int(get_infolabel('Container(%s).NumItems' % widget_id) or 0)
 				current = int(get_infolabel('Container(%s).CurrentItem' % widget_id) or 0)
 				if numitems and current:
-					loading = window.getProperty(paginator.LOADING_PROP % key) == 'true'
+					loading = bool(window.getProperty(paginator.LOADING_PROP % key))
 					hasmore = window.getProperty(paginator.HASMORE_PROP % key) == 'true'
 					built = int(window.getProperty(paginator.BUILT_PROP % key) or 0)
 					runway = page_limit(True) * paginator.lookahead_pages()
 					log_change('id=%s key=%s current=%s/%s remaining=%s runway=%s built=%s hasmore=%s loading=%s' %
 								(widget_id, paginator.short(key), current, numitems, numitems - current, runway, built, hasmore, loading))
 					if loading:
-						# A refresh is in flight; clear a flag left stuck by a build that errored out.
-						if time() - pending.get(key, 0) > stuck_timeout:
+						# Una ricostruzione e' in corso. Sblocca il flag solo se la build e' morta davvero.
+						# Il momento di partenza sta nella proprieta' stessa e non solo in `pending`, cosi'
+						# il conteggio resta valido anche se il servizio riparte a meta' build.
+						started = paginator.loading_started(key) or pending.get(key, 0)
+						if started and time() - started > stuck_timeout:
 							window.clearProperty(paginator.LOADING_PROP % key); pending.pop(key, None)
-							paginator.log('watcher STUCK loading flag cleared key=%s after %ss' % (paginator.short(key), stuck_timeout))
+							logger('Fen Light', 'WidgetPaginator: build ferma da oltre %ss (key=%s), flag sbloccato. '
+									'Se compare spesso le build sono troppo lente e il widget torna alla prima pagina.'
+									% (stuck_timeout, paginator.short(key)))
 					else:
 						pending.pop(key, None)
 						# (d) Only load ahead on genuine DOWNWARD movement, never on arrival. The first time a
@@ -232,9 +244,10 @@ class WidgetPaginator:
 						# built == numitems, so heavily-filtered searches still keep advancing.
 						if hasmore and numitems - current <= runway and numitems >= built and moved:
 							pages = paginator.raw_pages(key, paginator.initial_batch())
-							window.setProperty(paginator.LOADING_PROP % key, 'true')
+							now = time()
+							window.setProperty(paginator.LOADING_PROP % key, str(now))
 							window.setProperty(paginator.PAGES_PROP % key, str(pages + 1))
-							pending[key] = time()
+							pending[key] = now
 							paginator.log('watcher TRIGGER key=%s pages %s->%s current=%s/%s built=%s -> kodi_refresh(%s)' %
 										(paginator.short(key), pages, pages + 1, current, numitems, built, widget_id))
 							# Same focus-preserving primitive the Trakt monitor uses: a soft widget reload that

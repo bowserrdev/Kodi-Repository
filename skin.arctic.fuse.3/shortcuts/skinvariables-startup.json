@@ -134,7 +134,7 @@
                     "value": "Skin.SetString(HomeSwitcher.1108.Mode,Wall)"
                 }],
                 "SetProperty(InitStatus,Reticulating Splines,1198)",
-                "RunScript(plugin.video.themoviedb.helper,blur_image={var_image_simplebackground},prefix=SimpleBackground)"
+                "RunPlugin(plugin://plugin.video.fenlight/?mode=fen_blur&image={var_image_simplebackground}&prefix=SimpleBackground)"
             ]
         }],
 
