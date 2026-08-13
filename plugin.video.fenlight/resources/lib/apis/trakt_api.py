@@ -680,18 +680,64 @@ def get_trakt_tvshow_id(item):
 			except: tmdb_id = None
 	return tmdb_id
 
+_SYNC_PAGE_LIMIT = 100   # massimo per pagina consentito da Trakt su questi endpoint
+_SYNC_PAGE_CAP = 200     # freno di sicurezza: 20.000 elementi, ben oltre qualsiasi libreria reale
+
+def _get_all_sync_pages(path, with_auth=True):
+	# Trakt ha iniziato a paginare gli endpoint sync/watched/*. Chiamandoli con pagination=False si
+	# ottiene SOLO la prima pagina, cioe' i 100 titoli piu' recenti: tutto il resto della cronologia
+	# spariva dalla cache e i film visti piu' indietro nel tempo perdevano il badge "visto", senza alcuna
+	# discriminante visibile. E' la stessa classe di cambiamento che aveva gia' colpito la ripartizione
+	# stagioni/episodi di sync/watched/shows.
+	#
+	# Se l'endpoint NON e' paginato, la prima pagina contiene gia' tutto e page_count vale 1: il ciclo
+	# fa una sola richiesta e il comportamento resta identico a prima. La modifica e' quindi sicura in
+	# entrambi gli scenari. Se gli header di paginazione mancano del tutto si ripiega sulla chiamata
+	# secca storica.
+	items, page_no, page_count = [], 1, 1
+	while page_no <= page_count and page_no <= _SYNC_PAGE_CAP:
+		try: response = call_trakt(path, params={'limit': _SYNC_PAGE_LIMIT}, with_auth=with_auth, pagination=True, page_no=page_no)
+		except Exception: response = None
+		if not response:
+			if page_no == 1: return call_trakt(path, with_auth=with_auth, pagination=False) or []
+			break
+		page_items, pages = response
+		if page_items: items.extend(page_items)
+		try: page_count = int(pages)
+		except: page_count = page_no
+		page_no += 1
+	logger('FenLight Trakt', '%s: %s elementi su %s pagine' % (path, len(items), min(page_count, _SYNC_PAGE_CAP)))
+	return items
+
 def trakt_indicators_movies():
+	# Due canali silenziosi facevano sparire il badge "visto" da un sottoinsieme apparentemente casuale
+	# di film, senza lasciare traccia nel log: get_trakt_movie_id restituisce None quando l'id TMDb non
+	# e' risolvibile (e il film veniva saltato), e pool.submit non rilancia mai le eccezioni sollevate
+	# dentro _process (il Future non viene letto). Ora entrambi finiscono in un conteggio loggato.
+	dropped = []
 	def _process(item):
-		movie = item['movie']
-		tmdb_id = get_trakt_movie_id(movie['ids'])
-		if not tmdb_id: return
-		insert_append(('movie', tmdb_id, '', '', item['last_watched_at'], movie['title']))
+		try:
+			movie = item['movie']
+			tmdb_id = get_trakt_movie_id(movie['ids'])
+			if not tmdb_id:
+				dropped.append('%s ids=%s' % (movie.get('title'), movie.get('ids')))
+				return
+			insert_append(('movie', tmdb_id, '', '', item['last_watched_at'], movie['title']))
+		except Exception as e:
+			dropped.append('%s -> %s' % ((item.get('movie') or {}).get('title'), e))
 	insert_list = []
 	insert_append = insert_list.append
-	params = {'path': 'sync/watched/movies%s', 'with_auth': True, 'pagination': False}
-	result = get_trakt(params)
-	threads = list(make_thread_list(_process, result))
-	[i.join() for i in threads]
+	result = _get_all_sync_pages('sync/watched/movies')
+	if not result:
+		# set_bulk_movie_watched esegue DELETE + INSERT: pubblicare una lista vuota azzererebbe l'intera
+		# cache dei visti e farebbe sparire TUTTI i badge fino alla sincronizzazione successiva. Un errore
+		# di rete arriva qui come None; una risposta 200 con lista vuota e' indistinguibile da "non ho
+		# visto nulla", ma su un account gia' popolato e' quasi sempre un guasto: meglio non toccare nulla.
+		logger('FenLight Trakt', 'watched movies: nessun dato da Trakt, cache lasciata intatta')
+		return
+	make_thread_list(_process, result)
+	logger('FenLight Trakt', 'watched movies: %s da Trakt, %s in cache, %s scartati%s'
+			% (len(result), len(insert_list), len(dropped), (' -> %s' % dropped[:10]) if dropped else ''))
 	trakt_watched_cache.set_bulk_movie_watched(insert_list)
 
 def trakt_indicators_tv():
@@ -746,7 +792,9 @@ def trakt_indicators_tv():
 			return logger('FenLight Trakt', 'watched episodes sync: %s new plays added, no rebuild needed' % len(insert_list))
 	# full rebuild: no stored history, plays were removed, or more new plays than a single page holds
 	shows_info = {}
-	shows = get_trakt({'path': 'sync/watched/shows%s', 'with_auth': True, 'pagination': False}) or []
+	# Anche qui la chiamata era limitata alla prima pagina: oltre le 100 serie, gli episodi di quelle
+	# escluse venivano scartati dal filtro shows_info, pur essendo presenti nella cronologia.
+	shows = _get_all_sync_pages('sync/watched/shows')
 	if not shows: return trakt_watched_cache.set_bulk_tvshow_watched([])
 	make_thread_list(_process_show, shows)
 	if page_count > 1: make_thread_list(_get_history_page, range(2, page_count + 1))

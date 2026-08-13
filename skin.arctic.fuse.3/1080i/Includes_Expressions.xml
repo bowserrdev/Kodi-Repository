@@ -130,6 +130,13 @@
     <!-- === -->
     <!-- OSD -->
     <!-- === -->
+    <!-- Vero quando premere GIU' nell'OSD porta effettivamente da qualche parte. Replica riga per riga
+         la catena di Action_OSD_Main_OnDown / Label_OSD_HintText_Main: se l'utente disattiva tutti i
+         pannelli, il testo dinamico del suggerimento diventa vuoto ma l'etichetta statica "Premi giu'"
+         e la freccia restano disegnate, promettendo una navigazione che non esiste. Serve a nascondere
+         l'intero gruppo. Va tenuta allineata a quelle due variabili se si toccano. -->
+    <expression name="Exp_OSD_HasDownTarget">[[VideoPlayer.Content(livetv) + [!Skin.HasSetting(OSD.OnDown.DisablePVROSDGuide) | !Skin.HasSetting(OSD.OnDown.DisablePVROSDChannels)]] | [!VideoPlayer.Content(livetv) + [[$EXP[Exp_OSD_HasPlaylist] + !Skin.HasSetting(OSD.OnDown.Disable1140)] | !Skin.HasSetting(OSD.OnDown.DisableVideoBookmarks) | !Skin.HasSetting(OSD.OnDown.Disable1141)]]]</expression>
+
     <expression name="Exp_OSD_HasPlaylist">[VideoPlayer.Content(episodes) | VideoPlayer.Content(livetv) | [VideoPlayer.Content(movies) + !Integer.IsEqual(VideoPlayer.PlaylistLength,1) + !Integer.IsEqual(VideoPlayer.PlaylistLength,0)]]</expression>
 
     <expression name="Exp_OSD_PVRChannelSwitch">[VideoPlayer.Content(livetv) + [!String.IsEmpty(PVR.ChannelNumberInput) | Player.ShowInfo]]</expression>
