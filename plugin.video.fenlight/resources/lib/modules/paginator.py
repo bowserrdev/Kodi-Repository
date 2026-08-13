@@ -211,6 +211,21 @@ def head_lookup(first_url):
 	from modules.kodi_utils import get_property
 	return get_property(HEAD_PROP % md5(first_url.encode('utf-8')).hexdigest()) or None
 
+def is_loading(key):
+	# Il flag LOADING contiene il timestamp in cui il watcher ha lanciato la ricostruzione (prima era
+	# la stringa 'true'). Qualunque valore non vuoto significa "build in corso": e' il segnale con cui
+	# get_pages decide di ricostruire tutte le pagine accumulate invece di ricadere sul lotto iniziale.
+	from modules.kodi_utils import get_property
+	return bool(get_property(LOADING_PROP % key))
+
+def loading_started(key):
+	# Momento in cui il watcher ha marcato questa chiave come "in ricostruzione", per capire da quanto
+	# tempo una build e' ferma. Sta nella proprieta' e non solo in memoria del servizio, cosi' il conto
+	# regge anche se il servizio riparte a meta' build. 0 = valore vecchio o assente.
+	from modules.kodi_utils import get_property
+	try: return float(get_property(LOADING_PROP % key))
+	except: return 0
+
 def raw_pages(key, default):
 	# The accumulated page count for this widget, regardless of state. Used by the watcher to know
 	# what to increment from.
@@ -226,7 +241,7 @@ def get_pages(key, default):
 	# widget (PG_REFRESH set by kodi_refresh: Trakt monitor / periodic WidgetRefresher) -- in both cases
 	# the container must keep its current length so the items stay put and the focus is preserved.
 	from modules.kodi_utils import get_property
-	loading = get_property(LOADING_PROP % key) == 'true'
+	loading = is_loading(key)
 	soft_refresh = get_property(PG_REFRESH_PROP) == 'true'
 	result = raw_pages(key, default) if (loading or soft_refresh) else default
 	log('get_pages key=%s loading=%s soft_refresh=%s -> pages_to_load=%s (default=%s)' % (short(key), loading, soft_refresh, result, default))

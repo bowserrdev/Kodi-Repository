@@ -24,7 +24,7 @@ Numerazione stabile: viene citata nei commenti al codice e nei messaggi di commi
 
 | # | Problema | Dove | Gravità | Stato |
 |---|---|---|---|---|
-| 1 | `UpdateLibrary` globale: paginare un widget li ricostruisce tutti | `service.py:242` | critico | da fare |
+| 1 | `UpdateLibrary` globale: paginare un widget li ricostruisce tutti | `service.py:242` | critico | **prossimo** |
 | 2 | Ricostruzione cumulativa: pagina N rifà le pagine 1..N, costo quadratico | `movies.py:82` | critico | da fare |
 | 3 | `reuselanguageinvoker=false`: interprete Python nuovo a ogni build | `addon.xml:17` | critico | da fare |
 | 4 | `except: pass` cieco: una build fallita chiude la directory vuota, in silenzio | `movies.py:151` | bloccante per la diagnosi | ✅ fatto |
@@ -34,6 +34,7 @@ Numerazione stabile: viene citata nei commenti al codice e nei messaggi di commi
 | 8 | `setCast` su ogni riga dei widget | `movies.py:228` | alto | ✅ risolto da #7 |
 | 9 | Filtro doppiaggio rieseguito su tutte le pagine a ogni build | `movies.py:289` | medio | cade con #2 |
 | 10 | Log di diagnostica della paginazione sempre attivo | `paginator.py:63` | basso | ✅ fatto |
+| 19 | `stuck_timeout=8` toglieva il flag `LOADING` a build ancora in corso → collasso alla prima pagina | `service.py:162` | **era la causa del blocco** | ✅ fatto |
 
 ### B. Sfondo sfocato e immagini
 
@@ -172,3 +173,109 @@ sempre questo. La skin usa LF, il plugin CRLF.
 > **Il beneficio pieno di #7 arriva solo sui titoli nuovi.** Le voci già in cache mantengono il cast
 > completo finché non scadono. Per misurare davvero, svuotare la cache dei metadati dalle impostazioni
 > di Fen Light prima del test.
+
+---
+
+# Lotto 2 — trovata la causa vera del blocco della paginazione
+
+Stato: **completato**, da provare sul Mi Stick.
+
+Il log del primo test (Xiaomi MiTV-AESP0, Android 9, Mali-450, Kodi 21.1) ha chiuso la questione.
+Non serviva indovinare: c'era tutto scritto.
+
+## Cosa dice il log
+
+**1. Nessun `FenLight BUILD FALLITA`.** Le build non esplodono. Il collasso alla prima pagina non è
+un'eccezione: è una decisione presa dal codice.
+
+**2. I trigger di paginazione si vedono tutti.** Ogni `UpdateLibrary(video,special://skin/foo)` lascia
+la traccia `VideoInfoScanner: Starting scan .. / Process directory 'special://skin/foo' does not exist`.
+Otto occorrenze:
+
+| Ora | Contesto | Distanza dalla precedente |
+|---|---|---|
+| 18:15:07 | home | — |
+| 18:16:46 | cerca | — |
+| 18:16:52 | cerca | 6,3 s |
+| 18:16:59 | cerca | 7,2 s |
+| 18:17:07 | cerca | 8,1 s |
+| 18:17:21 | cerca | 13,6 s |
+| 18:17:27 | cerca | 6,7 s |
+| 18:17:35 | cerca | 7,4 s |
+
+Poi più nulla.
+
+**3. Quella cadenza di 6-8 secondi non è l'utente che scorre. È un timeout.**
+
+## Il meccanismo
+
+`service.py` aveva `stuck_timeout = 8`: il watcher considera morta una build che non finisce entro
+8 secondi e le toglie il flag `LOADING`.
+
+Ma quel flag è anche il segnale che la build legge, all'inizio, per decidere **quante pagine
+ricostruire** (`paginator.get_pages`): con `LOADING` alzato ricostruisce tutte le pagine accumulate,
+senza ricade sul lotto iniziale — perché l'assenza del flag significa "apertura pulita del widget".
+
+La sequenza sul Mi Stick:
+
+1. il watcher alza `LOADING` e spara `UpdateLibrary`;
+2. l'evento è **globale**: tutti i widget si ricaricano, e ognuno apre un **interprete Python nuovo**
+   (#3). Sullo stick le invocazioni si accodano;
+3. la build del widget che ci interessa è in fondo alla coda e **parte dopo più di 8 secondi**;
+4. nel frattempo il watcher ha già tolto `LOADING`;
+5. la build legge `get_pages()`, non trova il flag, conclude "apertura pulita" e ricostruisce **il
+   lotto iniziale**;
+6. il widget resta identico — o torna alla prima pagina se era già cresciuto.
+
+Da qui, tutti e tre i sintomi, con la stessa causa:
+
+- **in home non pagina mai**: più widget in coda, la build parte sempre oltre gli 8 s;
+- **in cerca funziona per qualche pagina**: meno widget, la build parte in tempo — finché la
+  ricostruzione cumulativa (#2) non si allunga abbastanza da sforare;
+- **su Mac funziona tutto**: le build partono entro 8 s e il timeout non scatta mai.
+
+Non era un timeout di rete e non era un crash: era una condizione di corsa fra il servizio e il
+plugin, che su hardware lento si perde sistematicamente.
+
+## Correzioni applicate
+
+**`stuck_timeout` da 8 a 90 secondi.** Il valore originale era più corto della durata reale di una
+build sul dispositivo di riferimento. Commentato nel codice perché non venga riabbassato senza misurare.
+
+**Il flag `LOADING` ora contiene il timestamp di partenza** invece della stringa `'true'`
+(`paginator.is_loading()` / `paginator.loading_started()`, aggiornati anche `router.py` e `service.py`).
+Prima il momento di partenza stava solo nel dizionario in memoria del servizio: se il servizio
+ripartiva a metà build, quel flag non si sarebbe sbloccato **mai più** e il widget sarebbe rimasto
+muto per sempre.
+
+**Lo sblocco di emergenza ora si logga sempre**, non più dietro `PG_DEBUG`. È un evento raro e
+diagnostico: se ricompare vuol dire che le build superano i 90 secondi, cioè un problema diverso e
+peggiore.
+
+**Bonus dal log**: `ExecuteAsync - Not executing non-existing script plugin.video.themoviedb.helper`
+all'avvio. Era il blur dello sfondo semplice in `skinvariables-startup.json`, rimasto puntato
+sull'addon rimosso. Riscritto su `plugin://plugin.video.fenlight/?mode=fen_blur`.
+
+## Onestà sul risultato
+
+**Questa è una mitigazione, non la cura.** Rimuove il collasso, quindi la paginazione dovrebbe
+finalmente avanzare anche in home — ma ogni passo resterà lento, perché la causa a monte è intatta:
+un widget da paginare ne fa ricostruire sei (#1), e ognuno ricostruisce anche tutte le pagine
+precedenti (#2). La cura è quella, e viene subito dopo.
+
+**Un errore mio da segnalare**: ho spento `PG_DEBUG` (#10) *prima* di questo test, e così ho perso la
+traccia diretta della paginazione proprio nella sessione in cui serviva. La diagnosi è arrivata lo
+stesso, per via indiretta, dalle tracce del `VideoInfoScanner`. Al posto del log verboso ho lasciato
+la singola riga sullo sblocco di emergenza, che dà lo stesso segnale a costo quasi nullo.
+
+## Cosa verificare
+
+1. **In home**: scorri un widget fino in fondo. Ora dovrebbe **caricare la pagina successiva**. Sarà
+   lento — vedrai ancora tutti i widget aggiornarsi — ma deve avanzare e **non tornare più alla prima
+   pagina**.
+2. **In cerca**: scorri per molte pagine di seguito. Non deve più azzerarsi dopo qualche pagina.
+3. **Nel log** cerca `WidgetPaginator: build ferma da oltre 90s`. Se **non** compare, la corsa è
+   chiusa. Se compare, le build superano il minuto e mezzo e il problema si sposta sul peso.
+4. **All'avvio**: `Not executing non-existing script plugin.video.themoviedb.helper` non deve più
+   comparire.
+5. Lo sfondo sfocato deve funzionare come prima.
