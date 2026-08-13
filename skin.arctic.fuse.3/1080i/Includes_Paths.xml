@@ -244,9 +244,6 @@
         <value>-</value>
     </variable>
 
-    <variable name="Path_VideoInfo_Trailers">
-        <value condition="String.IsEqual(Window.Property(FenLight.DBType),musicvideo)">$VAR[Path_Youtube_Query,plugin://plugin.video.youtube/kodion/search/query/?q=,&amp;search_type=notvalid]</value>
-    </variable>
 
     <variable name="Path_VideoInfo_OnlineFanart">
         <!-- Tutti i valori erano path TMDbHelper. Alimenta il container della galleria fanart:

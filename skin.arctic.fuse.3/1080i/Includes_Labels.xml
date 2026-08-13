@@ -237,10 +237,6 @@
         <value>$INFO[Skin.String(Startup.ImageFolder)]</value>
     </variable>
 
-    <variable name="Label_Trailer_PlayPause">
-        <value condition="Player.Paused">$LOCALIZE[208]</value>
-        <value>$LOCALIZE[31484]</value>
-    </variable>
 
     <variable name="Label_OSD_PausePlay">
         <value condition="Player.Playing">$LOCALIZE[31484]</value>
@@ -389,8 +385,6 @@
 
     <variable name="Label_Studio">
         <value condition="!String.IsEmpty(ListItem.Studio)">$INFO[ListItem.Studio]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Network.1.Name))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Network.1.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Studio.1.Name))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Studio.1.Name)]</value>
     </variable>
     <variable name="Label_FromStudio">
         <value condition="!String.IsEmpty(Window(Home).Property(FenLight.ListItem.Studio.1.Name))">$INFO[Window(Home).Property(FenLight.ListItem.Studio.1.Name)]</value>
@@ -405,68 +399,37 @@
 
     <variable name="Label_Country">
         <value condition="!String.IsEmpty(ListItem.Country)">$INFO[ListItem.Country]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Country))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Country)]</value>
     </variable>
 
     <variable name="Label_Genre">
         <value condition="!String.IsEmpty(ListItem.Genre)">$INFO[ListItem.Genre]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Genre))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Genre)]</value>
     </variable>
 
     <variable name="Label_Director">
         <value condition="!String.IsEmpty(ListItem.Director)">$INFO[ListItem.Director]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Director))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Director)]</value>
     </variable>
     <variable name="Label_FromDirector">
         <value condition="!String.IsEmpty(Window(Home).Property(FenLight.ListItem.Director.1.Name))">$INFO[Window(Home).Property(FenLight.ListItem.Director.1.Name)]</value>
         <value>$INFO[ListItem.Director]</value>
     </variable>
     <variable name="Label_OSD_FromDirector">
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.1.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.1.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.1.job),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.1.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.2.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.2.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.2.job),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.2.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.3.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.3.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.3.job),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.3.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.4.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.4.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.4.job),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.4.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.5.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.5.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.5.job),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.5.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.6.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.6.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.6.job),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.6.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.7.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.7.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.7.job),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.7.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.8.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.8.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.8.job),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.8.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.9.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.9.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.9.job),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.9.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director))">$INFO[Window(Home).Property(TMDbHelper.Player.Director)]</value>
         <value>$INFO[VideoPlayer.Director]</value>
     </variable>
 
     <variable name="Label_Writer">
         <value condition="!String.IsEmpty(ListItem.Writer)">$INFO[ListItem.Writer]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Writer))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Writer)]</value>
     </variable>
     <variable name="Label_FromWriter">
         <value condition="!String.IsEmpty(Window(Home).Property(FenLight.ListItem.Writer.1.Name))">$INFO[Window(Home).Property(FenLight.ListItem.Writer.1.Name)]</value>
         <value>$INFO[ListItem.Writer]</value>
     </variable>
     <variable name="Label_OSD_FromWriter">
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.1.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.1.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.1.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.1.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.2.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.2.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.2.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.2.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.3.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.3.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.3.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.3.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.4.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.4.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.4.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.4.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.5.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.5.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.5.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.5.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.6.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.6.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.6.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.6.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.7.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.7.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.7.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.7.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.8.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.8.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.8.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.8.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.9.Name)) + !String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.9.job)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.9.job),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.9.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer))">$INFO[Window(Home).Property(TMDbHelper.Player.Writer)]</value>
         <value>$INFO[VideoPlayer.Writer]</value>
     </variable>
 
     <variable name="Label_Creator">
         <value condition="!String.IsEmpty(ListItem.Property(Creator))">$INFO[ListItem.Property(Creator)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Creator))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Creator)]</value>
     </variable>
-    <variable name="Label_FromCreator">
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Creator.1.Name))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Creator.1.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Creator.2.Name))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Creator.2.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Creator.3.Name))">$INFO[Window(Home).Property(TMDbHelper.ListItem.Creator.3.Name)]</value>
-    </variable>
-
     <variable name="Label_OSD_CastMember_Appearances">
         <value condition="!String.IsEmpty(Container(6501).ListItem.Property(numitems.tmdb.movies.cast))">$INFO[Container(6501).ListItem.Property(numitems.tmdb.movies.cast),, $LOCALIZE[342]]$INFO[Container(6501).ListItem.Property(numitems.tmdb.tvshows.cast), $LOCALIZE[1397] , $LOCALIZE[20343]]</value>
         <value condition="!String.IsEmpty(Container(6502).ListItem.Property(numitems.tmdb.movies.cast)) + String.IsEqual(Container(6501).ListItem.Label,Container(6502).ListItem.Label)">$INFO[Container(6502).ListItem.Property(numitems.tmdb.movies.cast),, $LOCALIZE[342]]$INFO[Container(6502).ListItem.Property(numitems.tmdb.tvshows.cast), $LOCALIZE[1397] , $LOCALIZE[20343]]</value>
@@ -796,24 +759,15 @@
     </variable>
 
     <variable name="Label_OSD_DirectorName">
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.1.Name)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.1.Role),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.1.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.2.Name)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.2.Role),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.2.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Director.3.Name)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Director.3.Role),Director)">$INFO[Window(Home).Property(TMDbHelper.Player.Director.3.Name)]</value>
         <value condition="!String.IsEmpty(VideoPlayer.Director)">$INFO[VideoPlayer.Director]</value>
-        <value>$INFO[Window(Home).Property(TMDbHelper.Player.Director.1.Name)]</value>
     </variable>
 
     <variable name="Label_OSD_WriterName">
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.1.Name)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.1.Role),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.1.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.2.Name)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.2.Role),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.2.Name)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.Player.Writer.3.Name)) + String.IsEqual(Window(Home).Property(TMDbHelper.Player.Writer.3.Role),Screenplay)">$INFO[Window(Home).Property(TMDbHelper.Player.Writer.3.Name)]</value>
         <value condition="!String.IsEmpty(VideoPlayer.Writer)">$INFO[VideoPlayer.Writer]</value>
-        <value>$INFO[Window(Home).Property(TMDbHelper.Player.Writer.1.Name)]</value>
     </variable>
 
     <variable name="Label_OSD_StudioName">
         <value condition="!String.IsEmpty(VideoPlayer.Studio)">$INFO[VideoPlayer.Studio]</value>
-        <value>$INFO[Window(Home).Property(TMDbHelper.Player.Studio.1.Name)]</value>
     </variable>
 
     <variable name="Label_MusicMood">
@@ -952,37 +906,9 @@
         <value condition="!String.IsEmpty(Player.PlaySpeed) + !String.IsEqual(Player.PlaySpeed,1.00) + !String.IsEqual(Player.PlaySpeed,0.00)">$INFO[Player.PlaySpeed,$LOCALIZE[31071] ,x]</value>
     </variable>
 
-    <variable name="Label_ListItem_Status">
-        <!-- Collassata sul valore che gia' produce: la proprieta' che la pilotava era popolata dal
-             servizio di TMDbHelper e oggi e' sempre vuota, quindi ogni condizione era falsa e la
-             variabile ricadeva comunque su questo fallback. Raggiunta dinamicamente da
-             Includes_Info.xml come $VAR[Label_$PARAM[service]_Status]. -->
-        <value>$LOCALIZE[13205]</value>
-    </variable>
 
-    <variable name="Label_Player_Status">
-        <!-- Collassata sul valore che gia' produce: la proprieta' che la pilotava era popolata dal
-             servizio di TMDbHelper e oggi e' sempre vuota, quindi ogni condizione era falsa e la
-             variabile ricadeva comunque su questo fallback. Raggiunta dinamicamente da
-             Includes_Info.xml come $VAR[Label_$PARAM[service]_Status]. -->
-        <value>$LOCALIZE[13205]</value>
-    </variable>
 
-    <variable name="Label_ListItem_StatusDate">
-        <!-- Collassata sul valore che gia' produce: la proprieta' che la pilotava era popolata dal
-             servizio di TMDbHelper e oggi e' sempre vuota, quindi ogni condizione era falsa e la
-             variabile ricadeva comunque su questo fallback. Raggiunta dinamicamente da
-             Includes_Info.xml come $VAR[Label_$PARAM[service]_StatusDate]. -->
-        <value>$LOCALIZE[1446]</value>
-    </variable>
 
-    <variable name="Label_Player_StatusDate">
-        <!-- Collassata sul valore che gia' produce: la proprieta' che la pilotava era popolata dal
-             servizio di TMDbHelper e oggi e' sempre vuota, quindi ogni condizione era falsa e la
-             variabile ricadeva comunque su questo fallback. Raggiunta dinamicamente da
-             Includes_Info.xml come $VAR[Label_$PARAM[service]_StatusDate]. -->
-        <value>$LOCALIZE[1446]</value>
-    </variable>
 
     <variable name="Label_Header_Main">
         <value condition="Window.IsVisible(addonbrowser)">$LOCALIZE[24001]</value>

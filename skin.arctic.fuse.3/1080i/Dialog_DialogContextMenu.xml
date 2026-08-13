@@ -187,15 +187,6 @@
             <visible>$EXP[Exp_TMDbHelper_IsData]</visible>
         </item>
         <item>
-            <label>$LOCALIZE[31393]</label>
-            <icon>special://skin/extras/icons/video.png</icon>
-            <visible>[!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Trailer))]</visible>
-            <onclick>Dialog.Close(contextmenu,true)</onclick>
-            <onclick>SetProperty(PlayTrailerItems,$VAR[Path_VideoInfo_Trailers],Home)</onclick>
-            <onclick>RunScript(script.skinvariables,run_executebuiltin=special://skin/shortcuts/builtins/skinvariables-playtrailer.json,use_rules)</onclick>
-            <visible>$EXP[Exp_TMDbHelper_IsData]</visible>
-        </item>
-        <item>
             <label>$LOCALIZE[15019]</label>
             <icon>special://skin/extras/icons/circle-plus.png</icon>
             <visible>ListItem.IsFolder</visible>

@@ -2,7 +2,6 @@
 <window>
 
     <defaultcontrol always="true">10</defaultcontrol>
-    <onload>SetProperty(TMDbHelper.ContextMenu,True)</onload>
     <controls>
         <include>DialogPVRGuideSearch</include>
     </controls>

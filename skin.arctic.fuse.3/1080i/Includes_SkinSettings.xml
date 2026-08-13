@@ -817,17 +817,6 @@
             <onclick>Skin.ToggleSetting(PVR.DisableGenreColours)</onclick>
             <selected>!Skin.HasSetting(PVR.DisableGenreColours)</selected>
         </include>
-        <include content="Settings_Button" description="TMDbHelper for PVR">
-            <param name="dialog">false</param>
-            <param name="window">skinsettings</param>
-            <param name="baseid">$PARAM[baseid]</param>
-            <param name="id">022</param>
-            <param name="control">radiobutton</param>
-            <param name="slevel">2</param>
-            <label>PVR $LOCALIZE[31435]</label>
-            <onclick>Skin.ToggleSetting(TMDbHelper.DisablePVR)</onclick>
-            <selected>!Skin.HasSetting(TMDbHelper.DisablePVR)</selected>
-        </include>
 
         <include content="Settings_Button" description="Holiday Theme: Australian Summer">
             <param name="dialog">false</param>
