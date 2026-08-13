@@ -148,7 +148,12 @@ class Movies:
 				if self.new_page and not self.widget_hide_next_page:
 						self.new_page.update({'mode': 'build_movie_list', 'action': self.action, 'category_name': self.category_name})
 						add_dir(self.new_page, 'Next Page (%s) >>' % self.new_page['new_page'], handle, 'nextpage', nextpage_landscape)
-		except: pass
+		except Exception as e:
+			# MAI silenzioso: una build che esplode chiude la directory VUOTA, e il container
+			# torna a ricostruirsi da capo -- e' il meccanismo per cui "spariscono le pagine
+			# dopo la prima". Senza questo log il fallimento e' invisibile.
+			import traceback
+			logger('FenLight BUILD FALLITA', 'movies action=%s: %s\n%s' % (self.action, e, traceback.format_exc()))
 		set_content(handle, content_type)
 		set_category(handle, self.category_name)
 		end_directory(handle, cacheToDisc=False if self.is_external else True)
