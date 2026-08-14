@@ -1677,3 +1677,75 @@ blu-ray.com è molto più lento di TMDb e il codice lo interroga solo come ripie
    `0.00s` con una costruzione lunga, il confine è ancora nel posto sbagliato.
 3. Che la seconda visita alla stessa pagina sia veloce: i verdetti appena scaricati sono ora in
    `dub.db`, quindi il costo si paga una volta sola per titolo.
+
+---
+
+# Lotto 18 — il Mi Stick misurato: restano tre voci, tutte verso il C++
+
+## Il quadro sul dispositivo di riferimento
+
+Xiaomi Mi TV Stick, 4 core ARM 32-bit. Cinque costruzioni, 302 elementi in totale:
+
+| fase | quota | ms/elemento |
+|---|---|---|
+| `ctxmenu` | **37%** | 18,69 |
+| `props` | **23%** | 11,71 |
+| `infotag` | **17%** | 8,43 |
+| `prep+cm` | 9% | 4,59 |
+| `setArt` | 6% | 3,01 |
+| `setLabel` | 3% | 1,69 |
+| `cast` | 3% | 1,65 |
+| `meta` | **0%** | 0,08 |
+
+**`meta` è a zero anche sulla stick**: il prefetch del lotto 14 regge sul dispositivo debole, che
+era il punto. Tre voci — menu contestuale, proprietà, info tag — fanno il **77%** di quel che resta,
+e sono tutte attraversamenti verso l'API C++ di Kodi.
+
+Per confronto, sul Mac le stesse fasi costano ~0,5 ms/elemento contro i ~50 della stick: **un
+fattore 100**, molto più del rapporto di CPU pura. Il che conferma che il costo non è calcolo
+nostro, ma attraversamento del confine Python/C++.
+
+## La domanda che decide la correzione
+
+Il costo di una fase è proporzionale al **numero di chiamate** o al **numero di chiavi** che ogni
+chiamata trasporta? Le due risposte portano a correzioni opposte:
+
+- **per chiamata** → accorpare. Il menu contestuale, per esempio, internamente non è altro che una
+  coppia di proprietà per voce (`contextmenulabel(N)` / `contextmenuaction(N)`), quindi potrebbe
+  entrare nello stesso dizionario che già passiamo a `setProperties`: da 1 chiamata + 14 proprietà
+  a 0 chiamate aggiuntive.
+- **per chiave** → accorpare non serve a niente, e bisogna invece *ridurre*: meno voci di menu,
+  meno proprietà, meno setter.
+
+Non è deducibile dal codice sorgente di Kodi senza averlo sotto mano, e ho già sbagliato tre
+ipotesi in questa serie. Quindi si misura.
+
+## L'autotest sostituito
+
+Il vecchio autotest su json ha già dato la sua risposta (acceleratore C presente, ~0,03 ms/blob) e
+sulla stick **costava 130–320 ms per costruzione**: era diventato esso stesso una voce di spesa.
+Rimosso e sostituito con un micro-benchmark dell'API C++ che misura, dentro Kodi:
+
+- **N `setProperty` singole** contro **una `setProperties` con le stesse N chiavi** — è il confronto
+  che risponde alla domanda: se i tempi si somigliano il costo è per chiave, se la seconda è molto
+  più rapida è per chiamata;
+- `addContextMenuItems` con 7 voci, costo per chiamata;
+- un setter di info tag, costo per chiamata.
+
+## Sul riavvio della stick
+
+Il log si interrompe di netto, senza traccia né errore: coerente con un riavvio di sistema, non con
+un crash di Kodi. Da questo log **non è diagnosticabile**, e non ho intenzione di indovinare.
+
+Due osservazioni utili però ci sono. La prima: il dispositivo ha 1 GB condiviso con la GPU, e una
+lista interattiva arriva a 200 elementi con i metadati di tutti in memoria. La seconda: il
+`meta_prefetch` viene eseguito **due volte** sulla stessa lista — una nel filtro doppiaggio e una
+nell'indexer — quindi per un momento esistono due dizionari completi. Sono ~2,4 MB per 200
+elementi: poco, ma è spreco puro ed è eliminabile.
+
+Ridurre gli attraversamenti verso il C++ agisce nella stessa direzione della stabilità, perché
+riduce insieme tempo di CPU e oggetti temporanei.
+
+## Cosa verificare
+
+Cercare `FenLight PERF API`. Una riga sola, e dice quale delle due correzioni fare.
