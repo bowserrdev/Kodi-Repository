@@ -71,12 +71,17 @@ def build_mdblist_list(params):
 		page_no, paginate_start = int(params.get('new_page', '1')), int(params.get('paginate_start', '0'))
 		if page_no == 1 and not is_external: set_property('fenlight.exit_params', folder_path())
 		result = mdblist_get_list_contents(list_id)
+		_t0 = paginator.now()
 		interactive = paginator.interactive_enabled() and is_external
 		paginator.log('mdblist build list_id=%s is_home=%s is_external=%s setting=%s result=%s -> interactive=%s' %
 					(list_id, is_home, is_external, paginator.interactive_enabled(), len(result), interactive))
 		if interactive:
 			pg_key = paginator.make_key(params)
-			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch())
+			# Il ?pages= del path del widget: e' il segnale durevole che questa ricostruzione
+			# appartiene a un widget gia' espanso. Senza, si ricade sui flag transitori e QUALUNQUE
+			# ricostruzione non innescata dal watcher -- l'avvio di una riproduzione, per esempio --
+			# fa collassare il widget al lotto iniziale.
+			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch(), params.get('pages', 0))
 			# Fill past the requested window when the dub filter thins the list (see _dub_paginate).
 			# process_list is already dub-filtered here -> no second _dub_filter_items.
 			process_list, pages_consumed, has_more = _dub_paginate(result, pages_to_load, is_external)
@@ -89,6 +94,11 @@ def build_mdblist_list(params):
 			process_list, total_pages, paginate_start = _paginate_list(result, page_no, paginate_start)
 			all_movies = _dub_filter_items([i for i in process_list if i['type'] == 'movie'], 'movie', is_external)
 			all_tvshows = _dub_filter_items([i for i in process_list if i['type'] == 'show'], 'tvshow', is_external)
+		# Confine reale fra le due fasi. Prima qui si passava _t0 anche come "risolto", quindi la riga
+		# PERF diceva sempre "risoluzione 0.00s" e sommava il filtro doppiaggio dentro "costruzione":
+		# una lista di serie a 198 elementi risultava costruita in 9.79s con il 100% dei metadati gia'
+		# in cache, il che era impossibile e infatti non era vero.
+		_t_resolved = paginator.now()
 		movie_list = {'list': [(i['order'], i['media_ids']) for i in all_movies], 'id_type': 'trakt_dict', 'custom_order': 'true'}
 		tvshow_list = {'list': [(i['order'], i['media_ids']) for i in all_tvshows], 'id_type': 'trakt_dict', 'custom_order': 'true'}
 		content = max([('movies', len(all_movies)), ('tvshows', len(all_tvshows))], key=lambda k: k[1])[0]
@@ -100,7 +110,10 @@ def build_mdblist_list(params):
 		item_list.sort(key=lambda k: k[1])
 		final_items = [i[0] for i in item_list]
 		add_items(handle, final_items)
-		if interactive: paginator.set_head(pg_key, final_items)
+		if interactive:
+			paginator.set_head(pg_key, final_items)
+			paginator.log_build('mdblist', 'mdblist %s' % list_id, _t0, _t_resolved, paginator.now(), len(final_items),
+						pages_to_load, params.get('pages'))
 		if not interactive and total_pages > page_no:
 			new_page = str(page_no + 1)
 			add_dir({'mode': 'mdblist.list.build_mdblist_list', 'list_id': list_id, 'list_name': list_name,

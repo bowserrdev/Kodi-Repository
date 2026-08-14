@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 import sys
+from time import perf_counter as _perf
 from modules import meta_lists
 from modules import kodi_utils, settings
 from modules import paginator
 from modules.metadata import tvshow_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url, dub_filter
+from modules.metadata import tvshow_meta_prefetch, meta_prefetch_key
 from modules.utils import manual_function_import, get_datetime, make_thread_list_enumerate, make_thread_list_multi_arg, get_current_timestamp, paginate_list
 from modules.watched_status import get_database, watched_info_tvshow, get_watched_status_tvshow, get_progress_status_tvshow
 logger = kodi_utils.logger
@@ -43,6 +45,8 @@ class TVShows:
 		self.id_type, self.list, self.action = self.params_get('id_type', 'tmdb_id'), self.params_get('list', []), self.params_get('action', None)
 		self.items, self.new_page, self.total_pages, self.is_external, self.is_home = [], {}, None, external(), home()
 		self.interactive = False
+		# Popolato da worker() prima del pool; vuoto significa solo "nessuna anticipazione", non errore.
+		self.meta_prefetch = {}
 		self.widget_hide_next_page = self.is_home and widget_hide_next_page()
 		self.widget_hide_watched = self.is_home and widget_hide_watched()
 		self.custom_order = self.params_get('custom_order', 'false') == 'true'
@@ -78,7 +82,7 @@ class TVShows:
 				self.pg_key = paginator.make_key(self.params)
 				paginator.log('tvshows BUILD action=%s key=%s params=%s' % (self.action, paginator.short(self.pg_key),
 						{k: self.params.get(k) for k in ('mode', 'action', 'category_name', 'key_id', 'url', 'query') if self.params.get(k)}))
-				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch())
+				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch(), self.params_get('pages', 0))
 				# Fill every build to a full screen: server- or post-build filtering (text search, advanced
 				# search) can thin a TMDB page down to a few items, so keep loading until a page's worth is
 				# gathered. Neutral for unfiltered widgets (a single page already meets the target).
@@ -169,7 +173,11 @@ class TVShows:
 
 	def build_tvshow_content(self, _position, _id):
 		try:
-			meta = tvshow_meta(self.id_type, _id, self.tmdb_api_key, self.mpaa_region, self.current_date, self.current_time)
+			# Vedi Movies.build_movie_content: prima il lotto letto in sequenza fuori dal pool.
+			_pk = meta_prefetch_key(self.id_type, _id, 'tvshow')
+			meta = self.meta_prefetch.get(_pk) if _pk else None
+			if meta is None:
+				meta = tvshow_meta(self.id_type, _id, self.tmdb_api_key, self.mpaa_region, self.current_date, self.current_time)
 			if not meta or 'blank_entry' in meta: return
 			cm = []
 			cm_append = cm.append
@@ -264,6 +272,13 @@ class TVShows:
 		self.watched_title = 'Trakt' if self.watched_indicators == 1 else 'Fen Light'
 		self.watched_info = watched_info_tvshow(get_database(self.watched_indicators))
 		self.window_command = 'ActivateWindow(Videos,%s,return)' if self.is_external else 'Container.Update(%s)'
+		# UNA lettura per l'intera lista, in sequenza, PRIMA che parta il pool. Vedi meta_cache.get_many.
+		_pf0 = _perf()
+		try:
+			_ids = [i[1] for i in self.list] if self.custom_order else list(self.list)
+			self.meta_prefetch = tvshow_meta_prefetch(self.id_type, _ids, self.current_time)
+		except: self.meta_prefetch = {}
+		paginator.log_prefetch('tvshows %s' % self.action, len(self.list), len(self.meta_prefetch), _perf() - _pf0)
 		if self.custom_order:
 			threads = list(make_thread_list_multi_arg(self.build_tvshow_content, self.list))
 			[i.join() for i in threads]

@@ -151,7 +151,6 @@ class WidgetPaginator:
 		logger('Fen Light', 'WidgetPaginator Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import execute_builtin
 		from modules.settings import page_limit
 		from modules import paginator
 		monitor, player = xbmc.Monitor(), xbmc.Player()
@@ -204,8 +203,20 @@ class WidgetPaginator:
 				first_url = get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % widget_id)
 				key = paginator.head_lookup(first_url)
 				if not key:
+					# Contenitore VUOTO con un token residuo: e' la ricerca a casella vuota, dove il path di
+					# base sparisce e resterebbe il solo '&pages=N', che Kodi non sa risolvere. Si azzera solo a
+					# zero elementi: durante una ricostruzione gli elementi restano e la chiave torna subito,
+					# quindi non si rischia di svuotare un widget vivo.
+					if int(get_infolabel('Container(%s).NumItems' % widget_id) or 0) == 0:
+						window.clearProperty(paginator.CTL_PAGES_PROP % widget_id)
 					log_change('idle id=%s no-head first=%s' % (widget_id, (first_url[:50] or '-')))
 					wait_for_abort(0.3); continue
+				# Il token vive sul CONTENITORE, la paginazione sulla CHIAVE del widget: quando il contenitore
+				# cambia inquilino il token del precedente va azzerato, o il widget nuovo si aprirebbe
+				# direttamente alle pagine accumulate da quello vecchio.
+				if window.getProperty(paginator.CTL_KEY_PROP % widget_id) != key:
+					window.setProperty(paginator.CTL_KEY_PROP % widget_id, key)
+					window.clearProperty(paginator.CTL_PAGES_PROP % widget_id)
 				numitems = int(get_infolabel('Container(%s).NumItems' % widget_id) or 0)
 				current = int(get_infolabel('Container(%s).CurrentItem' % widget_id) or 0)
 				if numitems and current:
@@ -248,11 +259,15 @@ class WidgetPaginator:
 							window.setProperty(paginator.LOADING_PROP % key, str(now))
 							window.setProperty(paginator.PAGES_PROP % key, str(pages + 1))
 							pending[key] = now
-							paginator.log('watcher TRIGGER key=%s pages %s->%s current=%s/%s built=%s -> kodi_refresh(%s)' %
+							paginator.log('watcher TRIGGER key=%s pages %s->%s current=%s/%s built=%s -> token ctl%s' %
 										(paginator.short(key), pages, pages + 1, current, numitems, built, widget_id))
-							# Same focus-preserving primitive the Trakt monitor uses: a soft widget reload that
-							# appends the new page in place without rebuilding/flickering the container.
-							execute_builtin('UpdateLibrary(video,special://skin/foo)')
+							# Ricarica MIRATA: il token compare dentro il <content> del widget come $INFO[],
+							# quindi cambiarlo fa ricaricare SOLO questo contenitore. Prima si sparava
+							# UpdateLibrary, che e' un evento globale: per paginare un widget si
+							# ricostruivano tutti quelli della schermata, ognuno con il suo interprete
+							# Python nuovo. Era la causa principale della lentezza in home, e la coda di
+							# invocazioni che ne usciva e' quella che faceva scadere il flag LOADING.
+							window.setProperty(paginator.CTL_PAGES_PROP % widget_id, str(pages + 1))
 							wait_for_abort(0.5); continue
 			except Exception as e:
 				paginator.log('watcher EXC %s' % e)

@@ -298,12 +298,17 @@ def build_trakt_list(params):
 			user, slug, list_type = params.get('user'), params.get('slug'), params.get('list_type')
 			with_auth = list_type == 'my_lists'
 			result = get_trakt_list_contents(list_type, user, slug, with_auth)
+		_t0 = paginator.now()
 		interactive = (not use_result) and paginator.interactive_enabled() and is_external
 		paginator.log('trakt build list_type=%s name=%s is_home=%s use_result=%s setting=%s paginate_enabled=%s result=%s -> interactive=%s' %
 					(params.get('list_type'), list_name, is_home, use_result, paginator.interactive_enabled(), paginate_enabled, len(result), interactive))
 		if interactive:
 			pg_key = paginator.make_key(params)
-			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch())
+			# Il ?pages= del path del widget: e' il segnale durevole che questa ricostruzione
+			# appartiene a un widget gia' espanso. Senza, si ricade sui flag transitori e QUALUNQUE
+			# ricostruzione non innescata dal watcher -- l'avvio di una riproduzione, per esempio --
+			# fa collassare il widget al lotto iniziale.
+			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch(), params.get('pages', 0))
 			# Fill past the requested window when the dub filter thins the list, so the widget lands full
 			# (see _dub_paginate). process_list is already dub-filtered here -> no second _dub_filter_items.
 			process_list, pages_consumed, has_more = _dub_paginate(result, pages_to_load, is_external)
@@ -318,6 +323,9 @@ def build_trakt_list(params):
 			all_tvshows = _dub_filter_items([i for i in process_list if i['type'] == 'show'], 'tvshow', is_external)
 		all_seasons = [i for i in process_list if i['type'] == 'season']
 		all_episodes = [i for i in process_list if i['type'] == 'episode']
+		# Confine reale fra le due fasi: prima del filtro doppiaggio e' "risoluzione", dopo e'
+		# "costruzione". Vedi la nota identica in mdblist_lists.py.
+		_t_resolved = paginator.now()
 		movie_list = {'list': [(i['order'], i['media_ids']) for i in all_movies], 'id_type': 'trakt_dict', 'custom_order': 'true'}
 		tvshow_list = {'list': [(i['order'], i['media_ids']) for i in all_tvshows], 'id_type': 'trakt_dict', 'custom_order': 'true'}
 		season_list = {'list': all_seasons}
@@ -333,7 +341,10 @@ def build_trakt_list(params):
 		if use_result: return [i[0] for i in item_list]
 		final_items = [i[0] for i in item_list]
 		add_items(handle, final_items)
-		if interactive: paginator.set_head(pg_key, final_items)
+		if interactive:
+			paginator.set_head(pg_key, final_items)
+			paginator.log_build('trakt', params.get('list_type') or 'list', _t0, _t_resolved, paginator.now(), len(final_items),
+						pages_to_load, params.get('pages'))
 		if not interactive and total_pages > page_no:
 			new_page = str(page_no + 1)
 			new_params = {'mode': 'trakt.list.build_trakt_list', 'list_type': list_type, 'list_name': list_name,

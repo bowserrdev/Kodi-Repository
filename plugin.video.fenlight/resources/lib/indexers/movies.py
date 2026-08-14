@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 import sys
+from time import perf_counter as _perf
 from modules import meta_lists
 from modules import kodi_utils, settings
 from modules import paginator
 from modules.metadata import movie_meta, movieset_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url, dub_filter
+from modules.metadata import movie_meta_prefetch, meta_prefetch_key
 from modules.utils import manual_function_import, get_datetime, make_thread_list_enumerate, make_thread_list_multi_arg, get_current_timestamp, paginate_list, jsondate_to_datetime
 from modules.watched_status import get_database, watched_info_movie, get_watched_status_movie, get_bookmarks_movie, get_progress_status_movie
 logger = kodi_utils.logger
@@ -43,6 +45,8 @@ class Movies:
 		self.id_type, self.list, self.action = self.params_get('id_type', 'tmdb_id'), self.params_get('list', []), self.params_get('action', None)
 		self.items, self.new_page, self.total_pages, self.is_external, self.is_home = [], {}, None, external(), home()
 		self.interactive = False
+		# Popolato da worker() prima del pool; vuoto significa solo "nessuna anticipazione", non errore.
+		self.meta_prefetch = {}
 		self.widget_hide_next_page = self.is_home and widget_hide_next_page()
 		self.widget_hide_watched = self.is_home and widget_hide_watched()
 		self.custom_order = self.params_get('custom_order', 'false') == 'true'
@@ -56,6 +60,7 @@ class Movies:
 
 	def fetch_list(self):
 		handle = int(sys.argv[1])
+		_t0 = paginator.now()
 		try:
 			try: page_no = int(self.params_get('new_page', '1'))
 			except: page_no = self.params_get('new_page')
@@ -74,11 +79,12 @@ class Movies:
 				self.pg_key = paginator.make_key(self.params)
 				paginator.log('movies BUILD action=%s key=%s params=%s' % (self.action, paginator.short(self.pg_key),
 						{k: self.params.get(k) for k in ('mode', 'action', 'category_name', 'key_id', 'url', 'query') if self.params.get(k)}))
-				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch())
+				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch(), self.params_get('pages', 0))
 				# Fill every build to a full screen: server- or post-build filtering (text search, advanced
 				# search) can thin a TMDB page down to a few items, so keep loading until a page's worth is
 				# gathered. Neutral for unfiltered widgets (a single page already meets the target).
 				min_items = paginator.fill_target()
+				self._pg_pages = pages_to_load
 				self.list, has_more, _last = paginator.load_cumulative(fetch_page, pages_to_load, min_items)
 				paginator.set_state(self.pg_key, _last, has_more)
 			elif self.action in main:
@@ -137,7 +143,10 @@ class Movies:
 					self.params['key_id'] = movie_meta('tmdb_id', self.params_get('key_id'), tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp())['imdb_id']
 				self.id_type = 'imdb_id'
 				self.list = function(self.params_get('key_id'))
+			_t1 = paginator.now()
 			items = self.worker()
+			paginator.log_build('movies', self.action, _t0, _t1, paginator.now(), len(items) if items else 0,
+						getattr(self, '_pg_pages', None), self.params_get('pages'))
 			if self.search_query and paginator.search_is_stale(self.search_query):
 				# A newer keystroke arrived while this build ran: drop the result so it can't overwrite
 				# the live container / head bridge. The directory is closed empty in the tail below.
@@ -163,8 +172,16 @@ class Movies:
 		
 	def build_movie_content(self, _position, _id):
 		try:
-			meta = movie_meta(self.id_type, _id, self.tmdb_api_key, self.mpaa_region, self.current_date, self.current_time)
+			_t0 = _perf()
+			# Prima il lotto gia' letto in sequenza fuori dal pool; solo chi manca paga la lettura
+			# singola qui dentro (e, se non e' in cache, la rete -- che e' il caso in cui i thread
+			# servono davvero).
+			_pk = meta_prefetch_key(self.id_type, _id)
+			meta = self.meta_prefetch.get(_pk) if _pk else None
+			if meta is None:
+				meta = movie_meta(self.id_type, _id, self.tmdb_api_key, self.mpaa_region, self.current_date, self.current_time)
 			if not meta or 'blank_entry' in meta: return
+			_t1 = _perf()
 			listitem = make_listitem()
 			cm = []
 			cm_append = cm.append
@@ -184,44 +201,39 @@ class Movies:
 			progress = get_progress_status_movie(self.bookmarks, str_tmdb_id)
 			playcount = get_watched_status_movie(self.watched_info, str_tmdb_id)
 			play_params = build_url({'mode': 'playback.media', 'media_type': 'movie', 'tmdb_id': tmdb_id})
+			# options_params e' sia voce di menu sia tasto rapido. extras_params e more_like_this_params
+			# non sono piu' voci, ma restano perche' custom_keys.py li legge dalle proprieta' della listitem.
 			extras_params = build_url({'mode': 'extras_menu_choice', 'media_type': 'movie', 'tmdb_id': tmdb_id, 'is_external': self.is_external})
 			options_params = build_url({'mode': 'options_menu_choice', 'content': 'movie', 'tmdb_id': tmdb_id, 'poster': poster, 'is_external': self.is_external})
 			more_like_this_params = build_url({'mode': 'build_movie_list', 'action': 'imdb_more_like_this', 'key_id': imdb_id,
-											'name': 'More Like This based on %s' % title, 'is_external': self.is_external})
+												'name': 'More Like This based on %s' % title, 'is_external': self.is_external})
 			belongs_to_movieset = 'true' if all([movieset_id, movieset_name]) else 'false'
 			movieset_active = self.open_movieset and belongs_to_movieset == 'true'
-			if self.open_extras or movieset_active: cm_append(('[B]Playback[/B]', run_plugin % play_params))
-			if not self.open_extras or movieset_active: cm_append(('[B]Extras[/B]', run_plugin % extras_params))
+			if self.open_extras or movieset_active: cm_append(('[B]Riproduci[/B]', run_plugin % play_params))
 			if movieset_active: url_params = build_url({'mode': 'open_movieset_choice', 'key_id': movieset_id, 'name': movieset_name, 'is_external': self.is_external})
 			elif self.open_extras: url_params = extras_params
 			else: url_params = play_params
-			cm_append(('[B]Options[/B]', run_plugin % options_params))
-			cm_append(('[B]Playback Options[/B]', run_plugin % build_url({'mode': 'playback_choice', 'media_type': 'movie', 'meta': tmdb_id})))
-			if belongs_to_movieset == 'true' and not self.movieset_list_active and not self.open_movieset:
-				cm_append(('[B]Browse Movie Set[/B]', self.window_command % \
-					build_url({'mode': 'build_movie_list', 'action': 'tmdb_movies_sets', 'key_id': movieset_id, 'name': movieset_name})))
-			cm_append(('[B]Browse Recommended[/B]', self.window_command % \
-					build_url({'mode': 'build_movie_list', 'action': 'tmdb_movies_recommendations', 'key_id': tmdb_id, 'name': 'Recommended based on %s' % title})))
-			cm_append(('[B]Browse More Like This[/B]', self.window_command % more_like_this_params))
-			if imdb_id: cm_append(('[B]In Trakt Lists[/B]', self.window_command % \
-							build_url({'mode': 'trakt.list.get_trakt_lists_with_media', 'media_type': 'movie', 'imdb_id': imdb_id, 'category_name': '%s In Trakt Lists' % title})))
-			cm_append(('[B]Trakt Lists Manager[/B]', run_plugin % \
-				build_url({'mode': 'trakt_manager_choice', 'tmdb_id': tmdb_id, 'imdb_id': imdb_id, 'tvdb_id': 'None', 'media_type': 'movie', 'icon': poster})))
-			cm_append(('[B]Favorites Manager[/B]', run_plugin % \
-				build_url({'mode': 'favorites_choice', 'media_type': 'movie', 'tmdb_id': tmdb_id, 'title': title})))
+			cm_append(('[B]Opzioni[/B]', run_plugin % options_params))
+			cm_append(('[B]Opzioni di riproduzione[/B]', run_plugin % build_url({'mode': 'playback_choice', 'media_type': 'movie', 'meta': tmdb_id})))
 			if playcount:
 				if self.widget_hide_watched: return
-				cm_append(('[B]Mark Unwatched %s[/B]' % self.watched_title, run_plugin % build_url({'mode': 'watched_status.mark_movie', 'action': 'mark_as_unwatched',
+				cm_append(('[B]Segna come non visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_movie', 'action': 'mark_as_unwatched',
 							'tmdb_id': tmdb_id, 'title': title})))
 			elif not unaired:
-				cm_append(('[B]Mark Watched %s[/B]' % self.watched_title, run_plugin % build_url({'mode': 'watched_status.mark_movie', 'action': 'mark_as_watched',
+				cm_append(('[B]Segna come visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_movie', 'action': 'mark_as_watched',
 							'tmdb_id': tmdb_id, 'title': title})))
+			in_watchlist = str_tmdb_id in self.watchlist_ids
+			cm_append((('[B]Rimuovi dalla watchlist[/B]' if in_watchlist else '[B]Aggiungi alla watchlist[/B]'),
+						run_plugin % build_url({'mode': 'trakt.watchlist_toggle', 'media_type': 'movie', 'tmdb_id': tmdb_id,
+						'in_watchlist': 'true' if in_watchlist else 'false'})))
 			if progress:
-				cm_append(('[B]Clear Progress[/B]', run_plugin % build_url({'mode': 'watched_status.erase_bookmark', 'media_type': 'movie', 'tmdb_id': tmdb_id, 'refresh': 'true'})))
+				cm_append(('[B]Azzera avanzamento[/B]', run_plugin % build_url({'mode': 'watched_status.erase_bookmark', 'media_type': 'movie', 'tmdb_id': tmdb_id, 'refresh': 'true'})))
+			# "Refresh" e' il superset di "Reload": alza fenlight.refresh_widgets, che i widget random leggono
+			# per rigenerare una selezione nuova, e poi chiama comunque kodi_refresh. Tenuto solo quello.
 			if self.is_external:
-				cm_append(('[B]Refresh Widgets[/B]', run_plugin % build_url({'mode': 'refresh_widgets'})))
-				cm_append(('[B]Reload Widgets[/B]', run_plugin % build_url({'mode': 'kodi_refresh'})))
-			else: cm_append(('[B]Exit Movie List[/B]', run_plugin % build_url({'mode': 'navigator.exit_media_menu'})))
+				cm_append(('[B]Aggiorna widget[/B]', run_plugin % build_url({'mode': 'refresh_widgets'})))
+			else: cm_append(('[B]Esci dalla lista[/B]', run_plugin % build_url({'mode': 'navigator.exit_media_menu'})))
+			_t2 = _perf()
 			info_tag = listitem.getVideoInfoTag()
 			info_tag.setMediaType('movie'), info_tag.setTitle(title), info_tag.setOriginalTitle(meta_get('original_title')), info_tag.setGenres(meta_get('genre'))
 			info_tag.setDuration(meta_get('duration')), info_tag.setPlaycount(playcount), info_tag.setPlot(meta_get('plot'))
@@ -230,27 +242,34 @@ class Movies:
 			info_tag.setCountries(meta_get('country')), info_tag.setTrailer(meta_get('trailer'))
 			info_tag.setTagLine(meta_get('tagline')), info_tag.setStudios(meta_get('studio'))
 			info_tag.setWriters(meta_get('writer')), info_tag.setDirectors(meta_get('director'))
+			_t3 = _perf()
 			info_tag.setCast([xbmc_actor(name=item['name'], role=item['role'], thumbnail=item['thumbnail']) for item in meta_get('cast', [])])
-			if progress:
-				info_tag.setResumePoint(float(progress))
-				set_properties({'WatchedProgress': progress})
+			_t4 = _perf()
+			if progress: info_tag.setResumePoint(float(progress))
 			listitem.setLabel(title)
+			_t5 = _perf()
 			listitem.addContextMenuItems(cm)
+			_t6 = _perf()
 			listitem.setArt({'poster': poster, 'fanart': fanart, 'icon': poster, 'clearlogo': clearlogo, 'landscape': landscape, 'thumb': thumb})
-			set_properties({'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
-							'belongs_to_collection': belongs_to_movieset, 'fenlight.more_like_this_params': more_like_this_params})
+			_t7 = _perf()
+			# UNA sola setProperties invece di due o tre: erano gia' tutte proprieta' dello stesso
+			# listitem, quindi il dizionario si compone in Python (costo nullo) e si attraversa il
+			# confine verso il C++ una volta sola.
+			_props = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
+						'belongs_to_collection': belongs_to_movieset, 'fenlight.more_like_this_params': more_like_this_params}
+			if progress: _props['WatchedProgress'] = progress
 			extra_ratings = meta_get('extra_ratings')
 			if extra_ratings:
-				_rp = {}
 				for _k, _n in (('imdb', 'IMDb_Rating'), ('metascore', 'MetaCritic_Rating'), ('tomatometer', 'RottenTomatoes_Rating'), ('tomatousermeter', 'RottenTomatoes_UserMeter')):
 					_r = extra_ratings.get(_k, {})
 					_v = _r.get('rating', '').replace('%', '')
-					if _v: _rp[_n] = _v
+					if _v: _props[_n] = _v
 					_i = _r.get('icon', '')
-					if _i: _rp[_n + '_Icon'] = _i
+					if _i: _props[_n + '_Icon'] = _i
 				_tmdb = meta_get('rating')
-				if _tmdb: _rp['TMDb_Rating'] = str(_tmdb)
-				if _rp: set_properties(_rp)
+				if _tmdb: _props['TMDb_Rating'] = str(_tmdb)
+			set_properties(_props)
+			paginator.phase_record(_t1 - _t0, _t2 - _t1, _t3 - _t2, _t4 - _t3, _t5 - _t4, _t6 - _t5, _t7 - _t6, _perf() - _t7)
 			self.append(((url_params, listitem, False), _position))
 		except: pass
 
@@ -260,10 +279,27 @@ class Movies:
 		self.watched_title = 'Trakt' if self.watched_indicators == 1 else 'Fen Light'
 		watched_db = get_database(self.watched_indicators)
 		self.watched_info, self.bookmarks = watched_info_movie(watched_db), get_bookmarks_movie(watched_db)
+		# Watchlist Trakt: UNA lettura da cache per costruzione (come watched_info e bookmarks),
+		# non una per elemento. Serve a decidere se la voce di menu dice Aggiungi o Rimuovi.
+		if self.watched_indicators == 1:
+			# import pigro: senza Trakt attivo non si paga il caricamento di trakt_api (requests, ecc.)
+			# a ogni costruzione di lista -- e con reuselanguageinvoker=false si pagherebbe davvero ogni volta.
+			from apis.trakt_api import watchlist_tmdb_ids
+			self.watchlist_ids = watchlist_tmdb_ids('movies')
+		else: self.watchlist_ids = set()
 		self.window_command = 'ActivateWindow(Videos,%s,return)' if self.is_external else 'Container.Update(%s)'
 		open_action = media_open_action('movie')
 		self.open_movieset = open_action in (2, 3) and not self.movieset_list_active
 		self.open_extras = open_action in (1, 3)
+		paginator.phase_reset()
+		# UNA lettura per l'intera lista, in sequenza, PRIMA che parta il pool. Vedi meta_cache.get_many:
+		# sotto il pool la stessa lettura costa 30-45 volte tanto per l'effetto convoglio sul GIL.
+		_pf0 = _perf()
+		try:
+			_ids = [i[1] for i in self.list] if self.custom_order else list(self.list)
+			self.meta_prefetch = movie_meta_prefetch(self.id_type, _ids, self.current_time)
+		except: self.meta_prefetch = {}
+		paginator.log_prefetch('movies %s' % self.action, len(self.list), len(self.meta_prefetch), _perf() - _pf0)
 		if self.custom_order:
 			threads = list(make_thread_list_multi_arg(self.build_movie_content, self.list))
 			[i.join() for i in threads]
@@ -272,6 +308,8 @@ class Movies:
 			[i.join() for i in threads]
 			self.items.sort(key=lambda k: k[1])
 			self.items = [i[0] for i in self.items]
+		paginator.phase_report('movies %s' % self.action, ('meta', 'prep+cm', 'infotag', 'cast', 'setLabel', 'ctxmenu', 'setArt', 'props'))
+		paginator.selftest()
 		return self.items
 
 	def paginate_list(self, data, page_no):

@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 import re
+from time import perf_counter as _perf
 from apis import tmdb_api
 from apis.imdb_api import imdb_data, imdb_episode_ratings
 from caches.meta_cache import meta_cache
 from modules.settings import meta_language
+from modules import paginator
 from modules.utils import jsondate_to_datetime, subtract_dates, make_thread_list
 from apis.skyhook_api import get_skyhook_season_data, get_skyhook_episodes, get_tvdb_to_tmdb_map
 
@@ -190,9 +192,20 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 	meta_func = movie_meta if media_type == 'movie' else tvshow_meta
 	# Default True == keep, so any unevaluated/errored/inconclusive item survives (fail open).
 	keep = [True] * len(ids)
+	# Stessa mossa fatta negli indexer: i metadati gia' in cache si leggono in UNA query, in sequenza,
+	# prima di aprire il pool. Senza, questo filtro ripagava per intero il costo convoglio sul GIL --
+	# ed e' il primo a girare, quindi lo pagava su TUTTA la lista, non solo sui nuovi.
+	_t_dub0 = _perf()
+	prefetched = meta_prefetch(media_type, id_type, ids, current_time)
+	_t_dub1 = _perf()
+	# Conteggi per il log: le liste sono append-only, quindi sicure fra i thread senza lock.
+	_hit_cache, _net_streaming, _net_bluray = [], [], []
 	def _evaluate(index):
 		try:
-			meta = meta_func(id_type, ids[index], api_key, mpaa_region, current_date, current_time)
+			_pk = meta_prefetch_key(id_type, ids[index], media_type)
+			meta = prefetched.get(_pk) if _pk else None
+			if meta is None:
+				meta = meta_func(id_type, ids[index], api_key, mpaa_region, current_date, current_time)
 			if not meta or meta.get('blank_entry'):
 				_dub_log('item idx=%s no-meta -> KEEP (fail open)' % index); return
 			tmdb_id = meta.get('tmdb_id')
@@ -202,7 +215,9 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 			cached = dub_cache.get_availability(country, media_type, tmdb_id)
 			if cached is not None:
 				keep[index] = cached
+				_hit_cache.append(1)
 				_dub_log('item "%s" tmdb=%s CACHE -> %s' % (title_dbg, tmdb_id, 'KEEP' if cached else 'DROP')); return
+			_net_streaming.append(1)
 			streaming = tmdb_api.streaming_available(media_type, tmdb_id, country, api_key)
 			if streaming is True:
 				dub_cache.set_availability(country, media_type, tmdb_id, True)
@@ -217,6 +232,7 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 			# Recently-released titles: verify the blu-ray.com listing is actually on sale, not just an
 			# announced/pre-order edition (which doesn't mean a dubbed copy is available yet).
 			verify = _is_recent_release(meta.get('premiered'), current_date)
+			_net_bluray.append(1)
 			home_video = has_home_video_release(title, year, country, verify_released=verify)
 			if home_video is None:
 				_dub_log('item "%s" tmdb=%s bluray("%s" %s verify=%s) INCONCLUSIVE -> KEEP (fail open)' % (title_dbg, tmdb_id, title, year, verify)); return
@@ -230,7 +246,72 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 	make_thread_list(_evaluate, range(len(ids)))
 	dropped = sum(1 for k in keep if not k)
 	_dub_log('dub_filter END media=%s in=%s out=%s (dropped %s)' % (media_type, len(ids), len(ids) - dropped, dropped))
+	# Riga sempre attiva (non gated da DUB_DEBUG): e' l'unico punto che dice quanto della lentezza
+	# percepita e' rete inevitabile e quanto e' lavoro nostro. Il filtro gira PRIMA della costruzione,
+	# quindi finora il suo costo compariva mascherato dentro "costruzione" nella riga PERF.
+	try:
+		from modules import paginator as _pg
+		if _pg.PERF:
+			from modules.kodi_utils import logger
+			logger('FenLight PERF DUB', '%s | %s elementi | meta anticipati %s | verdetto in cache %s | '
+					'rete: streaming %s, bluray %s | scartati %s | prefetch %.1f ms + valutazione %.2f s'
+					% (media_type, len(ids), len(prefetched), len(_hit_cache), len(_net_streaming),
+						len(_net_bluray), dropped, (_t_dub1 - _t_dub0) * 1000, _perf() - _t_dub1))
+	except: pass
 	return keep
+
+def _is_blank(meta):
+	# Un "blank entry" e' il segnaposto salvato quando TMDb rifiuta un id (codici 6/34/37): serve
+	# proprio a NON richiedere di nuovo quell'id per 24 ore. Non ha 'meta_language', quindi il
+	# controllo lingua lo valutava come 'en': con la lingua impostata su qualsiasi altra cosa il
+	# segnaposto veniva scartato SEMPRE, e ogni costruzione di lista tornava in rete su un id invalido.
+	# Misurato: una sola voce di questo tipo in una lista di serie costava 9-12 SECONDI di costruzione,
+	# perche' il pool attende tutti i thread e quella richiesta va a vuoto ogni volta.
+	return 'blank_entry' in meta
+
+def _resolve_meta_id(id_type, media_id, media_type='movie'):
+	# Stessa risoluzione che movie_meta/tvshow_meta fanno in testa: un elemento di lista Trakt/MDbList
+	# arriva come dizionario di id, non come id singolo. L'ordine di preferenza e' quello dei due
+	# originali -- e per le serie c'e' in piu' il ripiego su tvdb, che per i film non esiste.
+	if id_type == 'trakt_dict':
+		try:
+			if media_id.get('tmdb', None): return 'tmdb_id', media_id['tmdb']
+			if media_id.get('imdb', None): return 'imdb_id', media_id['imdb']
+			if media_type == 'tvshow' and media_id.get('tvdb', None): return 'tvdb_id', media_id['tvdb']
+		except: pass
+		return None, None
+	return id_type, media_id
+
+def meta_prefetch_key(id_type, media_id, media_type='movie'):
+	resolved_type, resolved_id = _resolve_meta_id(id_type, media_id, media_type)
+	if resolved_type is None or resolved_id is None: return None
+	return '%s|%s' % (resolved_type, resolved_id)
+
+def meta_prefetch(media_type, id_type, media_ids, current_time=None):
+	# Legge in UNA volta sola tutti i metadati gia' in cache per la lista, prima che parta il pool di
+	# thread. Chi non e' qui dentro (voce assente, scaduta, o in un'altra lingua) cade sul percorso
+	# normale di movie_meta/tvshow_meta, rimasto identico: questo strato non decide nulla, anticipa
+	# soltanto le letture che avrebbero comunque avuto luogo, e le paga a prezzo sequenziale.
+	results = {}
+	try:
+		lang = meta_language()
+		groups = {}
+		for media_id in media_ids:
+			resolved_type, resolved_id = _resolve_meta_id(id_type, media_id, media_type)
+			if resolved_type is None or resolved_id is None: continue
+			groups.setdefault(resolved_type, set()).add(str(resolved_id))
+		for resolved_type, ids in groups.items():
+			for row_id, meta in meta_cache.get_many(media_type, resolved_type, list(ids), current_time).items():
+				if not _is_blank(meta) and meta.get('meta_language', 'en') != lang: continue
+				results['%s|%s' % (resolved_type, row_id)] = meta
+	except: pass
+	return results
+
+def movie_meta_prefetch(id_type, media_ids, current_time=None):
+	return meta_prefetch('movie', id_type, media_ids, current_time)
+
+def tvshow_meta_prefetch(id_type, media_ids, current_time=None):
+	return meta_prefetch('tvshow', id_type, media_ids, current_time)
 
 def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_time=None):
 	if id_type == 'trakt_dict':
@@ -238,10 +319,18 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 		elif media_id.get('imdb', None): id_type, media_id = 'imdb_id', media_id['imdb']
 		else: id_type, media_id = None, None
 	if media_id == None: return None
+	# La fase "meta" misura 1.5 ms per elemento, contro i 22 us che lettura SQLite + json.loads
+	# costano fuori da Kodi. Le due meta' del percorso caldo sono separate per sapere QUALE paga:
+	# meta_language() -- che sotto sotto e' un getProperty su Window(10000), quindi una chiamata C++
+	# con lock, moltiplicata per i 6-10 thread del pool -- oppure la lettura di cache vera e propria.
+	_m0 = _perf()
 	lang = meta_language()
+	_m1 = _perf()
 	meta = metacache_get('movie', id_type, media_id, current_time)
-	if meta and meta.get('meta_language', 'en') != lang: meta = None
-	if meta: return meta
+	if meta and not _is_blank(meta) and meta.get('meta_language', 'en') != lang: meta = None
+	if meta:
+		paginator.phase_record_meta(_m1 - _m0, _perf() - _m1)
+		return meta
 	try:
 		if id_type in ('tmdb_id', 'imdb_id'): data = movie_details(media_id, api_key, lang)
 		else:
@@ -402,7 +491,7 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 	if media_id == None: return None
 	lang = meta_language()
 	meta = metacache_get('tvshow', id_type, media_id, current_time)
-	if meta and meta.get('meta_language', 'en') != lang: meta = None
+	if meta and not _is_blank(meta) and meta.get('meta_language', 'en') != lang: meta = None
 	if meta: return meta
 	try:
 		if id_type == 'tmdb_id': data = tvshow_details(media_id, api_key, lang)
