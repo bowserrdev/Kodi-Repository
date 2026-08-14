@@ -1749,3 +1749,83 @@ riduce insieme tempo di CPU e oggetti temporanei.
 ## Cosa verificare
 
 Cercare `FenLight PERF API`. Una riga sola, e dice quale delle due correzioni fare.
+
+---
+
+# Lotto 19 — REGRESSIONE MIA: `phase_report` cancellata, addon rotto
+
+## Cosa è successo
+
+Nel lotto 18 ho sostituito l'autotest con uno script Python che riscriveva `paginator.py`
+prendendo tutto il testo fra un commento iniziale e `def log_prefetch(`. In quell'intervallo non
+c'era solo l'autotest: c'era anche **`phase_report`**, che è stata cancellata.
+
+`ast.parse` passava — la sintassi era perfettamente valida — quindi il controllo che facevo
+abitualmente non ha visto niente. L'addon è finito in mano all'utente rotto:
+
+```
+AttributeError: module 'modules.paginator' has no attribute 'phase_report'
+  File "indexers/movies.py", line 311, in worker
+```
+
+`phase_report` è chiamata in fondo a `Movies.worker()`, quindi **ogni costruzione di lista film
+falliva**. Conseguenze osservate: widget della home vuoti (`0 elementi`), watchlist vuota,
+"latest releases" vuoto, ricerca ferma — su Mac e su Mi Stick.
+
+Il segnale c'era e non l'ho letto: `git diff --numstat` diceva `40 aggiunte / 47 rimozioni` per
+una modifica che doveva solo *sostituire* un blocco. Sette righe sparite in più.
+
+## La lezione, che è diversa da quella già annotata
+
+Era già scritto in questo documento di verificare `git diff --numstat` dopo ogni modifica
+scriptata — regola nata dal disastro CRLF. Non bastava, perché guardavo il numero e non cosa
+fosse sparito.
+
+**La sintassi valida non dice niente sui simboli.** Dopo una riscrittura scriptata va verificato
+che i nomi esistano ancora, non che il file compili.
+
+## Il controllo, ora automatizzato
+
+`check_symbols.py` (nella cartella di lavoro) analizza l'AST di tutti i 91 moduli e verifica:
+
+1. ogni `from <modulo interno> import nome` → il nome esiste nel modulo di origine;
+2. ogni `<modulo>.attributo` → l'attributo esiste, limitato ai nomi legati da un import di modulo
+   interno **nello stesso file** e solo su nodi `ast.Attribute`.
+
+La prima versione usava una regex e produceva 591 falsi positivi (pescava stringhe come
+`'fenlight.rd'` e `'offcloud.com'`): rifatta sull'AST, ora è pulita.
+
+Da eseguire **dopo ogni modifica scriptata**, prima di consegnare.
+
+## Ripristino
+
+`phase_report` riscritta identica, con dentro anche il report delle sotto-fasi `meta` che stava
+nello stesso blocco. Verifica: tutti e 33 gli attributi `paginator.*` usati nel codice esistono.
+
+## Tre bug preesistenti trovati per strada
+
+Il controllo ha fatto emergere tre route rotte **a monte, in Fen Light**, in file che non ho mai
+toccato (`git diff` su `router.py` è vuoto):
+
+```
+modules/router.py:224  from modules.search import add_to_history   -> non esiste
+modules/router.py:364  from modules.kodi_utils import show_text_media -> non esiste
+modules/router.py:374  from modules.kodi_utils import set_view      -> non esiste
+```
+
+Due hanno anche la chiamata incoerente con l'import (la riga dopo `show_text_media` chiama
+`show_text` con cinque argomenti posizionali sbagliati). Non sono correzioni meccaniche e non
+vanno infilate dentro un ripristino: annotate, da fare a parte.
+
+## Sul riavvio della stick: cosa dice davvero questo log
+
+**Non è attribuibile alla costruzione delle liste.** In questa sessione le build fallivano
+immediatamente con l'AttributeError e restituivano `0 elementi`: il carico di CPU e memoria era
+quindi *minimo*, e il dispositivo si è riavviato lo stesso, prima ancora di mostrare i widget.
+
+Nel log non c'è nessuna traccia di tempesta di invocazioni (le due ricostruzioni distano 40
+secondi) né alcun errore prima dell'interruzione. Da qui non è diagnosticabile, e non ho
+intenzione di indovinare una quarta volta.
+
+Il prossimo test, su un addon funzionante, dice se il riavvio persiste: se persiste, non c'entra
+il nostro percorso di costruzione.

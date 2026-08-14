@@ -192,6 +192,31 @@ def phase_record(*durations):
 def phase_record_meta(*durations):
 	if PERF: _META_PHASES.append(durations)
 
+def phase_report(kind, labels):
+	if not PERF: return
+	try:
+		from modules.kodi_utils import logger
+		rows = list(_ITEM_PHASES)
+		if not rows: return
+		n = len(rows)
+		totals = [sum(r[i] for r in rows) for i in range(len(labels))]
+		grand = sum(totals) or 1e-9
+		# Somma dei tempi di THREAD, non tempo di parete: con il pool a N worker la somma supera
+		# la durata reale della costruzione. Il valore utile e' la QUOTA relativa fra le fasi.
+		logger('FenLight PERF FASI', '%s | %s elementi | somma thread %.0f ms | %s'
+				% (kind, n, grand * 1000,
+					' + '.join('%s %.0fms (%.0f%%)' % (labels[i], totals[i] * 1000, 100.0 * totals[i] / grand)
+								for i in range(len(labels)))))
+		mrows = list(_META_PHASES)
+		if mrows:
+			m_lang = sum(r[0] for r in mrows)
+			m_cache = sum(r[1] for r in mrows)
+			m_tot = (m_lang + m_cache) or 1e-9
+			logger('FenLight PERF META', '%s | %s letture | meta_language %.0fms (%.0f%%) + lettura cache %.0fms (%.0f%%) | %.2f ms/elemento'
+					% (kind, len(mrows), m_lang * 1000, 100.0 * m_lang / m_tot,
+						m_cache * 1000, 100.0 * m_cache / m_tot, m_tot * 1000 / len(mrows)))
+	except: pass
+
 # Autotest UNA TANTUM per costruzione. La domanda a cui deve rispondere adesso e' una sola: il costo
 # di una fase e' proporzionale al NUMERO DI CHIAMATE verso il C++ di Kodi, o al NUMERO DI CHIAVI/VOCI
 # che ogni chiamata trasporta? Le due risposte portano a correzioni opposte -- consolidare le chiamate
