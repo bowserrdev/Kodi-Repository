@@ -7,6 +7,7 @@ all_tables = ('metadata', 'season_metadata', 'function_cache')
 id_types = ('tmdb_id', 'imdb_id', 'tvdb_id')
 season_prop, media_prop = 'fenlight.meta_season_%s', 'fenlight.%s_%s_%s'
 GET_MOVIE_SHOW = 'SELECT meta, expires FROM metadata WHERE db_type = ? AND %s = ?'
+GET_MOVIE_SHOW_MANY = 'SELECT %s, meta, expires FROM metadata WHERE db_type = ? AND %s IN (%s)'
 GET_SEASON = 'SELECT meta, expires FROM season_metadata WHERE tmdb_id = ?'
 GET_FUNCTION = 'SELECT string_id, data, expires FROM function_cache WHERE string_id = ?'
 GET_ALL = 'SELECT db_type, tmdb_id FROM metadata'
@@ -44,6 +45,30 @@ class MetaCache:
 					meta = None
 		except: meta = None
 		return meta
+
+	def get_many(self, media_type, id_type, media_ids, current_time=None):
+		# UNA query per l'intera lista invece di una per elemento, da eseguire in sequenza fuori dal
+		# pool di thread. Misurato dentro Kodi: la stessa lettura costa 0.036 ms/elemento in
+		# sequenza e 1.0-1.7 ms sotto il pool a 6-10 worker -- non perche' sia lenta, ma per
+		# l'effetto convoglio sul GIL (sqlite3 lo rilascia durante execute e per riprenderlo aspetta
+		# un passaggio di consegne, fino a 5 ms). Le voci scadute NON vengono restituite: cadono sul
+		# percorso normale, che le cancella e le riscarica.
+		results = {}
+		if not media_ids: return results
+		try:
+			if not current_time: current_time = get_timestamp()
+			dbcon = connect_database('metacache_db')
+			media_ids = list(media_ids)
+			# SQLite limita il numero di parametri per statement: la lista va spezzata.
+			for start in range(0, len(media_ids), 500):
+				chunk = media_ids[start:start + 500]
+				query = GET_MOVIE_SHOW_MANY % (id_type, id_type, ', '.join('?' for _ in chunk))
+				for row in dbcon.execute(query, [media_type] + chunk):
+					if row[2] < current_time: continue
+					try: results[string(row[0])] = json.loads(row[1])
+					except: pass
+		except: pass
+		return results
 
 	def get_season(self, prop_string):
 		try:

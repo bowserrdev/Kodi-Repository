@@ -24,7 +24,7 @@
         <param name="id">{widget_id}</param>
     </include>
 
-    <content sortby="{widget_sortby}" sortorder="{widget_sortorder}" target="{widget_target}" limit="{widget_limit}" browse="$VAR[Defs_BrowseLimitedLists]">{widget_path}</content>
+    <content sortby="{widget_sortby}" sortorder="{widget_sortorder}" target="{widget_target}" limit="{widget_limit}" browse="$VAR[Defs_BrowseLimitedLists]">{widget_path}$INFO[Window(Home).Property(fenlight.pg.ctl{widget_id}.pages),&amp;pages=,]</content>
 
     <include content="Defs_AutoScroll" condition="{widget_isautoscroll}">
         <param name="condition">[!Control.HasFocus({widget_id}) | System.IdleTime(3)]</param>

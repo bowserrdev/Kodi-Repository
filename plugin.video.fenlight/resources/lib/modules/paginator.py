@@ -25,6 +25,18 @@ HEAD_PROP = 'fenlight.pg.head.%s'
 # Distinguishes an in-place refresh of a live, expanded widget from a genuine fresh open (which has no
 # flag and starts from the initial batch). The watcher's own pagination refresh uses LOADING instead.
 PG_REFRESH_PROP = 'fenlight.pg.refresh'
+# Token di ricarica MIRATA, indicizzato per id del contenitore. Compare dentro il <content> del widget
+# come $INFO[...], quindi cambiarlo fa ricaricare SOLO quel contenitore invece di sparare
+# UpdateLibrary, che e' un evento globale e ricostruisce tutti i widget della schermata (#1).
+# Lo stesso meccanismo che la skin usa gia' per i widget di ricerca, che si ricaricano a ogni tasto
+# perche' il loro <content> contiene un $VAR dinamico.
+# Effetto collaterale voluto: il numero di pagine finisce NEL PATH, quindi e' stato durevole invece di
+# un flag transitorio. Sopravvive a una build lenta e al ritorno dalla riproduzione.
+CTL_PAGES_PROP = 'fenlight.pg.ctl%s.pages'
+# Chiave del widget che possiede attualmente quel contenitore. Gli id dei contenitori si ripetono fra
+# categorie diverse e una ricerca cambia chiave a ogni query: quando l'identita' cambia il token va
+# azzerato, altrimenti il widget nuovo erediterebbe le pagine di quello vecchio.
+CTL_KEY_PROP = 'fenlight.pg.ctl%s.key'
 # Bounded registry of recently-built widget keys, to clean up stale per-widget properties over long
 # sessions (each distinct search query mints a new key and leaks its prop set). Entry = 'key:headhash'.
 # Pruning only ever drops the OLDEST entries; the focused widget is always newest, and a pruned widget
@@ -143,6 +155,131 @@ def search_is_stale(query):
 		return True
 	return False
 
+# --- Strumentazione temporanea per le misure di prestazione (lotto ottimizzazioni) ---
+# Una riga di log per costruzione di lista. Volume basso (una per widget per ricostruzione) e ci
+# dice l'unica cosa che finora abbiamo stimato invece di misurare: dove finisce il tempo. La riga
+# separa il tempo di RISOLUZIONE (pagine TMDb + filtri, quasi tutto da cache dopo il primo giro)
+# da quello di COSTRUZIONE (una listitem per elemento: menu contestuale, info tag, artwork), che e'
+# la parte incomprimibile per ricostruzione. Da togliere quando le ottimizzazioni sono chiuse.
+PERF = True
+
+# Contatore di invocazioni VIVE IN QUESTO INTERPRETE. Con reuselanguageinvoker=false ogni build apre un
+# processo Python nuovo, quindi vale sempre 1. Con reuse=true l'interprete sopravvive e il numero
+# cresce. E' l'unico modo per sapere se il flag ha davvero effetto: senza, si finirebbe a giudicare da
+# quanto "sembra" veloce. Se resta a 1 con il flag attivo, qualcosa impedisce il riuso -- il sospetto
+# principale e' il sys.exit(1) che fenlight.py esegue a fine build dei widget.
+_INVOCATIONS = [0]
+
+# Misura PER FASE dentro la costruzione della singola listitem. Serve a rispondere a una domanda
+# precisa: json.loads dell'intero blob (2.00 ms per pagina da 112), le SELECT puntuali (0.53 ms) e le
+# build_url (3.16 ms) sommano ~5.7 ms su una costruzione che ne misura ~130. Il 95% sta altrove, e
+# "altrove" sono le chiamate all'API C++ di Kodi. Questa misura dice QUALI.
+# Ogni elemento fa una sola list.append (atomica sotto GIL, quindi niente lock fra i thread del pool)
+# di una tupla di durate; la somma per fase avviene alla fine, nel thread principale.
+_ITEM_PHASES = []
+# Sotto-fasi dentro movie_meta: (meta_language, lettura di cache). Separate perche' la fase "meta"
+# misurata in Kodi (1.5 ms/elemento) e' 60 volte il costo di SELECT + json.loads misurato fuori.
+_META_PHASES = []
+
+def phase_reset():
+	if PERF:
+		del _ITEM_PHASES[:]
+		del _META_PHASES[:]
+
+def phase_record(*durations):
+	if PERF: _ITEM_PHASES.append(durations)
+
+def phase_record_meta(*durations):
+	if PERF: _META_PHASES.append(durations)
+
+# Autotest UNA TANTUM per costruzione. Risponde alla domanda che da fuori Kodi non si puo' porre:
+# la stessa lettura (SELECT + json.loads) che qui misura ~1.0-1.7 ms/elemento, fuori ne misura 0.022.
+# Lo esegue nel THREAD PRINCIPALE, in sequenza, senza il pool: cosi' il numero non contiene ne'
+# contesa sul GIL ne' parallelismo, ed e' confrontabile con il benchmark esterno.
+# Sospetto guida: il Python imbarcato da Kodi potrebbe non avere l'acceleratore C di json (_json),
+# nel qual caso il decoder cade sul percorso puro Python, che misurato fuori e' 12 volte piu' lento.
+PERF_SELFTEST = True
+
+def selftest():
+	if not (PERF and PERF_SELFTEST): return
+	try:
+		import sys, json
+		from time import perf_counter
+		from modules.kodi_utils import logger
+		from caches.base_cache import connect_database
+		dbcon = connect_database('metacache_db')
+		t0 = perf_counter()
+		rows = dbcon.execute("SELECT meta FROM metadata WHERE db_type = 'movie' LIMIT 100").fetchall()
+		t1 = perf_counter()
+		if not rows: return
+		blobs = [r[0] for r in rows]
+		loads = json.loads
+		t2 = perf_counter()
+		for b in blobs: loads(b)
+		t3 = perf_counter()
+		try:
+			import json.decoder
+			accel = json.decoder.c_scanstring is not None
+		except: accel = 'sconosciuto'
+		media = sum(len(b) for b in blobs) / float(len(blobs))
+		logger('FenLight PERF SELFTEST', 'acceleratore C json: %s | python %s | %s blob, medio %.0f B | '
+				'SELECT unico %.2f ms | json.loads sequenziale %.2f ms = %.3f ms/blob'
+				% (accel, sys.version.split()[0], len(blobs), media,
+					(t1 - t0) * 1000, (t3 - t2) * 1000, (t3 - t2) * 1000 / len(blobs)))
+	except: pass
+
+def phase_report(kind, labels):
+	if not PERF: return
+	try:
+		from modules.kodi_utils import logger
+		rows = list(_ITEM_PHASES)
+		if not rows: return
+		n = len(rows)
+		totals = [sum(r[i] for r in rows) for i in range(len(labels))]
+		grand = sum(totals) or 1e-9
+		# Somma dei tempi di THREAD, non tempo di parete: con il pool a N worker la somma supera
+		# la durata reale della costruzione. Il valore utile e' la QUOTA relativa fra le fasi.
+		logger('FenLight PERF FASI', '%s | %s elementi | somma thread %.0f ms | %s'
+				% (kind, n, grand * 1000,
+					' + '.join('%s %.0fms (%.0f%%)' % (labels[i], totals[i] * 1000, 100.0 * totals[i] / grand)
+								for i in range(len(labels)))))
+		mrows = list(_META_PHASES)
+		if mrows:
+			m_lang = sum(r[0] for r in mrows)
+			m_cache = sum(r[1] for r in mrows)
+			m_tot = (m_lang + m_cache) or 1e-9
+			logger('FenLight PERF META', '%s | %s letture | meta_language %.0fms (%.0f%%) + lettura cache %.0fms (%.0f%%) | %.2f ms/elemento'
+					% (kind, len(mrows), m_lang * 1000, 100.0 * m_lang / m_tot,
+						m_cache * 1000, 100.0 * m_cache / m_tot, m_tot * 1000 / len(mrows)))
+	except: pass
+
+def log_prefetch(kind, requested, hits, seconds):
+	if not PERF: return
+	try:
+		from modules.kodi_utils import logger
+		logger('FenLight PERF PREFETCH', '%s | %s richiesti, %s gia\' in cache (%.0f%%) | lettura unica %.1f ms'
+				% (kind, requested, hits, (100.0 * hits / requested) if requested else 0, seconds * 1000))
+	except: pass
+
+def now():
+	from time import time
+	return time()
+
+def log_build(kind, action, t_start, t_resolved, t_built, count, pages=None, path_pages=None):
+	if not PERF: return
+	_INVOCATIONS[0] += 1
+	try:
+		from modules.kodi_utils import logger
+		total = t_built - t_start
+		per_item = (total / count * 1000) if count else 0
+		# path_pages e' il ?pages= arrivato dal path del widget: e' il dato che dice se la ricarica
+		# mirata sta reggendo lo stato. Se dopo una riproduzione ricompare vuoto, il token si e' perso.
+		logger('FenLight PERF', '%s %s | %s elementi%s%s | totale %.2fs = risoluzione %.2fs + costruzione %.2fs | %.1f ms/elemento | inv=%s'
+				% (kind, action, count, (' | %s pagine' % pages) if pages else '',
+					(' | path_pages=%s' % path_pages) if path_pages not in (None, '', 0, '0') else ' | path_pages=-',
+					total, t_resolved - t_start, t_built - t_resolved, per_item, _INVOCATIONS[0]))
+	except: pass
+
 def make_key(params):
 	# Builds a stable per-widget key from the identifying params, ignoring volatile ones, so that
 	# the indexer (from its own params) and the watcher (from Container.FolderPath) compute the same key.
@@ -234,7 +371,24 @@ def raw_pages(key, default):
 	except: value = 0
 	return value if value >= default else default
 
-def get_pages(key, default):
+def get_pages(key, default, path_pages=0):
+	# path_pages e' il ?pages=N letto dal path del widget: dice che questa ricostruzione appartiene a
+	# un widget GIA' espanso. E' il segnale preferito perche' sta nel path -- non puo' essere tolto
+	# sotto i piedi da un timeout mentre la build lavora, e sopravvive al ritorno dalla riproduzione.
+	#
+	# Non ci si fida ciecamente: gli id dei contenitori si ripetono fra categorie diverse, quindi un
+	# altro widget con lo stesso id potrebbe aver lasciato lI' il suo token. Il conteggio autorevole
+	# resta quello indicizzato per chiave del widget, e si prende il minore dei due: se questa chiave
+	# non ha pagine accumulate, raw_pages torna il default e il token altrui viene ignorato.
+	try: path_pages = int(path_pages or 0)
+	except: path_pages = 0
+	if path_pages > default:
+		result = min(path_pages, raw_pages(key, default))
+		log('get_pages key=%s path_pages=%s -> pages_to_load=%s (default=%s)' % (short(key), path_pages, result, default))
+		return result
+	return _get_pages_legacy(key, default)
+
+def _get_pages_legacy(key, default):
 	# A genuine fresh widget open starts from the initial batch, so re-opening a widget never reloads its
 	# whole previously-expanded history at once. The accumulated page count is used only when this rebuild
 	# is either a watcher-driven pagination step (LOADING set) or an in-place soft refresh of the live

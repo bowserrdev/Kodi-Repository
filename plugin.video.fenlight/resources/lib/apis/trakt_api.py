@@ -460,6 +460,29 @@ def remove_from_watchlist(data):
 	if path_check('trakt_watchlist') or external(): kodi_refresh()
 	return result
 
+def watchlist_tmdb_ids(media_type='movies'):
+	# Insieme dei tmdb_id gia' in watchlist, letto una volta sola per costruzione di lista (come
+	# watched_info e bookmarks). Passa da cache_trakt_object, quindi e' una lettura da SQLite:
+	# nessuna chiamata di rete per elemento.
+	try: return {str(i['media_ids']['tmdb']) for i in trakt_fetch_collection_watchlist('watchlist', media_type) if i['media_ids'].get('tmdb')}
+	except: return set()
+
+def watchlist_toggle(params):
+	# Voce unica del menu contestuale: aggiunge o toglie dalla watchlist a seconda di dov'e' gia'.
+	# Sostituisce il gestore liste completo, che chiedeva quale lista prima di fare qualsiasi cosa.
+	if not trakt_user_active(): return notification('No Active Trakt Account', 3500)
+	media_type = params.get('media_type', 'movie')
+	key = 'movies' if media_type == 'movie' else 'shows'
+	try: media_id = int(params['tmdb_id'])
+	except: return notification('Error', 3000)
+	data = {key: [{'ids': {'tmdb': media_id}}]}
+	if params.get('in_watchlist') == 'true': remove_from_watchlist(data)
+	else: add_to_watchlist(data)
+	# Solo invalidazione della cache, nessun kodi_refresh forzato: un refresh globale ricostruirebbe
+	# TUTTI i widget (vedi #1) per aggiornare una sola etichetta di menu. La voce si aggiorna alla
+	# prossima ricostruzione naturale del widget; la notifica conferma subito l'azione all'utente.
+	clear_trakt_collection_watchlist_data('watchlist', key)
+
 def add_to_collection(data, multi=False):
 	result = call_trakt('/sync/collection', data=data)
 	if not multi:
