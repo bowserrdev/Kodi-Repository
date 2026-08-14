@@ -192,65 +192,58 @@ def phase_record(*durations):
 def phase_record_meta(*durations):
 	if PERF: _META_PHASES.append(durations)
 
-# Autotest UNA TANTUM per costruzione. Risponde alla domanda che da fuori Kodi non si puo' porre:
-# la stessa lettura (SELECT + json.loads) che qui misura ~1.0-1.7 ms/elemento, fuori ne misura 0.022.
-# Lo esegue nel THREAD PRINCIPALE, in sequenza, senza il pool: cosi' il numero non contiene ne'
-# contesa sul GIL ne' parallelismo, ed e' confrontabile con il benchmark esterno.
-# Sospetto guida: il Python imbarcato da Kodi potrebbe non avere l'acceleratore C di json (_json),
-# nel qual caso il decoder cade sul percorso puro Python, che misurato fuori e' 12 volte piu' lento.
+# Autotest UNA TANTUM per costruzione. La domanda a cui deve rispondere adesso e' una sola: il costo
+# di una fase e' proporzionale al NUMERO DI CHIAMATE verso il C++ di Kodi, o al NUMERO DI CHIAVI/VOCI
+# che ogni chiamata trasporta? Le due risposte portano a correzioni opposte -- consolidare le chiamate
+# oppure ridurre il contenuto -- quindi va misurata, non dedotta.
+# Sul Mi Stick le tre fasi rimaste (ctxmenu 37%, props 23%, infotag 17%) sono tutte attraversamenti
+# verso l'API C++, e valgono il 77% della costruzione.
+# Confronto chiave: N setProperty singole contro UNA setProperties con le stesse N chiavi. Se i due
+# tempi si somigliano il costo e' per chiave; se la seconda e' molto piu' rapida il costo e' per
+# chiamata, e allora conviene accorpare (il menu contestuale si puo' scrivere come proprieta').
+# Il vecchio autotest su json ha gia' risposto (acceleratore C presente, ~0.03 ms/blob su Mac) e
+# sulla stick costava 130-320 ms per costruzione: rimosso.
 PERF_SELFTEST = True
 
 def selftest():
 	if not (PERF and PERF_SELFTEST): return
 	try:
-		import sys, json
 		from time import perf_counter
+		from xbmcgui import ListItem
 		from modules.kodi_utils import logger
-		from caches.base_cache import connect_database
-		dbcon = connect_database('metacache_db')
-		t0 = perf_counter()
-		rows = dbcon.execute("SELECT meta FROM metadata WHERE db_type = 'movie' LIMIT 100").fetchall()
-		t1 = perf_counter()
-		if not rows: return
-		blobs = [r[0] for r in rows]
-		loads = json.loads
-		t2 = perf_counter()
-		for b in blobs: loads(b)
-		t3 = perf_counter()
-		try:
-			import json.decoder
-			accel = json.decoder.c_scanstring is not None
-		except: accel = 'sconosciuto'
-		media = sum(len(b) for b in blobs) / float(len(blobs))
-		logger('FenLight PERF SELFTEST', 'acceleratore C json: %s | python %s | %s blob, medio %.0f B | '
-				'SELECT unico %.2f ms | json.loads sequenziale %.2f ms = %.3f ms/blob'
-				% (accel, sys.version.split()[0], len(blobs), media,
-					(t1 - t0) * 1000, (t3 - t2) * 1000, (t3 - t2) * 1000 / len(blobs)))
-	except: pass
+		N, REP = 30, 5
+		props = dict(('fenlight.bench%s' % i, 'valore%s' % i) for i in range(N))
+		cm = [('voce %s' % i, 'RunPlugin(plugin://plugin.video.fenlight/?mode=bench&i=%s)' % i) for i in range(7)]
 
-def phase_report(kind, labels):
-	if not PERF: return
-	try:
-		from modules.kodi_utils import logger
-		rows = list(_ITEM_PHASES)
-		if not rows: return
-		n = len(rows)
-		totals = [sum(r[i] for r in rows) for i in range(len(labels))]
-		grand = sum(totals) or 1e-9
-		# Somma dei tempi di THREAD, non tempo di parete: con il pool a N worker la somma supera
-		# la durata reale della costruzione. Il valore utile e' la QUOTA relativa fra le fasi.
-		logger('FenLight PERF FASI', '%s | %s elementi | somma thread %.0f ms | %s'
-				% (kind, n, grand * 1000,
-					' + '.join('%s %.0fms (%.0f%%)' % (labels[i], totals[i] * 1000, 100.0 * totals[i] / grand)
-								for i in range(len(labels)))))
-		mrows = list(_META_PHASES)
-		if mrows:
-			m_lang = sum(r[0] for r in mrows)
-			m_cache = sum(r[1] for r in mrows)
-			m_tot = (m_lang + m_cache) or 1e-9
-			logger('FenLight PERF META', '%s | %s letture | meta_language %.0fms (%.0f%%) + lettura cache %.0fms (%.0f%%) | %.2f ms/elemento'
-					% (kind, len(mrows), m_lang * 1000, 100.0 * m_lang / m_tot,
-						m_cache * 1000, 100.0 * m_cache / m_tot, m_tot * 1000 / len(mrows)))
+		li = ListItem(offscreen=True)
+		t0 = perf_counter()
+		for k, v in props.items(): li.setProperty(k, v)
+		t1 = perf_counter()
+
+		li2 = ListItem(offscreen=True)
+		t2 = perf_counter()
+		li2.setProperties(props)
+		t3 = perf_counter()
+
+		li3 = ListItem(offscreen=True)
+		t4 = perf_counter()
+		for _ in range(REP): li3.addContextMenuItems(cm)
+		t5 = perf_counter()
+
+		li4 = ListItem(offscreen=True)
+		tag = li4.getVideoInfoTag()
+		t6 = perf_counter()
+		for _ in range(REP):
+			tag.setTitle('x'), tag.setPlot('y'), tag.setYear(2020), tag.setRating(7.5), tag.setMpaa('T')
+		t7 = perf_counter()
+
+		singola, insieme = (t1 - t0) * 1000, (t3 - t2) * 1000
+		ctx, setter = (t5 - t4) * 1000 / REP, (t7 - t6) * 1000 / (REP * 5)
+		logger('FenLight PERF API', '%s chiavi: %s setProperty singole %.1f ms (%.3f ms/chiave) contro UNA '
+				'setProperties %.1f ms (%.3f ms/chiave) -> accorpare rende %.1fx | addContextMenuItems(7 voci) '
+				'%.2f ms/chiamata | setter infotag %.3f ms/chiamata'
+				% (N, N, singola, singola / N, insieme, insieme / N,
+					(singola / insieme) if insieme else 0, ctx, setter))
 	except: pass
 
 def log_prefetch(kind, requested, hits, seconds):
