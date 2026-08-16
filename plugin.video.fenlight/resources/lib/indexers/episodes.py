@@ -12,7 +12,7 @@ add_items, set_content, set_sort_method, end_directory = kodi_utils.add_items, k
 date_offset_info, default_all_episodes, nextep_include_unwatched = settings.date_offset, settings.default_all_episodes, settings.nextep_include_unwatched
 nextep_airing_today, nextep_sort_key, nextep_sort_direction = settings.nextep_airing_today, settings.nextep_sort_key, settings.nextep_sort_direction
 nextep_include_unaired, ep_display_format, widget_hide_watched = settings.nextep_include_unaired, settings.single_ep_display_format, settings.widget_hide_watched
-make_listitem, build_url, xbmc_actor, set_category = kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.xbmc_actor, kodi_utils.set_category
+make_listitem, build_url, cast_label, set_category = kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.cast_label, kodi_utils.set_category
 nextep_limit_history, nextep_limit, tmdb_api_key, mpaa_region = settings.nextep_limit_history, settings.nextep_limit, settings.tmdb_api_key, settings.mpaa_region
 get_property, nextep_include_airdate, calendar_sort_order = kodi_utils.get_property, settings.nextep_include_airdate, settings.calendar_sort_order
 watched_indicators_info, nextep_method, show_specials, flatten_episodes = settings.watched_indicators, settings.nextep_method, settings.show_specials, settings.flatten_episodes
@@ -86,7 +86,8 @@ def build_episode_list(params):
 				info_tag.setCountries(country), info_tag.setTrailer(trailer), info_tag.setDirectors(item_get('director'))
 				info_tag.setYear(int(year)), info_tag.setRating(item_get('rating')), info_tag.setVotes(item_get('votes')), info_tag.setMpaa(mpaa)
 				info_tag.setStudios(studio), info_tag.setWriters(item_get('writer'))
-				info_tag.setCast([xbmc_actor(name=item['name'], role=item['role'], thumbnail=item['thumbnail']) for item in cast + item_get('guest_stars', [])])
+				# Niente setCast: la skin del cast legge solo i nomi. Vedi kodi_utils.cast_label.
+				_cast_names = cast_label(cast + item_get('guest_stars', []))
 				if progress and not unaired:
 					info_tag.setResumePoint(float(progress))
 					set_properties({'WatchedProgress': progress})
@@ -94,7 +95,9 @@ def build_episode_list(params):
 				listitem.addContextMenuItems(cm)
 				listitem.setArt({'poster': show_poster, 'fanart': show_fanart, 'thumb': thumb, 'icon':thumb, 'clearlogo': show_clearlogo, 'landscape': show_landscape,
 								'season.poster': season_poster, 'tvshow.poster': show_poster, 'tvshow.clearlogo': show_clearlogo})
-				set_properties({'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'episode_type': episode_type})
+				_p = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'episode_type': episode_type}
+				if _cast_names: _p['fenlight.cast'] = _cast_names
+				set_properties(_p)
 				yield (url_params, listitem, False)
 			except: pass
 	handle, is_external, is_home, category_name = int(sys.argv[1]), external(), home(), 'Episodes'
@@ -254,7 +257,8 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			info_tag.setCountries(meta_get('country', [])), info_tag.setTrailer(trailer), info_tag.setTvShowStatus(show_status)
 			info_tag.setStudios(studio), info_tag.setWriters(item_get('writer')), info_tag.setDirectors(item_get('director'))
 			info_tag.setYear(int(year)), info_tag.setRating(item_get('rating')), info_tag.setVotes(item_get('votes')), info_tag.setMpaa(mpaa)
-			info_tag.setCast([xbmc_actor(name=item['name'], role=item['role'], thumbnail=item['thumbnail']) for item in cast + item_get('guest_stars', [])])
+			# Niente setCast: la skin del cast legge solo i nomi. Vedi kodi_utils.cast_label.
+			_cast_names = cast_label(cast + item_get('guest_stars', []))
 			if progress and not unaired:
 				info_tag.setResumePoint(float(progress))
 				set_properties({'WatchedProgress': progress})
@@ -262,7 +266,9 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			listitem.addContextMenuItems(cm)
 			listitem.setArt({'poster': show_poster, 'fanart': show_fanart, 'thumb': thumb, 'icon':thumb, 'clearlogo': show_clearlogo, 'landscape': show_landscape,
 							'season.poster': season_poster, 'tvshow.poster': show_poster, 'tvshow.clearlogo': show_clearlogo})
-			set_properties({'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'episode_type': episode_type})
+			_p = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'episode_type': episode_type}
+			if _cast_names: _p['fenlight.cast'] = _cast_names
+			set_properties(_p)
 			item_list_append({'list_items': (url_params, listitem, False), 'first_aired': premiered, 'name': '%s - %sx%s' % (title, str_season_zfill2, str_episode_zfill2),
 							'unaired': unaired, 'last_played': ep_data_get('last_played', resinsert), 'sort_order': _position, 'unwatched': ep_data_get('unwatched')})
 		except: pass

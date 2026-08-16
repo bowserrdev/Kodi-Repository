@@ -6,7 +6,7 @@ from modules.utils import get_datetime, adjust_premiered_date, make_thread_list
 from modules.watched_status import get_database, watched_info_season, get_watched_status_season, get_progress_status_season
 # logger = kodi_utils.logger
 
-poster_empty, xbmc_actor, set_category, home = kodi_utils.empty_poster, kodi_utils.xbmc_actor, kodi_utils.set_category, kodi_utils.home
+poster_empty, cast_label, set_category, home = kodi_utils.empty_poster, kodi_utils.cast_label, kodi_utils.set_category, kodi_utils.home
 add_items, set_content, end_directory, set_view_mode = kodi_utils.add_items, kodi_utils.set_content, kodi_utils.end_directory, kodi_utils.set_view_mode
 make_listitem, build_url, external, date_offset_info, tmdb_api_key = kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.external, settings.date_offset, settings.tmdb_api_key
 watched_indicators_info, widget_hide_watched, show_specials, mpaa_region = settings.watched_indicators, settings.widget_hide_watched, settings.show_specials, settings.mpaa_region
@@ -64,7 +64,8 @@ def build_season_list(params):
 														'title': show_title, 'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'season': season_number})))
 				set_properties({'watchedepisodes': string(watched), 'unwatchedepisodes': string(unwatched)})
 				set_properties({'totalepisodes': string(aired_eps), 'watchedprogress': string(visible_progress),
-								'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params})
+								'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
+								'fenlight.cast': cast_names})
 				if is_external:
 					cm_append(('[B]Refresh Widgets[/B]', run_plugin % build_url({'mode': 'refresh_widgets'})))
 					cm_append(('[B]Reload Widgets[/B]', run_plugin % build_url({'mode': 'kodi_refresh'})))
@@ -74,7 +75,6 @@ def build_season_list(params):
 				info_tag.setUniqueIDs({'imdb': imdb_id, 'tmdb': str_tmdb_id, 'tvdb': str_tvdb_id})
 				info_tag.setTvShowStatus(status), info_tag.setFirstAired(premiered), info_tag.setStudios(studio), info_tag.setYear(int(year))
 				info_tag.setRating(rating), info_tag.setVotes(votes), info_tag.setMpaa(mpaa), info_tag.setCountries(country), info_tag.setTrailer(trailer)
-				info_tag.setCast([xbmc_actor(name=item['name'], role=item['role'], thumbnail=item['thumbnail']) for item in cast])
 				listitem.setLabel(title)
 				listitem.setArt({'poster': poster, 'season.poster': poster, 'fanart': show_fanart, 'clearlogo': show_clearlogo, 'landscape': show_landscape, 'thumb': thumb,
 								'icon': show_landscape, 'tvshow.poster': poster, 'tvshow.clearlogo': show_clearlogo})
@@ -92,6 +92,9 @@ def build_season_list(params):
 	orig_title, status, show_plot = meta_get('original_title', ''), meta_get('status'), meta_get('plot')
 	str_tmdb_id, str_tvdb_id, rating, genre = string(tmdb_id), string(tvdb_id), meta_get('rating'), meta_get('genre')
 	cast, mpaa, votes, trailer, studio, country = meta_get('cast', []), meta_get('mpaa'), meta_get('votes'), string(meta_get('trailer')), meta_get('studio'), meta_get('country')
+	# Il cast e' quello della serie: uguale per tutte le stagioni, quindi si compone UNA volta qui
+	# invece che dentro il ciclo. Vedi kodi_utils.cast_label.
+	cast_names = cast_label(cast)
 	episode_run_time, season_data, total_seasons = meta_get('duration'), meta_get('season_data'), meta_get('total_seasons')
 	show_poster, show_fanart = meta_get('poster') or poster_empty, meta_get('fanart') or fanart_empty
 	show_clearlogo, show_landscape = meta_get('clearlogo') or '', meta_get('landscape') or ''

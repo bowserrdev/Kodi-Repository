@@ -23,6 +23,18 @@ extras_enabled_menus, active_internal_scrapers, auto_play = settings.extras_enab
 quality_filter, date_offset, trakt_user_active = settings.quality_filter, settings.date_offset, settings.trakt_user_active
 single_ep_list, scraper_names = kodi_utils.single_ep_list, kodi_utils.scraper_names
 
+def meta_from_params(params, default_media_type='tvshow'):
+	# Rilettura dei metadati a partire dal solo tmdb_id, per i valori che le liste non mettono piu'
+	# nell'URL della voce (titolo, URL del poster). Sono testo libero: nell'URL andavano
+	# percent-encodati per ogni elemento di ogni lista costruita, qui costano una lettura da cache
+	# e solo quando l'utente apre davvero la voce. Vedi il commento in indexers/movies.py.
+	tmdb_id = params.get('tmdb_id')
+	if not tmdb_id: return {}
+	media_type = params.get('media_type') or params.get('content') or default_media_type
+	function = metadata.movie_meta if media_type in ('movie', 'movies') else metadata.tvshow_meta
+	try: return function('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime()) or {}
+	except: return {}
+
 def preferred_autoplay_choice(params):
 	def _default_choices():
 		return [{'name': '1st Sort', 'value': 'Choose 1st Sort Param'}, {'name': '2nd Sort', 'value': 'Choose 2nd Sort Param'},
@@ -170,7 +182,7 @@ def random_choice(params):
 
 def trakt_manager_choice(params):
 	if not trakt_user_active(): return notification('No Active Trakt Account', 3500)
-	icon = params.get('icon', None) or get_icon('trakt')
+	icon = params.get('icon', None) or meta_from_params(params).get('poster') or get_icon('trakt')
 	choices = [('Add To Trakt List...', 'Add'), ('Remove From Trakt List...', 'Remove')]
 	list_items = [{'line1': item[0], 'icon': icon} for item in choices]
 	kwargs = {'items': json.dumps(list_items), 'heading': 'Trakt Lists Manager'}
@@ -477,6 +489,9 @@ def clear_favorites_choice(params={}):
 def favorites_choice(params):
 	from caches.favorites_cache import favorites_cache
 	media_type, tmdb_id, title = params.get('media_type'), params.get('tmdb_id'), params.get('title')
+	# Il titolo viene salvato nei preferiti, quindi serve davvero; ma non deve viaggiare nell'URL
+	# della voce di menu. Le liste passano il solo tmdb_id e lo si rilegge qui.
+	if not title: title = meta_from_params(params).get('title', '')
 	current_favorites = favorites_cache.get_favorites(media_type)
 	people_favorite = media_type == 'people'
 	current_favorite = any(i['tmdb_id'] == tmdb_id for i in current_favorites)
@@ -533,6 +548,10 @@ def options_menu_choice(params, meta=None):
 		function = metadata.movie_meta if content == 'movie' else metadata.tvshow_meta
 		meta = function('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime())
 	meta_get = meta.get
+	# Il poster arriva dai metadati quando non e' nei parametri. Le liste non lo mettono piu' nell'URL
+	# della voce: era un URL da ~70 caratteri da percent-encodare per ogni elemento costruito, per
+	# un'icona che serve solo qui. Il parametro resta accettato, per le URL gia' in giro.
+	if not poster: poster = meta_get('poster') or None
 	rootname, title, imdb_id, tvdb_id = meta_get('rootname', None), meta_get('title'), meta_get('imdb_id', None), meta_get('tvdb_id', None)
 	window_function = activate_window if is_external else container_update
 	listing = []

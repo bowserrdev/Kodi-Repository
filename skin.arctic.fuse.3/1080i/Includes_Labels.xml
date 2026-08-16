@@ -994,8 +994,18 @@
         <value condition="!$EXP[Exp_TMDbHelper_IsData]">$INFO[ListItem.Writing]</value>
     </variable>
 
+    <!-- Fen Light non chiama piu' setCast sugli elementi delle liste: costruire una ventina di
+         oggetti xbmc.Actor per elemento (quasi cinquemila su una lista da 250) valeva il 43% del
+         tempo di costruzione, per una stringa che si legge solo qui. Adesso pubblica i soli nomi,
+         gia' composti, nella proprieta' fenlight.cast. ListItem.Cast resta come ripiego per gli
+         elementi che non vengono da Fen Light (libreria Kodi, altri addon).
+         I due $INFO sono CONCATENATI, non scelti da una condizione: uno dei due e' sempre vuoto
+         (gli elementi Fen Light non hanno piu' il cast nell'info tag, quelli della libreria non
+         hanno la proprieta'). Questo pannello e' il dialogo trama, che non e' la schermata dove
+         il cast conta davvero: quella e' la finestra informazioni, servita da build_cast_list.
+         Se qui non compare nulla non e' un problema. -->
     <variable name="Label_Overlay_TopCast">
-        <value condition="!$EXP[Exp_TMDbHelper_IsData]">$INFO[ListItem.Cast]</value>
+        <value condition="!$EXP[Exp_TMDbHelper_IsData]">$INFO[ListItem.Property(fenlight.cast)]$INFO[ListItem.Cast]</value>
     </variable>
 
     <variable name="Label_Overlay_Tagline">
