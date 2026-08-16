@@ -271,6 +271,16 @@ def selftest():
 					(singola / insieme) if insieme else 0, ctx, setter))
 	except: pass
 
+def log_network(kind, count, seconds):
+	# Voci risolte in rete perche' non servite dal prefetch. Riga distinta da quella del prefetch:
+	# li' "gia' in cache" ha un senso, qui no -- sono per definizione tutte assenti dalla cache.
+	if not PERF: return
+	try:
+		from modules.kodi_utils import logger
+		logger('FenLight PERF RETE', '%s | %s voci non in cache risolte in rete | %.0f ms (%.0f ms/voce)'
+				% (kind, count, seconds * 1000, (seconds * 1000 / count) if count else 0))
+	except: pass
+
 def log_prefetch(kind, requested, hits, seconds):
 	if not PERF: return
 	try:

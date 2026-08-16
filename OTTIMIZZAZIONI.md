@@ -1829,3 +1829,138 @@ intenzione di indovinare una quarta volta.
 
 Il prossimo test, su un addon funzionante, dice se il riavvio persiste: se persiste, non c'entra
 il nostro percorso di costruzione.
+
+---
+
+# Lotto 20 — la risposta: non "per chiamata" né "per chiave". Erano i thread.
+
+## Il micro-benchmark
+
+Diciassette esecuzioni sul Mi Stick, `FenLight PERF API`:
+
+| misura | min | mediana | max |
+|---|---|---|---|
+| `setProperty` singola (ms/chiave) | 0,018 | 0,033 | 7,177 |
+| `setProperties` accorpata (ms/chiave) | 0,015 | 0,023 | 1,969 |
+| `addContextMenuItems` 7 voci (ms/chiamata) | 0,150 | 0,260 | 9,200 |
+| setter info tag (ms/chiamata) | 0,004 | 0,006 | 0,030 |
+
+**Accorpare non serve**: singole e accorpate costano lo stesso per chiave (0,018 contro 0,015 al
+minimo, rapporto mediano 1,1x). L'idea di riscrivere il menu contestuale come proprietà è morta,
+e per fortuna non l'avevo scritta.
+
+Ma il numero che conta è un altro. La **stessa singola chiamata** `addContextMenuItems`:
+
+```
+nel thread principale (selftest) :  0,15 - 0,26 ms
+dentro il pool (fase 'ctxmenu')  :  1951 ms / 131 elementi = 14,9 ms
+                                    -> 74 volte tanto
+```
+
+Non è un'inferenza: è la stessa operazione misurata in due contesti. E la varianza enorme del
+selftest (fino a 9,2 ms quando un'altra costruzione gira in parallelo) è la stessa causa vista da
+un'altra angolazione: **contesa**, non costo dell'operazione.
+
+## La diagnosi
+
+È l'effetto convoglio sul GIL del lotto 14, che avevo tolto **solo alla lettura dei metadati**.
+
+Tolta quella, nel pool non è rimasto niente che benefici dei thread: solo Python e chiamate
+all'API C++, che il GIL serializza comunque. I sei worker del Mi Stick non parallelizzano — si
+fanno la coda a vicenda sul passaggio di consegne del GIL, che avviene al più ogni 5 ms.
+
+Il pool aveva senso quando ogni elemento poteva andare in rete. Dopo il prefetch non è più così,
+e la struttura è rimasta indietro rispetto alla ragione per cui esisteva.
+
+## L'intervento: costruzione in due fasi
+
+1. **Prefetch** dei metadati già in cache — una query, in sequenza (lotto 14, invariato).
+2. **`_resolve_missing()`** — le voci non servite dal prefetch vanno chieste alla rete, e *lì* i
+   thread restano: il tempo è attesa di I/O, il GIL è rilasciato per millisecondi veri, il
+   parallelismo funziona davvero. Il risultato confluisce nello stesso dizionario del prefetch
+   (l'assegnazione a un dizionario è atomica sotto GIL, nessun lock necessario).
+3. **Costruzione in sequenza** — `build_movie_content` / `build_tvshow_content` a questo punto non
+   fanno mai I/O: tutti i metadati sono già risolti. Il ciclo sostituisce il pool.
+
+Applicato a `movies.py` e `tvshows.py`. Nessun cambiamento nell'ordine degli elementi: il ramo
+`custom_order` continua a restituire le tuple `(item, posizione)` che ordina il chiamante, l'altro
+ordina come prima.
+
+## Perché va anche nella direzione della stabilità
+
+Meno thread vivi contemporaneamente, meno oggetti temporanei, meno contesa con il thread di
+rendering. Su un dispositivo da 1 GB condiviso con la GPU è la stessa medaglia dell'ottimizzazione,
+non un compromesso opposto.
+
+## Cosa verificare
+
+1. **`PERF FASI`**: `ctxmenu`, `props` e `infotag` devono crollare. Sul Mi Stick valevano
+   rispettivamente 37%, 23% e 17% di una somma-thread di ~5300 ms su 131 elementi.
+2. **`PERF`**: `costruzione`. Era 1,31 s per 131 elementi e 3,55 s per 248.
+3. **`PERF PREFETCH ... (rete)`**: la riga nuova, che isola quanto costa risolvere le voci mancanti.
+   Deve comparire solo quando ci sono voci non in cache.
+4. Che le liste siano **identiche**: stessi titoli, stesso ordine, nessun buco.
+5. Che una lista con voci **non in cache** (discover su un genere nuovo) funzioni ancora: è il caso
+   che esercita `_resolve_missing`.
+
+## Due cose segnalate, da fare dopo
+
+- **Selezione dopo la riproduzione dalla ricerca**: alla chiusura del player il focus finisce sulla
+  barra di ricerca invece che sul film, e non si riesce a scendere di nuovo alla lista.
+- **Richiesta di installare TMDbHelper**: nel log compare
+  `Unable to find plugin plugin.video.themoviedb.helper` seguito da
+  `GetDirectory - Error getting plugin://plugin.video.themoviedb.helper/?info=discover&with_id=True&tmdb_type=movie`.
+  È un riferimento a TMDbHelper **ancora vivo nella skin**, sul percorso discover — quindi rientra
+  nella rimozione dei riferimenti, con il path esatto già individuato.
+
+## Il risultato su Mac (cache svuotata)
+
+Nessun errore, nessuna lista vuota, ordine corretto. E il costo di CPU crolla:
+
+| | ms/elemento (somma thread) |
+|---|---|
+| con il pool | **1,693** (1027 elementi su 7 costruzioni) |
+| in sequenza | **0,134** (714 elementi su 9 costruzioni) |
+| | **13x più leggero** |
+
+La ridistribuzione delle fasi è esattamente quella prevista dal micro-benchmark:
+
+| fase | con il pool | in sequenza |
+|---|---|---|
+| `ctxmenu` | 37–43% | **4–5%** |
+| `props` | 23–29% | **2–3%** |
+| `infotag` | 15–22% | 10–11% |
+| `setArt` | 5–12% | 2% |
+| `prep+cm` | 4–9% | **52–58%** |
+| `cast` | 2–5% | **22–26%** |
+
+Le chiamate C++ sono diventate marginali, come il selftest prometteva (0,2 ms contro 14,9). Quel
+che resta è ora **lavoro Python puro**: `prep+cm` sono le sette `build_url` per elemento, `cast` è
+la comprensione che costruisce gli oggetti attore. Su Mac il totale è 0,134 ms/elemento, quindi
+lì non vale la pena toccarli; sulla stick lo stesso lavoro pesa ~100 volte tanto ed è il prossimo
+candidato, se serve.
+
+Nota strutturale emersa dal test a freddo: la riga `PERF RETE` è comparsa **una volta sola**
+(trakt_watchlist, 2237 ms per 21 voci). Tutte le altre costruzioni hanno trovato il 100% in cache,
+perché il **filtro doppiaggio gira prima** e risolve già i metadati mancanti. `_resolve_missing`
+è quindi una rete di sicurezza, non il percorso normale — il che è esattamente come deve essere.
+
+## Correzione di un'etichetta sbagliata
+
+La riga di rete riusava `log_prefetch` e stampava *"21 richiesti, 21 già in cache (100%)"*, che per
+voci **non** in cache è un controsenso. Sostituita con `log_network`, che dice il numero di voci
+risolte e il costo per voce.
+
+## Perché la prova che conta è sul Mi Stick
+
+Il Mac ha confermato **correttezza** e ha misurato il guadagno di CPU (13x). Ma non può dire se
+l'obiettivo è raggiunto, per due motivi:
+
+1. **Su Mac le chiamate C++ non erano mai state il collo di bottiglia.** Il fattore 74x
+   dell'effetto convoglio è stato misurato *sulla stick*: 4 core, GIL conteso, ogni passaggio di
+   consegne fino a 5 ms. Il Mac ne vedeva una versione attenuata (parallelismo ~2,1 contro ~5).
+2. **La stabilità si manifesta solo lì.** I due riavvii sono avvenuti sulla stick, e la riduzione
+   di thread vivi e oggetti temporanei è proprio ciò che dovrebbe cambiare quel quadro.
+
+Sulla stick, con il pool, il costo era **49,85 ms/elemento** di somma thread. Se il convoglio è
+davvero la causa, deve scendere di un ordine di grandezza.

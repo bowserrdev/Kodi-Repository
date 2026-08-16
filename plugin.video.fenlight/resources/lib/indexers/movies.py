@@ -6,7 +6,7 @@ from modules import kodi_utils, settings
 from modules import paginator
 from modules.metadata import movie_meta, movieset_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url, dub_filter
 from modules.metadata import movie_meta_prefetch, meta_prefetch_key
-from modules.utils import manual_function_import, get_datetime, make_thread_list_enumerate, make_thread_list_multi_arg, get_current_timestamp, paginate_list, jsondate_to_datetime
+from modules.utils import manual_function_import, get_datetime, make_thread_list, get_current_timestamp, paginate_list, jsondate_to_datetime
 from modules.watched_status import get_database, watched_info_movie, get_watched_status_movie, get_bookmarks_movie, get_progress_status_movie
 logger = kodi_utils.logger
 
@@ -292,25 +292,51 @@ class Movies:
 		self.open_movieset = open_action in (2, 3) and not self.movieset_list_active
 		self.open_extras = open_action in (1, 3)
 		paginator.phase_reset()
-		# UNA lettura per l'intera lista, in sequenza, PRIMA che parta il pool. Vedi meta_cache.get_many:
-		# sotto il pool la stessa lettura costa 30-45 volte tanto per l'effetto convoglio sul GIL.
+		# UNA lettura per l'intera lista, in sequenza. Vedi meta_cache.get_many.
 		_pf0 = _perf()
-		try:
-			_ids = [i[1] for i in self.list] if self.custom_order else list(self.list)
-			self.meta_prefetch = movie_meta_prefetch(self.id_type, _ids, self.current_time)
+		_ids = [i[1] for i in self.list] if self.custom_order else list(self.list)
+		try: self.meta_prefetch = movie_meta_prefetch(self.id_type, _ids, self.current_time)
 		except: self.meta_prefetch = {}
 		paginator.log_prefetch('movies %s' % self.action, len(self.list), len(self.meta_prefetch), _perf() - _pf0)
+		# I thread SOLO per chi deve andare in rete: li' l'attesa e' I/O, il GIL e' rilasciato per
+		# millisecondi veri e il parallelismo funziona davvero.
+		self._resolve_missing(_ids)
+		# La costruzione, invece, e' in SEQUENZA. Misurato sul Mi Stick: la stessa singola chiamata
+		# addContextMenuItems costa 0.2 ms nel thread principale e 14.9 ms dentro il pool a 6 worker --
+		# 74 volte tanto. Tolta la lettura dei metadati (lotto 14), nel pool non restava nulla che
+		# beneficiasse dei thread: solo Python e chiamate all'API C++, che il GIL serializza comunque.
+		# I worker non parallelizzavano, si facevano la coda a vicenda sul passaggio di consegne del GIL.
 		if self.custom_order:
-			threads = list(make_thread_list_multi_arg(self.build_movie_content, self.list))
-			[i.join() for i in threads]
+			for _position, _id in self.list: self.build_movie_content(_position, _id)
 		else:
-			threads = list(make_thread_list_enumerate(self.build_movie_content, self.list))
-			[i.join() for i in threads]
+			for _position, _id in enumerate(self.list): self.build_movie_content(_position, _id)
 			self.items.sort(key=lambda k: k[1])
 			self.items = [i[0] for i in self.items]
 		paginator.phase_report('movies %s' % self.action, ('meta', 'prep+cm', 'infotag', 'cast', 'setLabel', 'ctxmenu', 'setArt', 'props'))
 		paginator.selftest()
 		return self.items
+
+	def _resolve_missing(self, ids):
+		# Voci non servite dal prefetch (assenti, scadute, o con id non risolvibile): vanno chieste alla
+		# rete. Risolte QUI, prima della costruzione, cosi' che build_movie_content non faccia mai I/O e
+		# possa girare in sequenza. Il risultato entra nello stesso dizionario del prefetch: l'assegnazione
+		# a un dizionario e' atomica sotto GIL, quindi non serve un lock fra i thread.
+		missing = []
+		prefetch_get = self.meta_prefetch.get
+		for media_id in ids:
+			key = meta_prefetch_key(self.id_type, media_id)
+			if key and prefetch_get(key) is None: missing.append((key, media_id))
+		if not missing: return
+		def _fetch(entry):
+			key, media_id = entry
+			try:
+				meta = movie_meta(self.id_type, media_id, self.tmdb_api_key, self.mpaa_region, self.current_date, self.current_time)
+				if meta: self.meta_prefetch[key] = meta
+			except: pass
+		_t0 = _perf()
+		threads = list(make_thread_list(_fetch, missing))
+		[i.join() for i in threads]
+		paginator.log_network('movies %s' % self.action, len(missing), _perf() - _t0)
 
 	def paginate_list(self, data, page_no):
 		if paginate(self.is_home):
