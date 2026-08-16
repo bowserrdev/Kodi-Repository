@@ -278,6 +278,13 @@ def mark_movie(params):
 	refresh, from_playback = params.get('refresh', 'true') == 'true', params.get('from_playback', 'false') == 'true'
 	if from_playback: refresh = False
 	tmdb_id, title = params.get('tmdb_id'), params.get('title')
+	# Il titolo finisce nella tabella watched e serve a ordinare la lista "Visti", quindi va scritto.
+	# Ma non deve viaggiare nell'URL della voce di menu: e' testo libero, quindi da percent-encodare
+	# per ogni elemento di ogni lista costruita. Qui costa una lettura da cache, e solo quando
+	# l'utente clicca davvero. Il parametro resta accettato, per le URL gia' in giro.
+	if not title and action == 'mark_as_watched':
+		try: title = metadata.movie_meta('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime()).get('title', '')
+		except: title = ''
 	watched_indicators = watched_indicators_function()
 	if watched_indicators == 1:
 		if from_playback == 'true' and trakt_official_status(media_type) == False: sleep(1000)
@@ -300,6 +307,9 @@ def mark_tvshow(params):
 	insert_list = []
 	insert_append = insert_list.append
 	meta = metadata.tvshow_meta('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime())
+	# I metadati servivano comunque qui: il titolo si prende da loro invece di farlo viaggiare
+	# percent-encodato nell'URL di ogni voce di ogni lista. Il parametro resta accettato.
+	if not title: title = meta.get('title', '')
 	season_data = meta['season_data']
 	season_data = [i for i in season_data if i['season_number'] > 0]
 	total = len(season_data)

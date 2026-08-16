@@ -15,8 +15,12 @@ from importlib import import_module, reload as rel_module
 from datetime import datetime, timedelta, date
 from modules.kodi_utils import translate_path, sleep, show_busy_dialog, hide_busy_dialog, path_exists
 
-# Auto-detect optimal worker count: cpu_count + 2 for I/O waiting threads, capped for low-RAM devices.
-_WORKER_COUNT = max(4, min((os.cpu_count() or 4) + 2, 10))
+# Numero di worker dei pool: cpu_count + 2, con tetto per i dispositivi a poca RAM.
+# E' stata provata un'impostazione utente per fissarlo a mano ed e' stata tolta: dal momento in cui la
+# costruzione delle listitem gira in SEQUENZA (vedi indexers/movies.py), questi pool servono solo alla
+# fase di RETE, dove l'attesa e' I/O e il GIL e' rilasciato davvero. Li' abbassare i worker non aiuta,
+# serializza soltanto: con 2 worker una pagina di 20 elementi non in cache fa 10 giri di rete invece di 2.
+WORKER_COUNT = max(4, min((os.cpu_count() or 4) + 2, 10))
 # from modules.kodi_utils import logger
 
 def change_image_resolution(image, replace_res):
@@ -41,19 +45,19 @@ class _Done:
 _DONE = (_Done(),)
 
 def make_thread_list(_target, _list):
-	with ThreadPoolExecutor(max_workers=_WORKER_COUNT) as pool:
+	with ThreadPoolExecutor(max_workers=WORKER_COUNT) as pool:
 		for item in _list:
 			pool.submit(_target, item)
 	return _DONE
 
 def make_thread_list_multi_arg(_target, _list):
-	with ThreadPoolExecutor(max_workers=_WORKER_COUNT) as pool:
+	with ThreadPoolExecutor(max_workers=WORKER_COUNT) as pool:
 		for item in _list:
 			pool.submit(_target, *item)
 	return _DONE
 
 def make_thread_list_enumerate(_target, _list):
-	with ThreadPoolExecutor(max_workers=_WORKER_COUNT) as pool:
+	with ThreadPoolExecutor(max_workers=WORKER_COUNT) as pool:
 		for count, item in enumerate(_list):
 			pool.submit(_target, count, item)
 	return _DONE

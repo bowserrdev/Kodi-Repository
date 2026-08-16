@@ -203,8 +203,13 @@ def phase_report(kind, labels):
 		grand = sum(totals) or 1e-9
 		# Somma dei tempi di THREAD, non tempo di parete: con il pool a N worker la somma supera
 		# la durata reale della costruzione. Il valore utile e' la QUOTA relativa fra le fasi.
-		logger('FenLight PERF FASI', '%s | %s elementi | somma thread %.0f ms | %s'
-				% (kind, n, grand * 1000,
+		# Il numero di worker va stampato insieme alla misura: senza, confrontare due log di sessioni
+		# diverse significa fidarsi di come era impostato il dispositivo in quel momento.
+		try:
+			from modules.utils import WORKER_COUNT as workers
+		except: workers = '?'
+		logger('FenLight PERF FASI', '%s | %s elementi | worker %s | somma thread %.0f ms | %s'
+				% (kind, n, workers, grand * 1000,
 					' + '.join('%s %.0fms (%.0f%%)' % (labels[i], totals[i] * 1000, 100.0 * totals[i] / grand)
 								for i in range(len(labels)))))
 		mrows = list(_META_PHASES)
@@ -302,10 +307,19 @@ def log_build(kind, action, t_start, t_resolved, t_built, count, pages=None, pat
 		per_item = (total / count * 1000) if count else 0
 		# path_pages e' il ?pages= arrivato dal path del widget: e' il dato che dice se la ricarica
 		# mirata sta reggendo lo stato. Se dopo una riproduzione ricompare vuoto, il token si e' perso.
-		logger('FenLight PERF', '%s %s | %s elementi%s%s | totale %.2fs = risoluzione %.2fs + costruzione %.2fs | %.1f ms/elemento | inv=%s'
+		try:
+			from modules.utils import WORKER_COUNT as workers
+		except: workers = '?'
+		# La costruzione si stampa in MILLISECONDI: con %.2fs la granularita' era 10 ms su misure che
+		# ormai valgono 20-40 ms, quindi il log non avrebbe potuto mostrare un miglioramento anche
+		# quando c'era. La risoluzione resta in secondi: li' i tempi sono di rete, ordini di grandezza
+		# piu' grandi.
+		build_ms = (t_built - t_resolved) * 1000
+		logger('FenLight PERF', '%s %s | %s elementi%s%s | worker %s | totale %.2fs = risoluzione %.2fs + costruzione %.0f ms (%.3f ms/elemento) | %.1f ms/elemento totale | inv=%s'
 				% (kind, action, count, (' | %s pagine' % pages) if pages else '',
 					(' | path_pages=%s' % path_pages) if path_pages not in (None, '', 0, '0') else ' | path_pages=-',
-					total, t_resolved - t_start, t_built - t_resolved, per_item, _INVOCATIONS[0]))
+					workers, total, t_resolved - t_start, build_ms, (build_ms / count) if count else 0,
+					per_item, _INVOCATIONS[0]))
 	except: pass
 
 def make_key(params):

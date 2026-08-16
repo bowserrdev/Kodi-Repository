@@ -11,7 +11,7 @@ from modules.watched_status import get_database, watched_info_tvshow, get_watche
 logger = kodi_utils.logger
 
 string, external, add_items, add_dir = str, kodi_utils.external, kodi_utils.add_items, kodi_utils.add_dir
-sleep, add_item, xbmc_actor, home, tmdb_api_key = kodi_utils.sleep, kodi_utils.add_item, kodi_utils.xbmc_actor, kodi_utils.home, settings.tmdb_api_key
+sleep, add_item, cast_label, home, tmdb_api_key = kodi_utils.sleep, kodi_utils.add_item, kodi_utils.cast_label, kodi_utils.home, settings.tmdb_api_key
 set_category, make_listitem, build_url, set_property = kodi_utils.set_category, kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.set_property
 set_content, end_directory, set_view_mode, folder_path = kodi_utils.set_content, kodi_utils.end_directory, kodi_utils.set_view_mode, kodi_utils.folder_path
 poster_empty, nextpage_landscape = kodi_utils.empty_poster, kodi_utils.nextpage_landscape
@@ -19,6 +19,26 @@ media_open_action, default_all_episodes, page_limit, paginate = settings.media_o
 widget_hide_next_page, widget_hide_watched, watched_indicators = settings.widget_hide_next_page, settings.widget_hide_watched, settings.watched_indicators
 mpaa_region = settings.mpaa_region
 run_plugin, container_update = 'RunPlugin(%s)', 'Container.Update(%s)'
+# Vedi il commento in movies.py: URL per formattazione diretta invece che con build_url/urlencode.
+# Sulle serie il guadagno e' maggiore perche' un elemento costruisce piu' URL, e ben sette di esse
+# portavano testo libero (titolo o URL del poster) che urlencode doveva percent-encodare a ogni giro.
+# Ora quel testo non viaggia piu': i gestori lo rileggono dai metadati, che avevano gia' in mano o
+# che leggono da cache una volta sola, quando l'utente apre davvero la voce.
+# ATTENZIONE: qualunque nuovo parametro di testo libero deve tornare a passare da build_url.
+_BASE = 'plugin://plugin.video.fenlight/?'
+URL_EXTRAS = _BASE + 'mode=extras_menu_choice&tmdb_id=%s&media_type=tvshow&is_external=%s&is_anime=%s'
+URL_OPTIONS = _BASE + 'mode=options_menu_choice&content=tvshow&tmdb_id=%s&is_external=%s&is_anime=%s'
+URL_MORE_LIKE_THIS = _BASE + 'mode=build_tvshow_list&action=imdb_more_like_this&key_id=%s&name_id=%s&is_external=%s'
+URL_RECOMMENDATIONS = _BASE + 'mode=build_tvshow_list&action=tmdb_tv_recommendations&key_id=%s&name_id=%s'
+URL_SEASON_LIST = _BASE + 'mode=build_season_list&tmdb_id=%s'
+URL_ALL_EPISODES = _BASE + 'mode=build_episode_list&tmdb_id=%s&season=all'
+URL_IN_TRAKT_LISTS = _BASE + 'mode=trakt.list.get_trakt_lists_with_media&media_type=tvshow&imdb_id=%s&name_id=%s'
+URL_TRAKT_MANAGER = _BASE + 'mode=trakt_manager_choice&tmdb_id=%s&imdb_id=%s&tvdb_id=%s&media_type=tvshow'
+URL_FAVORITES = _BASE + 'mode=favorites_choice&media_type=tvshow&tmdb_id=%s&is_anime=%s'
+URL_MARK_TVSHOW = _BASE + 'mode=watched_status.mark_tvshow&action=%s&tmdb_id=%s&tvdb_id=%s'
+URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets'
+URL_KODI_REFRESH = _BASE + 'mode=kodi_refresh'
+URL_EXIT_MEDIA_MENU = _BASE + 'mode=navigator.exit_media_menu'
 main = ('tmdb_tv_popular', 'tmdb_tv_popular_today', 'tmdb_tv_premieres', 'tmdb_tv_airing_today','tmdb_tv_on_the_air','tmdb_tv_upcoming',
 'tmdb_anime_popular', 'tmdb_anime_popular_recent', 'tmdb_anime_premieres', 'tmdb_anime_upcoming', 'tmdb_anime_on_the_air')
 special = ('tmdb_tv_languages', 'tmdb_tv_networks', 'tmdb_tv_providers', 'tmdb_tv_year', 'tmdb_tv_decade', 'tmdb_tv_recommendations', 'tmdb_tv_genres',
@@ -147,6 +167,9 @@ class TVShows:
 					self.params['key_id'] = tvshow_meta('tmdb_id', self.params_get('key_id'), tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp())['imdb_id']
 				self.id_type = 'imdb_id'
 				self.list = function(self.params_get('key_id'))
+			# Il nome della lista si risolve QUI, una volta, da cache. Nell'URL della voce costava una
+			# percent-codifica del titolo per ogni elemento di ogni lista costruita.
+			self._resolve_list_name()
 			items = self.worker()
 			if self.search_query and paginator.search_is_stale(self.search_query):
 				# A newer keystroke arrived while this build ran: drop the result so it can't overwrite
@@ -197,43 +220,37 @@ class TVShows:
 				if total_watched: progress = get_progress_status_tvshow(total_watched, total_aired_eps)
 				else: progress = 0
 				visible_progress = '0' if progress == 100 else progress
-			extras_params = build_url({'mode': 'extras_menu_choice', 'tmdb_id': tmdb_id, 'media_type': 'tvshow', 'is_external': self.is_external, 'is_anime': self.is_anime})
-			options_params = build_url({'mode': 'options_menu_choice', 'content': 'tvshow', 'tmdb_id': tmdb_id, 'poster': poster,
-										'is_external': self.is_external, 'is_anime': self.is_anime})
-			more_like_this_params = build_url({'mode': 'build_tvshow_list', 'action': 'imdb_more_like_this', 'key_id': imdb_id,
-											'name': 'More Like This based on %s' % title, 'is_external': self.is_external})
+			extras_params = URL_EXTRAS % (tmdb_id, self.is_external, self.is_anime)
+			options_params = URL_OPTIONS % (tmdb_id, self.is_external, self.is_anime)
+			more_like_this_params = URL_MORE_LIKE_THIS % (imdb_id, tmdb_id, self.is_external)
 			if self.all_episodes:
-				if self.all_episodes == 1 and total_seasons > 1: url_params = build_url({'mode': 'build_season_list', 'tmdb_id': tmdb_id})
-				else: url_params = build_url({'mode': 'build_episode_list', 'tmdb_id': tmdb_id, 'season': 'all'})
-			else: url_params = build_url({'mode': 'build_season_list', 'tmdb_id': tmdb_id})
+				if self.all_episodes == 1 and total_seasons > 1: url_params = URL_SEASON_LIST % tmdb_id
+				else: url_params = URL_ALL_EPISODES % tmdb_id
+			else: url_params = URL_SEASON_LIST % tmdb_id
 			if self.open_extras:
 				cm_append(('[B]Browse[/B]', container_update % url_params))
 				url_params = extras_params
 			else: cm_append(('[B]Extras[/B]', run_plugin % extras_params))
 			cm_append(('[B]Options[/B]', run_plugin % options_params))
-			cm_append(('[B]Browse Recommended[/B]', self.window_command % \
-					build_url({'mode': 'build_tvshow_list', 'action': 'tmdb_tv_recommendations', 'key_id': tmdb_id, 'name': 'Recommended based on %s' % title})))
+			cm_append(('[B]Browse Recommended[/B]', self.window_command % (URL_RECOMMENDATIONS % (tmdb_id, tmdb_id))))
 			cm_append(('[B]Browse More Like This[/B]', self.window_command % more_like_this_params))
-			if imdb_id: cm_append(('[B]In Trakt Lists[/B]', self.window_command % \
-							build_url({'mode': 'trakt.list.get_trakt_lists_with_media', 'media_type': 'tvshow', 'imdb_id': imdb_id, 'category_name': '%s In Trakt Lists' % title})))
-			cm_append(('[B]Trakt Lists Manager[/B]', run_plugin % \
-				build_url({'mode': 'trakt_manager_choice', 'tmdb_id': tmdb_id, 'imdb_id': imdb_id, 'tvdb_id': tvdb_id, 'media_type': 'tvshow', 'icon': poster})))
-			cm_append(('[B]Favorites Manager[/B]', run_plugin % \
-				build_url({'mode': 'favorites_choice', 'media_type': 'tvshow', 'tmdb_id': tmdb_id, 'title': title, 'is_anime': self.is_anime})))
+			if imdb_id: cm_append(('[B]In Trakt Lists[/B]', self.window_command % (URL_IN_TRAKT_LISTS % (imdb_id, tmdb_id))))
+			cm_append(('[B]Trakt Lists Manager[/B]', run_plugin % (URL_TRAKT_MANAGER % (tmdb_id, imdb_id, tvdb_id))))
+			cm_append(('[B]Favorites Manager[/B]', run_plugin % (URL_FAVORITES % (tmdb_id, self.is_anime))))
 			if playcount:
 				if self.widget_hide_watched: return
 			elif not unaired:
-				cm_append(('[B]Mark Watched %s[/B]' % self.watched_title, run_plugin % build_url({'mode': 'watched_status.mark_tvshow', 'action': 'mark_as_watched',
-																			'title': title,'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id})))
+				cm_append(('[B]Mark Watched %s[/B]' % self.watched_title,
+							run_plugin % (URL_MARK_TVSHOW % ('mark_as_watched', tmdb_id, tvdb_id))))
 			if progress:
-				cm_append(('[B]Mark Unwatched %s[/B]' % self.watched_title, run_plugin % build_url({'mode': 'watched_status.mark_tvshow', 'action': 'mark_as_unwatched',
-																			'title': title, 'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id})))
+				cm_append(('[B]Mark Unwatched %s[/B]' % self.watched_title,
+							run_plugin % (URL_MARK_TVSHOW % ('mark_as_unwatched', tmdb_id, tvdb_id))))
 			set_properties({'watchedepisodes': string(total_watched), 'unwatchedepisodes': string(total_unwatched)})
 			set_properties({'watchedprogress': visible_progress, 'totalepisodes': string(total_aired_eps), 'totalseasons': string(total_seasons)})
 			if self.is_external:
-				cm_append(('[B]Refresh Widgets[/B]', run_plugin % build_url({'mode': 'refresh_widgets'})))
-				cm_append(('[B]Reload Widgets[/B]', run_plugin % build_url({'mode': 'kodi_refresh'})))
-			else: cm_append(('[B]Exit TV Show List[/B]', run_plugin % build_url({'mode': 'navigator.exit_media_menu'})))
+				cm_append(('[B]Refresh Widgets[/B]', run_plugin % URL_REFRESH_WIDGETS))
+				cm_append(('[B]Reload Widgets[/B]', run_plugin % URL_KODI_REFRESH))
+			else: cm_append(('[B]Exit TV Show List[/B]', run_plugin % URL_EXIT_MEDIA_MENU))
 			listitem.setLabel(title)
 			listitem.addContextMenuItems(cm)
 			listitem.setArt({'poster': poster, 'fanart': fanart, 'icon': poster, 'clearlogo': clearlogo, 'landscape': landscape, 'thumb': thumb, 'icon': landscape,
@@ -246,8 +263,12 @@ class TVShows:
 			info_tag.setVotes(meta_get('votes')), info_tag.setMpaa(meta_get('mpaa')), info_tag.setDuration(meta_get('duration')), info_tag.setCountries(meta_get('country'))
 			info_tag.setTrailer(meta_get('trailer')), info_tag.setPremiered(premiered)
 			info_tag.setTvShowStatus(meta_get('status')), info_tag.setRating(meta_get('rating'))
-			info_tag.setCast([xbmc_actor(name=item['name'], role=item['role'], thumbnail=item['thumbnail']) for item in meta_get('cast', [])])
-			set_properties({'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'fenlight.more_like_this_params': more_like_this_params})
+			# Niente setCast: la skin del cast legge solo i nomi. Vedi kodi_utils.cast_label.
+			_cast_props = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
+							'fenlight.more_like_this_params': more_like_this_params}
+			cast_names = cast_label(meta_get('cast'))
+			if cast_names: _cast_props['fenlight.cast'] = cast_names
+			set_properties(_cast_props)
 			extra_ratings = meta_get('extra_ratings')
 			if extra_ratings:
 				_rp = {}
@@ -288,6 +309,22 @@ class TVShows:
 			self.items.sort(key=lambda k: k[1])
 			self.items = [i[0] for i in self.items]
 		return self.items
+
+	# Prefisso del nome lista per azione: name_id porta solo il tmdb_id della serie di partenza,
+	# il testo si compone qui. Sostituisce i vecchi parametri 'name'/'category_name', che portavano
+	# la frase gia' fatta -- testo libero, quindi da percent-encodare, per ogni elemento di ogni lista.
+	_LIST_NAME_PREFIX = {'imdb_more_like_this': 'More Like This based on %s', 'tmdb_tv_recommendations': 'Recommended based on %s'}
+
+	def _resolve_list_name(self):
+		# Se manca name_id (URL vecchia ancora in giro, widget salvato) resta il nome che c'era prima.
+		name_id = self.params_get('name_id')
+		if not name_id or self.params_get('name') or self.params_get('category_name'): return
+		prefix = self._LIST_NAME_PREFIX.get(self.action)
+		if not prefix: return
+		try:
+			meta = tvshow_meta('tmdb_id', name_id, tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp())
+			if meta and meta.get('title'): self.category_name = prefix % meta['title']
+		except: pass
 
 	def _resolve_missing(self, ids):
 		# Vedi Movies._resolve_missing: i thread restano solo dove il tempo e' attesa di rete.

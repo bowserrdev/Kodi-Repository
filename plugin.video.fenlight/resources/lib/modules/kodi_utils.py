@@ -82,6 +82,16 @@ def get_addon_fanart():
 def build_url(url_params):
 	return 'plugin://plugin.video.fenlight/?%s' % urlencode(url_params)
 
+def cast_label(cast):
+	# Equivalente esatto di ListItem.Cast: Kodi lo compone come i soli NOMI separati da un a capo
+	# (CVideoInfoTag::GetCast senza ruolo), ed e' l'unica cosa che la skin legge del cast.
+	# Farlo comporre a Kodi costava un oggetto xbmc.Actor per attore -- una ventina per elemento,
+	# quasi cinquemila per una lista da 250 -- piu' la chiamata setCast, per una stringa che si
+	# vede solo aprendo il pannello trama. Qui e' una join, e finisce nella setProperties che
+	# l'elemento fa comunque: zero attraversamenti in piu' verso il C++.
+	if not cast: return ''
+	return '\n'.join([i['name'] for i in cast if i.get('name')])
+
 def add_dir(url_params, list_name, handle, iconImage='folder', fanartImage=None, isFolder=True):
 	fanart = fanartImage or get_addon_fanart()
 	icon = get_icon(iconImage)

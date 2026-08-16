@@ -1964,3 +1964,711 @@ l'obiettivo è raggiunto, per due motivi:
 
 Sulla stick, con il pool, il costo era **49,85 ms/elemento** di somma thread. Se il convoglio è
 davvero la causa, deve scendere di un ordine di grandezza.
+
+---
+
+# Lotto 21 — il verdetto sul Mi Stick, letto per intero
+
+## Stabilità: risolta
+
+Sessione di 11 minuti, molte pagine, una ricerca, due riproduzioni: **nessun crash, nessun
+riavvio**. Il carico di CPU crollato è la spiegazione plausibile, anche se non dimostrata.
+
+## Il lavoro di CPU: −7,7×
+
+Somma dei tempi di thread, stessa stick, stesse liste: **da 49,85 a 6,5 ms/elemento** a sessione
+fresca. Il profilo delle fasi è quello previsto: `ctxmenu` da 37% a 5%, `props` da 23% a 2%.
+
+## Ma il tempo di parete non è migliorato sulle liste grandi
+
+Questa è la parte che va detta chiaramente, perché contraddice l'aspettativa:
+
+| elementi | con pool | in sequenza | delta |
+|---|---|---|---|
+| 48 ~ 47 | 2,22 s | **0,86 s** | 2,6x |
+| 54 | 2,72 s | **1,34 s** | 2,0x |
+| 131 ~ 130 | 1,31 s | 1,39 s | **0,9x** |
+| 248 | 2,34 s | 2,35 s | **1,0x** |
+
+Liste piccole molto meglio, liste grandi **invariate**.
+
+La ragione è nei numeri: sulla stick il pool otteneva un parallelismo **reale di 3,6–4,1×**, molto
+più dei ~2,1× visti su Mac. Quindi il pool pagava un'inflazione da convoglio di 7,7× ma la
+divideva per 4. Togliendolo abbiamo eliminato l'inflazione e perso il parallelismo: sulle liste
+grandi le due cose si annullano.
+
+Sulle liste piccole no, perché lì dominava il costo fisso di avvio del pool — ed è sparito.
+
+**Non è una sconfitta**: 7,7× di lavoro di CPU in meno significa meno calore, meno contesa con il
+thread di rendering, meno consumo. Ma va registrato che *la costruzione delle liste lunghe non è
+diventata più rapida*, e credere il contrario sarebbe stato un errore di lettura.
+
+### Il margine che ne deriva
+
+Sequenziale e pool-a-6 sono i due estremi. In mezzo c'è un **pool piccolo (2–3 worker)**: abbastanza
+per usare i core, troppo poco perché il convoglio sul GIL esploda. Con 880 ms di lavoro reale su
+248 elementi, anche solo 2 worker con inflazione 2× darebbero ~880 ms di parete contro i 2350
+attuali. È un'ipotesi, ma costa una riga e una prova.
+
+## Il degrado durante la sessione: reale, e NON è nostro
+
+Il rallentamento percepito è nel log:
+
+| | ms/elemento |
+|---|---|
+| prima della 1a riproduzione (16:04–16:08) | **6,5** |
+| dopo (16:09–16:14) | **14,6** |
+
+La prova che non dipende dal nostro codice è l'autotest sintetico, che esegue **codice identico**
+a ogni giro, indipendente da liste e cache:
+
+```
+addContextMenuItems (7 voci):  mediana 0,17 ms  ->  0,71 ms   (4x)
+lettura unica su 248 elementi:        554 ms   ->  1737 ms    (3x)
+```
+
+Stessa operazione, stessi dati, tre volte più lenta a fine sessione. È il dispositivo che degrada —
+memoria frammentata, throttling termico, stato accumulato di Kodi. Non c'è una perdita nel nostro
+percorso: se ci fosse, l'autotest sintetico non ne risentirebbe.
+
+## Le inefficienze di codice che restano, misurate
+
+Profilo a sessione fresca (media sui campioni puliti):
+
+| fase | quota | cos'è |
+|---|---|---|
+| `prep+cm` | **~48%** | 7 `build_url` per elemento + estrazione + menu |
+| `infotag` | ~19% | una ventina di setter |
+| `cast` | ~17% | 20 oggetti `xbmc.Actor` costruiti per elemento |
+| tutto il resto | ~16% | |
+
+Non è più C++: è **Python nostro**. E dentro `build_url` la distribuzione è netta:
+
+```
+more_like_this (contiene il TITOLO)   21%
+options        (contiene il POSTER)   20%
+watched_status (contiene il TITOLO)   16%
+                                      --
+le tre con stringhe lunghe da codificare: 58%
+```
+
+Il poster è un URL da ~70 caratteri e il titolo può essere lungo: entrambi vanno percent-encodati
+a ogni elemento, per parametri che servono **solo se l'utente apre quella voce**.
+
+## Dove lavorerei, in ordine
+
+1. **Pool piccolo per la costruzione** — una riga, e recupera il parallelismo perso senza
+   ripagare il convoglio. È il candidato con il rapporto valore/rischio migliore.
+2. **Togliere poster e titolo dalle URL** — si passa il solo `tmdb_id` e il gestore risolve il
+   resto quando serve. Taglia più della metà del 48%.
+3. **`CAST_LIMIT`** — 17% per venti attori di cui la skin mostra una lista di nomi. Scendere a
+   8–10 è una scelta di prodotto, non un'ottimizzazione: cambia cosa si legge nel pannello trama.
+
+---
+
+# Lotto 22 — numero di worker del pool impostabile dall'utente
+
+## Perché una impostazione e non una costante
+
+Il lotto 21 ha lasciato una domanda aperta a cui **non si può rispondere con un numero fisso**: sul
+Mi Stick il pool consegnava 3,6–4,1× di parallelismo reale ma pagava il convoglio del GIL; sul Mac
+il sequenziale batte già il pool (0,24 contro 0,32 ms/elemento). Due dispositivi, due ottimi
+diversi. E il valore automatico attuale non è il risultato di una misura:
+
+```python
+_WORKER_COUNT = max(4, min((os.cpu_count() or 4) + 2, 10))
+```
+
+Sul Mi Stick (4 core) dà **6**. Non perché 6 sia stato misurato: perché è `cpu_count + 2`.
+
+C'è anche un moltiplicatore che la formula ignora: la home costruisce **più widget insieme**, quindi
+i thread vivi contemporaneamente sono `worker × widget`. Con 6 worker e 4 widget sono 24 thread che
+si contendono il GIL su una stick da 1 GB. È lo scenario in cui il convoglio pesa di più, ed è
+esattamente lo scenario che l'utente incontra all'apertura.
+
+Quindi: si rende il numero regolabile e **si misura**, invece di scegliere.
+
+## Cosa è cambiato
+
+**`modules/utils.py`** — la costante diventa una funzione letta a ogni creazione di pool:
+
+```python
+_WORKER_AUTO = max(4, min((os.cpu_count() or 4) + 2, 10))
+
+def worker_count():
+	try:
+		value = int(get_property('fenlight.pool_workers') or 0)
+	except: value = 0
+	return value if value > 0 else _WORKER_AUTO
+```
+
+`0` significa automatico, cioè il comportamento di prima: **con l'impostazione al default nulla
+cambia**. La lettura passa dalla property della finestra e non da `modules.settings`, perché
+`utils.py` è importato praticamente ovunque e non deve tirarsi dietro `caches.settings_cache`.
+Costa una chiamata per pool creato, non per elemento.
+
+Le tre funzioni `make_thread_list`, `make_thread_list_multi_arg`, `make_thread_list_enumerate`
+usano `worker_count()`. Essendo letta a ogni pool, l'impostazione ha effetto **subito**, senza
+riavviare Kodi: è la differenza fra fare quattro prove in dieci minuti e farne quattro in un'ora.
+
+**`caches/settings_cache.py`** — nuova voce accanto a `limit_concurrent_threads`:
+
+```python
+{'setting_id': 'pool_workers', 'setting_type': 'action', 'setting_default': '0',
+	'settings_options': {'0': 'Auto', '1': '1', '2': '2', '3': '3', '4': '4', '6': '6', '8': '8', '10': '10'}},
+```
+
+**`resources/skins/Default/1080i/settings_manager.xml`** — voce "Thread Pool Workers" in
+General, sotto "Maximum Active Threads".
+
+**`modules/paginator.py`** — le due righe di log che contano ora stampano il numero di worker:
+
+```
+FenLight PERF      ... | worker 6 | totale 2.41s = risoluzione ... + costruzione ...
+FenLight PERF FASI ... | worker 6 | somma thread ... ms | ...
+```
+
+Senza questo, confrontare due log significherebbe fidarsi del ricordo di come era impostato il
+dispositivo in quel momento.
+
+## Come leggere le due righe insieme
+
+Le due misure rispondono a domande diverse e vanno lette in coppia:
+
+- `PERF ... ms/elemento` è **tempo di parete**: è quello che l'utente sente. È la metrica da
+  ottimizzare.
+- `PERF FASI ... somma thread` è la **somma dei tempi di thread**. Rapporto fra le due =
+  parallelismo reale ottenuto.
+
+Con meno worker la somma-thread deve **scendere** (meno convoglio) e il parallelismo **scendere**
+anch'esso. Il numero giusto è quello dove il tempo di parete tocca il minimo — non quello dove la
+somma-thread è più bassa.
+
+## Protocollo di prova
+
+Su **entrambi** i dispositivi, stessa lista e stesso ordine, con la cache già calda (così si misura
+CPU e non rete, che è il focus dichiarato):
+
+1. Impostazioni Fen Light → General → **Thread Pool Workers**
+2. Prova con `Auto`, poi `1`, poi `2`, poi `3`
+3. Per ogni valore: aprire la stessa lista lunga (~130 e ~248 elementi) e la home con i widget
+4. Riavviare Kodi fra un valore e l'altro **se possibile** — il lotto 21 ha dimostrato che la stick
+   degrada durante la sessione (autotest sintetico 0,17 → 0,71 ms), quindi provare quattro valori
+   di fila senza riavviare farebbe sembrare peggiore semplicemente l'ultimo provato
+5. Alternativa se il riavvio è scomodo: provare nell'ordine `1, 2, 3, Auto` e poi **ripetere `1`
+   alla fine**. Se il secondo `1` è molto peggiore del primo, il degrado di sessione sta sporcando
+   la misura e i confronti vanno rifatti a freddo.
+
+Da confrontare, per ogni valore: `ms/elemento` (parete), `somma thread`, e il rapporto fra i due.
+
+## Verifiche fatte
+
+- `python3 -m py_compile` sui tre moduli toccati: OK
+- controllo AST dei simboli su tutti i moduli: nessun simbolo mancante introdotto (restano i **tre
+  problemi preesistenti** di `router.py`, mai toccato da noi: `add_to_history`, `show_text_media`,
+  `set_view`)
+- `git diff --numstat` riga per riga: `utils.py 17/7`, `paginator.py 14/4`,
+  `settings_cache.py 2/0`, `settings_manager.xml 8/0` — tutte le rimozioni sono spiegate dalle
+  sostituzioni fatte, nessuna riga sparita di troppo
+- XML della finestra impostazioni: parsing OK
+
+---
+
+# Lotto 23 — le URL delle voci: via `urlencode`, via poster e titolo
+
+## La misura che ha cambiato il piano
+
+Il piano era "togliere poster e titolo dalle URL". Misurando prima di scrivere è venuto fuori che
+il grosso stava altrove:
+
+```
+8 build_url di un elemento film, come erano       32,67 us
+le stesse senza poster e senza titolo             25,49 us     -22%
+le stesse per formattazione diretta                0,92 us     -97%
+```
+
+Togliere le stringhe lunghe vale il 22%. Non chiamare `urlencode` vale il 97%. Sulle serie, dove
+un elemento costruisce dieci URL e sette portavano testo libero:
+
+```
+10 URL di un elemento serie, come erano           45,03 us
+per formattazione diretta                          1,41 us     -97%
+```
+
+Il riscontro con il log del Mac: `prep+cm` su 249 elementi misurava **9 ms**, e 32,67 us × 249 =
+**8,1 ms**. Quella fase era `build_url` e basta.
+
+## Perché `urlencode` costava tanto per non fare nulla
+
+`urlencode` non sa che i valori sono sicuri: costruisce la lista delle coppie, chiama `quote_via`
+su ogni chiave e ogni valore, e `quote_plus` scandisce **carattere per carattere** anche una
+stringa come `movie` o un intero. Su una voce di menu i valori sono id numerici, id imdb `tt...`,
+booleani e letterali: non c'è **niente** da percent-encodare. Il lavoro era tutto a vuoto.
+
+La sostituzione è un template di modulo per URL:
+
+```python
+_BASE = 'plugin://plugin.video.fenlight/?'
+URL_OPTIONS = _BASE + 'mode=options_menu_choice&content=movie&tmdb_id=%s&is_external=%s'
+```
+
+**Il vincolo che rende la cosa sicura, e che va rispettato in futuro:** qui dentro possono stare
+solo valori che non hanno bisogno di codifica. Qualunque testo libero — titoli, nomi di raccolte,
+URL di poster — deve tornare a passare da `build_url`, altrimenti la URL si rompe al primo spazio
+o `&`. Per questo `open_movieset_choice` (che porta il nome della raccolta) è rimasto su `build_url`.
+
+## Il testo libero: non accorciato, rimosso
+
+Tre valori viaggiavano nelle URL solo per essere letti molto più tardi, se e quando l'utente
+apriva quella voce. Ora nell'URL c'è il solo `tmdb_id` e il gestore rilegge il resto:
+
+| valore | prima | adesso |
+|---|---|---|
+| `poster` (~70 caratteri) | in `options_params` di ogni elemento | `options_menu_choice` lo prende dai metadati, che leggeva già per conto suo |
+| `title` in "More Like This" / "Recommended" | frase composta in ogni elemento | passa `name_id`, il nome si compone all'apertura della lista |
+| `title` per "Segna come visto" | in ogni elemento | `mark_movie` / `mark_tvshow` lo rileggono (e `mark_tvshow` caricava già i metadati) |
+| `title` per "In Trakt Lists" e "Preferiti" | in ogni elemento | risolti da `tmdb_id` all'apertura |
+| `icon` (poster) per "Trakt Lists Manager" | in ogni elemento | risolto da `tmdb_id` all'apertura |
+
+Costo spostato: **una lettura da cache quando l'utente clicca**, invece di una percent-codifica per
+ogni elemento di ogni lista costruita.
+
+**Tutti i vecchi parametri restano accettati.** `name`, `category_name`, `title`, `poster`, `icon`:
+se presenti vincono. Serve perché ci sono URL già in giro — widget salvati nella home, e
+`windows/extras.py` che chiama gli stessi gestori passando ancora `name` e `category_name`.
+
+## File toccati
+
+- `indexers/movies.py` — 11 template, `_resolve_more_like_this_name()`
+- `indexers/tvshows.py` — 14 template, `_resolve_list_name()` con prefisso per azione
+- `indexers/dialogs.py` — `meta_from_params()`; poster in `options_menu_choice` e
+  `trakt_manager_choice`, titolo in `favorites_choice`
+- `indexers/trakt_lists.py` — `name_id` in `get_trakt_lists_with_media`
+- `modules/watched_status.py` — titolo in `mark_movie` e `mark_tvshow`
+
+## Verifiche fatte
+
+La verifica che conta: **le stringhe prodotte devono essere identiche byte per byte** a quelle che
+`urlencode` avrebbe generato. Un errore qui non si vede alla costruzione della lista — si vede solo
+cliccando la voce, magari settimane dopo.
+
+`scratchpad/check_urls.py` legge i template **dalla sorgente** (via AST, non riscritti a mano) e
+confronta ognuno con `urlencode` sugli stessi parametri, incluso il caso `imdb_id = None`:
+
+```
+OK: 27 URL identiche a urlencode
+```
+
+Inoltre: `py_compile` sui cinque moduli, controllo AST dei simboli su tutti i moduli (restano i soli
+tre problemi preesistenti di `router.py`), e riconciliazione riga per riga di `git diff --numstat`
+— le 23 righe rimosse da `tvshows.py` e le 15 da `movies.py` sono esattamente quelle sostituite.
+
+## Cosa verificare sul dispositivo
+
+Le misure sopra sono di micro-benchmark: dicono quanto costa il codice, non quanto si guadagna a
+schermo. Nel log va guardata la quota di **`prep+cm`**, che era 55–58%: se il ragionamento regge
+deve crollare, e le altre fasi devono salire di quota **senza salire in millisecondi**.
+
+Da provare a mano, perché sono i percorsi che ora risolvono a valle:
+
+1. menu contestuale → **Opzioni** (l'icona del poster nel dialogo deve esserci ancora)
+2. tasto rapido **Opzioni** e **More Like This** (leggono le proprietà della listitem)
+3. **Browse More Like This** e **Browse Recommended**: il titolo della schermata deve dire
+   "More Like This based on ..." / "Recommended based on ...", non "Movies" o "TV Shows"
+4. **In Trakt Lists** (titolo della schermata) e **Trakt Lists Manager** (icona)
+5. **Segna come visto** su un film, poi aprire la lista **Visti**: il titolo deve comparire e
+   l'ordinamento alfabetico deve funzionare — è la prova che il titolo è finito nel database
+6. **Preferiti** su una serie: il nome salvato deve essere quello giusto
+
+---
+
+# Lotto 23 bis — il risultato misurato sul Mac
+
+Stessa lista, stessi 249 elementi, tutti da cache (`mdblist 91378`):
+
+| fase | prima | dopo |
+|---|---|---|
+| **somma thread** | 16 ms | **9 ms** |
+| `prep+cm` | 9 ms (57%) | **2 ms (23%)** |
+| `infotag` | 1 ms (9%) | 1 ms (17%) |
+| `cast` | 4 ms (23%) | 4 ms (43%) |
+
+`prep+cm` **−78%**. Il micro-benchmark prevedeva 7,9 ms di risparmio su 249 elementi, la misura in
+Kodi ne dà 7: previsione e realtà coincidono, quindi il meccanismo era quello giusto.
+
+La controprova: `infotag` e `cast` sono **identici in millisecondi** e salgono solo di quota. È il
+comportamento atteso se il taglio ha colpito `build_url` e non ha spostato lavoro altrove.
+
+## Una precisione del log che avevo dichiarato e non fatto
+
+Nel messaggio precedente avevo detto di aver corretto la granularità di `costruzione`. Non l'avevo
+fatto: il codice stampava ancora `%.2fs`, cioè 10 ms di risoluzione su misure da 20-40 ms. Adesso:
+
+```
+... | costruzione 24 ms (0.096 ms/elemento) | 0.5 ms/elemento totale
+```
+
+---
+
+# Lotto 24 — il cast: niente più `setCast` nelle liste
+
+## Cosa costava, e per cosa
+
+`cast` era diventata la voce singola più grossa della costruzione: **43%**, 4 ms su 249 elementi.
+Sono venti oggetti `xbmc.Actor` per elemento — quasi **cinquemila** per una lista da 250 — più la
+chiamata `setCast`, ciascuno un attraversamento verso il C++ di Kodi.
+
+Per cosa? La skin legge il cast in **un solo punto**:
+
+```
+Includes_Labels.xml:997  Label_Overlay_TopCast  ->  $INFO[ListItem.Cast]
+      -> Label_Overlay_PlotBox -> Dialog_DialogPlot.xml:54
+```
+
+Cioè il pannello trama, che si apre solo se l'utente lo chiede. `DialogVideoInfo.xml` della skin non
+mostra cast (87 righe, nessun riferimento), e la skin di Fen Light nemmeno.
+
+## Perché non serviva un servizio
+
+L'idea iniziale era pubblicare il cast su richiesta all'apertura del dialogo, sul modello di
+`blur_service.py`. Non serve, per un dettaglio di come Kodi compone `ListItem.Cast`:
+
+```cpp
+// CVideoInfoTag::GetCast(bIncludeRole = false)
+strLabel += StringUtils::Format("{}\n", castItem.strName);
+```
+
+Sono **i soli nomi separati da un a capo**. Nessun ruolo, nessuna miniatura. Quindi la stessa
+stringa si compone in Python con una `join`, e finisce nella `setProperties` che l'elemento fa
+**comunque**: zero attraversamenti in più verso il C++, e nessun servizio, nessuna asincronia,
+nessun ritardo alla prima apertura del pannello.
+
+`kodi_utils.cast_label()` fa esattamente questo. Le miniature degli attori non si perdono: la
+finestra Extras costruisce la sua lista Cast dai metadati (`windows/extras.py:156`), non dalla
+listitem.
+
+## File toccati
+
+- `modules/kodi_utils.py` — `cast_label()`
+- `indexers/movies.py`, `tvshows.py`, `episodes.py` (due punti), `seasons.py` — via `setCast`,
+  la proprietà `fenlight.cast` entra nella `setProperties` già presente
+- `skin.arctic.fuse.3/1080i/Includes_Labels.xml` — `Label_Overlay_TopCast` legge la proprietà, con
+  `ListItem.Cast` come ripiego per gli elementi che non vengono da Fen Light (libreria Kodi, altri
+  addon)
+
+In `seasons.py` il cast è quello della serie, uguale per tutte le stagioni: si compone **una volta**
+fuori dal ciclo.
+
+## Un bug che ho scritto e corretto
+
+La prima versione in `seasons.py` metteva `_cast_names` nella `set_properties` di riga 68 e lo
+assegnava a riga 79 — **dentro lo stesso ciclo**. Prima iterazione: `UnboundLocalError`, ingoiato
+dal `except: pass` dell'indexer, quindi prima stagione mancante e nessuna traccia nel log. È
+esattamente la classe di errore del lotto 19: sintassi valida, simboli tutti esistenti.
+
+Il controllo generico "uso prima dell'assegnazione" su tutti i moduli non è utilizzabile: dà 228
+segnalazioni, quasi tutte false (chiusure e cicli preesistenti). Al suo posto, un controllo mirato
+che per ogni nome introdotto stampa **in quale funzione** avviene assegnazione e lettura:
+
+```
+seasons.py   cast_names
+    assegnato  riga 97    in build_season_list()
+    letto      riga 68    in _process()
+```
+
+Chiusura legittima: `_process()` viene consumato a riga 108, dopo l'assegnazione. Negli altri tre
+file assegnazione e lettura sono nella stessa funzione, in quest'ordine.
+
+## Cosa verificare sul dispositivo
+
+Nel log, `cast` deve crollare da ~43% a una quota trascurabile, **senza che le altre fasi crescano
+in millisecondi**.
+
+A mano — il punto è uno solo, ma va guardato su ogni tipo di elemento perché sono quattro builder
+diversi: aprire il **pannello trama** e controllare che la sezione cast ci sia ancora e mostri gli
+stessi nomi, su **film**, **serie**, **stagione** ed **episodio**.
+
+---
+
+# Da riprendere
+
+- **Widget watchlist non si aggiorna** dopo aver aggiunto un film alla watchlist Trakt dal menu
+  contestuale (rilevato il 2026-08-16). Da verificare insieme al funzionamento della
+  sincronizzazione periodica con Trakt.
+- Impostazione `pool_workers` (lotto 22): resta in piedi, il default non cambia nulla. Vale solo
+  per la fase di rete, dato che la costruzione è sequenziale.
+- Rimozione della strumentazione `PERF` / `PERF_SELFTEST` quando le ottimizzazioni si chiudono.
+
+## Lotto 24 — il cast non compariva più nel pannello trama
+
+Il lato Python era corretto: nel log `cast` è sceso da 43% (4 ms su 249) a 9% (0,4 ms), e la somma
+thread da 9 a 5 ms. La stringa quindi si compone e finisce nella `setProperties`. Il difetto era
+nella riga di skin che avevo scritto io:
+
+```xml
+<!-- sbagliata -->
+<value condition="!$EXP[...] + !String.IsEmpty(ListItem.Property(fenlight.cast))">$INFO[ListItem.Property(fenlight.cast)]</value>
+<value condition="!$EXP[...]">$INFO[ListItem.Cast]</value>
+```
+
+Il sintomo — **niente cast**, non nomi attaccati o sbagliati — dice che il valore non arriva proprio
+al textbox, quindi non è la stringa ma la selezione del valore. `String.IsEmpty(ListItem.Property(...))`
+dentro la condizione di una variabile di skin non è affidabile quando manca il contesto
+dell'elemento, che è esattamente il caso di un dialogo: la condizione risulta falsa, si passa al
+secondo valore, e `ListItem.Cast` ora è vuoto perché `setCast` non c'è più. Doppio buco.
+
+La correzione toglie il problema invece di aggirarlo: **i due `$INFO` si concatenano**, senza
+condizione. Uno dei due è sempre vuoto per costruzione — gli elementi Fen Light non hanno più il
+cast nell'info tag, quelli della libreria Kodi non hanno la proprietà:
+
+```xml
+<value condition="!$EXP[Exp_TMDbHelper_IsData]">$INFO[ListItem.Property(fenlight.cast)]$INFO[ListItem.Cast]</value>
+```
+
+Il controllo XML ha intercettato per strada un secondo errore mio: `--` non è ammesso dentro un
+commento XML. Da qui in poi la verifica gira su **tutti** i file XML della skin, non solo su quello
+toccato.
+
+### Se non basta
+
+Se dopo questa correzione il cast continua a non comparire, la causa non è la condizione ma il
+fatto che dentro il dialogo `ListItem.Property()` non si risolva affatto. In quel caso la strada è
+già tracciata e collaudata in questo repo: `blur_service.py` legge dal vivo `ListItem.<token>` e
+pubblica su `Window(Home)` (`TMDbHelper.ListItem.base_poster`, `base_label`) proprio perché lo
+scope del dialogo non arriva alla lista. Basterebbe aggiungere il cast a quei token e leggere
+`Window(Home).Property(...)` come terzo ripiego. Costo per la costruzione delle liste: zero in
+entrambi i casi.
+
+### La diagnosi giusta: era un'altra finestra
+
+Avevo guardato il **pannello trama** (dialogo 1113). La "pagina informazioni" è un'altra cosa:
+è `movieinformation`, cioè il `DialogVideoInfo` di Kodi, e la sua riga Cast è il **contenitore 50**,
+che Kodi riempie **dal C++** leggendo il cast dell'info tag. Nessuna proprietà può alimentarlo:
+quella riga si popola solo con `setCast`. La mia correzione precedente era puntata sul dialogo
+sbagliato.
+
+Ma la strada on demand esisteva già, ed era spenta da un residuo di TMDbHelper.
+`Includes_DialogInfo.xml` ha **due** righe Cast alternative:
+
+| riga | contenuto | condizione originale |
+|---|---|---|
+| locale (299) | contenitore 50 riempito da Kodi dall'info tag | `![!UseLocalCast + TMDbHelperData]` |
+| servita (314) | `<content>` = `$VAR[Path_VideoInfo_OnlineCast]` | `!UseLocalCast + TMDbHelperData` |
+
+E `Path_VideoInfo_OnlineCast` (`Includes_Paths.xml:254`) **punta già a Fen Light**:
+
+```
+plugin://plugin.video.fenlight/?mode=build_cast_list&media_type=...&tmdb_id=$INFO[Window.Property(FenLight.TMDb_ID)]
+```
+
+`DialogVideoInfo.xml:11-12` imposta già `FenLight.TMDb_ID` e `FenLight.DBType` in `onload`, e
+`indexers/people.build_cast_list()` esiste e serve la directory del cast leggendo i metadati da
+cache. Tutto pronto: mancava solo che la condizione non richiedesse più TMDbHelper, che in questo
+fork non c'è.
+
+Le due condizioni ora discriminano su **quello che conta davvero** — se l'elemento viene da Fen
+Light — e restano esatte complementari, così le due righe non possono mai comparire insieme:
+
+```
+riga servita:  !Skin.HasSetting(Info.UseLocalCast) + [$EXP[Exp_TMDbHelper_IsData] | !String.IsEmpty(Window.Property(FenLight.TMDb_ID))]
+riga locale:  ![ la stessa espressione ]
+```
+
+Gli elementi della libreria Kodi non hanno `FenLight.TMDb_ID`, quindi continuano a usare la riga
+locale e il cast dell'info tag. L'interruttore di skin `Info.UseLocalCast` resta funzionante.
+
+**Questo è l'on demand vero**: il cast si scarica dalla cache e si costruisce solo quando la
+finestra informazioni si apre, per il singolo titolo richiesto. Zero costo su ogni elemento di
+ogni lista.
+
+La modifica precedente su `Label_Overlay_TopCast` resta: serve al **pannello trama**, che è un
+percorso diverso e legge `ListItem`, non il contenitore 50.
+
+### Terza diagnosi, questa volta con le prove
+
+Ho sbagliato bersaglio due volte perché ho ragionato per ipotesi invece di guardare i fatti. I fatti,
+raccolti dopo:
+
+**1. `DialogVideoInfo` non era mai stata aperta.** `set_videoinfo_properties` è un `<onload>` di
+`DialogVideoInfo.xml` che non ho toccato, e non compare in **nessuna** delle due sessioni di log.
+Quindi la "scheda informazioni" non è quella finestra, e il lotto precedente era puntato altrove.
+
+**2. `Label_Overlay_PlotBox` è usato in un solo punto di tutta la skin**: `Dialog_DialogPlot.xml:54`.
+E `Label_Overlay_TopCast` solo dentro di esso. Quindi l'unico posto della skin che abbia mai
+mostrato il cast di Fen Light è il **dialogo 1113**, comunque lo si apra. La voce "Informazioni" del
+menu contestuale (`$LOCALIZE[207]`) è proprio `ActivateWindow(1113)`.
+
+**3. In tutto quel pannello la skin non legge nemmeno una proprietà.** Tagline, plot, regia,
+sceneggiatura, titolo: `ListItem.TagLine`, `ListItem.Plot`, `ListItem.Director`, `ListItem.Writing`,
+`ListItem.Label`. Sono **tutti campi dell'info tag o campi core**. Nessun
+`ListItem.Property(...)`, in un pannello che ne avrebbe mille occasioni.
+
+Da qui la conclusione, che spiega ogni osservazione: **il dialogo 1113 risolve i campi dell'info tag
+ma non le proprietà della listitem.** `ListItem.Cast` funzionava perché è un campo dell'info tag;
+`ListItem.Property(fenlight.cast)` no. Nessuna delle due varianti di condizione che avevo provato
+poteva funzionare.
+
+### La correzione
+
+La strada che quel dialogo sa leggere è già in uso nel repo: `blur_service.py` pubblica
+`TMDbHelper.ListItem.base_poster` e `base_label` su `Window(Home)` **esattamente per questo motivo**.
+Il cast prende la stessa strada:
+
+- `blur_service.BlurService._publish_cast()` legge `ListItem.Property(fenlight.cast)` dall'elemento
+  in focus (dal contesto della finestra media, dove le proprietà si risolvono) e lo ripubblica come
+  `Window(Home).Property(FenLight.ListItem.Cast)`.
+- La pubblicazione segue l'**identità** dell'elemento (l'etichetta), non il valore del cast: va
+  riscritta anche a vuoto quando l'elemento cambia, altrimenti il pannello mostrerebbe gli attori
+  del titolo precedente — errore peggiore del non mostrarne nessuno.
+- Sta **prima** del cancello `Skin.HasSetting(TMDbHelper.EnableBlur)`: il cast non c'entra con la
+  sfocatura e deve funzionare anche a sfocatura spenta.
+- Costo: una `getInfoLabel` per ciclo da 0,3 s, e una seconda solo quando l'elemento cambia.
+
+Nella skin la condizione ora è `String.IsEmpty(Window(Home).Property(...))`, che è affidabile perché
+**non dipende dal contesto dell'elemento** — a differenza di quella su `ListItem.Property` che avevo
+scritto due giri fa. `ListItem.Cast` resta come ripiego per gli elementi non Fen Light.
+
+La proprietà `fenlight.cast` sulla listitem resta: è ciò che il servizio legge. Il costo pesante —
+i circa cinquemila oggetti `xbmc.Actor` per lista — non torna in nessun caso.
+
+La modifica del giro precedente su `Includes_DialogInfo.xml` (riga Cast servita da Fen Light invece
+che dall'info tag) resta anch'essa: è una pulizia corretta di un residuo di TMDbHelper, ma **non è
+verificata**, perché quella finestra non risulta mai aperta nei log.
+
+### La causa vera: una condizione valutata al caricamento, non all'apertura
+
+Le due sezioni precedenti contengono due mie conclusioni sbagliate. Le lascio scritte perché
+l'errore di metodo è più istruttivo della correzione.
+
+**Errore 1 — ho scambiato l'assenza di prove per una prova.** Avevo dedotto che `DialogVideoInfo`
+non fosse mai stata aperta perché `set_videoinfo_properties` non compariva nel log. Ma quello è un
+`RunPlugin` che non scrive nulla: a livello di log normale non lascia traccia. La schermata era
+quella giusta fin dal secondo giro, e da lì sono partito a inseguire il dialogo trama, il blur
+service e le proprietà della Home — tutta roba che non c'entrava.
+
+**Errore 2 — condizione dinamica in un punto statico.** La correzione al secondo giro era:
+
+```xml
+<include content="Widget_Info_Row" condition="!Skin.HasSetting(Info.UseLocalCast) + [$EXP[...] | !String.IsEmpty(Window.Property(FenLight.TMDb_ID))]">
+```
+
+Non poteva funzionare. La `condition` di un `<include>` è risolta **al caricamento della finestra**,
+e il log lo dice:
+
+```
+Loading skin file: DialogVideoInfo.xml, load type: KEEP_IN_MEMORY
+```
+
+`KEEP_IN_MEMORY` significa caricata una volta all'avvio della skin. In quel momento
+`Window.Property(FenLight.TMDb_ID)` è vuota, quindi la riga servita non è mai stata compilata nella
+finestra. Il `<content>`, invece, è una **variabile**, e quelle sì vengono valutate all'apertura:
+per questo `Path_VideoInfo_OnlineCast` funziona benissimo dov'è.
+
+**Regola da ricordare**: nella `condition` di un `<include>` possono stare solo espressioni stabili
+al caricamento della skin (`Skin.HasSetting`, `Skin.String`). Qualsiasi `Window.Property`,
+`ListItem.*` o `Container.*` è vuota o irrilevante in quel momento.
+
+### La correzione
+
+Le due righe Cast si scelgono ora sul solo interruttore di skin, che è stabile al caricamento:
+
+```
+riga servita (Fen Light):  !Skin.HasSetting(Info.UseLocalCast)      <- predefinita
+riga locale (info tag):     Skin.HasSetting(Info.UseLocalCast)
+```
+
+È coerente con l'interruttore che la skin già espone (`Dialog_DialogCustom.xml:1197`, dove
+"selezionato" corrisponde proprio a `!Skin.HasSetting(Info.UseLocalCast)`). Con l'impostazione al
+suo valore predefinito si usa la riga servita, cioè
+`build_cast_list` di Fen Light: **cast on demand, caricato all'apertura della finestra**, nomi e
+foto, e cliccando un attore si apre la sua scheda (`DialogInfo_Widgets_Action` legge `tmdb_id` e
+`tmdb_type`, che `build_cast_list` scrive su ogni elemento).
+
+### Cosa ho rimosso
+
+- `blur_service.py`: tolto `_publish_cast` e la sua chiamata. Serviva al dialogo trama, che non è
+  la schermata giusta, e costava una `getInfoLabel` ogni 0,3 s. Il file è tornato identico all'originale.
+- `Label_Overlay_TopCast` è tornato alla forma concatenata, senza dipendenze dal servizio. Quel
+  pannello non è la schermata dove il cast conta.
+
+### Il fatto che mancava: le impostazioni della skin
+
+Ho continuato a scrivere condizioni basate su `Skin.HasSetting` senza mai andare a leggere il valore
+di quei flag. Sono in
+`userdata/addon_data/skin.arctic.fuse.3/settings.xml`, e dicono:
+
+```
+info.uselocalcast     = true
+tmdbhelper.enabledata = true
+```
+
+Due conseguenze, entrambe fatali per i giri precedenti:
+
+1. La riga Cast servita da Fen Light la compilavo con `!Skin.HasSetting(Info.UseLocalCast)`, e quel
+   flag è **acceso**. Restava compilata la riga locale, che senza `setCast` è vuota.
+2. `Exp_TMDbHelper_IsData` è **vera**, quindi `Label_Overlay_TopCast` (che ha
+   `condition="!$EXP[Exp_TMDbHelper_IsData]"`) non produce nulla in nessun caso: tutte le modifiche
+   che gli avevo fatto erano codice morto in partenza.
+
+### La correzione definitiva
+
+Le due righe non potevano restare entrambe compilate: passano `altvisible=true`, quindi si vedono
+**anche da vuote** (`Includes_Widgets.xml:66`), e si sarebbero viste due intestazioni "Cast".
+
+Quindi la riga locale è stata **rimossa** e quella servita da Fen Light è ora **incondizionata**.
+La riga locale non aveva più una sorgente: `setCast` non c'è più sugli elementi delle liste, ed era
+proprio quello il costo che volevamo togliere. Come effetto collaterale, l'impostazione di skin
+`Info.UseLocalCast` non ha più effetto sul cast.
+
+Il cast ora è davvero on demand: `build_cast_list` viene chiamata quando si apre la scheda, legge i
+metadati da cache e restituisce nomi e foto; cliccando un attore si apre la sua scheda, perché
+`DialogInfo_Widgets_Action` legge `tmdb_id` e `tmdb_type`, che `build_cast_list` scrive su ogni voce.
+
+### Da segnalare, separato
+
+`tmdbhelper.enabledata = true` con TMDbHelper disinstallato: molti rami della skin prendono la
+strada TMDbHelper e non trovano nulla. È probabilmente all'origine anche del prompt "installa
+TMDbHelper" già annotato. Non l'ho toccato perché spegnerlo cambia decine di condizioni in una volta
+(per esempio le righe Recommended e Collection della scheda informazioni sono compilate **solo** se
+quel flag è vero): è una pulizia a sé, da fare con calma. La riga del cast ora è incondizionata,
+quindi funziona con il flag in entrambi gli stati.
+
+### Metodo, per non ripetere il giro
+
+Tre errori in fila, tutti dello stesso tipo: **ho dedotto invece di guardare**.
+Assenza nel log presa per prova (le `GetDirectory` riuscite sono solo in debug); condizione
+dinamica messa dove viene valutata solo al caricamento; valore di un flag dato per scontato invece
+di leggerlo da `settings.xml`. Prima di scrivere una condizione di skin: leggere il file delle
+impostazioni, e verificare **quando** quella condizione viene valutata.
+
+---
+
+# Lotto 25 — rimossa l'impostazione sui worker del pool (lotto 22)
+
+Tolta perché non serve a niente e può fare danno.
+
+**Non serve**: dal lotto 20 la costruzione delle listitem gira in sequenza, quindi quei pool restano
+solo sulla fase di **rete**, che è fuori dal campo di ottimizzazione dichiarato. La prova sul Mac
+(Auto contro 6) non aveva prodotto nessun segnale, per costruzione.
+
+**Può fare danno**: abbassare i worker sulla fase di rete non riduce nessun convoglio del GIL — lì
+l'attesa è I/O e il GIL è rilasciato davvero — serializza soltanto. Con 2 worker una pagina di 20
+elementi non in cache fa 10 giri di rete invece di 2.
+
+`_WORKER_COUNT` torna costante, rinominata `WORKER_COUNT` perché `paginator.py` la importa per
+stamparla nel log. Rimosse: la voce in `default_settings`, la riga nella finestra impostazioni,
+`worker_count()`. `blur_service.py` e `settings_manager.xml` sono tornati identici a HEAD.
+
+## Un difetto delle mie riscritture scriptate: le terminazioni di riga
+
+`git diff --numstat` dava **502 aggiunte / 502 rimozioni** su `settings_cache.py` per una rimozione
+di due righe. Causa: i file del repo sono **CRLF**, e i miei script li riscrivevano con
+`io.open(path, 'w')`, che su macOS scrive LF. Ogni riga risultava modificata.
+
+Non cambia niente per Python, ma rende il diff illeggibile e nasconde gli errori veri — che è
+esattamente il modo in cui il lotto 19 era passato inosservato. Quattro file erano stati convertiti
+(`settings_cache.py`, `episodes.py`, `seasons.py`, `utils.py`); CRLF ripristinato ovunque. Dopo il
+ripristino `settings_cache.py` non ha **nessuna** differenza rispetto a HEAD, come dev'essere.
+
+**Regola**: dopo una riscrittura scriptata, controllare le terminazioni di riga insieme ai simboli.
+Se `--numstat` riporta un numero di righe vicino al totale del file, è quasi sempre questo.

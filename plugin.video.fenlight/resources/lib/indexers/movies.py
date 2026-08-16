@@ -14,12 +14,31 @@ make_listitem, build_url, nextpage_landscape = kodi_utils.make_listitem, kodi_ut
 string, external, add_items, add_dir, get_property = str, kodi_utils.external, kodi_utils.add_items, kodi_utils.add_dir, kodi_utils.get_property
 set_content, end_directory, set_view_mode, folder_path = kodi_utils.set_content, kodi_utils.end_directory, kodi_utils.set_view_mode, kodi_utils.folder_path
 poster_empty, set_property = kodi_utils.empty_poster, kodi_utils.set_property
-sleep, xbmc_actor, set_category = kodi_utils.sleep, kodi_utils.xbmc_actor, kodi_utils.set_category
+sleep, cast_label, set_category = kodi_utils.sleep, kodi_utils.cast_label, kodi_utils.set_category
 add_item, home = kodi_utils.add_item, kodi_utils.home
 watched_indicators, widget_hide_next_page = settings.watched_indicators, settings.widget_hide_next_page
 widget_hide_watched, media_open_action, page_limit, paginate = settings.widget_hide_watched, settings.media_open_action, settings.page_limit, settings.paginate
 tmdb_api_key, mpaa_region = settings.tmdb_api_key, settings.mpaa_region
 run_plugin = 'RunPlugin(%s)'
+# URL della singola voce costruite per FORMATTAZIONE DIRETTA invece che con build_url/urlencode.
+# Misurato sul Mac: le otto build_url di un elemento costano 32,67 us, le stesse stringhe formattate
+# 0,92 us -- 35 volte meno, e il risultato e' identico byte per byte. Su una lista da 249 elementi
+# sono 8,1 ms degli 9 ms che il log attribuisce alla fase prep+cm.
+# Funziona perche' qui dentro NON C'E' NULLA DA PERCENT-ENCODARE: interi (tmdb_id), id imdb 'tt...',
+# booleani, e per il resto letterali. urlencode scansionava comunque ogni carattere di ogni valore.
+# ATTENZIONE: qualunque valore di testo libero -- titoli, nomi di raccolte, URL di poster -- deve
+# continuare a passare da build_url. Messo qui, si romperebbe al primo spazio o '&' nel testo.
+_BASE = 'plugin://plugin.video.fenlight/?'
+URL_PLAY = _BASE + 'mode=playback.media&media_type=movie&tmdb_id=%s'
+URL_EXTRAS = _BASE + 'mode=extras_menu_choice&media_type=movie&tmdb_id=%s&is_external=%s'
+URL_OPTIONS = _BASE + 'mode=options_menu_choice&content=movie&tmdb_id=%s&is_external=%s'
+URL_MORE_LIKE_THIS = _BASE + 'mode=build_movie_list&action=imdb_more_like_this&key_id=%s&name_id=%s&is_external=%s'
+URL_PLAYBACK_CHOICE = _BASE + 'mode=playback_choice&media_type=movie&meta=%s'
+URL_MARK = _BASE + 'mode=watched_status.mark_movie&action=%s&tmdb_id=%s'
+URL_WATCHLIST_TOGGLE = _BASE + 'mode=trakt.watchlist_toggle&media_type=movie&tmdb_id=%s&in_watchlist=%s'
+URL_ERASE_BOOKMARK = _BASE + 'mode=watched_status.erase_bookmark&media_type=movie&tmdb_id=%s&refresh=true'
+URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets'
+URL_EXIT_MEDIA_MENU = _BASE + 'mode=navigator.exit_media_menu'
 main = ('tmdb_movies_popular', 'tmdb_movies_popular_today','tmdb_movies_blockbusters','tmdb_movies_in_theaters', 'tmdb_movies_upcoming', 'tmdb_movies_latest_releases',
 'tmdb_movies_premieres', 'tmdb_movies_oscar_winners')
 special = ('tmdb_movies_languages', 'tmdb_movies_providers', 'tmdb_movies_year', 'tmdb_movies_decade', 'tmdb_movies_certifications', 'tmdb_movies_recommendations',
@@ -143,6 +162,9 @@ class Movies:
 					self.params['key_id'] = movie_meta('tmdb_id', self.params_get('key_id'), tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp())['imdb_id']
 				self.id_type = 'imdb_id'
 				self.list = function(self.params_get('key_id'))
+				# Il titolo del film di partenza si risolve QUI, una volta, da cache: nell'URL della voce
+				# costava una percent-codifica per ogni elemento di ogni lista costruita.
+				self._resolve_more_like_this_name()
 			_t1 = paginator.now()
 			items = self.worker()
 			paginator.log_build('movies', self.action, _t0, _t1, paginator.now(), len(items) if items else 0,
@@ -200,13 +222,16 @@ class Movies:
 			else: unaired = False
 			progress = get_progress_status_movie(self.bookmarks, str_tmdb_id)
 			playcount = get_watched_status_movie(self.watched_info, str_tmdb_id)
-			play_params = build_url({'mode': 'playback.media', 'media_type': 'movie', 'tmdb_id': tmdb_id})
+			play_params = URL_PLAY % tmdb_id
 			# options_params e' sia voce di menu sia tasto rapido. extras_params e more_like_this_params
 			# non sono piu' voci, ma restano perche' custom_keys.py li legge dalle proprieta' della listitem.
-			extras_params = build_url({'mode': 'extras_menu_choice', 'media_type': 'movie', 'tmdb_id': tmdb_id, 'is_external': self.is_external})
-			options_params = build_url({'mode': 'options_menu_choice', 'content': 'movie', 'tmdb_id': tmdb_id, 'poster': poster, 'is_external': self.is_external})
-			more_like_this_params = build_url({'mode': 'build_movie_list', 'action': 'imdb_more_like_this', 'key_id': imdb_id,
-												'name': 'More Like This based on %s' % title, 'is_external': self.is_external})
+			extras_params = URL_EXTRAS % (tmdb_id, self.is_external)
+			# Il poster non viaggia piu' nell'URL: options_menu_choice legge gia' i metadati per conto suo
+			# e da li' ricava anche l'immagine. Era un URL da ~70 caratteri da percent-encodare per ogni
+			# elemento di ogni lista, per un'icona che si vede solo se l'utente apre davvero il menu.
+			options_params = URL_OPTIONS % (tmdb_id, self.is_external)
+			# Stessa logica per il titolo: si passa name_id e il nome della lista si compone all'apertura.
+			more_like_this_params = URL_MORE_LIKE_THIS % (imdb_id, tmdb_id, self.is_external)
 			belongs_to_movieset = 'true' if all([movieset_id, movieset_name]) else 'false'
 			movieset_active = self.open_movieset and belongs_to_movieset == 'true'
 			if self.open_extras or movieset_active: cm_append(('[B]Riproduci[/B]', run_plugin % play_params))
@@ -214,25 +239,24 @@ class Movies:
 			elif self.open_extras: url_params = extras_params
 			else: url_params = play_params
 			cm_append(('[B]Opzioni[/B]', run_plugin % options_params))
-			cm_append(('[B]Opzioni di riproduzione[/B]', run_plugin % build_url({'mode': 'playback_choice', 'media_type': 'movie', 'meta': tmdb_id})))
+			cm_append(('[B]Opzioni di riproduzione[/B]', run_plugin % (URL_PLAYBACK_CHOICE % tmdb_id)))
+			# Il titolo non viaggia piu' nell'URL: mark_movie lo rilegge dai metadati (una lettura da cache,
+			# e solo quando l'utente clicca davvero) prima di scriverlo nella tabella watched.
 			if playcount:
 				if self.widget_hide_watched: return
-				cm_append(('[B]Segna come non visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_movie', 'action': 'mark_as_unwatched',
-							'tmdb_id': tmdb_id, 'title': title})))
+				cm_append(('[B]Segna come non visto[/B]', run_plugin % (URL_MARK % ('mark_as_unwatched', tmdb_id))))
 			elif not unaired:
-				cm_append(('[B]Segna come visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_movie', 'action': 'mark_as_watched',
-							'tmdb_id': tmdb_id, 'title': title})))
+				cm_append(('[B]Segna come visto[/B]', run_plugin % (URL_MARK % ('mark_as_watched', tmdb_id))))
 			in_watchlist = str_tmdb_id in self.watchlist_ids
 			cm_append((('[B]Rimuovi dalla watchlist[/B]' if in_watchlist else '[B]Aggiungi alla watchlist[/B]'),
-						run_plugin % build_url({'mode': 'trakt.watchlist_toggle', 'media_type': 'movie', 'tmdb_id': tmdb_id,
-						'in_watchlist': 'true' if in_watchlist else 'false'})))
+						run_plugin % (URL_WATCHLIST_TOGGLE % (tmdb_id, 'true' if in_watchlist else 'false'))))
 			if progress:
-				cm_append(('[B]Azzera avanzamento[/B]', run_plugin % build_url({'mode': 'watched_status.erase_bookmark', 'media_type': 'movie', 'tmdb_id': tmdb_id, 'refresh': 'true'})))
+				cm_append(('[B]Azzera avanzamento[/B]', run_plugin % (URL_ERASE_BOOKMARK % tmdb_id)))
 			# "Refresh" e' il superset di "Reload": alza fenlight.refresh_widgets, che i widget random leggono
 			# per rigenerare una selezione nuova, e poi chiama comunque kodi_refresh. Tenuto solo quello.
 			if self.is_external:
-				cm_append(('[B]Aggiorna widget[/B]', run_plugin % build_url({'mode': 'refresh_widgets'})))
-			else: cm_append(('[B]Esci dalla lista[/B]', run_plugin % build_url({'mode': 'navigator.exit_media_menu'})))
+				cm_append(('[B]Aggiorna widget[/B]', run_plugin % URL_REFRESH_WIDGETS))
+			else: cm_append(('[B]Esci dalla lista[/B]', run_plugin % URL_EXIT_MEDIA_MENU))
 			_t2 = _perf()
 			info_tag = listitem.getVideoInfoTag()
 			info_tag.setMediaType('movie'), info_tag.setTitle(title), info_tag.setOriginalTitle(meta_get('original_title')), info_tag.setGenres(meta_get('genre'))
@@ -243,7 +267,9 @@ class Movies:
 			info_tag.setTagLine(meta_get('tagline')), info_tag.setStudios(meta_get('studio'))
 			info_tag.setWriters(meta_get('writer')), info_tag.setDirectors(meta_get('director'))
 			_t3 = _perf()
-			info_tag.setCast([xbmc_actor(name=item['name'], role=item['role'], thumbnail=item['thumbnail']) for item in meta_get('cast', [])])
+			# Niente setCast: la skin del cast legge solo i nomi, e li riceve come proprieta'.
+			# Vedi kodi_utils.cast_label.
+			cast_names = cast_label(meta_get('cast'))
 			_t4 = _perf()
 			if progress: info_tag.setResumePoint(float(progress))
 			listitem.setLabel(title)
@@ -257,6 +283,7 @@ class Movies:
 			# confine verso il C++ una volta sola.
 			_props = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
 						'belongs_to_collection': belongs_to_movieset, 'fenlight.more_like_this_params': more_like_this_params}
+			if cast_names: _props['fenlight.cast'] = cast_names
 			if progress: _props['WatchedProgress'] = progress
 			extra_ratings = meta_get('extra_ratings')
 			if extra_ratings:
@@ -315,6 +342,18 @@ class Movies:
 		paginator.phase_report('movies %s' % self.action, ('meta', 'prep+cm', 'infotag', 'cast', 'setLabel', 'ctxmenu', 'setArt', 'props'))
 		paginator.selftest()
 		return self.items
+
+	def _resolve_more_like_this_name(self):
+		# name_id e' il tmdb_id del film da cui la lista e' partita. Sostituisce il vecchio parametro
+		# 'name', che portava il titolo gia' composto: una stringa di testo libero, quindi da
+		# percent-encodare, moltiplicata per ogni elemento di ogni lista. Se manca (URL vecchia
+		# ancora in giro, o widget salvato) resta il 'name' che c'era prima: nessuna regressione.
+		name_id = self.params_get('name_id')
+		if not name_id or self.params_get('name') or self.params_get('category_name'): return
+		try:
+			meta = movie_meta('tmdb_id', name_id, tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp())
+			if meta and meta.get('title'): self.category_name = 'More Like This based on %s' % meta['title']
+		except: pass
 
 	def _resolve_missing(self, ids):
 		# Voci non servite dal prefetch (assenti, scadute, o con id non risolvibile): vanno chieste alla

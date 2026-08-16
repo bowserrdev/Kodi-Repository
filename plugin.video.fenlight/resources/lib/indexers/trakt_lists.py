@@ -191,7 +191,15 @@ def get_trakt_lists_with_media(params):
 		add_items(handle, list(_process()))
 	except: pass
 	set_content(handle, 'files')
-	set_category(handle, params.get('category_name', 'Trakt Lists'))
+	# name_id e' il solo tmdb_id del media di partenza: il titolo della schermata si compone qui,
+	# una volta, invece di viaggiare percent-encodato nell'URL di ogni elemento di ogni lista.
+	# category_name resta accettato, per le URL gia' in giro e per le chiamate da windows/extras.py.
+	category_name = params.get('category_name')
+	if not category_name and params.get('name_id'):
+		from indexers.dialogs import meta_from_params
+		_title = meta_from_params({'tmdb_id': params['name_id'], 'media_type': params.get('media_type')}).get('title')
+		if _title: category_name = '%s In Trakt Lists' % _title
+	set_category(handle, category_name or 'Trakt Lists')
 	end_directory(handle)
 	set_view_mode('view.main')
 

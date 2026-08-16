@@ -295,23 +295,23 @@
 
     <include name="DialogInfo_VideoWidgets">
 
-        <!-- Cast-->
-        <include content="Widget_Info_Row" condition="![!Skin.HasSetting(Info.UseLocalCast) + $EXP[Exp_TMDbHelper_IsData]]">
-            <param name="id">50</param>
-            <param name="baseid" />
-            <param name="basegroupid">51</param>
-            <param name="label">$LOCALIZE[206]</param>
-            <param name="include">List_Poster_Row</param>
-            <param name="widgetfade_include">true</param>
-            <param name="set_widgetcontainer">false</param>
-            <param name="menuid">8000</param>
-            <param name="detailed">true</param>
-            <param name="widget_hideartwork">true</param>
-            <param name="widget_showoverlay">true</param>
-            <param name="altvisible">true</param>
-            <onfocus>SetProperty(CurrentID,$INFO[Window.Property(BaseID)])</onfocus>
-        </include>
-        <include content="Widget_Info_Row" condition="!Skin.HasSetting(Info.UseLocalCast) + $EXP[Exp_TMDbHelper_IsData]">
+        <!-- Cast, servito da Fen Light (build_cast_list) e caricato all'apertura della finestra.
+             Qui c'era una seconda riga alternativa, "locale": senza <content>, la riempiva Kodi con
+             il cast dell'info tag dell'elemento. E' stata rimossa perche' non ha piu' una sorgente:
+             Fen Light non chiama piu' setCast sugli elementi delle liste (costava una ventina di
+             oggetti xbmc.Actor per elemento, quasi cinquemila su una lista da 250, per un dato che
+             si legge solo qui). Le due righe non potevano restare entrambe: passano altvisible=true,
+             quindi si vedono anche da vuote, e si sarebbero viste due intestazioni "Cast".
+             Con la rimozione l'impostazione di skin Info.UseLocalCast non ha piu' effetto sul cast.
+             DUE TRAPPOLE, entrambe gia' costate un giro a vuoto:
+             1) la condition di un <include> e' risolta al CARICAMENTO della finestra
+                (DialogVideoInfo.xml e' KEEP_IN_MEMORY, quindi all'avvio della skin), non
+                all'apertura: una Window.Property li' dentro e' sempre vuota. Il <content> invece
+                e' una variabile, e quella viene valutata all'apertura, per questo funziona.
+             2) le condizioni che dipendevano da Skin.HasSetting davano per scontato il valore del
+                flag. Vanno lette in userdata/addon_data/skin.arctic.fuse.3/settings.xml, non
+                indovinate. -->
+        <include content="Widget_Info_Row">
             <param name="id">50</param>
             <param name="baseid">50</param>
             <param name="basegroupid">51</param>
