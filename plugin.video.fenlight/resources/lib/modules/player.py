@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import time
 import json
 from threading import Thread
 from apis.trakt_api import make_trakt_slug, trakt_scrobble_start, trakt_scrobble_stop, trakt_official_status
@@ -25,15 +24,14 @@ class FenLightPlayer(xbmc_player):
 		self._av_started = True
 
 	def onPlayBackSeek(self, time, seekOffset):
+		# Si aggiorna SOLO la posizione: nessuna chiamata a Trakt e nessuna marcatura qui.
+		# Trakt riceve uno scrobble start all'avvio e uno stop alla chiusura, niente altro.
 		try:
 			if getattr(self, 'is_generic', True) or not getattr(self, '_av_started', False): return
-			self._last_scrobble_update = 0.0
 			total = getattr(self, 'total_time', 0) or 0
 			if not total: return
 			self.curr_time = time / 1000.0
 			self.current_point = round(float(self.curr_time / total * 100), 1)
-			if self.current_point >= set_watched and not self.media_marked:
-				self.media_watched_marker()
 		except: pass
  
 
@@ -122,12 +120,11 @@ class FenLightPlayer(xbmc_player):
 
 					sleep(1000)
 					self.current_point = round(float(self.curr_time/self.total_time * 100), 1)
-					if self.scrobble_started and (time.time() - self._last_scrobble_update) >= 120:
-						Thread(target=trakt_scrobble_start, args=(self.media_type, self.tmdb_id, self._trakt_season, self._trakt_episode)).start()
-						self._last_scrobble_update = time.time()
+					# Durante la riproduzione non si tocca ne' Trakt ne' il database dei visti: niente
+					# rinvio periodico dello scrobble (era ogni 120s) e niente marcatura al 90%. Tutto
+					# avviene una volta sola all'uscita dal ciclo, con la percentuale reale di chiusura.
 					if self.current_point >= set_watched:
 						if play_random_continual: self.run_random_continual(); break
-						if not self.media_marked: self.media_watched_marker()
 					if self.autoplay_nextep or self.autoscrape_nextep:
 						if not self.nextep_info_gathered: self.info_next_ep()
 						if round(self.total_time - self.curr_time) <= self.start_prep: self.run_next_ep(); break
@@ -136,6 +133,7 @@ class FenLightPlayer(xbmc_player):
 			if not self.media_marked: self.media_watched_marker()
 			self.clear_playback_properties()
 			self.clear_playing_item()
+			Thread(target=self.flush_pending_refresh).start()
 		except:
 			hide_busy_dialog()
 			self.sources_object.playback_successful = False
@@ -197,14 +195,30 @@ class FenLightPlayer(xbmc_player):
 				else: watched_function = mark_episode
 				watched_params = {'action': 'mark_as_watched', 'tmdb_id': self.tmdb_id, 'title': self.title, 'year': self.year, 'season': self.season, 'episode': self.episode,
 									'tvdb_id': self.tvdb_id, 'from_playback': 'true'}
-				Thread(target=self.run_media_progress, args=(watched_function, watched_params)).start()
-				# note: for mark_movie/mark_episode kodi_refresh is already called internally
+				# mark_movie/mark_episode con from_playback NON fanno alcun refresh (mettono refresh=False),
+				# quindi finora finire un film non aggiornava i widget: lo si chiede qui. La ricostruzione
+				# e' comunque rimandata a fine riproduzione dal gate in kodi_utils, quindi passando
+				# all'episodio successivo non si ricostruisce nulla mentre il video va.
+				Thread(target=self.run_media_progress, args=(watched_function, watched_params, True)).start()
 			else:
 				clear_property('fenlight.random_episode_history')
 				if self.current_point >= set_resume:
 					progress_params = {'media_type': self.media_type, 'tmdb_id': self.tmdb_id, 'curr_time': self.curr_time, 'total_time': self.total_time,
 									'title': self.title, 'season': self.season, 'episode': self.episode, 'from_playback': 'true'}
 					Thread(target=self.run_media_progress, args=(set_bookmark, progress_params, True)).start()
+		except: pass
+
+	def flush_pending_refresh(self):
+		# Esegue, a riproduzione finita, l'unico refresh eventualmente rimandato da kodi_utils mentre il
+		# video era in corso. L'attesa serve a lasciar passare prima il refresh del segnalibro, che parte
+		# da run_media_progress dopo 2s e azzera la stessa proprieta': cosi' si ricostruisce una volta sola.
+		try:
+			if not ku.get_property(ku.PENDING_REFRESH_PROP): return
+			ku.sleep(3000)
+			kind = ku.get_property(ku.PENDING_REFRESH_PROP)
+			if not kind: return
+			ku.clear_property(ku.PENDING_REFRESH_PROP)
+			ku.run_plugin({'mode': 'refresh_widgets' if kind == 'refresh_widgets' else 'kodi_refresh'})
 		except: pass
 
 	def run_media_progress(self, function, params, do_refresh=False):
@@ -266,7 +280,6 @@ class FenLightPlayer(xbmc_player):
 			self.media_marked, self.nextep_info_gathered = False, False
 			self.current_point = 0.0
 			self.scrobble_started = False
-			self._last_scrobble_update = 0.0
 			self.playback_successful, self.cancel_all_playback = None, False
 			self.playing_item = self.sources_object.playing_item
 			self._av_started = False
