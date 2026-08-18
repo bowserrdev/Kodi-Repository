@@ -54,10 +54,12 @@ class CustomFonts:
 		window.clearProperty(current_skin_prop)
 		font_utils = FontUtils()
 		while not monitor.abortRequested():
+			# In riproduzione non si tocca la skin: execute_custom_fonts riscrive Font.xml e puo'
+			# innescare un ricaricamento. Prima girava comunque, solo piu' di rado.
+			if window.getProperty(pause_services_prop) == 'true' or is_playing():
+				wait_for_abort(20); continue
 			font_utils.execute_custom_fonts()
-			if window.getProperty(pause_services_prop) == 'true' or is_playing(): sleep = 20
-			else: sleep = 10
-			wait_for_abort(sleep)
+			wait_for_abort(10)
 		try: del monitor
 		except: pass
 		try: del player
@@ -98,7 +100,7 @@ class WidgetRefresher:
 		logger('Fen Light', 'WidgetRefresher Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import home, run_plugin
+		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, self.is_playing = monitor.waitForAbort, player.isPlayingVideo
 		self.window = xbmcgui.Window(10000)
@@ -111,6 +113,12 @@ class WidgetRefresher:
 			try:
 				wait_for_abort(10)
 				self.window.clearProperty('fenlight.refresh_widgets')
+				# Rete di sicurezza per il refresh rimandato durante la riproduzione: se il video non e'
+				# passato da FenLightPlayer (video generico, trailer) nessuno lo rilancia alla chiusura,
+				# e il widget resterebbe vecchio. Qui si recupera appena la riproduzione e' finita.
+				if not self.is_playing() and self.window.getProperty(PENDING_REFRESH_PROP):
+					self.window.clearProperty(PENDING_REFRESH_PROP)
+					run_plugin({'mode': 'refresh_widgets'})
 				offset = int(self.get_setting('fenlight.widget_refresh_timer', '60'))
 				if offset != self.offset:
 					self.set_next_refresh(time())

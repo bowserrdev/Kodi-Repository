@@ -2672,3 +2672,248 @@ ripristino `settings_cache.py` non ha **nessuna** differenza rispetto a HEAD, co
 
 **Regola**: dopo una riscrittura scriptata, controllare le terminazioni di riga insieme ai simboli.
 Se `--numstat` riporta un numero di righe vicino al totale del file, è quasi sempre questo.
+
+---
+
+# Lotto 26 — il log della stick del 2026-08-16 18:21: cosa dice davvero
+
+## Primo: quella stick monta ancora il codice vecchio
+
+Le righe PERF non contengono `worker N` e stampano `costruzione 2.49s` invece di
+`costruzione X ms (Y ms/elemento)`. Sono il formato precedente al lotto 22. Conferma dal profilo:
+
+| | prep+cm | cast |
+|---|---|---|
+| stick, questo log | ~50% | ~20% |
+| Mac **prima** dei lotti 23-24 | 57% | 23% |
+| Mac **dopo** | 23% | 43% |
+
+Quindi i numeri di questo log **non misurano** i lotti 23 e 24. Marcatore rapido per la prossima
+prova: se nella riga `FenLight PERF` non c'è la parola `worker`, il codice è vecchio.
+
+## Secondo: il rallentamento NON dipende dal numero di risultati
+
+Stessa lista da 248 elementi, quattro costruzioni nella stessa sessione:
+
+| ora | costruzione | ms/elemento | autotest sintetico |
+|---|---|---|---|
+| 18:23:46 | 2,37 s | 20,1 | 0,019 ms/chiave |
+| **18:25:45** | **10,45 s** | **78,2** | **1,313 ms/chiave** |
+| 18:25:58 | 9,02 s | 54,3 | 0,337 ms/chiave |
+| 18:26:22 | 2,09 s | 22,8 | 0,017 ms/chiave |
+
+Stessa lista, stesso codice, 4,6× di differenza, e poi il ritorno ai valori iniziali. La lunghezza
+della lista non è la variabile.
+
+## La variabile è la riproduzione video
+
+Il filmato va da 18:24:30 a 18:24:52. Prima: tutto veloce. Nei ~90 secondi successivi: tutto lento.
+Poi recupera e resta veloce fino a fine sessione.
+
+L'autotest sintetico esegue **30 `setProperty` identiche** a ogni costruzione, senza toccare liste
+né cache. È il termometro pulito:
+
+```
+18:23:46   0,019 ms/chiave
+18:25:27   8,180 ms/chiave      <- subito dopo la riproduzione, 430x
+18:26:22   0,017 ms/chiave      <- recuperato
+```
+
+Stesse chiamate, stessi dati, 430 volte più lente. Non è la costruzione delle liste: è lo stato di
+Kodi/Android dopo aver tenuto aperto il decoder. Nel log compaiono anche tre
+`CPythonInvoker(22, fenlight.py): waiting on thread` fra 18:24:52 e 18:24:58, cioè l'invocazione
+della riproduzione che aspetta i propri thread in chiusura: vale la pena guardarci, ma è un
+capitolo diverso dalla costruzione delle liste.
+
+## Controprova: a sessione pulita non c'è degrado con la crescita
+
+Sequenza finale di paginazione discover, tutta in periodo "pulito" (autotest stabile a 0,018):
+
+| elementi | costruzione | ms/elemento |
+|---|---|---|
+| 27 | 0,29 s | 10,7 |
+| 37 | 0,34 s | 9,2 |
+| 50 | 0,37 s | 7,4 |
+| 63 | 0,43 s | 6,8 |
+
+Il costo per elemento **scende** al crescere della lista: l'avvio dell'interprete si spalma su più
+elementi. Nessuna degradazione progressiva.
+
+Il tempo di parete lì è 6-8 s a pagina, ma sta quasi tutto in `risoluzione` (5,7-7,6 s), con le
+righe `DUB` che mostrano `rete: streaming 9-15` per pagina. È il filtro doppiaggio che va in rete.
+
+## Cosa fare
+
+1. **Risincronizzare davvero la stick** e ripetere. Senza `worker` nella riga di log la prova non
+   vale. Attenzione ai `.pyc` tracciati in `__pycache__`.
+2. Il degrado post-riproduzione è device-level e va affrontato a parte, non come ottimizzazione
+   della costruzione.
+3. Resta aperto `GetDirectory - Error getting &pages=12` (18:26:12), già annotato.
+
+# Lotto 27 — il log della stick del 2026-08-16 18:32 e la riproduzione intoccabile
+
+## Le ottimizzazioni ci sono e si misurano
+
+Questa volta la stick monta il codice nuovo: `worker 6` nelle righe PERF e `costruzione N ms`.
+Confronto solo fra campioni con lo **stesso stato del dispositivo** (autotest sintetico
+0,019-0,036 ms/chiave), altrimenti si confrontano condizioni diverse e non codice:
+
+| lista | prima | dopo | |
+|---|---|---|---|
+| 130 elementi | 7,95 ms/el | 2,45 | −69% |
+| ~50 discover | 4,82 ms/el | 2,27 | −53% |
+| ~30 discover | 6,63 ms/el | 2,38 | −64% |
+
+Le due fasi attaccate, su 248 elementi: `cast` 301 ms (20%) → 24-34 ms (1%); `prep+cm`
+737 ms (49%) → 173-292 ms (6-9%). Le altre fasi restano ferme a parità di stato: era il controllo.
+
+## La stick ha spento un core a metà sessione
+
+`WORKER_COUNT = max(4, min(cpu_count + 2, 10))`, e su Android `os.cpu_count()` conta i core
+**online**. Nel log: `worker 6` fino alle 18:34:41, poi `worker 5` fino alla fine. `worker 5` si
+ottiene solo con `cpu_count = 3`. La stick ha spento un core alle ~18:35 e non l'ha più riacceso —
+gestione termica di Android, non nostro codice. È il 25% della CPU che sparisce a metà sessione, e
+spiega il "peggiora man mano che la uso" molto meglio della lunghezza delle liste.
+
+Effetto collaterale utile: il numero di worker nella riga di log è diventato un **sensore di
+throttling gratuito**. Vale la pena non toglierlo.
+
+## Perché la riproduzione laggava
+
+Film da 18:36:25 a 18:37:19. Dentro quella finestra: ~20 righe `PERF DUB`, una build da 54 elementi
+(3552 ms) e una da 248 (`risoluzione 15,57 s + costruzione 5826 ms`). In parallelo Kodi scrive
+decine di `ActiveAE - large audio sync error: -1000...-1630` e `OutputPicture - timeout waiting for
+buffer`. Controprova sulla stessa quantità di dati: la lettura da cache di 248 elementi costa
+**2412 ms durante il film** contro **904 ms** subito dopo.
+
+Non è il decoder: gli stavamo togliendo la macchina da sotto.
+
+## Cosa è stato cambiato
+
+Tutti i servizi (`TraktMonitor`, `WidgetRefresher`, `WidgetPaginator`, `BlurService`) avevano già la
+guardia `is_playing()`. Il buco era altrove.
+
+1. **`kodi_utils.kodi_refresh()` / `refresh_widgets()`** — è qui il vero innesco. `kodi_refresh` fa
+   `UpdateLibrary(video,...)`, un evento **globale** che ricostruisce ogni widget della schermata,
+   ognuno con un interprete Python nuovo, e ha una dozzina di chiamanti (Trakt, cache, watched
+   status, menu editor, ricerca). Ora entrambe controllano `Player.HasVideo`: se un video è in
+   corso la richiesta **non viene persa**, si annota in `fenlight.refresh_pending` e viene eseguita
+   alla chiusura. Gatire qui invece che sui singoli chiamanti copre anche gli innescatori che non
+   avevo identificato con certezza nel log.
+2. **`player.py` — Trakt solo a inizio e fine.** Tolto il rinvio periodico dello scrobble ogni 120s
+   e la sua riattivazione a ogni seek. Tolta anche la marcatura del visto al 90% mentre il film
+   ancora va: ora tutto avviene una volta sola all'uscita dal ciclo, con la percentuale reale di
+   chiusura. Trakt riceve **uno start all'avvio e uno stop alla chiusura**.
+3. **`player.flush_pending_refresh()`** — alla fine della riproduzione rilancia il refresh rimandato,
+   dopo 3s per lasciar passare prima quello del segnalibro (che parte dopo 2s e azzera la stessa
+   proprietà): si ricostruisce una volta sola invece di due.
+4. **`WidgetRefresher`** — rete di sicurezza: se il video non è passato da `FenLightPlayer` (video
+   generico, trailer) nessuno rilancerebbe il refresh rimandato; il servizio lo recupera entro 10s
+   dalla fine.
+5. **`CustomFonts`** — era l'unico servizio che durante la riproduzione continuava a lavorare
+   (`execute_custom_fonts()` ogni 20s invece di 10). Ora si ferma del tutto.
+
+## Effetto collaterale: chiuso il widget che non si aggiornava
+
+`mark_movie`/`mark_episode` con `from_playback` impostano `refresh = False`, quindi **finire un film
+non aggiornava mai i widget** — era il problema segnalato e messo da parte. Il commento in
+`player.py` diceva il contrario ("kodi_refresh is already called internally"): era falso. Ora la
+marcatura chiede il refresh, ed è sicuro proprio perché il gate lo rimanda a fine riproduzione:
+passando all'episodio successivo non si ricostruisce nulla mentre il video va.
+
+## Distinzione che ho tenuto
+
+È stata eliminata la costruzione di interfaccia **automatica/di sfondo** durante la riproduzione. La
+navigazione avviata dall'utente mentre il film va non è bloccata: se si esce dal video a sfogliare
+una lista, quella lista va costruita, altrimenti l'interfaccia si svuota.
+
+## Dove non conviene più insistere
+
+Su un campione pulito: `totale 3,15 s = risoluzione 2,81 s + costruzione 338 ms`. La costruzione è
+ormai il **10%** del tempo di parete; anche dimezzandola ancora si guadagnerebbe il 5%. Il tempo sta
+in `risoluzione`, cioè rete e filtro doppiaggio — che era stato messo fuori campo e a questo punto
+va rimesso in discussione. Se proprio si volesse continuare sulla CPU il candidato sarebbe
+`infotag` (33-44% del residuo, ~20 setter per elemento), ma non con quel 10%.
+
+## Nota di metodo
+
+L'autotest sintetico in questa sessione varia da 0,019 a 1,457 ms/chiave: 75x, a codice identico.
+Due misure prese in stati diversi non sono confrontabili. Senza leggere prima quel valore avrei
+letto un peggioramento dove c'è un −69%.
+
+## Da verificare sul dispositivo
+
+1. Avviare un film e **guardarlo senza toccare nulla**: nel log non devono comparire righe `PERF`
+   fra `OpenFile` e `CloseFile`, né `ActiveAE - large audio sync error`.
+2. Finire un film (oltre il 90%) e controllare che il badge "visto" compaia e che i widget
+   (cronologia, watchlist) si aggiornino **dopo** la chiusura.
+3. Chiudere un film a metà e controllare che il punto di ripresa sia corretto.
+4. Con `autoplay next episode`: passando all'episodio successivo non deve ricostruirsi nulla; il
+   refresh deve arrivare solo alla fine dell'ultimo episodio.
+5. Trakt: verificare che l'elemento risulti "in riproduzione" all'avvio e venga chiuso alla fine.
+   **Compromesso accettato**: senza il rinvio ogni 120s, se Kodi viene ucciso a metà film Trakt
+   resta con uno scrobble aperto e non si registra nulla. Prima il rinvio periodico lo copriva.
+6. Controllare il `worker N` nelle righe PERF: se scende a 5 la stick ha spento un core.
+
+# Lotto 27 bis — verifica sul Mac (log 2026-08-18 11:08-11:15)
+
+Tre riproduzioni dello stesso film, avviate e interrotte a mano.
+
+## Il risultato principale: decodifica pulita
+
+| | OpenFile | Demuxer | ultima riga PERF | CloseFile |
+|---|---|---|---|---|
+| 1 | 11:08:32.272 | .784 | **.702** | 11:08:51.314 |
+| 2 | 11:09:22.583 | 23.106 | **23.016** | 11:09:56.983 |
+| 3 | 11:14:39.283 | 39.745 | **39.713** | 11:14:58.838 |
+
+In tutte e tre, fra la creazione del demuxer e la chiusura — 18,5 s, 34 s, 19 s di decodifica vera —
+**non c'è nessuna riga di costruzione, nessun DUB, nessun refresh**. Era esattamente il problema del
+log della stick, dove dentro quella finestra cadevano una build da 248 elementi e ~20 pagine DUB.
+
+## Il refresh differito funziona
+
+Chiusura 1 a 11:08:51,3. A 11:08:56,0 (~4,5 s dopo) parte una ricostruzione con
+`114 elementi | 5 pagine` e `66 elementi | 3 pagine`: sono le pagine **espanse**, conservate da
+`fenlight.pg.refresh`. Una sola ricostruzione in più, non una raffica: l'attesa di 3 s in
+`flush_pending_refresh` ha fatto il suo lavoro di fusione con il refresh del segnalibro.
+
+Il confronto fra i due tipi di ricostruzione è diventato leggibile nel log e vale come firma:
+
+* `47 elementi | 2 pagine` = apertura pulita, lotto iniziale → **ricostruzione guidata da Kodi/skin**
+* `114 elementi | 5 pagine` = pagine conservate → **il nostro refresh differito**
+
+## Quello che resta: i widget si ricostruiscono all'ingresso e all'uscita dalla riproduzione
+
+In tutte e tre le riproduzioni, fra `OpenFile` e `Creating Demuxer` — cioè nei ~450 ms in cui Kodi
+apre lo stream e non sta ancora decodificando — si ricostruiscono i 3 widget di home
+(21 / 47 / 43 elementi), e lo stesso accade alla chiusura. Sono ricostruzioni del **tipo "apertura
+pulita"**: non passano da `kodi_refresh`, quindi il gate del lotto 27 non le vede e non le vedrebbe
+comunque, perché `Player.HasVideo` è ancora falso. È Kodi che ripopola i DirectoryProvider quando la
+finestra home viene rimostrata (i widget chiudono con `cacheToDisc=False`).
+
+Sul Mac costano 3-35 ms l'una e sono invisibili. Sulla stick sono le build da secondi, e cadono
+proprio mentre lo stream riempie il buffer: è il candidato numero uno del prossimo lotto.
+
+## Errori Trakt: artefatti del test, non regressione
+
+```
+11:09:57  409 Conflict            scrobble/stop
+11:09:58  404 Not Found           sync/playback/1824024453
+11:14:59  422 Unprocessable       scrobble/stop
+```
+
+Lo stesso film è stato avviato e fermato **tre volte in sei minuti**: Trakt rifiuta uno
+`scrobble/stop` ripetuto sullo stesso elemento a breve distanza. Le modifiche del lotto 27 su questo
+percorso sono per queste riproduzioni un **no-op dimostrabile**: durano tutte meno di 120 s, quindi
+il rinvio periodico dello scrobble non sarebbe partito comunque, e nessuna supera il 90%, quindi la
+marcatura anticipata non sarebbe scattata. La chiamata di stop alla chiusura è identica a prima.
+
+**Limite di questa conclusione**: è un ragionamento, non una misura. `kodi.old.log` non contiene
+nessuna riproduzione, quindi non esiste una base di confronto. Da riguardare alla prossima sessione
+con film diversi.
+
+## Ancora aperto
+
+`Control 2000 in window 13001/13002 has been asked to focus, but it can't` (tre occorrenze): è la
+finestra di dialogo delle sorgenti, non tocca la riproduzione. Non indagato.

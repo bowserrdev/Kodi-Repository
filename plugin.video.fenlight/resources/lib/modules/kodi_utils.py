@@ -284,18 +284,37 @@ def path_check(string):
 def reload_skin():
 	execute_builtin('ReloadSkin()')
 
+# Nessuna ricostruzione di interfaccia mentre un video e' in riproduzione. UpdateLibrary e' un evento
+# GLOBALE: ricostruisce ogni widget della schermata, ognuno con un interprete Python nuovo, e su un
+# dispositivo debole ruba alla decodifica proprio la CPU che le serve (sul Mi Stick si vede come
+# 'large audio sync error' e 'timeout waiting for buffer'). La richiesta non viene persa: si annota qui
+# e il player la esegue alla chiusura della riproduzione (FenLightPlayer.flush_pending_refresh).
+PENDING_REFRESH_PROP = 'fenlight.refresh_pending'
+
+def playback_active():
+	return get_visibility('Player.HasVideo')
+
+def _defer_refresh_if_playing(kind):
+	if not playback_active(): return False
+	set_property(PENDING_REFRESH_PROP, kind)
+	return True
+
 def kodi_refresh():
 	# Global soft refresh (Trakt monitor / periodic WidgetRefresher). Flag the rebuild as an in-place
 	# refresh so interactive widgets keep their already-expanded page count instead of collapsing back to
 	# the initial batch (which would shrink the container and bounce the focus). The flag is held only for
 	# the short window in which the widget builds read it, then cleared. A genuine fresh open carries no
 	# flag, so it still starts from the initial batch. Mirrors the existing 'fenlight.refresh_widgets' hold.
+	if _defer_refresh_if_playing('kodi_refresh'): return
+	clear_property(PENDING_REFRESH_PROP)
 	set_property('fenlight.pg.refresh', 'true')
 	execute_builtin('UpdateLibrary(video,special://skin/foo)')
 	sleep(2000)
 	clear_property('fenlight.pg.refresh')
 
 def refresh_widgets(show_notification='false'):
+	if _defer_refresh_if_playing('refresh_widgets'): return
+	clear_property(PENDING_REFRESH_PROP)
 	set_property('fenlight.refresh_widgets', 'true')
 	sleep(250)
 	run_plugin({'mode': 'kodi_refresh'}, block=True)
