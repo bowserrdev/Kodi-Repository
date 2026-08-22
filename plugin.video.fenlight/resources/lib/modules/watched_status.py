@@ -237,6 +237,13 @@ def _mark_on_trakt(args, cache_media_type, ep_map_for=None):
 			args = tuple(args) + _map_to_tmdb_episode(*ep_map_for)
 		if not trakt_watched_status_mark(*args): return notification('Error')
 		clear_trakt_collection_watchlist_data('watchlist', cache_media_type)
+		# Timbro per il monitor Trakt: questo cambiamento l'abbiamo fatto NOI e la riga locale e' gia'
+		# scritta. Senza, il monitor lo scambia per una modifica remota e ricostruisce l'intera
+		# cronologia -- 6 pagine e 1275 episodi, 4 secondi sul Mi Stick. Vedi trakt_watched_episodes.
+		try:
+			from time import time as _now
+			kodi_utils.set_property('fenlight.trakt.self_mark', str(_now()))
+		except: pass
 	except: pass
 
 def _clear_progress_on_trakt(media_type, media_id, season, episode, resume_id):

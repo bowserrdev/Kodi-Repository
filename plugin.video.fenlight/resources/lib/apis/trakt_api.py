@@ -859,6 +859,22 @@ def trakt_indicators_tv():
 		if insert_list:
 			trakt_watched_cache.add_tvshow_watched(insert_list)
 			return logger('FenLight Trakt', 'watched episodes sync: %s new plays added, no rebuild needed' % len(insert_list))
+	# Con gli indicatori Trakt, watched_status_mark scrive nello STESSO database che
+	# last_watched_episode_date() legge (indicators_dict: 1 -> trakt_db). Quindi dopo una nostra
+	# marcatura il piu' recente locale E' gia' la marcatura stessa, nessun play remoto risulta piu'
+	# recente, new_plays esce vuota e si finisce sul rebuild completo. Log della stick del 22/08:
+	# 'ultimo locale=2026-08-22T11:12:54.000Z', cioe' la riga scritta due secondi dopo la chiusura
+	# del player. Ogni marcatura si autoinnescava un rebuild da 6 pagine.
+	# Il timbro dice che il cambiamento e' nostro ed e' gia' applicato in locale: non c'e' niente da
+	# ricostruire. Vale anche per le rimozioni, perche' anche quelle le scrive gia' il percorso locale.
+	# Finestra stretta: se scade, si ricostruisce come prima. Le modifiche fatte da un ALTRO
+	# dispositivo portano play piu' recenti, quindi passano dalla via incrementale qui sopra.
+	if not new_plays and last_synced:
+		try:
+			_self = float(get_property('fenlight.trakt.self_mark') or 0)
+			if _self and (time.time() - _self) < 120:
+				return logger('FenLight Trakt', 'rebuild saltato: la modifica e' + "'" + ' nostra ed e' + "'" + ' gia' + "'" + ' applicata in locale')
+		except: pass
 	# full rebuild: no stored history, plays were removed, or more new plays than a single page holds
 	# PERF: il rebuild completo scarica 6 pagine di cronologia e ricostruisce 1274 episodi. Sul Mi
 	# Stick costa 2-6 s di rete e CPU, e nel log del 22/08 e' partito a OGNI marcatura mentre la via
