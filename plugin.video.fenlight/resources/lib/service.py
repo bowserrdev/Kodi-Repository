@@ -9,6 +9,10 @@ current_skin_prop = 'fenlight.current_skin'
 trakt_service_string = 'TraktMonitor Service Update %s - %s'
 trakt_success_line_dict = {'success': 'Trakt Update Performed', 'no account': '(Unauthorized) Trakt Update Performed'}
 update_string = 'Next Update in %s minutes...'
+# Finestra entro cui una ricostruzione globale gia' avvenuta rende superflua quella che Trakt
+# chiederebbe. Tarata sopra il ritardo osservato fra le due (7,1 s) e sotto nessun vincolo:
+# alzarla sopprime piu' duplicati ma ritarda di piu' un cambiamento fatto DAVVERO altrove.
+TRAKT_REFRESH_COALESCE = 30
 
 def logger(heading, function):
 	xbmc.log('###%s###: %s' % (heading, function), 1)
@@ -71,7 +75,7 @@ class TraktMonitor:
 		logger('Fen Light', 'TraktMonitor Service Starting')
 		from apis.trakt_api import trakt_sync_activities
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import run_plugin
+		from modules.kodi_utils import run_plugin, refresh_age
 		from modules.settings import trakt_sync_interval
 		monitor, player, window = xbmc.Monitor(), xbmc.Player(), xbmcgui.Window(10000)
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
@@ -86,7 +90,19 @@ class TraktMonitor:
 				else:
 					if status in ('success', 'no account'): logger('Fen Light', trakt_service_string % ('Success. %s' % trakt_success_line_dict[status], next_update_string))
 					else: logger('Fen Light', trakt_service_string % ('Success. No Changes Needed', next_update_string))# 'not needed'
-					if status == 'success' and get_setting('fenlight.trakt.refresh_widgets', 'false') == 'true': run_plugin({'mode': 'kodi_refresh'})
+					# Le due ondate di ricostruzione dopo una riproduzione erano lo STESSO evento contato due
+					# volte: a fine film mandiamo lo scrobble a Trakt, il poll successivo lo rilegge come
+					# 'qualcosa e' cambiato' e ricostruisce tutto una seconda volta per lo stesso titolo.
+					# Nel log del Mac del 21/08: scan alle 23:37:44.874 (il nostro flush post-riproduzione) e
+					# di nuovo alle 23:37:51.969, 62 ms dopo 'Trakt Update Performed'. Se l'interfaccia e'
+					# stata ricostruita da poco, la ricostruzione di Trakt e' quasi certamente per il
+					# cambiamento che l'ha appena innescata. La sincronizzazione e' gia' avvenuta comunque:
+					# quello che si salta e' solo il ridisegno, e il dato compare alla prima ricostruzione
+					# successiva -- che con la navigazione arriva in pochi secondi.
+					if status == 'success' and get_setting('fenlight.trakt.refresh_widgets', 'false') == 'true':
+						age = refresh_age()
+						if age >= TRAKT_REFRESH_COALESCE: run_plugin({'mode': 'kodi_refresh'})
+						else: logger('Fen Light', 'TraktMonitor: refresh saltato, interfaccia ricostruita %.1fs fa' % age)
 			except Exception as e: logger('Fen Light', trakt_service_string % ('Failed', 'The following Error Occured: %s' % str(e)))
 			wait_for_abort(wait_time)
 		try: del monitor
@@ -116,9 +132,16 @@ class WidgetRefresher:
 				# Rete di sicurezza per il refresh rimandato durante la riproduzione: se il video non e'
 				# passato da FenLightPlayer (video generico, trailer) nessuno lo rilancia alla chiusura,
 				# e il widget resterebbe vecchio. Qui si recupera appena la riproduzione e' finita.
-				if not self.is_playing() and self.window.getProperty(PENDING_REFRESH_PROP):
+				playing = self.is_playing()
+				if not playing and self.window.getProperty(PENDING_REFRESH_PROP):
 					self.window.clearProperty(PENDING_REFRESH_PROP)
 					run_plugin({'mode': 'refresh_widgets'})
+				# In riproduzione si esce QUI. Sotto c'e' get_setting, che quando la chiave non e' anche
+				# una proprieta' di finestra ricade su una query SQLite: era una lettura da disco ogni
+				# 10s per tutta la durata del film, sulla stessa eMMC su cui il player scrive la cache
+				# dello stream. condition_check() scartava comunque il giro, ma solo DOPO averla pagata.
+				# Stesso difetto gia' corretto per WidgetPaginator nel lotto 27 ter.
+				if playing: continue
 				offset = int(self.get_setting('fenlight.widget_refresh_timer', '60'))
 				if offset != self.offset:
 					self.set_next_refresh(time())
@@ -182,8 +205,12 @@ class WidgetPaginator:
 				paginator.log('watcher %s' % state); last_log = state
 		while not monitor.abortRequested():
 			try:
-				if get_setting('fenlight.paginate.interactive', 'true') != 'true' \
-						or is_playing() or window.getProperty(pause_services_prop) == 'true':
+				# is_playing() PRIMA di get_setting: quest'ultima, quando la chiave non e' anche una
+				# proprieta' di finestra, finisce in una query SQLite. Nell'ordine precedente era una
+				# lettura da disco al secondo per tutta la durata del film, sulla stessa eMMC lenta su
+				# cui il player sta scrivendo la cache dello stream.
+				if is_playing() or window.getProperty(pause_services_prop) == 'true' \
+						or get_setting('fenlight.paginate.interactive', 'true') != 'true':
 					log_change('idle (off/playing/paused)')
 					wait_for_abort(1); continue
 				# Never paginate a widget inside an overlay dialog (e.g. the video-info card). Its related

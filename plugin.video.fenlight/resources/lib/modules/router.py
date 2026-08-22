@@ -384,10 +384,11 @@ def routing(sys):
 		return person_direct_search(_get('key_id') or _get('query'))
 	if mode == 'kodi_refresh':
 		from modules.kodi_utils import kodi_refresh
-		return kodi_refresh()
+		return kodi_refresh(_get('coalesce', 'true') != 'false')
 	if mode == 'refresh_widgets':
 		from modules.kodi_utils import refresh_widgets
-		return refresh_widgets(_get('show_notification', 'false'))
+		# user=true lo mette solo la voce di menu degli indexer, non il servizio.
+		return refresh_widgets(_get('show_notification', 'false'), _get('user', 'false') != 'true')
 	if mode == 'person_data_dialog':
 		from indexers.people import person_data_dialog
 		return person_data_dialog(params)

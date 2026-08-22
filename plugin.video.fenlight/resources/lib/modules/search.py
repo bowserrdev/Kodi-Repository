@@ -119,7 +119,7 @@ def remove_from_search(params):
 		result.remove(params.get('key_id'))
 		main_cache.set(params['setting_id'], result, expiration=8760)
 		notification('Success', 2500)
-		kodi_refresh()
+		kodi_refresh(coalesce=False)
 	except: return
 
 def clear_search():
@@ -134,7 +134,7 @@ def clear_search():
 def clear_all(setting_id, refresh='false'):
 	main_cache.set(setting_id, '', expiration=365)
 	notification('Success', 2500)
-	if refresh == 'true': kodi_refresh()
+	if refresh == 'true': kodi_refresh(coalesce=False)
 
 def clear_text_history():
 	# Cancellazione diretta (un click) dello storico delle ricerche testuali dell'hub.

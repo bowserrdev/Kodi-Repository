@@ -87,7 +87,20 @@ def build_mdblist_list(params):
 			process_list, pages_consumed, has_more = _dub_paginate(result, pages_to_load, is_external)
 			paginator.log('mdblist BUILD key=%s pages=%s consumed=%s shown=%s has_more=%s' %
 						(paginator.short(pg_key), pages_to_load, pages_consumed, len(process_list), has_more))
-			paginator.set_state(pg_key, pages_consumed, has_more)
+			# ATTENZIONE ALL'UNITA': si registra pages_to_load (pagine RICHIESTE, cioe' quelle che
+			# l'utente vede), NON pages_consumed (pagine grezze lette dalla sorgente per riempirle).
+			# PAGES_PROP viene riletto come pages_to_load alla ricostruzione successiva e il watcher lo
+			# incrementa di 1: le tre cose devono essere nella stessa unita'. Registrando le pagine
+			# consumate, ogni ricostruzione riconvertiva "pagine grezze" in "pagine da mostrare" e
+			# rimoltiplicava per 1/frazione-sopravvissuta -- un cricchetto. Nel log del Mac del 21/08
+			# la lista mdblist 91378 e' passata da 47 a 202 elementi in 252 ms senza che nessuno
+			# scorresse (2 -> 5 -> 10 -> 17 pagine richieste), e ogni ricostruzione successiva costava
+			# 5,3 volte tanto per sempre. E' sicuro perche' _dub_paginate riempie fino a
+			# pages_to_load*limit SOPRAVVISSUTI: a parita' di richiesta rende la stessa lunghezza.
+			# NON copiare questo ragionamento su load_cumulative: la' il riempimento e' a min_items
+			# assoluto, non proporzionale, quindi solo last_page riproduce la lunghezza ed e' giusto
+			# registrare quello.
+			paginator.set_state(pg_key, pages_to_load, has_more)
 			all_movies = [i for i in process_list if i['type'] == 'movie']
 			all_tvshows = [i for i in process_list if i['type'] == 'show']
 		else:

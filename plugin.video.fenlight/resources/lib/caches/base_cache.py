@@ -307,7 +307,7 @@ def refresh_cached_data(meta):
 	from apis.imdb_api import refresh_imdb_meta_data
 	refresh_imdb_meta_data(imdb_id)
 	notification('Success')
-	kodi_refresh()
+	kodi_refresh(coalesce=False)
 
 class BaseCache:
 	def __init__(self, dbfile, table):

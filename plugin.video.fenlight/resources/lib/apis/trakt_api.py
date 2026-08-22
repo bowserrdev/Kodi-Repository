@@ -18,6 +18,7 @@ logger, notification, xbmc_player, confirm_dialog = kodi_utils.logger, kodi_util
 kodi_dialog, addon_installed, addon_enabled, addon = kodi_utils.kodi_dialog, kodi_utils.addon_installed, kodi_utils.addon_enabled, kodi_utils.addon
 path_check, get_icon, clear_property, remove_keys = kodi_utils.path_check, kodi_utils.get_icon, kodi_utils.clear_property, kodi_utils.remove_keys
 execute_builtin, select_dialog, kodi_refresh = kodi_utils.execute_builtin, kodi_utils.select_dialog, kodi_utils.kodi_refresh
+kodi_refresh_ids = kodi_utils.kodi_refresh_ids
 progress_dialog, external, trakt_user_active, show_unaired_watchlist = kodi_utils.progress_dialog, kodi_utils.external, settings.trakt_user_active, settings.show_unaired_watchlist
 lists_sort_order, trakt_client, trakt_secret, tmdb_api_key = settings.lists_sort_order, settings.trakt_client, settings.trakt_secret, settings.tmdb_api_key
 clear_all_trakt_cache_data, cache_trakt_object, clear_trakt_calendar = trakt_cache.clear_all_trakt_cache_data, trakt_cache.cache_trakt_object, trakt_cache.clear_trakt_calendar
@@ -428,6 +429,39 @@ def trakt_fetch_collection_watchlist(list_type, media_type):
 	params = {'path': path, 'path_insert': (list_type, media_type), 'with_auth': True, 'pagination': False}
 	return cache_trakt_object(_process, string, params)
 
+def _tmdb_ids_from_data(data):
+	# I dati spediti a Trakt hanno forma {'movies'|'shows': [{'ids': {'tmdb'|'imdb'|'tvdb': id}}]}.
+	# Al refresh mirato servono i soli tmdb_id, perche' sono quelli che paginator pubblica per ogni
+	# contenitore. Se l'elemento era identificato per imdb o tvdb la lista esce vuota e il chiamante
+	# resta sul refresh globale: nessun caso peggiora rispetto a prima.
+	ids = []
+	try:
+		for items in data.values():
+			for item in items:
+				tmdb_id = item.get('ids', {}).get('tmdb')
+				if tmdb_id: ids.append(str(tmdb_id))
+	except: pass
+	return ids
+
+def _refresh_for_data(data):
+	# Togliere un titolo da una lista cambia i widget che quel titolo lo contengono, non tutti gli
+	# altri. Dentro una finestra di directory (my_lists, watchlist, collection) il sondaggio dei
+	# contenitori 500-520 non trova nulla e kodi_refresh_ids ricade da sola sul globale, che li' e'
+	# proprio quello che serve per rileggere la cartella aperta.
+	ids = _tmdb_ids_from_data(data)
+	if ids: kodi_refresh_ids(ids, coalesce=False)
+	else: kodi_refresh(coalesce=False)
+
+def _refresh_watchlist(data):
+	# Due insiemi diversi di contenitori, e servono entrambi:
+	#  - per ID: i widget che gia' mostrano il titolo, la cui voce di menu deve passare da "Aggiungi"
+	#    a "Rimuovi" (o viceversa);
+	#  - per AZIONE: il widget della watchlist, che cambia composizione. In AGGIUNTA il suo elenco di
+	#    id non contiene ancora il titolo, quindi la regola per id lo scarterebbe proprio mentre va
+	#    ricostruito -- ed e' esattamente il motivo per cui "aggiungi" non era istantaneo.
+	# coalesce=False: e' sempre un comando dell'utente. Vedi kodi_refresh in kodi_utils.
+	kodi_refresh_ids(_tmdb_ids_from_data(data), ('trakt_watchlist',), coalesce=False)
+
 def add_to_list(user, slug, data):
 	result = call_trakt('/users/%s/lists/%s/items' % (user, slug), data=data)
 	if result['existing']['movies'] + result['existing']['shows'] > 0: return notification('Already In List', 3000)
@@ -441,23 +475,27 @@ def remove_from_list(user, slug, data):
 	if result['deleted']['movies'] + result['deleted']['shows'] == 0: return notification('Error', 3000)
 	notification('Success', 3000)
 	trakt_sync_activities()
-	if path_check('my_lists') or external(): kodi_refresh()
+	if path_check('my_lists') or external(): _refresh_for_data(data)
 	return result
 
-def add_to_watchlist(data):
+def add_to_watchlist(data, refresh=True):
 	result = call_trakt('/sync/watchlist', data=data)
 	if result['existing']['movies'] + result['existing']['shows'] > 0: return notification('Already In List', 3000)
 	if result['added']['movies'] + result['added']['shows'] == 0: return notification('Error', 3000)
 	notification('Success', 3000)
 	trakt_sync_activities()
+	# Simmetrico a remove_from_watchlist: prima qui non c'era alcun refresh, quindi togliere un titolo
+	# aggiornava subito il widget e aggiungerlo no. refresh=False quando chiama watchlist_toggle, che
+	# deve invalidare la cache PRIMA di ricostruire.
+	if refresh and (path_check('trakt_watchlist') or external()): _refresh_watchlist(data)
 	return result
 
-def remove_from_watchlist(data):
+def remove_from_watchlist(data, refresh=True):
 	result = call_trakt('/sync/watchlist/remove', data=data)
 	if result['deleted']['movies'] + result['deleted']['shows'] == 0: return notification('Error', 3000)
 	notification('Success', 3000)
 	trakt_sync_activities()
-	if path_check('trakt_watchlist') or external(): kodi_refresh()
+	if refresh and (path_check('trakt_watchlist') or external()): _refresh_watchlist(data)
 	return result
 
 def watchlist_tmdb_ids(media_type='movies'):
@@ -476,12 +514,16 @@ def watchlist_toggle(params):
 	try: media_id = int(params['tmdb_id'])
 	except: return notification('Error', 3000)
 	data = {key: [{'ids': {'tmdb': media_id}}]}
-	if params.get('in_watchlist') == 'true': remove_from_watchlist(data)
-	else: add_to_watchlist(data)
-	# Solo invalidazione della cache, nessun kodi_refresh forzato: un refresh globale ricostruirebbe
-	# TUTTI i widget (vedi #1) per aggiornare una sola etichetta di menu. La voce si aggiorna alla
-	# prossima ricostruzione naturale del widget; la notifica conferma subito l'azione all'utente.
+	# refresh=False: la ricostruzione la ordina questa funzione, DOPO l'invalidazione della cache.
+	# Nell'ordine opposto il widget si ridisegnerebbe leggendo ancora la watchlist vecchia. Finora la
+	# rimozione funzionava perche' trakt_sync_activities ripuliva la cache in tempo: una corsa vinta,
+	# non una garanzia.
+	if params.get('in_watchlist') == 'true': remove_from_watchlist(data, refresh=False)
+	else: add_to_watchlist(data, refresh=False)
 	clear_trakt_collection_watchlist_data('watchlist', key)
+	# Non piu' un kodi_refresh globale (ricostruirebbe TUTTI i widget per una sola etichetta), ma
+	# nemmeno l'attesa della prossima ricostruzione naturale: mirato, e quindi immediato.
+	_refresh_watchlist(data)
 
 def add_to_collection(data, multi=False):
 	result = call_trakt('/sync/collection', data=data)
@@ -497,7 +539,7 @@ def remove_from_collection(data):
 	if result['deleted']['movies'] + result['deleted']['episodes'] == 0: return notification('Error', 3000)
 	notification('Success', 3000)
 	trakt_sync_activities()
-	if path_check('trakt_collection') or external(): kodi_refresh()
+	if path_check('trakt_collection') or external(): _refresh_for_data(data)
 	return result
 
 def hide_unhide_progress_items(params):
@@ -507,7 +549,9 @@ def hide_unhide_progress_items(params):
 	data = {media_type: [{'ids': {'tmdb': media_id}}]}
 	call_trakt(url, data=data)
 	trakt_sync_activities()
-	kodi_refresh()
+	# Nascondere o riesporre un titolo nel 'continua a guardare' tocca il widget che lo contiene:
+	# l'id ce l'abbiamo gia' nei parametri, non c'e' motivo di ricostruire l'intera home.
+	kodi_refresh_ids([media_id], coalesce=False)
 
 def trakt_search_lists(search_title, page_no):
 	def _process(dummy_arg):
@@ -597,7 +641,8 @@ def make_new_trakt_list(params):
 	call_trakt('users/me/lists', data=data)
 	trakt_sync_activities()
 	notification('Success', 3000)
-	kodi_refresh()
+	# Comando esplicito dell'utente: mai accorpato. Vedi kodi_refresh in kodi_utils.
+	kodi_refresh(coalesce=False)
 
 def delete_trakt_list(params):
 	user = params['user']
@@ -607,7 +652,8 @@ def delete_trakt_list(params):
 	call_trakt(url, is_delete=True)
 	trakt_sync_activities()
 	notification('Success', 3000)
-	kodi_refresh()
+	# Comando esplicito dell'utente: mai accorpato. Vedi kodi_refresh in kodi_utils.
+	kodi_refresh(coalesce=False)
 
 def trakt_add_to_list(params):
 	tmdb_id, tvdb_id, imdb_id, media_type = params['tmdb_id'], params['tvdb_id'], params['imdb_id'], params['media_type']
@@ -655,7 +701,7 @@ def trakt_like_a_list(params):
 		call_trakt('/users/%s/lists/%s/like' % (user, list_slug), method='post')
 		notification('Success - Trakt List Liked', 3000)
 		trakt_sync_activities()
-		if refresh: kodi_refresh()
+		if refresh: kodi_refresh(coalesce=False)
 		return True
 	except:
 		notification('Error', 3000)
@@ -669,7 +715,7 @@ def trakt_unlike_a_list(params):
 		call_trakt('/users/%s/lists/%s/like' % (user, list_slug), method='delete')
 		notification('Success - Trakt List Unliked', 3000)
 		trakt_sync_activities()
-		if refresh: kodi_refresh()
+		if refresh: kodi_refresh(coalesce=False)
 		return True
 	except:
 		notification('Error', 3000)

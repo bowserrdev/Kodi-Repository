@@ -5,6 +5,7 @@
 # A service-side watcher bumps the page count as the user scrolls and triggers a silent container
 # refresh, so the already-loaded items keep their position and the focus is preserved.
 from hashlib import md5
+from re import compile as re_compile
 from urllib.parse import parse_qsl
 from caches.settings_cache import get_setting
 
@@ -43,6 +44,24 @@ CTL_KEY_PROP = 'fenlight.pg.ctl%s.key'
 # simply republishes from scratch if reopened -- so this is behavior-neutral.
 REGISTRY_PROP = 'fenlight.pg.registry'
 REGISTRY_CAP = 60
+
+# --- Ricarica MIRATA per id (P2.2-b) -----------------------------------------------------------
+# Elenco dei tmdb_id pubblicati da un widget, indicizzato per chiave. Serve a rispondere alla sola
+# domanda che conta quando qualcosa cambia: "questo widget contiene il film che e' cambiato?". Se no,
+# ricostruirlo e' lavoro buttato -- e oggi si ricostruisce tutto perche' nessuno sa rispondere.
+IDS_PROP = 'fenlight.pg.ids.%s'
+# L'azione del widget (trakt_watchlist, tmdb_movies_popular, ...). Serve al caso OPPOSTO a IDS_PROP:
+# quando un titolo viene AGGIUNTO a una lista, il widget di quella lista non contiene ancora il suo
+# id, quindi la regola per id lo scarterebbe proprio mentre va ricostruito. Vedi
+# refresh_containers_for_ids.
+ACTION_PROP = 'fenlight.pg.action.%s'
+# I contenitori dei widget della skin. Arctic Fuse li numera 501-504 (verificato nel file generato e
+# in Includes_Search.xml); il margine copre una riconfigurazione della home senza dover ritoccare qui.
+# Sondarli costa una getInfoLabel ciascuno e avviene UNA volta per refresh, non in un ciclo.
+WIDGET_CONTAINER_IDS = tuple(range(500, 521))
+# Nome del parametro nonce accodato al token del contenitore per forzarne la ricarica. E' gia' in
+# _VOLATILE_PARAMS, quindi non entra nella chiave del widget e la paginazione non se ne accorge.
+RELOAD_PARAM = 'reload'
 
 # Params that change between cumulative reloads of the SAME widget and must not affect its key.
 _VOLATILE_PARAMS = ('new_page', 'paginate_start', 'refreshed', 'pages', 'reload', 'reload_property')
@@ -315,11 +334,22 @@ def log_build(kind, action, t_start, t_resolved, t_built, count, pages=None, pat
 		# quando c'era. La risoluzione resta in secondi: li' i tempi sono di rete, ordini di grandezza
 		# piu' grandi.
 		build_ms = (t_built - t_resolved) * 1000
+		# PERF: distanza dall'uscita dal player, quando e' recente. La PRIMA riga che la riporta dopo
+		# una chiusura e' la rilettura che fa Kodi per conto suo: e' il numero contro cui tarare il
+		# sleep(2000) di run_media_progress, oggi scelto a occhio.
+		since_close = ''
+		try:
+			from modules.kodi_utils import get_property
+			_c = float(get_property('fenlight.perf.closefile') or 0)
+			if _c:
+				_d = t_built - _c
+				if 0 < _d < 30: since_close = ' | +%.0f ms da CloseFile' % (_d * 1000)
+		except: pass
 		logger('FenLight PERF', '%s %s | %s elementi%s%s | worker %s | totale %.2fs = risoluzione %.2fs + costruzione %.0f ms (%.3f ms/elemento) | %.1f ms/elemento totale | inv=%s'
 				% (kind, action, count, (' | %s pagine' % pages) if pages else '',
 					(' | path_pages=%s' % path_pages) if path_pages not in (None, '', 0, '0') else ' | path_pages=-',
 					workers, total, t_resolved - t_start, build_ms, (build_ms / count) if count else 0,
-					per_item, _INVOCATIONS[0]))
+					per_item, _INVOCATIONS[0]) + since_close)
 	except: pass
 
 def make_key(params):
@@ -337,15 +367,41 @@ def query_from_path(folderpath):
 	query = folderpath.split('?', 1)[1] if '?' in folderpath else ''
 	return dict(parse_qsl(query, keep_blank_values=True))
 
+def _item_url(item):
+	# Plugin path di UN elemento della lista passata ad add_items. Gli indexer usano due forme: la tupla
+	# (url, listitem, isfolder) oppure la forma con ordinamento di movies/tvshows ((url, li, isf), pos).
+	if item is None: return None
+	if isinstance(item, (list, tuple)) and item and isinstance(item[0], (list, tuple)):
+		item = item[0]
+	try: return item[0]
+	except: return None
+
 def _first_item_url(items):
 	# Extract the first item's plugin path from the list handed to add_items. Indexers use either the
 	# add_items tuple (url, listitem, isfolder) or the movies/tvshows custom-order shape ((url, li, isf), pos).
 	if not items: return None
-	first = items[0]
-	if isinstance(first, (list, tuple)) and first and isinstance(first[0], (list, tuple)):
-		first = first[0]
-	try: return first[0]
-	except: return None
+	return _item_url(items[0])
+
+# Ogni URL di elemento porta 'tmdb_id=' (URL_PLAY, URL_OPTIONS, URL_MARK... in tutti gli indexer),
+# quindi gli id si estraggono senza dover conoscere la forma dei dati di ciascuno.
+_TMDB_IN_URL = re_compile(r'[?&]tmdb_id=(\d+)')
+
+def _publish_ids(key, items):
+	# Pubblica gli id contenuti da questo widget, per la ricarica mirata. Best-effort: se fallisce,
+	# refresh_containers_for_ids non riesce a escludere il widget e lo ricostruisce -- prudente, non rotto.
+	try:
+		from modules.kodi_utils import set_property
+		ids, seen = [], set()
+		for item in items or []:
+			url = _item_url(item)
+			if not url: continue
+			m = _TMDB_IN_URL.search(url)
+			if not m: continue
+			tid = m.group(1)
+			if tid in seen: continue
+			seen.add(tid); ids.append(tid)
+		set_property(IDS_PROP % key, ','.join(ids))
+	except: pass
 
 def _register(key, headhash):
 	# Append this build's key to the registry (newest last, no duplicates) and prune the oldest
@@ -364,10 +420,12 @@ def _register(key, headhash):
 		clear_property(HASMORE_PROP % old_key)
 		clear_property(BUILT_PROP % old_key)
 		clear_property(LOADING_PROP % old_key)
+		clear_property(IDS_PROP % old_key)
+		clear_property(ACTION_PROP % old_key)
 		if old_head: clear_property(HEAD_PROP % old_head)
 	set_property(REGISTRY_PROP, ','.join(entries))
 
-def set_head(key, items):
+def set_head(key, items, action=None):
 	# Final step of an interactive build (called right after add_items). Publishes:
 	#  - the first item's path -> widget key, so the watcher can identify the focused container;
 	#  - the count of items actually shown (BUILT_PROP), the watcher's catch-up gate;
@@ -381,8 +439,63 @@ def set_head(key, items):
 	if headhash:
 		set_property(HEAD_PROP % headhash, key)
 	clear_property(LOADING_PROP % key)
+	_publish_ids(key, items)
+	if action: set_property(ACTION_PROP % key, str(action))
 	_register(key, headhash)
 	log('set_head key=%s built=%s first_url=%s' % (short(key), count, (url[:90] if url else '-')))
+
+def refresh_containers_for_ids(ids, actions=()):
+	"""Ricostruisce SOLO i contenitori toccati da questi tmdb_id. Torna quanti ne ha ricaricati.
+
+	La regola e' volutamente PRUDENTE: si salta un contenitore soltanto quando si riesce a dimostrare
+	che non c'entra -- cioe' lo si e' identificato E il suo elenco di id non contiene nessuno di
+	quelli cambiati. Tutto il resto viene ricaricato. Cosi' un widget che non passa dal paginatore
+	(continua a guardare non chiama set_head, quindi non ha ne' chiave ne' elenco) continua ad
+	aggiornarsi come prima, invece di restare fermo: e' proprio quello che DEVE cambiare a fine film.
+
+	Torna 0 se non identifica nessun contenitore Fen Light: il chiamante ricade sul refresh globale,
+	quindi il comportamento non puo' essere peggiore di quello di oggi.
+	"""
+	from modules.kodi_utils import get_property, set_property, get_infolabel, getCurrentWindowId
+	# Dentro la finestra Video (10025) i controlli 500-528 NON sono widget: sono le viste della
+	# finestra stessa (Includes_Views.xml: <views>500,501,...,521,...,528</views>). Il token delle
+	# pagine non le governa, quindi impostarlo non ricarica nulla -- ma conterebbe come successo e
+	# impedirebbe il fallback globale, che li' e' l'unico modo di rileggere la cartella aperta.
+	# Finora il difetto restava latente perche' l'intervallo si ferma a 520 e la vista in uso era la
+	# 521: con una vista fra 500 e 520 il refresh sarebbe sparito nel nulla in silenzio.
+	try:
+		if getCurrentWindowId() == 10025: return 0
+	except: pass
+	wanted = set(str(i) for i in (ids or []) if i)
+	# Le azioni sono la scorciatoia per i widget che cambiano COMPOSIZIONE invece che stato: vanno
+	# ricostruiti per quello che SONO, non per quello che contengono.
+	wanted_actions = set(str(a) for a in (actions or ()) if a)
+	if not wanted and not wanted_actions: return 0
+	from time import time
+	nonce = '%d' % (time() * 1000)
+	seen_any, hit, skipped = False, 0, 0
+	for cid in WIDGET_CONTAINER_IDS:
+		first_url = get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % cid)
+		if not first_url or 'plugin.video.fenlight' not in first_url: continue
+		seen_any = True
+		key = head_lookup(first_url)
+		if key and get_property(ACTION_PROP % key) not in wanted_actions:
+			stored = get_property(IDS_PROP % key)
+			# stored vuota = elenco mai pubblicato: non si puo' dimostrare niente, quindi si ricarica.
+			if stored and not wanted.intersection(stored.split(',')):
+				skipped += 1
+				continue
+		# Il token vive nel <content> come $INFO[], quindi cambiarne il valore ricarica SOLO questo
+		# contenitore. Il numero di pagine va conservato tale e quale -- e' quello che l'utente vede --
+		# e il nonce si accoda come parametro a parte: 'reload' e' in _VOLATILE_PARAMS, quindi non
+		# entra nella chiave del widget e la paginazione non lo nota.
+		pages = (get_property(CTL_PAGES_PROP % cid) or '').split('&')[0]
+		if not pages: pages = str(raw_pages(key, initial_batch())) if key else str(initial_batch())
+		set_property(CTL_PAGES_PROP % cid, '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
+		hit += 1
+	log('refresh_for_ids ids=%s azioni=%s contenitori=%s ricaricati=%s saltati=%s' %
+		(len(wanted), len(wanted_actions), 'trovati' if seen_any else 'NESSUNO', hit, skipped))
+	return hit
 
 def head_lookup(first_url):
 	# Watcher side: resolve the focused container's first-item path back to its widget key.

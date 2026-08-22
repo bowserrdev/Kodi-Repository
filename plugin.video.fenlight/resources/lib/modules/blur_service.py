@@ -155,7 +155,11 @@ class BlurService:
 		_cleanup()
 		while not monitor.abortRequested():
 			if wait_for_abort(0.3): break
-			if is_playing() or home_window.getProperty(pause_string) == 'true': continue
+			# In riproduzione il ciclo rallenta a un giro al secondo invece di 3,3: non fa lavoro utile
+			# comunque, e ogni risveglio prende il GIL condiviso dell'interprete incorporato.
+			if is_playing():
+				wait_for_abort(0.7); continue
+			if home_window.getProperty(pause_string) == 'true': continue
 			try: dlg_id = xbmcgui.getCurrentWindowDialogId()
 			except: dlg_id = 9999
 			in_dialog = (dlg_id != 9999)
