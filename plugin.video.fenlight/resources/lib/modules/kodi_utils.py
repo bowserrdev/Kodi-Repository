@@ -118,8 +118,28 @@ def set_content(handle, content):
 def set_category(handle, label):
 	setCategory(handle, label)
 
+# Istante in cui l'ULTIMA cartella Fen Light ha finito di costruirsi, chiunque l'abbia chiesta. Serve
+# a una domanda sola, ed e' quella che decide il doppione post-riproduzione: uscendo dal player, Kodi
+# rilegge da sola i DirectoryProvider della finestra che torna in primo piano? Se si', ordinare anche
+# la nostra ricarica e' lavoro doppio. Il timbro sta in una proprieta' di finestra, quindi lo vedono
+# anche gli altri interpreti: ogni costruzione di widget e' un processo Python a se'.
+LAST_BUILD_PROP = 'fenlight.lastbuild'
+
 def end_directory(handle, cacheToDisc=True):
+	try:
+		# Solo le costruzioni ESTERNE, cioe' i widget della skin. Timbrare anche la navigazione interna
+		# darebbe un falso positivo evidente: chiudere il player e mettersi subito a sfogliare una
+		# lista verrebbe scambiato per "Kodi ha gia' ricostruito i widget", e il refresh non
+		# arriverebbe mai.
+		if external():
+			from time import time
+			set_property(LAST_BUILD_PROP, str(time()))
+	except: pass
 	endOfDirectory(handle, cacheToDisc=cacheToDisc)
+
+def directory_built_since(since_ts):
+	try: return float(get_property(LAST_BUILD_PROP) or 0) > float(since_ts or 0)
+	except: return False
 
 def set_view_mode(view_type, content='files', is_external=None):
 	if not get_property('fenlight.use_viewtypes') == 'true': return
@@ -297,6 +317,7 @@ def playback_active():
 def _defer_refresh_if_playing(kind):
 	if not playback_active(): return False
 	set_property(PENDING_REFRESH_PROP, kind)
+	logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), riproduzione in corso' % kind)
 	return True
 
 # Istante dell'ultima ricostruzione globale effettivamente eseguita. Serve a chi puo' innescarne una
@@ -315,6 +336,28 @@ REFRESH_COALESCE_SECONDS = 5
 # l'avanzamento ogni ~4 s, la 1a passava, la 2a veniva saltata, la 3a passava... perche' una richiesta
 # saltata non timbra l'orologio e la successiva si misurava dall'ultima ESEGUITA.
 LAST_REFRESH_SCOPE_PROP = 'fenlight.refresh.last.scope'
+
+# I widget leggono 'fenlight.pg.refresh' / 'fenlight.refresh_widgets' per capire che questa e' una
+# ricostruzione IN CORSO e conservare le pagine gia' espanse. Finora il segnale si teneva alzato con
+# sleep(2000) DENTRO l'invocazione del plugin, e la cosa era sbagliata due volte: teneva vivo un
+# interprete Python per due secondi a non fare nulla -- su un dispositivo dove avviarne uno e' gia'
+# caro e i processi contendono -- ed era comunque troppo corto, perche' sulla stick fra l'ordine di
+# ricarica e la prima costruzione passano ELEVEN secondi (log 22/08: 23:15:09.240 -> 23:15:20.219),
+# quindi la build leggeva il segnale gia' spento. Ora si scrive una SCADENZA e si esce subito: a
+# spegnerlo pensa WidgetRefresher, che gira gia' ogni 10 s. L'interprete si libera e la finestra
+# utile si allunga invece di accorciarsi.
+REFRESH_FLAG_UNTIL_PROP = 'fenlight.refresh.flag.until'
+REFRESH_FLAG_SECONDS = 20
+
+def hold_refresh_flag(name):
+	from time import time
+	set_property(name, 'true')
+	set_property(REFRESH_FLAG_UNTIL_PROP, str(time() + REFRESH_FLAG_SECONDS))
+
+def refresh_flag_expired():
+	from time import time
+	try: return time() >= float(get_property(REFRESH_FLAG_UNTIL_PROP) or 0)
+	except: return True
 
 def _scope_items(ids, actions=()):
 	# Le azioni si marcano con '@' per non confonderle con gli id: senza il prefisso un'azione e un
@@ -368,7 +411,7 @@ def kodi_refresh(coalesce=True):
 	if coalesce and age < REFRESH_COALESCE_SECONDS and get_property(LAST_REFRESH_SCOPE_PROP) == '*':
 		logger('Fen Light', 'kodi_refresh accorpato: ricostruzione globale %.2fs fa' % age)
 		return
-	set_property('fenlight.pg.refresh', 'true')
+	hold_refresh_flag('fenlight.pg.refresh')
 	# NOTA (lotto 43): qui era stato messo Container.Refresh quando la finestra e' la Video, per non
 	# perdere il fuoco a fine episodio. Ritirato: Container.Refresh ricarica SOLO la cartella aperta,
 	# mentre le cartelle padre restano quelle in cache -- in finestra Video end_directory usa
@@ -377,9 +420,8 @@ def kodi_refresh(coalesce=True):
 	# correttezza. Il fuoco resta un problema aperto, da risolvere conservando la posizione, non
 	# rinunciando all'aggiornamento.
 	_stamp_refresh('*')
+	logger('Fen Light', 'DIAG refresh: GLOBALE (UpdateLibrary) | finestra=%s' % getCurrentWindowId())
 	execute_builtin('UpdateLibrary(video,special://skin/foo)')
-	sleep(2000)
-	clear_property('fenlight.pg.refresh')
 
 def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# Ricarica MIRATA: ricostruisce i soli contenitori che contengono uno degli id cambiati -- piu'
@@ -397,24 +439,39 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	if coalesce and age < REFRESH_COALESCE_SECONDS and _refresh_covered_by_last(ids, actions):
 		logger('Fen Light', 'refresh mirato accorpato: gli stessi id ricostruiti %.2fs fa' % age)
 		return
+	# Dentro la finestra Video (10025) la lista aperta NON e' un widget: e' il contenitore della
+	# finestra, e il token delle pagine non lo governa. Finora paginator tornava 0 e QUI si ricadeva
+	# sul globale, cioe' UpdateLibrary: marcare un episodio stando dentro la serie ricostruiva ogni
+	# widget video della skin, invisibili compresi. Nel log della stick del 22/08 alle 23:16:29 si
+	# legge 'nessun contenitore identificato, si ricostruisce tutto' seguito dallo scan globale: e' il
+	# caso in cui l'utente se ne accorge di piu' ed era anche il piu' costoso di tutti.
+	# Container.Refresh ricarica SOLO la cartella aperta -- esattamente quella che si sta guardando --
+	# e ne conserva la posizione, quindi rimedia anche al fuoco perso. Le cartelle padre non le tocca:
+	# per quelle vedi cacheToDisc in seasons.py/episodes.py, ora False in finestra Video, cosi'
+	# tornando indietro Kodi le rilegge invece di servirle dalla cache (era il difetto del lotto 43,
+	# che aveva fatto ritirare Container.Refresh la prima volta).
+	if getCurrentWindowId() == 10025:
+		_stamp_refresh(','.join(sorted(_scope_items(ids, actions))))
+		logger('Fen Light', 'DIAG refresh: MIRATO finestra Video (Container.Refresh sulla lista aperta) | id=%s azioni=%s' % (len(ids or []), len(actions or ())))
+		execute_builtin('Container.Refresh')
+		return
 	# Stesso segnale che alza refresh_widgets(): i widget 'random' lo leggono per riestrarre
 	# (random_lists.py:84 e :270). Va tenuto o cambierebbe il loro comportamento di riflesso.
-	set_property('fenlight.refresh_widgets', 'true')
+	hold_refresh_flag('fenlight.refresh_widgets')
 	try:
 		from modules import paginator
 		hit = paginator.refresh_containers_for_ids(ids, actions)
 	except: hit = 0
 	if not hit:
-		logger('Fen Light', 'refresh mirato: nessun contenitore identificato, si ricostruisce tutto')
+		logger('Fen Light', 'DIAG refresh: nessun contenitore identificato, si ricade sul GLOBALE | id=%s azioni=%s finestra=%s'
+				% (len(ids or []), len(actions or ()), getCurrentWindowId()))
 		kodi_refresh(coalesce)
-		clear_property('fenlight.refresh_widgets')
 		return
 	# Conta come ricostruzione ai fini dell'accorpamento: senza questo, il monitor Trakt sparerebbe
 	# comunque il globale un secondo dopo per lo stesso evento e il lavoro mirato sarebbe sprecato.
 	_stamp_refresh(','.join(sorted(_scope_items(ids, actions))))
-	logger('Fen Light', 'refresh mirato: %s contenitori ricaricati' % hit)
-	sleep(2000)
-	clear_property('fenlight.refresh_widgets')
+	logger('Fen Light', 'DIAG refresh: MIRATO %s contenitori ricaricati | id=%s azioni=%s finestra=%s'
+			% (hit, len(ids or []), len(actions or ()), getCurrentWindowId()))
 
 def refresh_widgets(show_notification='false', coalesce=True):
 	# Due padroni: la voce di menu "Aggiorna widget" (comando esplicito dell'utente, da eseguire
@@ -423,12 +480,10 @@ def refresh_widgets(show_notification='false', coalesce=True):
 	# aggiornamento sarebbe il caso peggiore possibile: l'utente ha chiesto proprio quello.
 	if _defer_refresh_if_playing('refresh_widgets'): return
 	clear_property(PENDING_REFRESH_PROP)
-	set_property('fenlight.refresh_widgets', 'true')
+	hold_refresh_flag('fenlight.refresh_widgets')
 	sleep(250)
 	run_plugin({'mode': 'kodi_refresh', 'coalesce': 'true' if coalesce else 'false'}, block=True)
 	if show_notification == 'true': notification('Widgets Refreshed', 2500)
-	sleep(5000)
-	clear_property('fenlight.refresh_widgets')
 
 def run_plugin(params, block=False):
 	if isinstance(params, dict): params = build_url(params)

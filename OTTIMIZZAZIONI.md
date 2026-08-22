@@ -5461,3 +5461,241 @@ doppione arrivato a 20 ms di distanza.
 4. Controllare dall'app Trakt che lo stato arrivi comunque.
 5. Cambiare qualcosa **dal telefono** e verificare che il badge compaia: e' la via incrementale, che
    non deve essere stata toccata.
+
+---
+
+## Lotto 46 bis — Verifica sulla stick: il rebuild Trakt e' chiuso, ne restano due
+
+Log stick del 22/08 23:12-23:17. La correzione del lotto 46 **funziona**, due volte:
+
+```
+23:14:08.385  rebuild saltato: la modifica e' nostra ed e' gia' applicata in locale
+23:16:47.427  rebuild saltato: la modifica e' nostra ed e' gia' applicata in locale
+```
+
+Zero `watched episodes rebuild` in tutta la sessione. Confermato anche l'accorpamento col monitor
+(`refresh saltato, interfaccia ricostruita 0.0s / 17.8s / 18.6s / 29.0s fa`, quattro volte).
+
+E le liste di navigazione sono ormai gratis: `seasons Furious | 1 elemento | totale 0.03s / 0.04s /
+0.10s`, `episodes Season 1 | 8 elementi | totale 0.03s / 0.05s`. **Entrare in una serie non e' piu'
+il problema.** Il problema e' tutto nella tempesta di widget.
+
+Ma la latenza e' **peggiorata**: `+17422, +18160, +27545, +29068, +29270 ms da CloseFile` contro i
+`+8183` della sessione precedente. Il log dice perche', e sono tre cose distinte.
+
+---
+
+## Lotto 47 — Cinque cause, tre delle quali nostre
+
+### 47.1 — La guardia sulla finestra 10025 trasformava il mirato in globale (regressione mia)
+
+```
+23:16:29.889  refresh mirato: nessun contenitore identificato, si ricostruisce tutto
+23:16:30.041  VideoInfoScanner: Starting scan ..
+```
+
+L'utente era **dentro la lista episodi** (MyVideoNav caricata alle 23:16:11). La guardia del lotto
+39 bis -- giusta in se': nella finestra Video i controlli 500-528 sono le viste, non i widget --
+restituiva `0`, e il chiamante interpretava lo zero come «non ho trovato niente» e ripiegava su
+`UpdateLibrary`, cioe' **la ricostruzione di ogni widget video della skin, invisibili compresi**.
+
+Fuori da quella finestra il mirato funzionava (`refresh mirato: 1 contenitori`, `2 contenitori`).
+Dentro, cioe' **proprio nel caso in cui l'utente guarda la lista che deve cambiare**, si faceva la
+cosa piu' costosa possibile. E' questa la causa principale del peggioramento da +8 a +29 secondi.
+
+**Corretto**: in finestra 10025 si esegue `Container.Refresh` sulla cartella aperta e **non** si
+ripiega sul globale. `Container.Refresh` ricarica solo la lista visibile e ne conserva la posizione,
+quindi rimedia anche al fuoco perso.
+
+Resta il difetto che nel lotto 43 aveva fatto ritirare `Container.Refresh`: le cartelle padre
+(stagioni, serie) erano servite dalla cache su disco e mostravano un badge vecchio. Ora e' risolto
+alla radice: `cacheToDisc=False` per seasons ed episodes anche in finestra Video. Il prezzo e' una
+rilettura del plugin al ritorno, e ora sappiamo quanto costa perche' e' **misurata**: 30-100 ms.
+Era un baratto sensato quando quelle liste erano lente; oggi la cache si paga solo in correttezza.
+
+### 47.2 — Ogni widget veniva costruito due volte dopo la riproduzione
+
+```
+23:15:23.246  mdblist 101881 | 54 elementi | +17422 ms da CloseFile
+23:15:23.983  mdblist  91378 | 48 elementi | +18160 ms da CloseFile
+23:15:33.368  mdblist  91378 | 48 elementi | +27545 ms da CloseFile   <- la stessa
+23:15:35.095  mdblist 101881 | 54 elementi | +29270 ms da CloseFile   <- la stessa
+```
+
+Stessi id, stesso numero di elementi, a ~10 secondi di distanza. Spiegazione coerente con il
+`CDirectoryProvider`: alla chiusura del player la finestra sotto torna in primo piano e **Kodi
+rilegge i widget da sola**; poi arriva anche il nostro refresh esplicito.
+
+**Corretto**: il refresh post-riproduzione ha ora **un padrone solo** (`run_media_progress`, che
+azzera subito `PENDING_REFRESH_PROP` cosi' ne' `flush_pending_refresh` ne' la rete di sicurezza di
+`WidgetRefresher` possono partire in parallelo) e **cede il passo**: `kodi_rebuilt_by_itself()`
+attende fino a 20 s che compaia una ricostruzione spontanea e, se compare, non ordina la propria. La
+riga di visto e' scritta in locale *prima* di tutto questo, quindi la rilettura di Kodi legge gia' il
+dato giusto.
+
+Attendere non costa una tempesta: e' un thread fermo in un interprete gia' vivo, contro tre-cinque
+ricostruzioni da 2,5-4 s l'una.
+
+### 47.3 — La sincronizzazione dei film non aveva alcuna via incrementale
+
+```
+23:16:13.871  sync/watched/movies: 599 elementi su 6 pagine
+23:16:14.197  watched movies: 599 da Trakt, 599 in cache, 0 scartati
+```
+
+**599 su 599 gia' in cache, 0 scartati**: sei pagine scaricate per non cambiare una riga, e per
+giunta mentre la stessa CPU costruiva la lista stagioni. Gli episodi erano stati corretti nel lotto
+46; i film erano rimasti l'unico percorso che si autoinnescava il rebuild integrale.
+
+**Corretto** con la stessa guardia. E si e' chiuso un buco che il lotto 46 aveva lasciato anche sul
+lato episodi: il timbro `fenlight.trakt.self_mark` ora porta **anche il tipo**. Con il solo istante,
+marcare un episodio zittiva per due minuti anche il controllo sui film, e una modifica ai film
+arrivata da un altro dispositivo in quella finestra sarebbe stata **persa per sempre** -- perche'
+`reset_activity` aveva gia' registrato la nuova attivita' come vista.
+
+### 47.4 — La contesa, misurata al suo peggio: il codice per elemento non e' lento
+
+| misura | a riposo | durante la tempesta | fattore |
+|---|---|---|---|
+| `addContextMenuItems(7 voci)` | 0,13 ms | **9,49 ms** | 73x |
+| `setProperty` (per chiave) | 0,016 ms | **1,422 ms** | 89x |
+| `prep+cm` (per elemento) | ~2 ms | **216 ms** (1296 ms per 6 elementi) | ~100x |
+
+**La macchina e' satura, non il codice.** Ottimizzare ancora i setter non sposta niente: l'unica leva
+e' fare *meno costruzioni*. Questo chiude definitivamente quel filone.
+
+Conseguenza operativa: `PERF_SELFTEST` **spento**. Girava a ogni costruzione e costava ~100 ms,
+pagati anche in piena tempesta, cioe' proprio quando la macchina non ne aveva. Le risposte che doveva
+dare le ha date.
+
+### 47.5 — Lo `sleep(2000)` era sbagliato due volte
+
+`refresh mirato` -> `CPythonInvoker waiting on thread` misura 2,002s / 2,017s / 2,065s tre volte nel
+log: lo sleep era esatto. Ma serviva a tenere alzato il segnale «ricostruzione in corso» che i widget
+leggono per conservare le pagine espanse, e:
+
+- teneva vivo **un interprete Python per due secondi a non fare nulla**, su un dispositivo dove
+  avviarne uno e' gia' caro e i processi contendono;
+- era comunque **troppo corto**: fra l'ordine di ricarica (23:15:09.240) e la prima costruzione
+  (23:15:20.219) passano **11 secondi**, quindi la build leggeva il segnale gia' spento.
+
+**Corretto**: si scrive una scadenza (`REFRESH_FLAG_SECONDS = 20`) e si esce subito. A spegnere il
+segnale pensa `WidgetRefresher`, che gira gia' ogni 10 s. L'interprete si libera **e** la finestra
+utile si allunga invece di accorciarsi.
+
+### 47.6 — Il cricchetto delle pagine ha finalmente un tetto
+
+48 -> 62 (3 pagine) -> 87 elementi (4 pagine) nel giro di un minuto, e la ricostruzione da 87 arriva
+a **4,35s**. Ogni paginazione allargava per sempre cio' che ogni ricostruzione successiva doveva
+ricostruire, e non tornava mai indietro.
+
+`fenlight.paginate.max_pages`, default **8**. Raggiunto il tetto il widget smette di *allungarsi*:
+nessuna lista si accorcia mai e la posizione non salta. Il tetto agisce su `has_more` in `set_state`,
+non su `raw_pages` -- applicarlo li' avrebbe accorciato una lista gia' mostrata a ogni ricostruzione,
+esattamente cio' che il paginatore esiste per evitare.
+
+### 47.7 — La tempesta arriva anche all'APERTURA del player (non corretto, diagnosticato)
+
+```
+23:14:26.175  VideoPlayer::OpenFile
+23:14:37.752  mdblist 91378 | 48 elementi | totale 3.10s
+23:14:43.886  mdblist  2194 | 42 elementi | totale 0.94s
+```
+
+Nessun `+N ms da CloseFile`, nessun `refresh mirato` prima: **non e' roba nostra**. Diciassette
+secondi di CPU spesi a ricostruire widget invisibili mentre il decoder video parte, su una Mali-450
+con 1 GB. Poco dopo: `ReleaseOutputBuffer error in render(false)`, `CVideoPlayerAudio: stream stalled`.
+
+Il sospetto e' il cambio di frequenza di aggiornamento: `SetNativeResolution: 8: ...@23.976025` alle
+23:14:28.886, `GLES: Maximum texture width` alle 23:14:30.644 -- il contesto GL viene ricreato e la
+finestra sotto torna attiva. **Non si puo' correggere dal plugin**: e' Kodi che ci chiama e noi
+dobbiamo rispondere. La diagnostica ora lo marca (`DURANTE RIPRODUZIONE`) e la prova decisiva e'
+provare con l'adattamento della frequenza disattivato.
+
+---
+
+## Lotto 47 bis — La diagnostica: adesso il log dice PERCHE', non solo CHE COSA
+
+Il difetto di fondo delle ultime sessioni: il log diceva che una lista era stata ricostruita, mai
+chi l'avesse chiesta. Con due ondate dopo ogni riproduzione, ogni ipotesi restava indimostrabile.
+
+**`FenLight PERF AVVIO`** (nuovo, in `fenlight.py`, prima degli import) — gli 11 secondi ciechi:
+
+```
+avvio interprete ~N ms + import N ms + esecuzione N ms = N ms | <query>
+```
+
+`avvio` e' la CPU gia' bruciata prima della prima riga: il costo dell'interprete che parte, l'unica
+parte non strumentabile dall'interno. Con `reuselanguageinvoker=false` ogni invocazione reimporta
+tutto l'albero, quindi l'import e' il sospetto principale -- ma finora era **solo** un sospetto.
+
+**`causa=`** su ogni riga `PERF` di costruzione:
+
+| valore | significato |
+|---|---|
+| `ricarica-mirata` | il nonce e' nel path: l'abbiamo ordinata noi |
+| `paginazione` | l'utente ha scorso |
+| `apertura/re-show` | Kodi rilegge da sola il DirectoryProvider |
+
+**`DOPPIONE: stessa lista gia' costruita N ms fa (causa X)`** — riconosce le ricostruzioni ripetute
+entro 45 s. Registro unico con tetto di 12 voci (~330 caratteri), non una proprieta' per chiave:
+le chiavi cambiano a ogni ricerca e avrebbero lasciato rifiuti nelle sessioni lunghe.
+
+**`DURANTE RIPRODUZIONE`** — costruzione mentre il video va, cioe' CPU rubata alla decodifica.
+
+**`DIAG refresh:`** — la catena decisionale completa, una riga per decisione:
+`MIRATO N contenitori` / `MIRATO finestra Video (Container.Refresh)` / `GLOBALE (UpdateLibrary)` /
+`nessun contenitore identificato, si ricade sul GLOBALE` / `RIMANDATO, riproduzione in corso` /
+`NON ordinato, Kodi ha gia' ricostruito da sola N s dopo la chiusura`.
+
+**`DIAG paginazione: tetto di N pagine raggiunto`**.
+
+Tutto a livello `info`: nessun bisogno del log di debug.
+
+### Come leggere il prossimo log, in ordine
+
+1. `grep "DIAG refresh"` — dev'essere **`MIRATO`**. Ogni `GLOBALE` che non arrivi dal monitor Trakt
+   e' un caso da capire.
+2. `grep "DOPPIONE"` — **deve sparire**. Se resta, la seconda ondata non era la nostra e
+   `kodi_rebuilt_by_itself` sta guardando il segnale sbagliato.
+3. `grep "PERF AVVIO"` — se `import` domina, il prossimo lotto e' l'albero degli import; se domina
+   `avvio interprete`, non c'e' niente da fare in Python.
+4. `grep "da CloseFile"` — il numero che dice se abbiamo vinto. Da +29 secondi a quanto?
+5. `grep "rebuild saltato"` — deve comparire sia per `watched movies` sia per `watched episodes`.
+6. `grep "DURANTE RIPRODUZIONE"` — quante costruzioni rubano CPU al decoder.
+
+### Da verificare sul dispositivo
+
+1. **Segna un episodio come visto stando dentro la serie**: nel log
+   `DIAG refresh: MIRATO finestra Video (Container.Refresh sulla lista aperta)`, e **nessuno**
+   `VideoInfoScanner: Starting scan`. Il badge deve cambiare **e il fuoco restare dov'era**.
+2. **Torna indietro alle stagioni**: il badge «episodi rimanenti» dev'essere aggiornato (e' il
+   difetto del lotto 43, che ora dipende da `cacheToDisc=False`). Se tornare indietro e' diventato
+   *lento*, il baratto non regge e va rivisto: e' l'unica assunzione non ancora misurata.
+3. **Chiudi una riproduzione**: cercare `DOPPIONE`. Zero occorrenze = il doppione e' chiuso.
+   Confrontare `+N ms da CloseFile` con i +17/+29 s di partenza.
+4. **Segna un film come visto**: `watched movies: rebuild saltato`, non `599 elementi su 6 pagine`.
+5. **Modifica qualcosa dal telefono** (un film *e* un episodio): il badge deve comparire lo stesso.
+   E' la via incrementale, che non dev'essere stata toccata.
+6. **Pagina un widget a fondo**: dopo 8 pagine dev'esserci
+   `DIAG paginazione: tetto di 8 pagine raggiunto`.
+
+### Nota: l'avviso «e' necessario installare un addon: Fen Light»
+
+Non e' un difetto del codice. Nel log e' visibile la causa esatta:
+
+```
+23:12:43.126  service.py: waiting on thread          <- i servizi si fermano
+23:12:47.943  FindAddon: plugin.video.fenlight v3.0.15 installed
+23:12:48.381  error: Unable to find plugin plugin.video.fenlight
+23:12:50.146  FindAddon: repository.bowserr v1.1.16 installed
+```
+
+Kodi stava **aggiornando l'addon** da `repository.bowserr` (3.0.14 -> 3.0.15). Mentre sostituisce
+l'addon lo deregistra e lo riregistra; ogni richiesta `plugin://` che cade in quella finestra non si
+risolve, e Kodi propone di installarlo. Succede «generalmente all'apertura» perche' il controllo
+aggiornamenti parte poco dopo l'avvio, cioe' **in mezzo alla raffica di widget della home** -- e
+perche' su questo repo la versione viene incrementata a ogni sviluppo.
+
+Rimedio: Impostazioni -> Sistema -> Add-on -> Aggiornamenti = **«Notifica»** invece di «Installa
+automaticamente». Non e' dannoso: a aggiornamento finito tutto riprende.

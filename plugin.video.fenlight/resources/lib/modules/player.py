@@ -230,6 +230,7 @@ class FenLightPlayer(xbmc_player):
 			# film. Solo i contenitori che lo contengono vanno ricostruiti; per gli altri non e' cambiato
 			# niente. Se il sondaggio non identifica nessun contenitore, kodi_refresh_ids ricade da sola
 			# sul globale, quindi questo ramo non puo' comportarsi peggio di quello di prima.
+			if self.kodi_rebuilt_by_itself(): return
 			tmdb_id = str(getattr(self, 'tmdb_id', '') or '')
 			# Mirato per ENTRAMBI i tipi di richiesta: kodi_refresh_ids alza da sola
 			# fenlight.refresh_widgets, quindi la distinzione che c'era qui non serve piu'. Con il ramo
@@ -239,17 +240,55 @@ class FenLightPlayer(xbmc_player):
 			ku.run_plugin({'mode': 'refresh_widgets' if kind == 'refresh_widgets' else 'kodi_refresh'})
 		except: pass
 
+	# Quanto si aspetta, uscendo dal player, per vedere se Kodi ricostruisce da sola. Sulla stick la
+	# sua rilettura arriva 15-17 s dopo la chiusura (log 22/08: CloseFile 23:15:04.818, prima
+	# costruzione 23:15:20.219), quindi una finestra corta non la vedrebbe mai e continueremmo a
+	# ordinare la seconda ondata. Attendere non costa una tempesta: e' un thread fermo dentro un
+	# interprete gia' vivo, contro tre-cinque ricostruzioni da 2.5-4 s l'una.
+	REBUILD_WAIT_SECONDS = 20
+
+	def kodi_rebuilt_by_itself(self):
+		"""Vero se Kodi ha gia' riletto le cartelle per conto suo dopo la chiusura del player.
+
+		Uscendo dal player la finestra sottostante torna in primo piano e Kodi rilegge i suoi
+		DirectoryProvider senza che nessuno glielo chieda. Nel log della stick del 22/08 questo e la
+		NOSTRA ricarica mirata producevano due ondate distinte: la stessa lista (mdblist 91378, 48
+		elementi) costruita a +18160 ms dalla chiusura e di NUOVO a +27545 ms. Ventiquattro secondi di
+		ricostruzioni per un badge.
+		Se Kodi ci arriva prima, la nostra ricarica non aggiunge niente: la riga di visto e' gia'
+		scritta in locale PRIMA di tutto questo, quindi la sua rilettura legge gia' il dato giusto.
+		"""
+		try:
+			from time import time as _now
+			close_ts = ku.get_property('fenlight.perf.closefile') or 0
+			if not close_ts: return False
+			deadline = _now() + self.REBUILD_WAIT_SECONDS
+			while _now() < deadline:
+				if ku.directory_built_since(close_ts):
+					ku.logger('Fen Light', 'DIAG refresh: NON ordinato, Kodi ha gia' + "'" + ' ricostruito da sola %.1fs dopo la chiusura'
+								% (float(ku.get_property(ku.LAST_BUILD_PROP) or 0) - float(close_ts)))
+					return True
+				ku.sleep(500)
+			ku.logger('Fen Light', 'DIAG refresh: nessuna ricostruzione spontanea entro %ss, la ordiniamo noi' % self.REBUILD_WAIT_SECONDS)
+		except: pass
+		return False
+
 	def run_media_progress(self, function, params, do_refresh=False):
 		try:
 			function(params)
 			if do_refresh:
 				for _b1, _b2 in ((True, True), (True, False), (False, True), (False, False)):
 					ku.clear_property('1_%s_%s_%s_watched' % (self.media_type, _b1, _b2))
-				ku.sleep(2000)
+				# Da qui il refresh post-riproduzione ha UN padrone solo: questo. La richiesta rimandata
+				# si azzera subito, cosi' ne' flush_pending_refresh ne' la rete di sicurezza di
+				# WidgetRefresher (che ordinerebbe un GLOBALE) possono partire mentre stiamo decidendo.
+				ku.clear_property(ku.PENDING_REFRESH_PROP)
+				if self.kodi_rebuilt_by_itself(): return
 				# QUESTO e' il refresh che in pratica ricostruisce la home a fine film -- non
 				# flush_pending_refresh, che al proprio risveglio trova gia' azzerata la proprieta' e non fa
 				# nulla. Qui sappiamo esattamente cosa e' cambiato: il titolo appena visto. Se il sondaggio
 				# dei contenitori non identifica nulla, kodi_refresh_ids ricade da sola sul globale.
+				# Ci si arriva solo se Kodi NON ha ricostruito da sola: vedi kodi_rebuilt_by_itself.
 				tmdb_id = str(getattr(self, 'tmdb_id', '') or '')
 				if tmdb_id: return ku.kodi_refresh_ids([tmdb_id])
 				ku.run_plugin({'mode': 'refresh_widgets'})

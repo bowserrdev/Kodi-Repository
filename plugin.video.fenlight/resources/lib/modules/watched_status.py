@@ -240,9 +240,14 @@ def _mark_on_trakt(args, cache_media_type, ep_map_for=None):
 		# Timbro per il monitor Trakt: questo cambiamento l'abbiamo fatto NOI e la riga locale e' gia'
 		# scritta. Senza, il monitor lo scambia per una modifica remota e ricostruisce l'intera
 		# cronologia -- 6 pagine e 1275 episodi, 4 secondi sul Mi Stick. Vedi trakt_watched_episodes.
+		# Il timbro porta anche il TIPO. Con il solo istante, marcare un episodio avrebbe zittito per
+		# due minuti anche il controllo sui film: se in quella finestra fosse arrivata una modifica ai
+		# film da un altro dispositivo, sarebbe stata saltata -- e persa per sempre, perche'
+		# reset_activity ha gia' registrato la nuova attivita' come vista. Il tipo elimina la
+		# sovrapposizione: ogni guardia riconosce solo le proprie marcature.
 		try:
 			from time import time as _now
-			kodi_utils.set_property('fenlight.trakt.self_mark', str(_now()))
+			kodi_utils.set_property('fenlight.trakt.self_mark', '%s|%s' % (_now(), cache_media_type))
 		except: pass
 	except: pass
 

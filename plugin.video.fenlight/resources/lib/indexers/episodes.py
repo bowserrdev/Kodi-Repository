@@ -170,7 +170,14 @@ def build_episode_list(params):
 	set_sort_method(handle, content_type)
 	set_content(handle, content_type)
 	set_category(handle, category_name)
-	end_directory(handle, cacheToDisc=False if is_external else True)
+	# cacheToDisc=False anche in finestra Video. Con la cache accesa, tornando indietro Kodi serviva
+	# la cartella dalla cache su disco invece di rileggerla, e il badge (episodi rimanenti, visto)
+	# restava vecchio: e' il difetto che nel lotto 43 aveva fatto ritirare Container.Refresh e
+	# costretto a ricostruire TUTTO. Il prezzo e' una rilettura del plugin al ritorno, e ora sappiamo
+	# quanto costa perche' e' misurata: 30-100 ms sulla stick (log 22/08, 'seasons Furious | totale
+	# 0.03s', 'episodes Season 1 | totale 0.05s'). Era un baratto sensato quando queste liste erano
+	# lente; oggi non lo e' piu', e paghiamo la cache in correttezza.
+	end_directory(handle, cacheToDisc=False)
 	set_view_mode(list_view, content_type, is_external)
 
 def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaired=False):
