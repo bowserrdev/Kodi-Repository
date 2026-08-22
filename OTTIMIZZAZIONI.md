@@ -5286,3 +5286,101 @@ tempo, `Container.Refresh`. **Prima la misura, poi la costante.**
 3. Con Trakt attivo, controllare che lo stato **arrivi comunque** su Trakt (l'app del telefono).
 4. Chiudere una riproduzione e leggere nel log la prima riga con `+N ms da CloseFile`: e' il numero
    che serve per decidere il nuovo valore del sonno.
+
+---
+
+## Lotto 45 — Il Mi Stick ribalta la diagnosi: non e' il sonno, e' Trakt
+
+Log della stick del 22/08, 12:49:12 - 12:57:52. La misura `+N ms da CloseFile` aggiunta nel lotto 44
+bis ha risposto subito, e la risposta non e' quella che ci aspettavamo.
+
+### Il numero
+
+| | Mac | **Mi Stick** |
+|---|---|---|
+| da `CloseFile` alla lista aggiornata | ~2,5 s | **10,6 - 12,0 s** |
+
+```
+12:54:14.521  seasons Conversazioni...  | +11511 ms da CloseFile
+12:54:14.977  episodes Season 1         | +11968 ms da CloseFile
+12:56:10.217  episodes Season 1         | +10656 ms da CloseFile
+12:56:11.158  seasons Sterling Point    | +11582 ms da CloseFile
+```
+
+### Dove vanno quei secondi
+
+```
+12:54:02.742  CloseFile
+12:54:05.103  refresh nostro                      <- +2,1 s: e' il sleep(2000), fa il suo dovere
+12:54:05.221  scan finito                         <- 41 ms
+12:54:09.886  Trakt: sync/watched/shows
+12:54:11.766  Trakt: watched episodes rebuild: 35 shows, 1286 plays su 6 pagine, 1274 episodi
+12:54:14.521  la lista finalmente si ricostruisce  <- +9,4 s DOPO il nostro refresh
+```
+
+**Il sonno non e' il problema.** Abbassarlo a 1000 ms recupererebbe 1 secondo su 11,5. La decisione
+presa al lotto 44 bis ("prima misuro, poi scelgo il numero") ha evitato di spendere lavoro sulla voce
+sbagliata: e' esattamente il caso per cui la misura serviva.
+
+### La causa: ogni marcatura scatena un rebuild completo della cronologia Trakt
+
+`trakt_watched_episodes` ha due strade: una **incrementale** (`watched episodes sync: N new plays
+added, no rebuild needed`) e un **rebuild completo** che scarica 6 pagine di cronologia e ricostruisce
+1274 episodi.
+
+**In tutta la sessione l'incrementale e' scattata UNA volta** (12:49:40, all'avvio). Tutte le altre
+volte -- 12:53:03, 12:54:11, 12:57:44 -- rebuild completo. Sulla stick costa 2-6 s di rete e CPU, e
+compete con la ricostruzione dell'interfaccia.
+
+Ironia: l'aver spostato Trakt in sfondo (lotto 44) ha tolto l'attesa dal percorso interattivo, ma il
+lavoro che quella chiamata scatena nel monitor e' rimasto tutto li'.
+
+**Non si indovina perche'.** Le tre ipotesi plausibili -- nessun play piu' recente (rimozioni), prima
+pagina tutta nuova, cronologia locale assente -- portano a correzioni diverse. Verificata e scartata
+una quarta (formati di data diversi fra Trakt e cache locale: `_make_row` salva `watched_at`
+verbatim, quindi il confronto e' omogeneo). Aggiunta una riga di log che stampa il motivo, l'ultimo
+timestamp locale e il numero di pagine.
+
+### Il problema del fuoco e' un SINTOMO, non un difetto a se'
+
+```
+12:54:02.742  CloseFile
+12:54:03.828  Control 521 in window 10025 has been asked to focus, but it can't
+12:54:14.521  la lista arriva
+```
+
+La skin chiede il fuoco **1,1 s dopo** la chiusura, quando il contenitore e' ancora vuoto: fallisce.
+Quando la lista arriva, dieci secondi dopo, la posizione e' persa e il fuoco finisce sul primo
+elemento. Stessa sequenza a 12:56:00.487 e 12:56:54.198.
+
+**Quindi non serve un meccanismo per conservare il fuoco: serve che la lista arrivi in tempo.**
+Chiudere la latenza chiude anche questo. Vale anche per "uscendo dalla serie il fuoco non e' sempre
+sulla serie": stesso contenitore, stessa corsa persa.
+
+### Due conferme collaterali
+
+**La contesa amplifica tutto.** Alle 12:54:14.977, con il rebuild Trakt in corso:
+
+```
+episodes Season 1 | 3 elementi | costruzione 355 ms
+FASI: setLabel 257ms (72%) + ctxmenu 77ms (22%)
+```
+
+**257 ms di `setLabel` per 3 elementi**, cioe' 85 ms per chiamata, contro gli 0-1 ms delle stesse
+liste a macchina scarica. Non e' il codice: e' il dispositivo occupato. Conferma con un esempio netto
+la varianza da concorrenza gia' registrata.
+
+**Il cricchetto non e' morto.** Widget da **250, 298 e 375 elementi**, e per uno di essi
+`RETE tvshows: 239 voci non in cache risolte in rete | 34097 ms (143 ms/voce)`: **34 secondi di rete
+per un solo widget.**
+
+### Ordine di lavoro rivisto
+
+1. **Il rebuild completo di Trakt a ogni marcatura** -- 2-6 s per volta sulla stick, e blocca l'interfaccia.
+2. **I widget da 250-375 elementi** e i 34 s di risoluzione in rete.
+3. Il `sleep(2000)`: recupera 1 s su 11,5. Ultimo.
+
+### Da fare al prossimo test
+
+Marcare un episodio come visto e uno come non visto, poi mandare il log. La riga nuova
+`rebuild completo, motivo: ...` dira' quale delle tre strade porta li', e da quella dipende la cura.
