@@ -860,6 +860,18 @@ def trakt_indicators_tv():
 			trakt_watched_cache.add_tvshow_watched(insert_list)
 			return logger('FenLight Trakt', 'watched episodes sync: %s new plays added, no rebuild needed' % len(insert_list))
 	# full rebuild: no stored history, plays were removed, or more new plays than a single page holds
+	# PERF: il rebuild completo scarica 6 pagine di cronologia e ricostruisce 1274 episodi. Sul Mi
+	# Stick costa 2-6 s di rete e CPU, e nel log del 22/08 e' partito a OGNI marcatura mentre la via
+	# incrementale e' scattata una volta sola in tutta la sessione. Qui si registra PERCHE' si e'
+	# finiti sul rebuild: senza questo dato la causa si puo' solo indovinare, e le tre ipotesi
+	# plausibili (nessun play nuovo / play rimossi / prima pagina tutta nuova) portano a correzioni
+	# diverse.
+	try:
+		if not last_synced: _why = 'nessuna cronologia locale'
+		elif not new_plays: _why = 'nessun play piu' + "'" + ' recente del piu' + "'" + ' recente locale (rimozioni?)'
+		else: _why = 'prima pagina tutta nuova (%s su %s)' % (len(new_plays), len(history))
+		logger('FenLight Trakt', 'rebuild completo, motivo: %s | ultimo locale=%s | pagine=%s' % (_why, last_synced, page_count))
+	except: pass
 	shows_info = {}
 	# Anche qui la chiamata era limitata alla prima pagina: oltre le 100 serie, gli episodi di quelle
 	# escluse venivano scartati dal filtro shows_info, pur essendo presenti nella cronologia.
