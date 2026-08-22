@@ -116,6 +116,19 @@ def lookahead_pages():
 	except: value = 1
 	return max(1, value)
 
+def max_pages():
+	# Tetto alle pagine che UN widget puo' accumulare. Il rapporto e' a cricchetto: ogni paginazione
+	# allarga per sempre cio' che OGNI ricostruzione successiva dovra' ricostruire, e non torna mai
+	# indietro. Nel log della stick del 22/08 lo si vede crescere 48 -> 62 -> 87 elementi nel giro di
+	# un minuto, con la ricostruzione da 87 arrivata a 4.35s -- e quel costo si paga poi a ogni
+	# riproduzione, a ogni marcatura, per tutta la sessione.
+	# Raggiunto il tetto il widget smette di ALLUNGARSI. Nessuna lista si accorcia mai e la posizione
+	# non salta: semplicemente non si carica altro. Sul valore si puo' discutere; sull'assenza
+	# di un limite no.
+	try: value = int(get_setting('fenlight.paginate.max_pages', '8'))
+	except: value = 8
+	return max(2, value)
+
 # Hard ceiling on the EXTRA raw pages a fill (see load_cumulative min_items) may fetch beyond the
 # requested count. A sparse query -- one whose results are mostly filtered out (server-side for text
 # search, post-build for advanced search) -- must not spin through dozens of TMDB pages chasing the
@@ -189,6 +202,72 @@ PERF = True
 # principale e' il sys.exit(1) che fenlight.py esegue a fine build dei widget.
 _INVOCATIONS = [0]
 
+# --- DIAGNOSTICA DELLA CAUSA (lotto 47) --------------------------------------------------------
+# Il log diceva CHE una lista era stata ricostruita, mai PERCHE'. Con due ondate di ricostruzioni
+# dopo ogni riproduzione (log stick 22/08: mdblist 91378 a +18160 ms e la STESSA a +27545 ms) non
+# c'era modo di distinguere le nostre -- ordinate dal token di ricarica mirata -- da quelle che Kodi
+# fa per conto suo quando la finestra torna in primo piano. Senza quella distinzione ogni ipotesi sul
+# doppione resta indimostrabile, e si finisce a correggere a caso.
+DIAG = True
+# Le ultime costruzioni, per riconoscere i doppioni. UNA proprieta' con un tetto di voci invece di una
+# per chiave: le chiavi cambiano a ogni ricerca e una proprieta' per chiave lascerebbe rifiuti nelle
+# sessioni lunghe (stesso difetto gia' corretto con REGISTRY_CAP).
+DIAG_BUILDS_PROP = 'fenlight.diag.builds'
+DIAG_BUILDS_CAP = 12
+# Oltre questa distanza due costruzioni della stessa lista sono due eventi distinti, non un doppione.
+# Largo perche' sulla stick fra le due ondate passavano 10 s e l'ondata stessa ne durava 15.
+DIAG_DOPPIONE_SECONDS = 45
+
+def _current_query():
+	# I parametri di QUESTA invocazione letti da sys.argv, non passati dal chiamante: cosi' la
+	# diagnostica non dipende dal fatto che ogni indexer si ricordi di fornirli, e non puo' divergere
+	# dal path con cui Kodi ci ha davvero chiamati.
+	try:
+		import sys as _sys
+		if len(_sys.argv) < 3 or not _sys.argv[2]: return {}
+		return dict(parse_qsl(_sys.argv[2].lstrip('?'), keep_blank_values=True))
+	except: return {}
+
+def _build_cause(query):
+	# Il nonce nel path esiste solo se il token l'ha messo refresh_containers_for_ids: quella
+	# ricostruzione l'abbiamo ordinata noi. Senza nonce e' Kodi che rilegge il DirectoryProvider da
+	# sola -- cosa che fa a ogni ritorno della finestra in primo piano, ed e' l'ipotesi da verificare
+	# sulle ondate post-riproduzione.
+	if query.get(RELOAD_PARAM): return 'ricarica-mirata'
+	if query.get('new_page') or query.get('paginate_start'): return 'paginazione'
+	return 'apertura/re-show'
+
+def _diag_note(t_built):
+	"""Coda diagnostica della riga PERF: causa, doppione, riproduzione in corso."""
+	if not DIAG: return ''
+	try:
+		from modules.kodi_utils import get_property, set_property, get_visibility
+		query = _current_query()
+		causa = _build_cause(query)
+		bits = ['causa=%s' % causa]
+		key = make_key(query) if query else ''
+		if key:
+			raw = get_property(DIAG_BUILDS_PROP) or ''
+			rows, prev = [], None
+			for entry in raw.split(';'):
+				parts = entry.split('|')
+				if len(parts) != 3: continue
+				if parts[0] == key and prev is None:
+					try: prev = (float(parts[1]), parts[2])
+					except: prev = None
+				else: rows.append(entry)
+			rows.append('%s|%s|%s' % (key, t_built, causa))
+			set_property(DIAG_BUILDS_PROP, ';'.join(rows[-DIAG_BUILDS_CAP:]))
+			if prev:
+				delta = t_built - prev[0]
+				if 0 < delta < DIAG_DOPPIONE_SECONDS:
+					bits.append('DOPPIONE: stessa lista gia' + "'" + ' costruita %.0f ms fa (causa %s)' % (delta * 1000, prev[1]))
+		# Una costruzione mentre il video va e' CPU rubata alla decodifica su un dispositivo debole.
+		# Non la possiamo rifiutare -- e' Kodi che ce la chiede -- ma va contata.
+		if get_visibility('Player.HasVideo'): bits.append('DURANTE RIPRODUZIONE')
+		return ' | ' + ' | '.join(bits)
+	except: return ''
+
 # Misura PER FASE dentro la costruzione della singola listitem. Serve a rispondere a una domanda
 # precisa: json.loads dell'intero blob (2.00 ms per pagina da 112), le SELECT puntuali (0.53 ms) e le
 # build_url (3.16 ms) sommano ~5.7 ms su una costruzione che ne misura ~130. Il 95% sta altrove, e
@@ -252,7 +331,12 @@ def phase_report(kind, labels):
 # chiamata, e allora conviene accorpare (il menu contestuale si puo' scrivere come proprieta').
 # Il vecchio autotest su json ha gia' risposto (acceleratore C presente, ~0.03 ms/blob su Mac) e
 # sulla stick costava 130-320 ms per costruzione: rimosso.
-PERF_SELFTEST = True
+# Misurato sulla stick il 22/08: l'autotest costava 42.7 + 31.3 ms di setProperty piu' 5 giri di
+# addContextMenuItems a 9.49 ms -- circa 100 ms per OGNI costruzione, pagati anche durante la tempesta
+# post-riproduzione, cioe' proprio quando la macchina e' satura. Le risposte che doveva dare le ha
+# gia' date (il costo e' per chiamata, non per chiave; sotto contesa tutto si moltiplica per 70-90).
+# Resta accendibile a mano quando serve rimisurare, ma non deve piu' pesare sull'uso normale.
+PERF_SELFTEST = False
 
 def selftest():
 	if not (PERF and PERF_SELFTEST): return
@@ -349,7 +433,7 @@ def log_build(kind, action, t_start, t_resolved, t_built, count, pages=None, pat
 				% (kind, action, count, (' | %s pagine' % pages) if pages else '',
 					(' | path_pages=%s' % path_pages) if path_pages not in (None, '', 0, '0') else ' | path_pages=-',
 					workers, total, t_resolved - t_start, build_ms, (build_ms / count) if count else 0,
-					per_item, _INVOCATIONS[0]) + since_close)
+					per_item, _INVOCATIONS[0]) + since_close + _diag_note(t_built))
 	except: pass
 
 def make_key(params):
@@ -560,6 +644,15 @@ def set_state(key, pages, has_more):
 	# Publishes the cumulative page count and whether more pages exist. LOADING is deliberately NOT
 	# cleared here -- set_head clears it after add_items, so the watcher can't re-fire mid-build.
 	from modules.kodi_utils import set_property
+	# Il tetto si applica QUI, spegnendo has_more: e' il segnale che il watcher legge per decidere se
+	# caricare oltre. Applicarlo invece a raw_pages accorcerebbe una lista gia' mostrata a ogni
+	# ricostruzione, facendo saltare la posizione -- esattamente cio' che il paginatore esiste per
+	# evitare.
+	cap = max_pages()
+	if has_more and pages >= cap:
+		has_more = False
+		from modules.kodi_utils import logger
+		logger('Fen Light', 'DIAG paginazione: tetto di %s pagine raggiunto, il widget non si allunga oltre' % cap)
 	set_property(PAGES_PROP % key, str(pages))
 	set_property(HASMORE_PROP % key, 'true' if has_more else 'false')
 	log('set_state key=%s pages=%s has_more=%s' % (short(key), pages, has_more))

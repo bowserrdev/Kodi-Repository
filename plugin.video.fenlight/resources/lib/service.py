@@ -116,7 +116,8 @@ class WidgetRefresher:
 		logger('Fen Light', 'WidgetRefresher Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP
+		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, refresh_flag_expired
+		self.refresh_flag_expired = refresh_flag_expired
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, self.is_playing = monitor.waitForAbort, player.isPlayingVideo
 		self.window = xbmcgui.Window(10000)
@@ -128,7 +129,15 @@ class WidgetRefresher:
 		while not monitor.abortRequested():
 			try:
 				wait_for_abort(10)
-				self.window.clearProperty('fenlight.refresh_widgets')
+				# I segnali di "ricostruzione in corso" non li spegne piu' chi li accende: prima li
+				# teneva alzati uno sleep(2000) dentro l'invocazione del plugin, cioe' due secondi di
+				# interprete Python vivo a non fare nulla (vedi hold_refresh_flag). Ora li spegne
+				# questo servizio, che gira gia', e solo a scadenza avvenuta -- sulla stick fra
+				# l'ordine di ricarica e la prima costruzione passano 11 secondi, spegnerli subito
+				# li renderebbe inutili proprio dove servono.
+				if self.refresh_flag_expired():
+					self.window.clearProperty('fenlight.refresh_widgets')
+					self.window.clearProperty('fenlight.pg.refresh')
 				# Rete di sicurezza per il refresh rimandato durante la riproduzione: se il video non e'
 				# passato da FenLightPlayer (video generico, trailer) nessuno lo rilancia alla chiusura,
 				# e il widget resterebbe vecchio. Qui si recupera appena la riproduzione e' finita.
