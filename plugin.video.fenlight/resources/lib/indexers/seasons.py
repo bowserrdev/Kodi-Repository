@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import sys
-from modules import kodi_utils, settings
+from time import perf_counter as _perf
+from modules import kodi_utils, settings, paginator
 from modules.metadata import tvshow_meta
 from modules.utils import get_datetime, adjust_premiered_date, make_thread_list
 from modules.watched_status import get_database, watched_info_season, get_watched_status_season, get_progress_status_season
@@ -11,6 +12,17 @@ add_items, set_content, end_directory, set_view_mode = kodi_utils.add_items, kod
 make_listitem, build_url, external, date_offset_info, tmdb_api_key = kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.external, settings.date_offset, settings.tmdb_api_key
 watched_indicators_info, widget_hide_watched, show_specials, mpaa_region = settings.watched_indicators, settings.widget_hide_watched, settings.show_specials, settings.mpaa_region
 string, run_plugin, unaired_label, tmdb_poster = str, 'RunPlugin(%s)', '[COLOR red][I]%s[/I][/COLOR]', 'https://image.tmdb.org/t/p/w780%s'
+# Vedi il commento in movies.py: URL per formattazione diretta invece che con build_url/urlencode.
+# Il poster non viaggia piu' in options_params -- options_menu_choice lo rilegge dai metadati, che
+# ha gia' in mano: era un URL da percent-encodare per ogni stagione, per un'icona che si vede solo
+# se l'utente apre davvero il menu.
+# ATTENZIONE: qualunque parametro di testo libero deve tornare a passare da build_url. Per questo
+# le voci mark_season restano su build_url: portano ancora il titolo della serie.
+_BASE = 'plugin://plugin.video.fenlight/?'
+URL_EPISODE_LIST = _BASE + 'mode=build_episode_list&tmdb_id=%s&season=%s'
+URL_EXTRAS = _BASE + 'mode=extras_menu_choice&tmdb_id=%s&media_type=tvshow&is_external=%s'
+URL_OPTIONS = _BASE + 'mode=options_menu_choice&content=season&tmdb_id=%s&is_external=%s'
+URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets&user=true'
 view_mode, content_type = 'view.seasons', 'seasons'
 season_name_str = 'Season %s'
 
@@ -19,6 +31,7 @@ def build_season_list(params):
 		total_aired_eps, episode_count = meta_get('total_aired_eps'), 0
 		for item in season_data:
 			try:
+				_p0 = _perf()
 				cm = []
 				cm_append = cm.append
 				listitem = make_listitem()
@@ -49,39 +62,51 @@ def build_season_list(params):
 					playcount, watched, unwatched = get_watched_status_season(watched_info.get(season_number, None), aired_eps)
 					progress = get_progress_status_season(watched, aired_eps)
 				visible_progress = 0 if progress == 100 else progress
-				url_params = build_url({'mode': 'build_episode_list', 'tmdb_id': tmdb_id, 'season': season_number})
-				extras_params = build_url({'mode': 'extras_menu_choice', 'tmdb_id': tmdb_id, 'media_type': 'tvshow', 'is_external': is_external})
-				options_params = build_url({'mode': 'options_menu_choice', 'content': 'season', 'tmdb_id': tmdb_id, 'poster': show_poster, 'is_external': is_external})
-				cm_append(('[B]Extras[/B]', run_plugin % extras_params))
-				cm_append(('[B]Options[/B]', run_plugin % options_params))
+				url_params = URL_EPISODE_LIST % (tmdb_id, season_number)
+				# extras_params non e' piu' una voce di menu (come nei film e nelle serie) ma resta
+				# pubblicato come proprieta': lo legge il tasto rapido di custom_keys.py.
+				extras_params = URL_EXTRAS % (tmdb_id, is_external)
+				options_params = URL_OPTIONS % (tmdb_id, is_external)
+				cm_append(('[B]Opzioni[/B]', run_plugin % options_params))
 				if playcount:
 					if hide_watched: continue
 				elif not unaired and not season_special:
-						cm_append(('[B]Mark Watched %s[/B]' % watched_title, run_plugin % build_url({'mode': 'watched_status.mark_season', 'action': 'mark_as_watched',
+						cm_append(('[B]Segna come visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_season', 'action': 'mark_as_watched',
 															'title': show_title, 'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'season': season_number})))
 				if progress:
-					cm_append(('[B]Mark Unwatched %s[/B]' % watched_title, run_plugin % build_url({'mode': 'watched_status.mark_season', 'action': 'mark_as_unwatched',
+					cm_append(('[B]Segna come non visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_season', 'action': 'mark_as_unwatched',
 														'title': show_title, 'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'season': season_number})))
+				_p1 = _perf()
 				set_properties({'watchedepisodes': string(watched), 'unwatchedepisodes': string(unwatched)})
 				set_properties({'totalepisodes': string(aired_eps), 'watchedprogress': string(visible_progress),
 								'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
 								'fenlight.cast': cast_names})
+				# "Refresh" e' il superset di "Reload": tenuta solo quella, come nei film.
 				if is_external:
-					cm_append(('[B]Refresh Widgets[/B]', run_plugin % build_url({'mode': 'refresh_widgets'})))
-					cm_append(('[B]Reload Widgets[/B]', run_plugin % build_url({'mode': 'kodi_refresh'})))
+					cm_append(('[B]Aggiorna widget[/B]', run_plugin % URL_REFRESH_WIDGETS))
+				_p2 = _perf()
 				info_tag = listitem.getVideoInfoTag()
 				info_tag.setMediaType('season'), info_tag.setTitle(title), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(show_title), info_tag.setIMDBNumber(imdb_id)
 				info_tag.setSeason(season_number), info_tag.setPlot(plot), info_tag.setDuration(episode_run_time), info_tag.setPlaycount(playcount), info_tag.setGenres(genre)
 				info_tag.setUniqueIDs({'imdb': imdb_id, 'tmdb': str_tmdb_id, 'tvdb': str_tvdb_id})
 				info_tag.setTvShowStatus(status), info_tag.setFirstAired(premiered), info_tag.setStudios(studio), info_tag.setYear(int(year))
 				info_tag.setRating(rating), info_tag.setVotes(votes), info_tag.setMpaa(mpaa), info_tag.setCountries(country), info_tag.setTrailer(trailer)
+				_p3 = _perf()
 				listitem.setLabel(title)
+				_p4 = _perf()
 				listitem.setArt({'poster': poster, 'season.poster': poster, 'fanart': show_fanart, 'clearlogo': show_clearlogo, 'landscape': show_landscape, 'thumb': thumb,
 								'icon': show_landscape, 'tvshow.poster': poster, 'tvshow.clearlogo': show_clearlogo})
+				_p5 = _perf()
 				listitem.addContextMenuItems(cm)
+				paginator.phase_record(_p1 - _p0, _p2 - _p1, _p3 - _p2, _p4 - _p3, _p5 - _p4, _perf() - _p5)
 				yield (url_params, listitem, True)
 			except: pass
 	handle, is_external, is_home, category_name = int(sys.argv[1]), external(), home(), 'Season'
+	_t0 = paginator.now()
+	# single_seasons chiama questa funzione in PARALLELO, una volta per stagione: azzerare li' le fasi
+	# cancellerebbe le misure di una lista che un altro thread sta ancora costruendo. Su quella strada
+	# non si riporta nulla, quindi non si azzera nulla.
+	if params.get('custom_order', None) is None: paginator.phase_reset()
 	fanart_empty = kodi_utils.addon_fanart()
 	watched_indicators, adjust_hours, hide_watched = watched_indicators_info(), date_offset_info(), is_home and widget_hide_watched()
 	current_date = get_datetime()
@@ -105,8 +130,15 @@ def build_season_list(params):
 		season_data = [i for i in season_data if not i['season_number'] == 0]
 		season_data.sort(key=lambda k: k['season_number'])
 	watched_info = watched_info_season(tmdb_id, get_database(watched_indicators))
+	# Qui finisce la RISOLUZIONE (una sola lettura di tvshow_meta per l'intera lista) e comincia la
+	# costruzione. Le stagioni non hanno un prefetch: i metadati della serie coprono tutte le voci.
+	_t1 = paginator.now()
 	list_items = list(_process())
+	# La strada custom_order e' single_seasons, che chiama questa funzione una volta PER stagione:
+	# loggarla stamperebbe una riga per stagione invece di una per lista.
 	if custom_order is not None: return (list_items[0], custom_order)
+	paginator.log_build('seasons', show_title, _t0, _t1, paginator.now(), len(list_items))
+	paginator.phase_report('seasons %s' % show_title, ('prep+cm', 'props', 'infotag', 'setLabel', 'setArt', 'ctxmenu'))
 	add_items(handle, list_items)
 	category_name = show_title
 	set_content(handle, content_type)

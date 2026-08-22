@@ -299,25 +299,133 @@ def _defer_refresh_if_playing(kind):
 	set_property(PENDING_REFRESH_PROP, kind)
 	return True
 
-def kodi_refresh():
+# Istante dell'ultima ricostruzione globale effettivamente eseguita. Serve a chi puo' innescarne una
+# per un cambiamento che potrebbe essere gia' stato mostrato: al momento il monitor Trakt, che a fine
+# riproduzione rileva come 'cambiamento' lo scrobble che abbiamo appena mandato noi -- vedi TraktMonitor.
+LAST_REFRESH_PROP = 'fenlight.refresh.last'
+# Due ricostruzioni globali che si accavallano sono la STESSA ricostruzione. Non e' un'ipotesi: nel
+# log del Mac del 21/08 23:50 le due UpdateLibrary post-riproduzione distavano 282 ms -- il flush di
+# fine film e il monitor Trakt che rileggeva il nostro stesso scrobble. Chi arriva primo ricostruisce,
+# il secondo si accoda a vuoto. La finestra e' corta apposta: sopprime solo le collisioni, non un
+# cambiamento davvero diverso arrivato qualche secondo dopo.
+REFRESH_COALESCE_SECONDS = 5
+# COSA ha coperto l'ultima ricostruzione: '*' se globale, altrimenti gli id ricaricati. Senza questo,
+# l'accorpamento guardava solo l'orologio e buttava via la richiesta di un elemento DIVERSO arrivata
+# entro la finestra. Nel log del 22/08 00:32 si vedeva come un'alternanza perfetta: azzerando
+# l'avanzamento ogni ~4 s, la 1a passava, la 2a veniva saltata, la 3a passava... perche' una richiesta
+# saltata non timbra l'orologio e la successiva si misurava dall'ultima ESEGUITA.
+LAST_REFRESH_SCOPE_PROP = 'fenlight.refresh.last.scope'
+
+def _scope_items(ids, actions=()):
+	# Le azioni si marcano con '@' per non confonderle con gli id: senza il prefisso un'azione e un
+	# tmdb_id finirebbero nello stesso insieme e un accorpamento potrebbe scattare a sproposito.
+	return set(str(i) for i in (ids or []) if i) | set('@%s' % a for a in (actions or ()) if a)
+
+def _refresh_covered_by_last(ids, actions=()):
+	# Vero solo se l'ultima ricostruzione ha gia' coperto TUTTO questo: o era globale, o lo conteneva.
+	# Due richieste ravvicinate per elementi diversi restano due eventi distinti e vanno eseguite entrambe.
+	scope = get_property(LAST_REFRESH_SCOPE_PROP)
+	if scope == '*': return True
+	items = _scope_items(ids, actions)
+	if not scope or not items: return False
+	return items.issubset(set(scope.split(',')))
+
+def _stamp_refresh(scope):
+	try:
+		from time import time
+		set_property(LAST_REFRESH_PROP, str(time()))
+		set_property(LAST_REFRESH_SCOPE_PROP, scope)
+	except: pass
+
+def refresh_age():
+	# Secondi trascorsi dall'ultima ricostruzione globale. Un numero enorme se non ne risulta nessuna,
+	# cosi' chi lo interroga in caso di dubbio ricostruisce invece di saltare.
+	try:
+		from time import time
+		return time() - float(get_property(LAST_REFRESH_PROP) or 0)
+	except: return 1e9
+
+# L'accorpamento serve a UN solo problema: due chiamanti automatici che reagiscono allo STESSO evento
+# (fine riproduzione + monitor Trakt, che arrivano a un paio di secondi l'uno dall'altro). Non serve,
+# ed e' anzi dannoso, quando a chiedere e' l'utente: due comandi consecutivi sono due eventi distinti
+# anche quando toccano lo stesso titolo. Il 22/08 alle 11:52 "segna come visto" e subito dopo "segna
+# come non visto" avevano lo stesso id, e il secondo e' stato ingoiato: l'operazione era andata a buon
+# fine su Trakt ma l'interfaccia non lo mostrava. Da qui coalesce=False su tutto cio' che nasce da un
+# comando dell'utente.
+def kodi_refresh(coalesce=True):
 	# Global soft refresh (Trakt monitor / periodic WidgetRefresher). Flag the rebuild as an in-place
 	# refresh so interactive widgets keep their already-expanded page count instead of collapsing back to
 	# the initial batch (which would shrink the container and bounce the focus). The flag is held only for
 	# the short window in which the widget builds read it, then cleared. A genuine fresh open carries no
 	# flag, so it still starts from the initial batch. Mirrors the existing 'fenlight.refresh_widgets' hold.
 	if _defer_refresh_if_playing('kodi_refresh'): return
+	# Si azzera comunque: la richiesta rimandata e' soddisfatta dalla ricostruzione appena avvenuta.
+	# Lasciarla accesa farebbe scattare la rete di sicurezza del WidgetRefresher, cioe' una TERZA onda.
 	clear_property(PENDING_REFRESH_PROP)
+	age = refresh_age()
+	# Si accorpa solo dietro un'altra ricostruzione GLOBALE: quella e' davvero un superset. Dietro una
+	# mirata no -- la globale potrebbe riguardare tutt'altro, e saltarla lo perderebbe.
+	if coalesce and age < REFRESH_COALESCE_SECONDS and get_property(LAST_REFRESH_SCOPE_PROP) == '*':
+		logger('Fen Light', 'kodi_refresh accorpato: ricostruzione globale %.2fs fa' % age)
+		return
 	set_property('fenlight.pg.refresh', 'true')
+	# NOTA (lotto 43): qui era stato messo Container.Refresh quando la finestra e' la Video, per non
+	# perdere il fuoco a fine episodio. Ritirato: Container.Refresh ricarica SOLO la cartella aperta,
+	# mentre le cartelle padre restano quelle in cache -- in finestra Video end_directory usa
+	# cacheToDisc=True -- e cosi' il badge "episodi rimanenti" della serie non si aggiornava finche'
+	# non la si riapriva. Un badge sbagliato e' correttezza, il fuoco perso e' comodita': vince la
+	# correttezza. Il fuoco resta un problema aperto, da risolvere conservando la posizione, non
+	# rinunciando all'aggiornamento.
+	_stamp_refresh('*')
 	execute_builtin('UpdateLibrary(video,special://skin/foo)')
 	sleep(2000)
 	clear_property('fenlight.pg.refresh')
 
-def refresh_widgets(show_notification='false'):
+def kodi_refresh_ids(ids, actions=(), coalesce=True):
+	# Ricarica MIRATA: ricostruisce i soli contenitori che contengono uno degli id cambiati -- piu'
+	# quelli la cui AZIONE e' fra le richieste, per i casi in cui a cambiare e' la composizione della
+	# lista invece dello stato di un elemento (aggiunta alla watchlist) -- invece di
+	# sparare UpdateLibrary, che e' globale. Chiudere un film cambia UN elemento; oggi se ne
+	# ricostruiscono centinaia su tutti i widget della schermata.
+	# Se il sondaggio non identifica nessun contenitore (skin diversa, ids sbagliati, infolabel che non
+	# risolve fuori dal fuoco) si ricade sul globale: non puo' comportarsi peggio di prima.
+	if _defer_refresh_if_playing('kodi_refresh'): return
+	clear_property(PENDING_REFRESH_PROP)
+	# Stessa finestra di kodi_refresh(): due ricostruzioni accavallate sono la stessa, e non importa
+	# se una e' mirata e l'altra globale -- chi arriva secondo lavorerebbe a vuoto.
+	age = refresh_age()
+	if coalesce and age < REFRESH_COALESCE_SECONDS and _refresh_covered_by_last(ids, actions):
+		logger('Fen Light', 'refresh mirato accorpato: gli stessi id ricostruiti %.2fs fa' % age)
+		return
+	# Stesso segnale che alza refresh_widgets(): i widget 'random' lo leggono per riestrarre
+	# (random_lists.py:84 e :270). Va tenuto o cambierebbe il loro comportamento di riflesso.
+	set_property('fenlight.refresh_widgets', 'true')
+	try:
+		from modules import paginator
+		hit = paginator.refresh_containers_for_ids(ids, actions)
+	except: hit = 0
+	if not hit:
+		logger('Fen Light', 'refresh mirato: nessun contenitore identificato, si ricostruisce tutto')
+		kodi_refresh(coalesce)
+		clear_property('fenlight.refresh_widgets')
+		return
+	# Conta come ricostruzione ai fini dell'accorpamento: senza questo, il monitor Trakt sparerebbe
+	# comunque il globale un secondo dopo per lo stesso evento e il lavoro mirato sarebbe sprecato.
+	_stamp_refresh(','.join(sorted(_scope_items(ids, actions))))
+	logger('Fen Light', 'refresh mirato: %s contenitori ricaricati' % hit)
+	sleep(2000)
+	clear_property('fenlight.refresh_widgets')
+
+def refresh_widgets(show_notification='false', coalesce=True):
+	# Due padroni: la voce di menu "Aggiorna widget" (comando esplicito dell'utente, da eseguire
+	# sempre) e il servizio periodico (automatico, accorpabile). Al router arrivano identici, percio'
+	# la voce di menu si dichiara con user=true nell'URL. Accorpare una richiesta esplicita di
+	# aggiornamento sarebbe il caso peggiore possibile: l'utente ha chiesto proprio quello.
 	if _defer_refresh_if_playing('refresh_widgets'): return
 	clear_property(PENDING_REFRESH_PROP)
 	set_property('fenlight.refresh_widgets', 'true')
 	sleep(250)
-	run_plugin({'mode': 'kodi_refresh'}, block=True)
+	run_plugin({'mode': 'kodi_refresh', 'coalesce': 'true' if coalesce else 'false'}, block=True)
 	if show_notification == 'true': notification('Widgets Refreshed', 2500)
 	sleep(5000)
 	clear_property('fenlight.refresh_widgets')

@@ -37,7 +37,7 @@ URL_PLAYBACK_CHOICE = _BASE + 'mode=playback_choice&media_type=movie&meta=%s'
 URL_MARK = _BASE + 'mode=watched_status.mark_movie&action=%s&tmdb_id=%s'
 URL_WATCHLIST_TOGGLE = _BASE + 'mode=trakt.watchlist_toggle&media_type=movie&tmdb_id=%s&in_watchlist=%s'
 URL_ERASE_BOOKMARK = _BASE + 'mode=watched_status.erase_bookmark&media_type=movie&tmdb_id=%s&refresh=true'
-URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets'
+URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets&user=true'
 URL_EXIT_MEDIA_MENU = _BASE + 'mode=navigator.exit_media_menu'
 main = ('tmdb_movies_popular', 'tmdb_movies_popular_today','tmdb_movies_blockbusters','tmdb_movies_in_theaters', 'tmdb_movies_upcoming', 'tmdb_movies_latest_releases',
 'tmdb_movies_premieres', 'tmdb_movies_oscar_winners')
@@ -175,7 +175,7 @@ class Movies:
 				pass
 			else:
 				add_items(handle, items)
-				if self.interactive: paginator.set_head(self.pg_key, items)
+				if self.interactive: paginator.set_head(self.pg_key, items, self.action)
 				if self.new_page and not self.widget_hide_next_page:
 						self.new_page.update({'mode': 'build_movie_list', 'action': self.action, 'category_name': self.category_name})
 						add_dir(self.new_page, 'Next Page (%s) >>' % self.new_page['new_page'], handle, 'nextpage', nextpage_landscape)

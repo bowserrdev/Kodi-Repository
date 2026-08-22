@@ -220,7 +220,7 @@ class MenuEditor:
 		else: return notification('Failed', 1500)
 		notification('Success', 1500)
 		sleep(500)
-		if refresh: kodi_refresh()
+		if refresh: kodi_refresh(coalesce=False)
 
 	def _path_browser(self, label='', file=default_path, thumbnail=''):
 		show_busy_dialog()

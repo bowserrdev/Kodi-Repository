@@ -187,6 +187,14 @@ class FenLightPlayer(xbmc_player):
 
 	def media_watched_marker(self, force_watched=False):
 		self.media_marked = True
+		# PERF: timbro della chiusura, letto da paginator.log_build. Serve a UNA domanda sola: quanto
+		# ci mette Kodi a rileggere da solo la cartella aperta uscendo dal player? E' l'attesa che il
+		# sleep(2000) di run_media_progress deve coprire, e quel 2000 non e' mai stato misurato --
+		# su Mac la rilettura arriva a 390-653 ms, ma il numero che conta e' quello del Mi Stick.
+		try:
+			from time import time as _now
+			ku.set_property('fenlight.perf.closefile', str(_now()))
+		except: pass
 		if self.scrobble_started:
 			Thread(target=trakt_scrobble_stop, args=(self.media_type, self.tmdb_id, self.current_point, self._trakt_season, self._trakt_episode)).start()
 		try:
@@ -218,6 +226,16 @@ class FenLightPlayer(xbmc_player):
 			kind = ku.get_property(ku.PENDING_REFRESH_PROP)
 			if not kind: return
 			ku.clear_property(ku.PENDING_REFRESH_PROP)
+			# Ricarica MIRATA quando sappiamo cosa e' cambiato, ed e' il caso piu' frequente: e' finito UN
+			# film. Solo i contenitori che lo contengono vanno ricostruiti; per gli altri non e' cambiato
+			# niente. Se il sondaggio non identifica nessun contenitore, kodi_refresh_ids ricade da sola
+			# sul globale, quindi questo ramo non puo' comportarsi peggio di quello di prima.
+			tmdb_id = str(getattr(self, 'tmdb_id', '') or '')
+			# Mirato per ENTRAMBI i tipi di richiesta: kodi_refresh_ids alza da sola
+			# fenlight.refresh_widgets, quindi la distinzione che c'era qui non serve piu'. Con il ramo
+			# 'refresh_widgets' ancora globale, nel log del 22/08 00:24:16 usciva uno scan globale a 46 ms
+			# dal refresh mirato di run_media_progress: due ricostruzioni per lo stesso evento.
+			if tmdb_id: return ku.kodi_refresh_ids([tmdb_id])
 			ku.run_plugin({'mode': 'refresh_widgets' if kind == 'refresh_widgets' else 'kodi_refresh'})
 		except: pass
 
@@ -228,6 +246,12 @@ class FenLightPlayer(xbmc_player):
 				for _b1, _b2 in ((True, True), (True, False), (False, True), (False, False)):
 					ku.clear_property('1_%s_%s_%s_watched' % (self.media_type, _b1, _b2))
 				ku.sleep(2000)
+				# QUESTO e' il refresh che in pratica ricostruisce la home a fine film -- non
+				# flush_pending_refresh, che al proprio risveglio trova gia' azzerata la proprieta' e non fa
+				# nulla. Qui sappiamo esattamente cosa e' cambiato: il titolo appena visto. Se il sondaggio
+				# dei contenitori non identifica nulla, kodi_refresh_ids ricade da sola sul globale.
+				tmdb_id = str(getattr(self, 'tmdb_id', '') or '')
+				if tmdb_id: return ku.kodi_refresh_ids([tmdb_id])
 				ku.run_plugin({'mode': 'refresh_widgets'})
 		except: pass
 

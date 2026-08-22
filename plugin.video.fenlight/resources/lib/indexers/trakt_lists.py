@@ -241,8 +241,13 @@ def _dub_paginate(result, pages_to_load, is_external):
 	# past the requested window -- dropping titles with no localised release -- until a full window of
 	# SURVIVORS is gathered, bounded by _DUB_FILL_PAGE_CAP extra pages. So a heavily-filtered list still
 	# fills the screen in one build instead of leaving the widget short (which makes the watcher cascade many
-	# tiny load-ahead refreshes). pages_consumed is the REAL number of pages taken, so set_state records
-	# reality. process_list is already dub-filtered; ORDER PRESERVED (append-only invariant).
+	# tiny load-ahead refreshes). process_list is already dub-filtered; ORDER PRESERVED (append-only invariant).
+	#
+	# pages_consumed e' il numero di pagine GREZZE lette dalla sorgente, ed e' solo diagnostica: serve al
+	# log per capire quanto il filtro sta sfoltendo. NON va dato a set_state -- vedi il commento nei
+	# chiamanti. Il riempimento e' PROPORZIONALE (target = pages_to_load * limit), quindi a parita' di
+	# pages_to_load questa funzione rende sempre la stessa lunghezza: e' cio' che rende sicuro registrare
+	# la richiesta invece del consumo.
 	from modules.settings import page_limit
 	limit = page_limit(True)
 	target = pages_to_load * limit
@@ -322,7 +327,20 @@ def build_trakt_list(params):
 			process_list, pages_consumed, has_more = _dub_paginate(result, pages_to_load, is_external)
 			paginator.log('trakt BUILD key=%s pages=%s consumed=%s shown=%s has_more=%s' %
 					(paginator.short(pg_key), pages_to_load, pages_consumed, len(process_list), has_more))
-			paginator.set_state(pg_key, pages_consumed, has_more)
+			# ATTENZIONE ALL'UNITA': si registra pages_to_load (pagine RICHIESTE, cioe' quelle che
+			# l'utente vede), NON pages_consumed (pagine grezze lette dalla sorgente per riempirle).
+			# PAGES_PROP viene riletto come pages_to_load alla ricostruzione successiva e il watcher lo
+			# incrementa di 1: le tre cose devono essere nella stessa unita'. Registrando le pagine
+			# consumate, ogni ricostruzione riconvertiva "pagine grezze" in "pagine da mostrare" e
+			# rimoltiplicava per 1/frazione-sopravvissuta -- un cricchetto. Nel log del Mac del 21/08
+			# la lista mdblist 91378 e' passata da 47 a 202 elementi in 252 ms senza che nessuno
+			# scorresse (2 -> 5 -> 10 -> 17 pagine richieste), e ogni ricostruzione successiva costava
+			# 5,3 volte tanto per sempre. E' sicuro perche' _dub_paginate riempie fino a
+			# pages_to_load*limit SOPRAVVISSUTI: a parita' di richiesta rende la stessa lunghezza.
+			# NON copiare questo ragionamento su load_cumulative: la' il riempimento e' a min_items
+			# assoluto, non proporzionale, quindi solo last_page riproduce la lunghezza ed e' giusto
+			# registrare quello.
+			paginator.set_state(pg_key, pages_to_load, has_more)
 			all_movies = [i for i in process_list if i['type'] == 'movie']
 			all_tvshows = [i for i in process_list if i['type'] == 'show']
 		else:

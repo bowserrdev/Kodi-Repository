@@ -12,6 +12,7 @@ from modules.utils import get_datetime, adjust_premiered_date, sort_for_article,
 watched_indicators_function, lists_sort_order, date_offset, nextep_method = settings.watched_indicators, settings.lists_sort_order, settings.date_offset, settings.nextep_method
 sleep, progressDialogBG, get_video_database_path = kodi_utils.sleep, kodi_utils.progressDialogBG, kodi_utils.get_video_database_path
 notification, kodi_refresh, tmdb_api_key, mpaa_region = kodi_utils.notification, kodi_utils.kodi_refresh, settings.tmdb_api_key, settings.mpaa_region
+kodi_refresh_ids = kodi_utils.kodi_refresh_ids
 tv_progress_location = settings.tv_progress_location
 progress_db_string, indicators_dict = 'fenlight_hidden_progress_items', {0: 'watched_db', 1: 'trakt_db'}
 finished_show_check = ('Ended', 'Canceled')
@@ -46,7 +47,8 @@ def hide_unhide_progress_items(params):
 	if action == 'hide': current_items.append(media_id)
 	else: current_items.remove(media_id)
 	main_cache.set(progress_db_string, current_items, 1825)
-	return kodi_refresh()
+	# L'id e' in mano: si ricaricano i soli contenitori che contengono questo elemento.
+	return refresh_container_for(media_id, True)
 
 def get_last_played_value(watched_indicators):
 	if watched_indicators == 0: return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -66,8 +68,17 @@ def make_batch_insert(action, media_type, media_id, season, episode, last_played
 	if action == 'mark_as_watched': return (media_type, media_id, season, episode, last_played, title)
 	else: return (media_type, media_id, season, episode)
 
-def refresh_container(refresh=True):
-	if refresh: kodi_refresh()
+def refresh_container_for(media_id, refresh=True):
+	# Quando sappiamo QUALE elemento e' cambiato -- e in tutte le voci del menu contestuale lo sappiamo
+	# -- si ricaricano i soli contenitori che lo contengono invece di sparare UpdateLibrary, che
+	# ricostruisce ogni widget della schermata. Senza media_id si ricade sul globale.
+	# coalesce=False: ogni chiamante e' una voce del menu contestuale, cioe' un comando esplicito.
+	# Due comandi consecutivi sullo stesso titolo ('segna come visto' e poi 'segna come non visto')
+	# sono due eventi distinti e vanno eseguiti entrambi, altrimenti l'interfaccia resta indietro
+	# rispetto a un'operazione che su Trakt e' gia' andata a buon fine.
+	if not refresh: return
+	if media_id: return kodi_refresh_ids([str(media_id)], coalesce=False)
+	kodi_refresh(coalesce=False)
 
 def active_tvshows_information(status_type):
 	def _process(item):
@@ -213,19 +224,51 @@ def clear_local_bookmarks():
 		for i in ('bookmark', 'streamdetails', 'files'): dbcon.executemany("DELETE FROM %s WHERE idFile=?" % i, file_ids)
 	except: pass
 
+def _mark_on_trakt(args, cache_media_type, ep_map_for=None):
+	# La chiamata di rete la paga un thread di sfondo, non l'interfaccia. Il badge legge la riga
+	# LOCALE, che a questo punto e' gia' scritta: aspettare Trakt per aggiornarlo significava tenere
+	# ferma l'interfaccia su un dato che era gia' pronto. Stesso schema di _clear_progress_on_trakt.
+	# Compromesso accettato esplicitamente: se Trakt fallisce, l'avviso arriva DOPO l'aggiornamento e
+	# lo stato locale resta in anticipo su quello remoto fino alla prima sincronizzazione utile.
+	# ep_map_for porta la conversione episodio tvdb->tmdb, che a cache fredda e' un'altra chiamata di
+	# rete (skyhook): va nel thread anche quella, o meta' del guadagno resterebbe sul percorso caldo.
+	try:
+		if ep_map_for is not None:
+			args = tuple(args) + _map_to_tmdb_episode(*ep_map_for)
+		if not trakt_watched_status_mark(*args): return notification('Error')
+		clear_trakt_collection_watchlist_data('watchlist', cache_media_type)
+	except: pass
+
+def _clear_progress_on_trakt(media_type, media_id, season, episode, resume_id):
+	# L'attesa di un secondo era gia' qui prima: ora la paga un thread di sfondo invece
+	# dell'interfaccia. Se fallisce, la riga locale e' comunque gia' andata: il segnalibro remoto
+	# viene ripulito alla prima sincronizzazione Trakt utile.
+	try:
+		sleep(1000)
+		trakt_progress('clear_progress', media_type, media_id, 0, season, episode, resume_id)
+	except: pass
+
 def erase_bookmark(media_type, media_id, season='', episode='', refresh='false'):
 	try:
 		watched_indicators = watched_indicators_function()
 		watched_db = get_database(watched_indicators)
+		resume_id = None
 		if watched_indicators == 1:
+			# Il resume_id si legge PRIMA della cancellazione, perche' viene dalla riga che stiamo per
+			# togliere. E' una lettura locale, costa nulla.
 			try:
 				if media_type == 'episode': resume_id = get_bookmarks_episode(str(media_id), season, watched_db)[int(episode)]['resume_id']
 				else: resume_id = get_bookmarks_movie()[str(media_id)]['resume_id']
-				sleep(1000)
-				trakt_progress('clear_progress', media_type, media_id, 0, season, episode, resume_id)
-			except: pass
+			except: resume_id = None
+		# Stesso ordine di set_bookmark (lotto 27), qui era ancora rovesciato: si dormiva un secondo, si
+		# chiamava Trakt in rete, e solo ALLA FINE si cancellava la riga locale e si aggiornava
+		# l'interfaccia. Da li' la sensazione che 'azzera avanzamento' non facesse niente. La riga locale
+		# e' il dato che il badge legge: si cancella subito, l'interfaccia si aggiorna subito, e
+		# l'allineamento con Trakt lo paga un thread di sfondo.
 		watched_db.execute('DELETE FROM progress where db_type = ? and media_id = ? and season = ? and episode = ?', (media_type, media_id, season, episode))
-		refresh_container(refresh == 'true')
+		refresh_container_for(media_id, refresh == 'true')
+		if watched_indicators == 1 and resume_id is not None:
+			Thread(target=_clear_progress_on_trakt, args=(media_type, media_id, season, episode, resume_id)).start()
 	except: pass
 
 def batch_erase_bookmark(watched_indicators, insert_list, action):
@@ -246,6 +289,20 @@ def batch_erase_bookmark(watched_indicators, insert_list, action):
 		watched_db.executemany('DELETE FROM progress where db_type = ? and media_id = ? and season = ? and episode = ?', modified_list)
 	except: pass
 
+def _push_bookmark_to_trakt(media_type, tmdb_id, season, episode, resume_point):
+	# Allineamento remoto del segnalibro, fuori dal percorso che fa comparire il badge.
+	# NIENTE trakt_sync_activities qui: e' la sincronizzazione completa (scarica liste, progressi e
+	# metadati serie) ed e' quella che bloccava tutto per decine di secondi a ogni chiusura del
+	# player. Serve a recepire i cambiamenti fatti ALTROVE, ed e' compito del TraktMonitor periodico:
+	# quello che abbiamo appena guardato lo sappiamo gia' noi.
+	try:
+		_ts, _te = _map_to_tmdb_episode(tmdb_id, season, episode)
+		resume_id = trakt_progress('set_progress', media_type, tmdb_id, resume_point, _ts, _te) or 0
+		if resume_id:
+			get_database(1).execute('UPDATE progress SET resume_id = ? WHERE db_type = ? and media_id = ? and season = ? and episode = ?',
+									(resume_id, media_type, tmdb_id, season, episode))
+	except: pass
+
 def set_bookmark(params):
 	try:
 		media_type, tmdb_id, curr_time, total_time = params.get('media_type'), params.get('tmdb_id'), params.get('curr_time'), params.get('total_time')
@@ -257,20 +314,26 @@ def set_bookmark(params):
 		if watched_indicators == 1:
 			if trakt_official_status(media_type) == False: return
 			else:
-				_ts, _te = _map_to_tmdb_episode(tmdb_id, season, episode)
-				_trakt_id = trakt_progress('set_progress', media_type, tmdb_id, resume_point, _ts, _te, refresh_trakt=True) or 0
+				# Il minuto a cui si e' chiuso e' un dato LOCALE: lo sappiamo gia', e il badge legge
+				# solo questa riga. Quindi si scrive SUBITO e l'allineamento con Trakt va in secondo
+				# piano. Prima l'ordine era rovesciato -- due chiamate di rete piu' una
+				# sincronizzazione Trakt completa, e solo alla fine la riga -- e su un dispositivo
+				# debole il badge compariva decine di secondi dopo, con tutti i widget della home in
+				# attesa. Il resume_id nasce a 0 e arriva dopo: serve solo a cancellare il segnalibro
+				# da remoto (erase_bookmark), non a mostrare il progresso.
 				try:
 					dbcon = get_database(1)
 					dbcon.execute('INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time), get_last_played_value(1), _trakt_id, title))
+						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time), get_last_played_value(1), 0, title))
 				except: pass
+				Thread(target=_push_bookmark_to_trakt, args=(media_type, tmdb_id, season, episode, resume_point)).start()
 		else:
 			erase_bookmark(media_type, tmdb_id, season, episode)
 			last_played = get_last_played_value(watched_indicators)
 			dbcon = get_database(watched_indicators)
 			dbcon.execute('INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
 						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time), last_played, 0, title))
-		refresh_container(refresh)
+		refresh_container_for(tmdb_id, refresh)
 	except: pass
 
 def mark_movie(params):
@@ -286,12 +349,11 @@ def mark_movie(params):
 		try: title = metadata.movie_meta('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime()).get('title', '')
 		except: title = ''
 	watched_indicators = watched_indicators_function()
-	if watched_indicators == 1:
-		if from_playback == 'true' and trakt_official_status(media_type) == False: sleep(1000)
-		elif not trakt_watched_status_mark(action, 'movies', tmdb_id): return notification('Error')
-		clear_trakt_collection_watchlist_data('watchlist', media_type)
+	# Prima il locale e l'interfaccia, poi la rete. Vedi _mark_on_trakt.
 	watched_status_mark(watched_indicators, media_type, tmdb_id, action, title=title)
-	refresh_container(refresh)
+	refresh_container_for(tmdb_id, refresh)
+	if watched_indicators == 1:
+		Thread(target=_mark_on_trakt, args=((action, 'movies', tmdb_id), media_type)).start()
 
 def mark_tvshow(params):
 	title, action, tmdb_id = params.get('title', ''), params.get('action'), params.get('tmdb_id')
@@ -300,9 +362,10 @@ def mark_tvshow(params):
 	watched_indicators = watched_indicators_function()
 	progress_backround = progressDialogBG()
 	progress_backround.create('[B]Please Wait..[/B]', '')
+	# La rete parte subito ma in PARALLELO al lotto locale, che qui e' lungo (un inserimento per
+	# episodio, con dialogo di avanzamento): prima la si aspettava e basta.
 	if watched_indicators == 1:
-		if not trakt_watched_status_mark(action, 'shows', tmdb_id, tvdb_id): return notification('Error')
-		clear_trakt_collection_watchlist_data('watchlist', 'tvshow')
+		Thread(target=_mark_on_trakt, args=((action, 'shows', tmdb_id, tvdb_id), 'tvshow')).start()
 	current_date = get_datetime()
 	insert_list = []
 	insert_append = insert_list.append
@@ -327,7 +390,7 @@ def mark_tvshow(params):
 			insert_append(make_batch_insert(action, 'episode', tmdb_id, season_number, ep_number, last_played, title))
 	batch_watched_status_mark(watched_indicators, insert_list, action)
 	progress_backround.close()
-	refresh_container()
+	refresh_container_for(tmdb_id)
 
 def mark_season(params):
 	season = int(params.get('season'))
@@ -339,9 +402,9 @@ def mark_season(params):
 	except: tvdb_id = 0
 	watched_indicators = watched_indicators_function()
 	heading = '[B]Mark Watched %s[/B]' if action == 'mark_as_watched' else '[B]Mark Unwatched %s[/B]'
+	# Come mark_tvshow: la rete in parallelo al lotto locale, non davanti.
 	if watched_indicators == 1:
-		if not trakt_watched_status_mark(action, 'season', tmdb_id, tvdb_id, season): return notification('Error')
-		clear_trakt_collection_watchlist_data('watchlist', 'tvshow')
+		Thread(target=_mark_on_trakt, args=((action, 'season', tmdb_id, tvdb_id, season), 'tvshow')).start()
 	progress_backround = progressDialogBG()
 	progress_backround.create('[B]Please Wait..[/B]', '')
 	current_date = get_datetime()
@@ -358,7 +421,7 @@ def mark_season(params):
 		insert_append(make_batch_insert(action, 'episode', tmdb_id, season_number, ep_number, last_played, title))
 	batch_watched_status_mark(watched_indicators, insert_list, action)
 	progress_backround.close()
-	refresh_container()
+	refresh_container_for(tmdb_id)
 
 def mark_episode(params):
 	season, episode, title = int(params.get('season')), int(params.get('episode')), params.get('title')
@@ -370,12 +433,12 @@ def mark_episode(params):
 	try: tvdb_id = int(params.get('tvdb_id', '0'))
 	except: tvdb_id = 0
 	watched_indicators = watched_indicators_function()
-	if watched_indicators == 1:
-		if from_playback == 'true' and trakt_official_status(media_type) == False: sleep(1000)
-		elif not trakt_watched_status_mark(action, media_type, tmdb_id, tvdb_id, *_map_to_tmdb_episode(tmdb_id, season, episode)): return notification('Error')
-		clear_trakt_collection_watchlist_data('watchlist', 'tvshow')
+	# Prima il locale e l'interfaccia, poi la rete. Vedi _mark_on_trakt.
 	watched_status_mark(watched_indicators, media_type, tmdb_id, action, season, episode, title)
-	refresh_container(refresh)
+	refresh_container_for(tmdb_id, refresh)
+	if watched_indicators == 1:
+		Thread(target=_mark_on_trakt, args=((action, media_type, tmdb_id, tvdb_id), 'tvshow',
+					(tmdb_id, season, episode))).start()
 
 def watched_status_mark(watched_indicators, media_type='', media_id='', action='', season='', episode='', title=''):
 	try:

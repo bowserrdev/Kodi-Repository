@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 import sys
+from time import perf_counter as _perf
 from apis.trakt_api import trakt_watchlist, trakt_get_my_calendar
 from caches.favorites_cache import favorites_cache
-from modules import kodi_utils, settings, watched_status as ws
+from modules import kodi_utils, settings, watched_status as ws, paginator
 from modules.metadata import tvshow_meta, episodes_meta, all_episodes_meta
 from modules.utils import jsondate_to_datetime, adjust_premiered_date, make_day, get_datetime, title_key, date_difference, make_thread_list_enumerate
 # logger = kodi_utils.logger
@@ -23,6 +24,21 @@ get_bookmarks_all_episode, get_progress_status_all_episode = ws.get_bookmarks_al
 get_hidden_progress_items, get_database, watched_info_episode, get_next = ws.get_hidden_progress_items, ws.get_database, ws.watched_info_episode, ws.get_next
 get_watched_status_tvshow, watched_info_tvshow = ws.get_watched_status_tvshow, ws.watched_info_tvshow
 string =  str
+# Vedi il commento in movies.py: URL per formattazione diretta invece che con build_url/urlencode.
+# Gli episodi sono le liste piu' pesanti (continua a guardare, prossimi episodi), quindi qui il
+# risparmio per elemento conta piu' che altrove. Il poster non viaggia piu' in options_params:
+# options_menu_choice lo rilegge dai metadati, che ha gia' in mano.
+# ATTENZIONE: qualunque parametro di testo libero deve tornare a passare da build_url. Per questo
+# le voci mark_episode restano su build_url: portano ancora il titolo della serie.
+_BASE = 'plugin://plugin.video.fenlight/?'
+URL_OPTIONS = _BASE + 'mode=options_menu_choice&content=%s&tmdb_id=%s&is_external=%s'
+URL_EXTRAS = _BASE + 'mode=extras_menu_choice&tmdb_id=%s&media_type=episode&is_external=%s'
+URL_PLAY = _BASE + 'mode=playback.media&media_type=episode&tmdb_id=%s&season=%s&episode=%s'
+URL_PLAYBACK_CHOICE = _BASE + 'mode=playback_choice&media_type=episode&meta=%s&season=%s&episode=%s&episode_id=%s'
+URL_ERASE_BOOKMARK = _BASE + 'mode=watched_status.erase_bookmark&media_type=episode&tmdb_id=%s&season=%s&episode=%s&refresh=true'
+URL_SEASON_LIST = _BASE + 'mode=build_season_list&tmdb_id=%s'
+URL_ALL_EPISODES = _BASE + 'mode=build_episode_list&tmdb_id=%s&season=all'
+URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets&user=true'
 poster_empty = kodi_utils.empty_poster
 run_plugin, unaired_label, tmdb_poster = 'RunPlugin(%s)', '[COLOR red][I]%s[/I][/COLOR]', 'https://image.tmdb.org/t/p/w780%s'
 upper = string.upper
@@ -35,6 +51,7 @@ def build_episode_list(params):
 	def _process():
 		for item in episodes_data:
 			try:
+				_ph0 = _perf()
 				cm = []
 				cm_append = cm.append
 				listitem = make_listitem()
@@ -59,24 +76,24 @@ def build_episode_list(params):
 					if playcount and hide_watched: continue
 					if total_seasons: progress = get_progress_status_all_episode(bookmarks, season, episode)
 					else: progress = get_progress_status_episode(bookmarks, episode)
-				options_params = build_url({'mode': 'options_menu_choice', 'content': 'episode', 'tmdb_id': tmdb_id, 'poster': show_poster, 'is_external': is_external})
-				extras_params = build_url({'mode': 'extras_menu_choice', 'tmdb_id': tmdb_id, 'media_type': 'episode', 'is_external': is_external})
-				url_params = build_url({'mode': 'playback.media', 'media_type': 'episode', 'tmdb_id': tmdb_id, 'season': season, 'episode': episode})
-				cm_append(('[B]Extras[/B]', run_plugin % extras_params))
-				cm_append(('[B]Options[/B]', run_plugin % options_params))
-				cm_append(('[B]Playback Options[/B]', run_plugin % \
-							build_url({'mode': 'playback_choice', 'media_type': 'episode', 'meta': tmdb_id, 'season': season, 'episode': episode, 'episode_id': episode_id})))
+				# Extras non e' piu' una voce di menu (come nei film e nelle serie), ma extras_params resta
+				# pubblicato come proprieta': lo legge il tasto rapido di custom_keys.py.
+				options_params = URL_OPTIONS % ('episode', tmdb_id, is_external)
+				extras_params = URL_EXTRAS % (tmdb_id, is_external)
+				url_params = URL_PLAY % (tmdb_id, season, episode)
+				cm_append(('[B]Opzioni[/B]', run_plugin % options_params))
+				cm_append(('[B]Opzioni di riproduzione[/B]', run_plugin % (URL_PLAYBACK_CHOICE % (tmdb_id, season, episode, episode_id))))
 				if not unaired and not season_special:
 					if playcount:
-						cm_append(('[B]Mark Unwatched %s[/B]' % watched_title, run_plugin % build_url({'mode': 'watched_status.mark_episode', 'action': 'mark_as_unwatched',
+						cm_append(('[B]Segna come non visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_episode', 'action': 'mark_as_unwatched',
 													'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'season': season, 'episode': episode,  'title': title})))
-					else: cm_append(('[B]Mark Watched %s[/B]' % watched_title, run_plugin % build_url({'mode': 'watched_status.mark_episode', 'action': 'mark_as_watched',
+					else: cm_append(('[B]Segna come visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_episode', 'action': 'mark_as_watched',
 													'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'season': season, 'episode': episode,  'title': title})))
-					if progress: cm_append(('[B]Clear Progress[/B]', run_plugin % build_url({'mode': 'watched_status.erase_bookmark', 'media_type': 'episode', 'tmdb_id': tmdb_id,
-													'season': season, 'episode': episode, 'refresh': 'true'})))
+					if progress: cm_append(('[B]Azzera avanzamento[/B]', run_plugin % (URL_ERASE_BOOKMARK % (tmdb_id, season, episode))))
+				# "Refresh" e' il superset di "Reload": tenuta solo quella, come nei film.
 				if is_external:
-					cm_append(('[B]Refresh Widgets[/B]', run_plugin % build_url({'mode': 'refresh_widgets'})))
-					cm_append(('[B]Reload Widgets[/B]', run_plugin % build_url({'mode': 'kodi_refresh'})))
+					cm_append(('[B]Aggiorna widget[/B]', run_plugin % URL_REFRESH_WIDGETS))
+				_ph1 = _perf()
 				info_tag = listitem.getVideoInfoTag()
 				info_tag.setMediaType('episode'), info_tag.setTitle(display), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(title), info_tag.setGenres(genre)
 				info_tag.setPlaycount(playcount), info_tag.setSeason(season), info_tag.setEpisode(episode), info_tag.setPlot(item_get('plot') or tvshow_plot)
@@ -87,20 +104,28 @@ def build_episode_list(params):
 				info_tag.setYear(int(year)), info_tag.setRating(item_get('rating')), info_tag.setVotes(item_get('votes')), info_tag.setMpaa(mpaa)
 				info_tag.setStudios(studio), info_tag.setWriters(item_get('writer'))
 				# Niente setCast: la skin del cast legge solo i nomi. Vedi kodi_utils.cast_label.
+				_ph2 = _perf()
 				_cast_names = cast_label(cast + item_get('guest_stars', []))
 				if progress and not unaired:
 					info_tag.setResumePoint(float(progress))
 					set_properties({'WatchedProgress': progress})
+				_ph3 = _perf()
 				listitem.setLabel(display)
+				_ph4 = _perf()
 				listitem.addContextMenuItems(cm)
+				_ph5 = _perf()
 				listitem.setArt({'poster': show_poster, 'fanart': show_fanart, 'thumb': thumb, 'icon':thumb, 'clearlogo': show_clearlogo, 'landscape': show_landscape,
 								'season.poster': season_poster, 'tvshow.poster': show_poster, 'tvshow.clearlogo': show_clearlogo})
+				_ph6 = _perf()
 				_p = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'episode_type': episode_type}
 				if _cast_names: _p['fenlight.cast'] = _cast_names
 				set_properties(_p)
+				paginator.phase_record(_ph1 - _ph0, _ph2 - _ph1, _ph3 - _ph2, _ph4 - _ph3, _ph5 - _ph4, _ph6 - _ph5, _perf() - _ph6)
 				yield (url_params, listitem, False)
 			except: pass
 	handle, is_external, is_home, category_name = int(sys.argv[1]), external(), home(), 'Episodes'
+	_t0 = paginator.now()
+	paginator.phase_reset()
 	item_list = []
 	append = item_list.append
 	fanart_empty = kodi_utils.addon_fanart()
@@ -134,7 +159,14 @@ def build_episode_list(params):
 			season_poster = (poster_path if poster_path.startswith('http') else tmdb_poster % poster_path) if poster_path is not None else show_poster
 		except: season_poster = show_poster
 		category_name = 'Season %s' % season
-	add_items(handle, list(_process()))
+	# Qui finisce la RISOLUZIONE: una sola lettura di tvshow_meta piu' episodes_meta e i segnalibri,
+	# per l'intera lista. Da qui in poi e' costruzione di ListItem.
+	_t1 = paginator.now()
+	_items = list(_process())
+	paginator.log_build('episodes', category_name, _t0, _t1, paginator.now(), len(_items))
+	paginator.phase_report('episodes %s' % category_name,
+						('prep+cm', 'infotag', 'cast+resume', 'setLabel', 'ctxmenu', 'setArt', 'props'))
+	add_items(handle, _items)
 	set_sort_method(handle, content_type)
 	set_content(handle, content_type)
 	set_category(handle, category_name)
@@ -150,9 +182,11 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 		return cat_name
 	def _process(_position, ep_data):
 		try:
+			_ph0 = _perf()
 			ep_data_get = ep_data.get
 			meta = tvshow_meta('trakt_dict', ep_data_get('media_ids'), api_key, mpaa_region_value, current_date)
 			if not meta: return
+			_ph1 = _perf()
 			meta_get = meta.get
 			cm = []
 			cm_append = cm.append
@@ -221,34 +255,33 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 				display = '[%s] %s%s%s' % (display_premiered, title_string, seas_ep, ep_name)
 			else: display = '%s%s%s' % (title_string, seas_ep, ep_name)
 			if not item_get('duration'): item['duration'] = meta_get('duration')
-			options_params = build_url({'mode': 'options_menu_choice', 'content': list_type, 'tmdb_id': tmdb_id, 'poster': show_poster, 'is_external': is_external})
-			extras_params = build_url({'mode': 'extras_menu_choice', 'tmdb_id': tmdb_id, 'media_type': 'episode', 'is_external': is_external})
-			url_params = build_url({'mode': 'playback.media', 'media_type': 'episode', 'tmdb_id': tmdb_id, 'season': season, 'episode': episode})
-			cm_append(('[B]Extras[/B]', run_plugin % extras_params))
-			cm_append(('[B]Options[/B]', run_plugin % options_params))
-			cm_append(('[B]Playback Options[/B]', run_plugin % \
-						build_url({'mode': 'playback_choice', 'media_type': 'episode', 'meta': tmdb_id, 'season': season, 'episode': episode, 'episode_id': episode_id})))
+			# Vedi il blocco gemello in build_episode_list. Questa e' la strada dei widget "continua a
+			# guardare" e "prossimi episodi": la lista che si ricostruisce piu' spesso.
+			options_params = URL_OPTIONS % (list_type, tmdb_id, is_external)
+			extras_params = URL_EXTRAS % (tmdb_id, is_external)
+			url_params = URL_PLAY % (tmdb_id, season, episode)
+			cm_append(('[B]Opzioni[/B]', run_plugin % options_params))
+			cm_append(('[B]Opzioni di riproduzione[/B]', run_plugin % (URL_PLAYBACK_CHOICE % (tmdb_id, season, episode, episode_id))))
 			if not unaired:
 				if playcount:
-					cm_append(('[B]Mark Unwatched %s[/B]' % watched_title, run_plugin % build_url({'mode': 'watched_status.mark_episode', 'action': 'mark_as_unwatched',
+					cm_append(('[B]Segna come non visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_episode', 'action': 'mark_as_unwatched',
 												'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'season': season, 'episode': episode,  'title': title})))
-				else: cm_append(('[B]Mark Watched %s[/B]' % watched_title, run_plugin % build_url({'mode': 'watched_status.mark_episode', 'action': 'mark_as_watched',
+				else: cm_append(('[B]Segna come visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_episode', 'action': 'mark_as_watched',
 												'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'season': season, 'episode': episode,  'title': title})))
 				if progress:
-					cm_append(('[B]Clear Progress[/B]', run_plugin % build_url({'mode': 'watched_status.erase_bookmark', 'media_type': 'episode', 'tmdb_id': tmdb_id,
-												'season': season, 'episode': episode, 'refresh': 'true'})))
+					cm_append(('[B]Azzera avanzamento[/B]', run_plugin % (URL_ERASE_BOOKMARK % (tmdb_id, season, episode))))
 				if unwatched_info:
 					total_aired_eps = meta_get('total_aired_eps')
 					total_unwatched = get_watched_status_tvshow(watched_info_tvshow(watched_db).get(string(tmdb_id), None), total_aired_eps)[2]
 					if total_aired_eps != total_unwatched: set_properties({'watchedepisodes': '1', 'unwatchedepisodes': string(total_unwatched)})
-			if all_episodes:
-				if all_episodes == 1 and meta_get('total_seasons') > 1: browse_params = {'mode': 'build_season_list', 'tmdb_id': tmdb_id}
-				else: browse_params = {'mode': 'build_episode_list', 'tmdb_id': tmdb_id, 'season': 'all'}
-			else: browse_params = {'mode': 'build_season_list', 'tmdb_id': tmdb_id}
-			cm_append(('[B]Browse[/B]', window_command % build_url(browse_params)))
+			if all_episodes == 1 and meta_get('total_seasons') > 1: browse_params = URL_SEASON_LIST % tmdb_id
+			elif all_episodes: browse_params = URL_ALL_EPISODES % tmdb_id
+			else: browse_params = URL_SEASON_LIST % tmdb_id
+			cm_append(('[B]Sfoglia[/B]', window_command % browse_params))
+			# "Refresh" e' il superset di "Reload": tenuta solo quella, come nei film.
 			if is_external:
-				cm_append(('[B]Refresh Widgets[/B]', run_plugin % build_url({'mode': 'refresh_widgets'})))
-				cm_append(('[B]Reload Widgets[/B]', run_plugin % build_url({'mode': 'kodi_refresh'})))
+				cm_append(('[B]Aggiorna widget[/B]', run_plugin % URL_REFRESH_WIDGETS))
+			_ph2 = _perf()
 			info_tag = listitem.getVideoInfoTag()
 			info_tag.setMediaType('episode'), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(title), info_tag.setTitle(display), info_tag.setGenres(genre)
 			info_tag.setPlaycount(playcount), info_tag.setSeason(season), info_tag.setEpisode(episode), info_tag.setPlot(item_get('plot') or tvshow_plot)
@@ -258,21 +291,29 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			info_tag.setStudios(studio), info_tag.setWriters(item_get('writer')), info_tag.setDirectors(item_get('director'))
 			info_tag.setYear(int(year)), info_tag.setRating(item_get('rating')), info_tag.setVotes(item_get('votes')), info_tag.setMpaa(mpaa)
 			# Niente setCast: la skin del cast legge solo i nomi. Vedi kodi_utils.cast_label.
+			_ph3 = _perf()
 			_cast_names = cast_label(cast + item_get('guest_stars', []))
 			if progress and not unaired:
 				info_tag.setResumePoint(float(progress))
 				set_properties({'WatchedProgress': progress})
+			_ph4 = _perf()
 			listitem.setLabel(display)
+			_ph5 = _perf()
 			listitem.addContextMenuItems(cm)
+			_ph6 = _perf()
 			listitem.setArt({'poster': show_poster, 'fanart': show_fanart, 'thumb': thumb, 'icon':thumb, 'clearlogo': show_clearlogo, 'landscape': show_landscape,
 							'season.poster': season_poster, 'tvshow.poster': show_poster, 'tvshow.clearlogo': show_clearlogo})
+			_ph7 = _perf()
 			_p = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'episode_type': episode_type}
 			if _cast_names: _p['fenlight.cast'] = _cast_names
 			set_properties(_p)
+			paginator.phase_record(_ph1 - _ph0, _ph2 - _ph1, _ph3 - _ph2, _ph4 - _ph3, _ph5 - _ph4, _ph6 - _ph5, _ph7 - _ph6, _perf() - _ph7)
 			item_list_append({'list_items': (url_params, listitem, False), 'first_aired': premiered, 'name': '%s - %sx%s' % (title, str_season_zfill2, str_episode_zfill2),
 							'unaired': unaired, 'last_played': ep_data_get('last_played', resinsert), 'sort_order': _position, 'unwatched': ep_data_get('unwatched')})
 		except: pass
 	handle, is_external, is_home, category_name = int(sys.argv[1]), external(), home(), 'Episodes'
+	_t0 = paginator.now()
+	paginator.phase_reset()
 	item_list, airing_today, unwatched, return_results = [], [], [], False
 	resinsert = ''
 	item_list_append = item_list.append
@@ -325,6 +366,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 	else: data, return_results = sorted(params, key=lambda i: i['custom_order']), True
 	list_type_compare = list_type.split('episode.')[1]
 	list_type_starts_with = list_type_compare.startswith
+	_t1 = paginator.now()
 	threads = list(make_thread_list_enumerate(_process, data))
 	[i.join() for i in threads]
 	if return_results:
@@ -358,6 +400,9 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 										key=lambda i: i['first_aired'])
 				item_list = [i for i in item_list if not i in airing_today]
 				item_list = airing_today + item_list
+	paginator.log_build('episodi singoli', list_type, _t0, _t1, paginator.now(), len(item_list))
+	paginator.phase_report('episodi singoli %s' % list_type,
+						('meta', 'prep+cm', 'infotag', 'cast+resume', 'setLabel', 'ctxmenu', 'setArt', 'props'))
 	add_items(handle, [i['list_items'] for i in item_list])
 	set_content(handle, content_type)
 	set_category(handle, category_name)

@@ -29,15 +29,11 @@ _BASE = 'plugin://plugin.video.fenlight/?'
 URL_EXTRAS = _BASE + 'mode=extras_menu_choice&tmdb_id=%s&media_type=tvshow&is_external=%s&is_anime=%s'
 URL_OPTIONS = _BASE + 'mode=options_menu_choice&content=tvshow&tmdb_id=%s&is_external=%s&is_anime=%s'
 URL_MORE_LIKE_THIS = _BASE + 'mode=build_tvshow_list&action=imdb_more_like_this&key_id=%s&name_id=%s&is_external=%s'
-URL_RECOMMENDATIONS = _BASE + 'mode=build_tvshow_list&action=tmdb_tv_recommendations&key_id=%s&name_id=%s'
 URL_SEASON_LIST = _BASE + 'mode=build_season_list&tmdb_id=%s'
 URL_ALL_EPISODES = _BASE + 'mode=build_episode_list&tmdb_id=%s&season=all'
-URL_IN_TRAKT_LISTS = _BASE + 'mode=trakt.list.get_trakt_lists_with_media&media_type=tvshow&imdb_id=%s&name_id=%s'
-URL_TRAKT_MANAGER = _BASE + 'mode=trakt_manager_choice&tmdb_id=%s&imdb_id=%s&tvdb_id=%s&media_type=tvshow'
-URL_FAVORITES = _BASE + 'mode=favorites_choice&media_type=tvshow&tmdb_id=%s&is_anime=%s'
 URL_MARK_TVSHOW = _BASE + 'mode=watched_status.mark_tvshow&action=%s&tmdb_id=%s&tvdb_id=%s'
-URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets'
-URL_KODI_REFRESH = _BASE + 'mode=kodi_refresh'
+URL_WATCHLIST_TOGGLE = _BASE + 'mode=trakt.watchlist_toggle&media_type=tvshow&tmdb_id=%s&in_watchlist=%s'
+URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets&user=true'
 URL_EXIT_MEDIA_MENU = _BASE + 'mode=navigator.exit_media_menu'
 main = ('tmdb_tv_popular', 'tmdb_tv_popular_today', 'tmdb_tv_premieres', 'tmdb_tv_airing_today','tmdb_tv_on_the_air','tmdb_tv_upcoming',
 'tmdb_anime_popular', 'tmdb_anime_popular_recent', 'tmdb_anime_premieres', 'tmdb_anime_upcoming', 'tmdb_anime_on_the_air')
@@ -81,6 +77,7 @@ class TVShows:
 
 	def fetch_list(self):
 		handle = int(sys.argv[1])
+		_t0 = paginator.now()
 		try:
 			is_random = self.params_get('random', 'false') == 'true'
 			try: page_no = int(self.params_get('new_page', '1'))
@@ -170,14 +167,17 @@ class TVShows:
 			# Il nome della lista si risolve QUI, una volta, da cache. Nell'URL della voce costava una
 			# percent-codifica del titolo per ogni elemento di ogni lista costruita.
 			self._resolve_list_name()
+			_t1 = paginator.now()
 			items = self.worker()
+			paginator.log_build('tvshows', self.action, _t0, _t1, paginator.now(), len(items) if items else 0,
+						getattr(self, '_pg_pages', None), self.params_get('pages'))
 			if self.search_query and paginator.search_is_stale(self.search_query):
 				# A newer keystroke arrived while this build ran: drop the result so it can't overwrite
 				# the live container / head bridge. The directory is closed empty in the tail below.
 				pass
 			else:
 				add_items(handle, items)
-				if self.interactive: paginator.set_head(self.pg_key, items)
+				if self.interactive: paginator.set_head(self.pg_key, items, self.action)
 				if self.new_page and not self.widget_hide_next_page:
 							self.new_page.update({'mode': 'build_tvshow_list', 'action': self.action, 'category_name': self.category_name})
 							add_dir(self.new_page, 'Next Page (%s) >>' % self.new_page['new_page'], handle, 'nextpage', nextpage_landscape)
@@ -196,12 +196,14 @@ class TVShows:
 
 	def build_tvshow_content(self, _position, _id):
 		try:
+			_b0 = _perf()
 			# Vedi Movies.build_movie_content: prima il lotto letto in sequenza fuori dal pool.
 			_pk = meta_prefetch_key(self.id_type, _id, 'tvshow')
 			meta = self.meta_prefetch.get(_pk) if _pk else None
 			if meta is None:
 				meta = tvshow_meta(self.id_type, _id, self.tmdb_api_key, self.mpaa_region, self.current_date, self.current_time)
 			if not meta or 'blank_entry' in meta: return
+			_b1 = _perf()
 			cm = []
 			cm_append = cm.append
 			listitem = make_listitem()
@@ -227,34 +229,40 @@ class TVShows:
 				if self.all_episodes == 1 and total_seasons > 1: url_params = URL_SEASON_LIST % tmdb_id
 				else: url_params = URL_ALL_EPISODES % tmdb_id
 			else: url_params = URL_SEASON_LIST % tmdb_id
+			# Stesse voci dei film (vedi movies.py). Extras e le navigazioni secondarie non sono piu'
+			# voci di menu: extras_params e more_like_this_params restano pubblicate come proprieta',
+			# quindi i tasti rapidi di custom_keys.py continuano a funzionare. Da undici voci a cinque,
+			# e addContextMenuItems si paga per OGNI serie costruita.
 			if self.open_extras:
-				cm_append(('[B]Browse[/B]', container_update % url_params))
+				cm_append(('[B]Sfoglia[/B]', container_update % url_params))
 				url_params = extras_params
-			else: cm_append(('[B]Extras[/B]', run_plugin % extras_params))
-			cm_append(('[B]Options[/B]', run_plugin % options_params))
-			cm_append(('[B]Browse Recommended[/B]', self.window_command % (URL_RECOMMENDATIONS % (tmdb_id, tmdb_id))))
-			cm_append(('[B]Browse More Like This[/B]', self.window_command % more_like_this_params))
-			if imdb_id: cm_append(('[B]In Trakt Lists[/B]', self.window_command % (URL_IN_TRAKT_LISTS % (imdb_id, tmdb_id))))
-			cm_append(('[B]Trakt Lists Manager[/B]', run_plugin % (URL_TRAKT_MANAGER % (tmdb_id, imdb_id, tvdb_id))))
-			cm_append(('[B]Favorites Manager[/B]', run_plugin % (URL_FAVORITES % (tmdb_id, self.is_anime))))
+			cm_append(('[B]Opzioni[/B]', run_plugin % options_params))
 			if playcount:
 				if self.widget_hide_watched: return
 			elif not unaired:
-				cm_append(('[B]Mark Watched %s[/B]' % self.watched_title,
+				cm_append(('[B]Segna come visto[/B]',
 							run_plugin % (URL_MARK_TVSHOW % ('mark_as_watched', tmdb_id, tvdb_id))))
 			if progress:
-				cm_append(('[B]Mark Unwatched %s[/B]' % self.watched_title,
+				cm_append(('[B]Segna come non visto[/B]',
 							run_plugin % (URL_MARK_TVSHOW % ('mark_as_unwatched', tmdb_id, tvdb_id))))
+			in_watchlist = string(tmdb_id) in self.watchlist_ids
+			cm_append((('[B]Rimuovi dalla watchlist[/B]' if in_watchlist else '[B]Aggiungi alla watchlist[/B]'),
+						run_plugin % (URL_WATCHLIST_TOGGLE % (tmdb_id, 'true' if in_watchlist else 'false'))))
 			set_properties({'watchedepisodes': string(total_watched), 'unwatchedepisodes': string(total_unwatched)})
 			set_properties({'watchedprogress': visible_progress, 'totalepisodes': string(total_aired_eps), 'totalseasons': string(total_seasons)})
+			# "Refresh" e' il superset di "Reload": alza fenlight.refresh_widgets e poi chiama comunque
+			# kodi_refresh. Tenuta solo quella, come nei film.
 			if self.is_external:
-				cm_append(('[B]Refresh Widgets[/B]', run_plugin % URL_REFRESH_WIDGETS))
-				cm_append(('[B]Reload Widgets[/B]', run_plugin % URL_KODI_REFRESH))
-			else: cm_append(('[B]Exit TV Show List[/B]', run_plugin % URL_EXIT_MEDIA_MENU))
+				cm_append(('[B]Aggiorna widget[/B]', run_plugin % URL_REFRESH_WIDGETS))
+			else: cm_append(('[B]Esci dalla lista[/B]', run_plugin % URL_EXIT_MEDIA_MENU))
+			_b2 = _perf()
 			listitem.setLabel(title)
+			_b3 = _perf()
 			listitem.addContextMenuItems(cm)
+			_b4 = _perf()
 			listitem.setArt({'poster': poster, 'fanart': fanart, 'icon': poster, 'clearlogo': clearlogo, 'landscape': landscape, 'thumb': thumb, 'icon': landscape,
 							'tvshow.poster': poster, 'tvshow.clearlogo': clearlogo})
+			_b5 = _perf()
 			info_tag = listitem.getVideoInfoTag()
 			info_tag.setMediaType('tvshow'), info_tag.setTitle(title), info_tag.setTvShowTitle(title), info_tag.setOriginalTitle(meta_get('original_title'))
 			info_tag.setUniqueIDs({'imdb': imdb_id, 'tmdb': string(tmdb_id), 'tvdb': string(tvdb_id)}), info_tag.setIMDBNumber(imdb_id)
@@ -264,6 +272,7 @@ class TVShows:
 			info_tag.setTrailer(meta_get('trailer')), info_tag.setPremiered(premiered)
 			info_tag.setTvShowStatus(meta_get('status')), info_tag.setRating(meta_get('rating'))
 			# Niente setCast: la skin del cast legge solo i nomi. Vedi kodi_utils.cast_label.
+			_b6 = _perf()
 			_cast_props = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
 							'fenlight.more_like_this_params': more_like_this_params}
 			cast_names = cast_label(meta_get('cast'))
@@ -281,6 +290,7 @@ class TVShows:
 				_tmdb = meta_get('rating')
 				if _tmdb: _rp['TMDb_Rating'] = str(_tmdb)
 				if _rp: set_properties(_rp)
+			paginator.phase_record(_b1 - _b0, _b2 - _b1, _b3 - _b2, _b4 - _b3, _b5 - _b4, _b6 - _b5, _perf() - _b6)
 			self.append(((url_params, listitem, self.is_folder), _position))
 		except: pass
 
@@ -292,7 +302,15 @@ class TVShows:
 		self.watched_indicators = watched_indicators()
 		self.watched_title = 'Trakt' if self.watched_indicators == 1 else 'Fen Light'
 		self.watched_info = watched_info_tvshow(get_database(self.watched_indicators))
+		# Watchlist Trakt: UNA lettura da cache per costruzione, non una per elemento. Serve solo a
+		# decidere se la voce dice Aggiungi o Rimuovi. Import pigro: senza Trakt attivo non si paga il
+		# caricamento di trakt_api a ogni lista, e con reuselanguageinvoker=false si pagherebbe davvero.
+		if self.watched_indicators == 1:
+			from apis.trakt_api import watchlist_tmdb_ids
+			self.watchlist_ids = watchlist_tmdb_ids('shows')
+		else: self.watchlist_ids = set()
 		self.window_command = 'ActivateWindow(Videos,%s,return)' if self.is_external else 'Container.Update(%s)'
+		paginator.phase_reset()
 		# UNA lettura per l'intera lista, in sequenza. Vedi meta_cache.get_many.
 		_pf0 = _perf()
 		_ids = [i[1] for i in self.list] if self.custom_order else list(self.list)
@@ -308,6 +326,8 @@ class TVShows:
 			for _position, _id in enumerate(self.list): self.build_tvshow_content(_position, _id)
 			self.items.sort(key=lambda k: k[1])
 			self.items = [i[0] for i in self.items]
+		paginator.phase_report('tvshows %s' % self.action,
+							('meta', 'prep+cm', 'setLabel', 'ctxmenu', 'setArt', 'infotag', 'cast+props'))
 		return self.items
 
 	# Prefisso del nome lista per azione: name_id porta solo il tmdb_id della serie di partenza,

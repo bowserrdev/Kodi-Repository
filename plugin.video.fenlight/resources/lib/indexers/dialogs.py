@@ -15,6 +15,7 @@ ok_dialog, container_content, close_all_dialog, external = kodi_utils.ok_dialog,
 set_property, get_icon, kodi_dialog, open_settings = kodi_utils.set_property, kodi_utils.get_icon, kodi_utils.kodi_dialog, kodi_utils.open_settings
 show_busy_dialog, hide_busy_dialog, notification, confirm_dialog = kodi_utils.show_busy_dialog, kodi_utils.hide_busy_dialog, kodi_utils.notification, kodi_utils.confirm_dialog
 external_scraper_settings, kodi_refresh, autoscrape_next_episode = kodi_utils.external_scraper_settings, kodi_utils.kodi_refresh, settings.autoscrape_next_episode
+kodi_refresh_ids = kodi_utils.kodi_refresh_ids
 select_dialog, autoplay_next_episode, quality_filter = kodi_utils.select_dialog, settings.autoplay_next_episode, settings.quality_filter
 numeric_input, container_update, activate_window, folder_path = kodi_utils.numeric_input, kodi_utils.container_update, kodi_utils.activate_window, kodi_utils.folder_path
 poster_empty, audio_filters, mpaa_region, preferred_autoplay = kodi_utils.empty_poster, settings.audio_filters, settings.mpaa_region, settings.preferred_autoplay
@@ -505,7 +506,12 @@ def favorites_choice(params):
 	if not confirm_dialog(heading=heading, text=text): return
 	success = function(media_type, tmdb_id, title)
 	if success:
-		if refresh: kodi_refresh()
+		# Togliere un preferito cambia i contenitori che mostrano quel titolo. Nella finestra dei
+		# preferiti il sondaggio non trova widget e si ricade sul globale, che li' serve davvero;
+		# chiamato da un widget invece si ricostruisce solo quello.
+		if refresh:
+			if tmdb_id: kodi_refresh_ids([tmdb_id], coalesce=False)
+			else: kodi_refresh(coalesce=False)
 		notification('Success', 3500)
 	else: notification('Error', 3500)
 	if people_favorite and success: return text
