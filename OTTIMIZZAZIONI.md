@@ -5384,3 +5384,80 @@ per un solo widget.**
 
 Marcare un episodio come visto e uno come non visto, poi mandare il log. La riga nuova
 `rebuild completo, motivo: ...` dira' quale delle tre strade porta li', e da quella dipende la cura.
+
+---
+
+## Lotto 46 — Il rebuild Trakt se lo innescava la nostra stessa scrittura
+
+La riga diagnostica del lotto 45 ha risposto al primo colpo. Log della stick del 22/08:
+
+```
+13:13:26.534  rebuild completo, motivo: nessun play piu' recente del piu' recente locale (rimozioni?)
+              | ultimo locale=2026-08-22T11:12:54.000Z | pagine=6
+```
+
+`11:12:54Z` con l'Italia a UTC+2 e' **13:12:54 locali**, cioe' **due secondi dopo il CloseFile** delle
+13:12:52.758. Quel "piu' recente locale" non veniva da Trakt: era **la marcatura che avevamo appena
+scritto noi**.
+
+### Il cerchio, dimostrato nel codice
+
+```python
+# watched_status.py:17
+indicators_dict = {0: 'watched_db', 1: 'trakt_db'}
+```
+
+Con gli indicatori Trakt, `watched_status_mark` scrive nel **trakt_db** -- lo stesso database che
+`last_watched_episode_date()` interroga per sapere "fin dove sono sincronizzato".
+
+Quindi, a ogni marcatura:
+
+1. scriviamo la riga locale in `trakt_db`, con `last_played` = adesso;
+2. il monitor legge `last_synced` e trova **la nostra stessa riga**;
+3. nessun play remoto risulta piu' recente -> `new_plays` vuota;
+4. la condizione `if new_plays and len(new_plays) < len(history)` fallisce -> **rebuild completo**:
+   6 pagine di cronologia, 1287 play, 1275 episodi, ~4 secondi sulla stick.
+
+**Ogni marcatura si autoinnescava il lavoro piu' pesante dell'addon.** La via incrementale non poteva
+mai scattare per le modifiche fatte da questo dispositivo: solo per quelle di un altro.
+
+### La cura
+
+Un timbro: chi spinge su Trakt (`_mark_on_trakt`) segna `fenlight.trakt.self_mark`. Il monitor, se
+`new_plays` e' vuota **e** il timbro e' recente (< 120 s), salta il rebuild -- non c'e' niente da
+ricostruire, la riga locale e' gia' scritta.
+
+Vale anche per le **rimozioni**, perche' anche quelle le applica gia' il percorso locale. Le modifiche
+fatte da un **altro dispositivo** portano play piu' recenti del nostro ultimo, quindi continuano a
+passare dalla via incrementale. Se il timbro scade, si ricostruisce come prima: la rete di sicurezza
+resta.
+
+### Il fuoco: stessa catena, numeri di questa sessione
+
+```
+13:12:52.758  CloseFile
+13:12:54.140  Control 521 in window 10025 has been asked to focus, but it can't
+13:13:01.817  episodes Season 1 ... | +8183 ms da CloseFile
+```
+
+La skin chiede il fuoco **7 secondi prima che la lista esista**. Fallisce, e il fuoco resta
+sull'elemento padre -- la scritta «Stagione N». E' esattamente quello che l'utente descrive.
+
+Distanze misurate in questa sessione: **+8183, +9288, +9471, +10466 ms**. Leggermente meglio della
+precedente (10,6-12,0 s), stesso ordine di grandezza.
+
+### Confermato funzionante
+
+`13:13:41.534  kodi_refresh accorpato: ricostruzione globale 0.02s fa` -- l'accorpamento ha preso un
+doppione arrivato a 20 ms di distanza.
+
+### Da verificare sul dispositivo
+
+1. Marca un episodio come **visto**: nel log deve comparire
+   `rebuild saltato: la modifica e' nostra ed e' gia' applicata in locale`, **non**
+   `watched episodes rebuild`.
+2. Stesso test con **non visto** (rimozione).
+3. Rileggere `+N ms da CloseFile`: e' il numero che dice se il tappo era davvero quello.
+4. Controllare dall'app Trakt che lo stato arrivi comunque.
+5. Cambiare qualcosa **dal telefono** e verificare che il badge compaia: e' la via incrementale, che
+   non deve essere stata toccata.
