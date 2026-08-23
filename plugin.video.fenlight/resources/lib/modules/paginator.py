@@ -234,7 +234,18 @@ def _build_cause(query):
 	# ricostruzione l'abbiamo ordinata noi. Senza nonce e' Kodi che rilegge il DirectoryProvider da
 	# sola -- cosa che fa a ogni ritorno della finestra in primo piano, ed e' l'ipotesi da verificare
 	# sulle ondate post-riproduzione.
-	if query.get(RELOAD_PARAM): return 'ricarica-mirata'
+	# Il nonce resta nel path del contenitore finche' non se ne ordina un altro: nel log del 23/08
+	# 'reload=1787487459568' e' rimasto per SEI minuti, e ogni rilettura spontanea di Kodi in quel
+	# periodo si presentava come 'ricarica-mirata'. Si confronta con l'ultimo nonce emesso e con
+	# l'istante in cui e' stato emesso: oltre la finestra, quel token e' solo un residuo.
+	_nonce = query.get(RELOAD_PARAM)
+	if _nonce:
+		try:
+			from time import time
+			# Il nonce E' l'istante di emissione in millisecondi: non serve nient'altro per datarlo.
+			if 0 < (time() - float(_nonce) / 1000.0) < 60: return 'ricarica-mirata'
+			return 'apertura/re-show (token scaduto)'
+		except: return 'ricarica-mirata'
 	if query.get('new_page') or query.get('paginate_start'): return 'paginazione'
 	# UpdateLibrary non lascia niente nel path: senza questo timbro le ricostruzioni che innesca
 	# sarebbero indistinguibili dalle re-show spontanee di Kodi, ed e' esattamente la distinzione che

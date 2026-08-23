@@ -202,6 +202,17 @@ class FenLightPlayer(xbmc_player):
 		try:
 			from time import time as _now
 			ku.set_property('fenlight.perf.closefile', str(_now()))
+			# Timbro "questa modifica e' nostra" anche quando NON marchiamo niente. Finora lo metteva
+			# solo watched_status._mark_on_trakt, cioe' solo se si superava la soglia di visto: chiudere
+			# un film a meta' mandava comunque uno scrobble stop a Trakt, il monitor lo rileggeva come
+			# cambiamento remoto e ordinava una ricostruzione GLOBALE di tutti i widget.
+			# Nel log della stick del 23/08: CloseFile 14:18:40.877 -> 'Trakt Update Performed'
+			# 14:18:45.895 -> 'DIAG refresh: GLOBALE (UpdateLibrary)' 14:18:48.472, e dietro otto
+			# ricostruzioni di widget in cinquanta secondi. E' la risposta alla domanda "perche' si
+			# aggiornano TUTTI i widget quando chiudo il player".
+			# episode -> tvshow: la guardia ragiona per database, non per tipo di media.
+			ku.set_property('fenlight.trakt.self_mark',
+							'%s|%s' % (_now(), 'tvshow' if self.media_type == 'episode' else 'movie'))
 		except: pass
 		if self.scrobble_started:
 			Thread(target=trakt_scrobble_stop, args=(self.media_type, self.tmdb_id, self.current_point, self._trakt_season, self._trakt_episode)).start()
@@ -253,7 +264,12 @@ class FenLightPlayer(xbmc_player):
 	# costruzione 23:15:20.219), quindi una finestra corta non la vedrebbe mai e continueremmo a
 	# ordinare la seconda ondata. Attendere non costa una tempesta: e' un thread fermo dentro un
 	# interprete gia' vivo, contro tre-cinque ricostruzioni da 2.5-4 s l'una.
-	REBUILD_WAIT_SECONDS = 20
+	# Misurato sulla stick il 23/08: la rilettura spontanea di Kodi arriva a 4.8s, 9.7s e 13.2s dalla
+	# chiusura. Venti secondi la coprivano sempre, ma quando NON arrivava si finiva a ordinare una
+	# ricarica venti secondi dopo l'evento -- cioe' mentre l'utente sta gia' facendo altro, con la
+	# lista che si ricostruisce sotto le sue dita. Quattordici copre i casi osservati e accorcia di
+	# sei secondi il ritardo peggiore.
+	REBUILD_WAIT_SECONDS = 14
 
 	def kodi_rebuilt_by_itself(self):
 		"""Vero se Kodi ha gia' riletto le cartelle per conto suo dopo la chiusura del player.
