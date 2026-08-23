@@ -782,8 +782,8 @@ def _get_all_sync_pages(path, with_auth=True):
 # ricostruisce come prima, quindi il caso peggiore e' il comportamento vecchio, mai un dato perso.
 TRAKT_SELF_MARK_SECONDS = 120
 
-def _self_mark_recent(cache_media_type):
-	"""Vero se la marcatura appena fatta da NOI, di questo tipo, e' abbastanza recente.
+def self_mark_recent(cache_media_type=None):
+	"""Vero se la marcatura appena fatta da NOI e' abbastanza recente. Senza tipo: una qualsiasi.
 
 	Con gli indicatori Trakt, watched_status_mark scrive nello stesso database che le sincronizzazioni
 	qui sotto ricostruiscono (indicators_dict: 1 -> trakt_db). Quindi ogni nostra marcatura fa
@@ -797,7 +797,9 @@ def _self_mark_recent(cache_media_type):
 		stamp = float(parts[0])
 		kind = parts[1] if len(parts) > 1 else ''
 		# Timbro vecchio stile (solo l'istante): non sapendo il tipo non si puo' escludere niente.
-		if kind and kind != cache_media_type: return False
+		# cache_media_type None = "una marcatura qualsiasi", che e' cio' che serve al monitor: li' la
+		# domanda non e' quale database ricostruire, ma se c'e' qualcosa di nuovo DA MOSTRARE.
+		if cache_media_type and kind and kind != cache_media_type: return False
 		return (time.time() - stamp) < TRAKT_SELF_MARK_SECONDS
 	except: return False
 
@@ -806,7 +808,7 @@ def trakt_indicators_movies():
 	# solo il rebuild integrale a ogni cambio di attivita'. Nel log della stick del 22/08 alle 23:16:13
 	# sono state scaricate 6 pagine per ottenere '599 da Trakt, 599 in cache, 0 scartati' -- cioe' per
 	# non cambiare una riga -- e per giunta mentre la stessa CPU stava costruendo la lista stagioni.
-	if _self_mark_recent('movie'):
+	if self_mark_recent('movie'):
 		return logger('FenLight Trakt', 'watched movies: rebuild saltato, la modifica e' + "'" + ' nostra ed e' + "'" + ' gia' + "'" + ' applicata in locale')
 	# Due canali silenziosi facevano sparire il badge "visto" da un sottoinsieme apparentemente casuale
 	# di film, senza lasciare traccia nel log: get_trakt_movie_id restituisce None quando l'id TMDb non
@@ -898,7 +900,7 @@ def trakt_indicators_tv():
 	# ricostruire. Vale anche per le rimozioni, perche' anche quelle le scrive gia' il percorso locale.
 	# Finestra stretta: se scade, si ricostruisce come prima. Le modifiche fatte da un ALTRO
 	# dispositivo portano play piu' recenti, quindi passano dalla via incrementale qui sopra.
-	if not new_plays and last_synced and _self_mark_recent('tvshow'):
+	if not new_plays and last_synced and self_mark_recent('tvshow'):
 		return logger('FenLight Trakt', 'watched episodes: rebuild saltato, la modifica e' + "'" + ' nostra ed e' + "'" + ' gia' + "'" + ' applicata in locale')
 	# full rebuild: no stored history, plays were removed, or more new plays than a single page holds
 	# PERF: il rebuild completo scarica 6 pagine di cronologia e ricostruisce 1274 episodi. Sul Mi

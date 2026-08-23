@@ -116,18 +116,19 @@ def lookahead_pages():
 	except: value = 1
 	return max(1, value)
 
-def max_pages():
-	# Tetto alle pagine che UN widget puo' accumulare. Il rapporto e' a cricchetto: ogni paginazione
-	# allarga per sempre cio' che OGNI ricostruzione successiva dovra' ricostruire, e non torna mai
-	# indietro. Nel log della stick del 22/08 lo si vede crescere 48 -> 62 -> 87 elementi nel giro di
-	# un minuto, con la ricostruzione da 87 arrivata a 4.35s -- e quel costo si paga poi a ogni
-	# riproduzione, a ogni marcatura, per tutta la sessione.
-	# Raggiunto il tetto il widget smette di ALLUNGARSI. Nessuna lista si accorcia mai e la posizione
-	# non salta: semplicemente non si carica altro. Sul valore si puo' discutere; sull'assenza
-	# di un limite no.
-	try: value = int(get_setting('fenlight.paginate.max_pages', '8'))
-	except: value = 8
-	return max(2, value)
+def max_items():
+	# Tetto agli ELEMENTI che un widget puo' arrivare a mostrare. Contare le PAGINE sarebbe la misura
+	# sbagliata: con il filtro doppiaggio una pagina puo' rendere pochissimi elementi o nessuno, quindi
+	# lo stesso numero di pagine produce liste di lunghezze molto diverse. Il costo che vogliamo
+	# limitare, invece, e' rigorosamente per elemento -- la consegna a Kodi misura ~20 ms/elemento
+	# a macchina scarica e fino a 250 sotto contesa (log stick 23/08).
+	# Il rapporto e' a cricchetto: ogni paginazione allarga PER SEMPRE cio' che ogni ricostruzione
+	# successiva dovra' ricostruire e riconsegnare. Nel log si vede crescere 48 -> 62 -> 87 -> 115.
+	# Raggiunto il tetto il widget smette di ALLUNGARSI: nessuna lista si accorcia mai e la posizione
+	# non salta, semplicemente non si carica altro.
+	try: value = int(get_setting('fenlight.paginate.max_items', '75'))
+	except: value = 75
+	return max(20, value)
 
 # Hard ceiling on the EXTRA raw pages a fill (see load_cumulative min_items) may fetch beyond the
 # requested count. A sparse query -- one whose results are mostly filtered out (server-side for text
@@ -235,6 +236,15 @@ def _build_cause(query):
 	# sulle ondate post-riproduzione.
 	if query.get(RELOAD_PARAM): return 'ricarica-mirata'
 	if query.get('new_page') or query.get('paginate_start'): return 'paginazione'
+	# UpdateLibrary non lascia niente nel path: senza questo timbro le ricostruzioni che innesca
+	# sarebbero indistinguibili dalle re-show spontanee di Kodi, ed e' esattamente la distinzione che
+	# serve per sapere quante ondate ci stiamo procurando da soli.
+	try:
+		from time import time
+		from modules.kodi_utils import get_property
+		_u = float(get_property('fenlight.diag.updatelibrary') or 0)
+		if _u and 0 < (time() - _u) < 30: return 'refresh-globale'
+	except: pass
 	return 'apertura/re-show'
 
 def _diag_note(t_built):
@@ -518,6 +528,16 @@ def set_head(key, items, action=None):
 	from modules.kodi_utils import set_property, clear_property
 	count = len(items) if items else 0
 	set_property(BUILT_PROP % key, str(count))
+	# Il tetto si applica QUI e non in set_state: questo e' l'unico punto che conosce quanti elementi
+	# sono stati COSTRUITI davvero, cioe' dopo il filtro doppiaggio. Spegnere has_more e' il segnale
+	# che il watcher legge per decidere se caricare oltre; applicare invece un tetto a raw_pages
+	# accorcerebbe una lista gia' mostrata a ogni ricostruzione, facendo saltare la posizione --
+	# esattamente cio' che il paginatore esiste per evitare.
+	cap = max_items()
+	if count >= cap:
+		set_property(HASMORE_PROP % key, 'false')
+		from modules.kodi_utils import logger
+		logger('Fen Light', 'DIAG paginazione: tetto di %s elementi raggiunto (%s costruiti), il widget non si allunga oltre' % (cap, count))
 	url = _first_item_url(items)
 	headhash = md5(url.encode('utf-8')).hexdigest() if url else None
 	if headhash:
@@ -644,15 +664,6 @@ def set_state(key, pages, has_more):
 	# Publishes the cumulative page count and whether more pages exist. LOADING is deliberately NOT
 	# cleared here -- set_head clears it after add_items, so the watcher can't re-fire mid-build.
 	from modules.kodi_utils import set_property
-	# Il tetto si applica QUI, spegnendo has_more: e' il segnale che il watcher legge per decidere se
-	# caricare oltre. Applicarlo invece a raw_pages accorcerebbe una lista gia' mostrata a ogni
-	# ricostruzione, facendo saltare la posizione -- esattamente cio' che il paginatore esiste per
-	# evitare.
-	cap = max_pages()
-	if has_more and pages >= cap:
-		has_more = False
-		from modules.kodi_utils import logger
-		logger('Fen Light', 'DIAG paginazione: tetto di %s pagine raggiunto, il widget non si allunga oltre' % cap)
 	set_property(PAGES_PROP % key, str(pages))
 	set_property(HASMORE_PROP % key, 'true' if has_more else 'false')
 	log('set_state key=%s pages=%s has_more=%s' % (short(key), pages, has_more))
