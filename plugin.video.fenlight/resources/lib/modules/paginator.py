@@ -251,7 +251,7 @@ def _diag_note(t_built):
 	"""Coda diagnostica della riga PERF: causa, doppione, riproduzione in corso."""
 	if not DIAG: return ''
 	try:
-		from modules.kodi_utils import get_property, set_property, get_visibility
+		from modules.kodi_utils import get_property, set_property
 		query = _current_query()
 		causa = _build_cause(query)
 		bits = ['causa=%s' % causa]
@@ -274,7 +274,10 @@ def _diag_note(t_built):
 					bits.append('DOPPIONE: stessa lista gia' + "'" + ' costruita %.0f ms fa (causa %s)' % (delta * 1000, prev[1]))
 		# Una costruzione mentre il video va e' CPU rubata alla decodifica su un dispositivo debole.
 		# Non la possiamo rifiutare -- e' Kodi che ce la chiede -- ma va contata.
-		if get_visibility('Player.HasVideo'): bits.append('DURANTE RIPRODUZIONE')
+		# Si legge una proprieta' di finestra, NON getCondVisibility: qui siamo nel mezzo della
+		# costruzione, con il thread GUI fermo ad aspettarci, e interrogare la GUI da qui e' la stessa
+		# trappola descritta in kodi_utils.end_directory.
+		if get_property('fenlight.playback.active') == 'true': bits.append('DURANTE RIPRODUZIONE')
 		return ' | ' + ' | '.join(bits)
 	except: return ''
 

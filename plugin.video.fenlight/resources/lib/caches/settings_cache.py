@@ -244,6 +244,7 @@ default_settings = [
 {'setting_id': 'paginate.interactive', 'setting_type': 'boolean', 'setting_default': 'true'},
 {'setting_id': 'paginate.initial_batch', 'setting_type': 'action', 'setting_default': '2', 'min_value': '2', 'max_value': '10'},
 {'setting_id': 'paginate.lookahead', 'setting_type': 'action', 'setting_default': '1', 'min_value': '1', 'max_value': '5'},
+{'setting_id': 'paginate.max_items', 'setting_type': 'action', 'setting_default': '75', 'min_value': '20', 'max_value': '500'},
 {'setting_id': 'recommend_service', 'setting_type': 'action', 'setting_default': '0', 'settings_options': {'0': 'Recommended (TMDb)', '1': 'More Like This (IMDb)'}},
 {'setting_id': 'recommend_seed', 'setting_type': 'action', 'setting_default': '5', 'settings_options': {'1': 'Last Watched Only', '2': 'Last 2 Watched',
 '3': 'Last 3 Watched', '4': 'Last 4 Watched', '5': 'Last 5 Watched'}},

@@ -139,21 +139,25 @@ def set_category(handle, label):
 LAST_BUILD_PROP = 'fenlight.lastbuild'
 
 def end_directory(handle, cacheToDisc=True):
-	try:
-		# Solo le costruzioni ESTERNE, cioe' i widget della skin. Timbrare anche la navigazione interna
-		# darebbe un falso positivo evidente: chiudere il player e mettersi subito a sfogliare una
-		# lista verrebbe scambiato per "Kodi ha gia' ricostruito i widget", e il refresh non
-		# arriverebbe mai.
-		if external():
-			from time import time
-			set_property(LAST_BUILD_PROP, str(time()))
-	except: pass
 	# La misura avvolge la chiamata, non la duplica: endOfDirectory resta una sola, fuori da qualunque
 	# try, cosi' nessun errore della diagnostica puo' impedirla o farla eseguire due volte.
 	from time import perf_counter as _pc
 	_t = _pc()
 	endOfDirectory(handle, cacheToDisc=cacheToDisc)
 	_eod = (_pc() - _t) * 1000
+	try:
+		# Il timbro sta DOPO endOfDirectory, e la ragione non e' stilistica. external() interroga la
+		# GUI (getInfoLabel su Container.PluginName): metterlo PRIMA significava chiedere il lock
+		# grafico mentre il thread GUI di Kodi e' fermo ad aspettare proprio questa cartella. E' la
+		# forma classica di un abbraccio mortale, e all'avvio -- cinque widget che costruiscono insieme
+		# mentre Kodi carica Home.xml -- e' il momento in cui e' piu' probabile. Su Android un Kodi
+		# bloccato viene ucciso dal sistema, che dall'esterno si vede come un crash.
+		# Dopo endOfDirectory il thread GUI e' libero: e' lo stesso punto in cui set_view_mode chiama
+		# gia' external() da sempre, senza mai aver dato problemi.
+		if external():
+			from time import time
+			set_property(LAST_BUILD_PROP, str(time()))
+	except: pass
 	if _DELIVERY[1]:
 		try:
 			_n, _add = _DELIVERY[1], _DELIVERY[0]

@@ -772,6 +772,15 @@
                       </item>
                       <item>
                           <visible>Container(2000).HasFocus(30)</visible>
+                          <visible>String.IsEqual(Window(10000).Property(fenlight.paginate.interactive),true)</visible>
+                          <property name="setting_label">    - Max Items per Widget</property>
+                          <property name="setting_type">numeric</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.paginate.max_items)]</property>
+                          <property name="setting_description">Highest number of items a widget may grow to while scrolling. The cost of rebuilding and handing a widget to Kodi is per item, so this bounds how expensive every later refresh becomes. Lower it on weak devices, raise it on strong ones.</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_numeric&amp;setting_id=paginate.max_items)</onclick>
+                      </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(30)</visible>
                           <property name="setting_label">Service used for Because You Watched</property>
                           <property name="setting_type">action</property>
                           <property name="setting_value">$INFO[Window(10000).Property(fenlight.recommend_service_name)]</property>
