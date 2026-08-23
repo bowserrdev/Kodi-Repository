@@ -22,6 +22,12 @@ class FenLightPlayer(xbmc_player):
 
 	def onAVStarted(self):
 		self._av_started = True
+		# Proprieta' di finestra normale, non una condizione della GUI. La diagnostica dei widget deve
+		# poter sapere se un video e' in corso senza chiamare getCondVisibility dal thread del plugin:
+		# quella chiamata attraversa il lock grafico proprio mentre il thread GUI aspetta la cartella
+		# che stiamo costruendo. Vedi paginator._diag_note e il commento in end_directory.
+		try: set_property('fenlight.playback.active', 'true')
+		except: pass
 
 	def onPlayBackSeek(self, time, seekOffset):
 		# Si aggiorna SOLO la posizione: nessuna chiamata a Trakt e nessuna marcatura qui.
@@ -187,6 +193,8 @@ class FenLightPlayer(xbmc_player):
 
 	def media_watched_marker(self, force_watched=False):
 		self.media_marked = True
+		try: clear_property('fenlight.playback.active')
+		except: pass
 		# PERF: timbro della chiusura, letto da paginator.log_build. Serve a UNA domanda sola: quanto
 		# ci mette Kodi a rileggere da solo la cartella aperta uscendo dal player? E' l'attesa che il
 		# sleep(2000) di run_media_progress deve coprire, e quel 2000 non e' mai stato misurato --
