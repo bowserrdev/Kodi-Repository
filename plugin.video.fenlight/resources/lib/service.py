@@ -75,6 +75,7 @@ class TraktMonitor:
 		logger('Fen Light', 'TraktMonitor Service Starting')
 		from apis.trakt_api import trakt_sync_activities
 		from caches.settings_cache import get_setting
+		from apis.trakt_api import self_mark_recent
 		from modules.kodi_utils import run_plugin, refresh_age
 		from modules.settings import trakt_sync_interval
 		monitor, player, window = xbmc.Monitor(), xbmc.Player(), xbmcgui.Window(10000)
@@ -99,7 +100,18 @@ class TraktMonitor:
 					# cambiamento che l'ha appena innescata. La sincronizzazione e' gia' avvenuta comunque:
 					# quello che si salta e' solo il ridisegno, e il dato compare alla prima ricostruzione
 					# successiva -- che con la navigazione arriva in pochi secondi.
-					if status == 'success' and get_setting('fenlight.trakt.refresh_widgets', 'false') == 'true':
+					# Se a svegliare la sincronizzazione e' stata la NOSTRA marcatura, l'interfaccia mostra
+					# gia' il dato giusto: mark_movie/mark_episode scrivono in locale e ricaricano i
+					# contenitori toccati PRIMA ancora di spingere su Trakt. Ordinare qui una
+					# ricostruzione GLOBALE vuol dire rifare da capo ogni widget della schermata per un
+					# cambiamento gia' visibile. Nel log della stick del 23/08 sono i due
+					# 'DIAG refresh: GLOBALE' delle 13:22:12 e 13:22:59: nessuno dei due aveva niente
+					# di nuovo da mostrare, e ognuno si e' portato dietro cinque ricostruzioni.
+					# La finestra dell'accorpamento qui sotto non li prendeva perche' guarda solo
+					# l'orologio, e fra la marcatura e il poll successivo passa piu' di quel tempo.
+					if status == 'success' and self_mark_recent():
+						logger('Fen Light', "TraktMonitor: refresh saltato, la modifica e' nostra ed e' gia' a schermo")
+					elif status == 'success' and get_setting('fenlight.trakt.refresh_widgets', 'false') == 'true':
 						age = refresh_age()
 						if age >= TRAKT_REFRESH_COALESCE: run_plugin({'mode': 'kodi_refresh'})
 						else: logger('Fen Light', 'TraktMonitor: refresh saltato, interfaccia ricostruita %.1fs fa' % age)

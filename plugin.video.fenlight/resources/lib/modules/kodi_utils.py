@@ -109,8 +109,21 @@ def make_listitem():
 def add_item(handle, url, listitem, isFolder):
 	addDirectoryItem(handle, url, listitem, isFolder)
 
+# PERF (lotto 48): la CONSEGNA a Kodi, cioe' l'unico pezzo grosso mai misurato. Tutta la
+# strumentazione finora si fermava a log_build, che scatta PRIMA di add_items; ma nel log della stick
+# del 23/08 l'invocazione dura 14.8s dove la costruzione ne dichiara 4.6 -- dieci secondi spesi qui.
+# Serve a decidere una cosa sola, e non e' una sfumatura: se il costo sta in add_items e' il PESO di
+# ogni elemento (proprieta', menu contestuale, artwork) e va alleggerito l'elemento; se sta in
+# endOfDirectory e' il NUMERO di elementi e il peso non c'entra. Le due correzioni sono diverse e
+# senza questa misura si sceglierebbe a caso.
+_DELIVERY = [0.0, 0]
+
 def add_items(handle, item_list):
+	from time import perf_counter as _pc
+	_t = _pc()
 	addDirectoryItems(handle, item_list)
+	_DELIVERY[0] = (_pc() - _t) * 1000
+	_DELIVERY[1] = len(item_list) if item_list else 0
 
 def set_content(handle, content):
 	setContent(handle, content)
@@ -135,7 +148,19 @@ def end_directory(handle, cacheToDisc=True):
 			from time import time
 			set_property(LAST_BUILD_PROP, str(time()))
 	except: pass
+	# La misura avvolge la chiamata, non la duplica: endOfDirectory resta una sola, fuori da qualunque
+	# try, cosi' nessun errore della diagnostica puo' impedirla o farla eseguire due volte.
+	from time import perf_counter as _pc
+	_t = _pc()
 	endOfDirectory(handle, cacheToDisc=cacheToDisc)
+	_eod = (_pc() - _t) * 1000
+	if _DELIVERY[1]:
+		try:
+			_n, _add = _DELIVERY[1], _DELIVERY[0]
+			_DELIVERY[0], _DELIVERY[1] = 0.0, 0
+			logger('FenLight PERF CONSEGNA', '%s elementi | add_items %.0f ms (%.2f ms/elemento) + endOfDirectory %.0f ms (%.2f ms/elemento) | consegna totale %.0f ms'
+					% (_n, _add, _add / _n, _eod, _eod / _n, _add + _eod))
+		except: pass
 
 def directory_built_since(since_ts):
 	try: return float(get_property(LAST_BUILD_PROP) or 0) > float(since_ts or 0)
@@ -421,6 +446,14 @@ def kodi_refresh(coalesce=True):
 	# rinunciando all'aggiornamento.
 	_stamp_refresh('*')
 	logger('Fen Light', 'DIAG refresh: GLOBALE (UpdateLibrary) | finestra=%s' % getCurrentWindowId())
+	# Timbro per la diagnostica: UpdateLibrary non lascia traccia nel path, quindi le ricostruzioni
+	# che innesca arrivavano nel log etichettate 'apertura/re-show', identiche a quelle spontanee di
+	# Kodi. Nel log del 23/08 le due cose erano indistinguibili e questo rendeva impossibile dire
+	# quante ricostruzioni fossero davvero nostre. Vedi paginator._build_cause.
+	try:
+		from time import time
+		set_property('fenlight.diag.updatelibrary', str(time()))
+	except: pass
 	execute_builtin('UpdateLibrary(video,special://skin/foo)')
 
 def kodi_refresh_ids(ids, actions=(), coalesce=True):
