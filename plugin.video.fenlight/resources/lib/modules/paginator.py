@@ -33,11 +33,72 @@ PG_REFRESH_PROP = 'fenlight.pg.refresh'
 # perche' il loro <content> contiene un $VAR dinamico.
 # Effetto collaterale voluto: il numero di pagine finisce NEL PATH, quindi e' stato durevole invece di
 # un flag transitorio. Sopravvive a una build lenta e al ritorno dalla riproduzione.
-CTL_PAGES_PROP = 'fenlight.pg.ctl%s.pages'
+#
+# Il nome porta anche la FINESTRA, e non e' un vezzo. Il generatore della skin assegna gli id dei
+# contenitori con $MATH[501 + {item_x}] (shortcuts/generator/data/setup/widgets_row.xml), senza alcuno
+# scarto per finestra: ogni pagina di widget riparte da 501. Con una sola finestra non si notava; con
+# due, 'ctl502' e' contemporaneamente un widget della Home, uno dell'hub 1101 e uno della ricerca.
+# Misurato il 24/08 alle 17:28: passando fra le due finestre il token condiviso veniva azzerato dal
+# controllo di cambio inquilino qui sotto, e il widget a schermo tornava al lotto iniziale
+# ('...Gary&pages=5' -> '...Gary' e Trending da 80 elementi a 26). Lo spazio dei nomi deve essere
+# (finestra, contenitore), non il solo contenitore. Vedi ctl_scope().
+CTL_PAGES_PROP = 'fenlight.pg.w%s.ctl%s.pages'
 # Chiave del widget che possiede attualmente quel contenitore. Gli id dei contenitori si ripetono fra
 # categorie diverse e una ricerca cambia chiave a ogni query: quando l'identita' cambia il token va
 # azzerato, altrimenti il widget nuovo erediterebbe le pagine di quello vecchio.
-CTL_KEY_PROP = 'fenlight.pg.ctl%s.key'
+CTL_KEY_PROP = 'fenlight.pg.w%s.ctl%s.key'
+# Home e' 10000 per Kodi ma 'home' per il generatore della skin (data/base/home_widgets.xml), che e'
+# chi scrive il nome dentro il <content>. I due lati devono chiamarlo allo stesso modo o la skin
+# leggerebbe una proprieta' che nessuno scrive.
+#
+# E per le finestre custom della skin i due lati NON usano lo stesso numero. Il file si chiama
+# Custom_1101_Hub.xml e la skin scrive 1101, ma Kodi assegna alla finestra WINDOW_HOME + 1101 = 11101.
+# Misurato il 24/08 alle 17:50 dal log di Kodi, che stampa l'id nelle righe dei tasti:
+#     17:50:45.593  HandleKey: right, window 10000        <- Home
+#     17:50:46.113  HandleKey: down,  window 11101        <- l'hub, dopo il suo Window Init
+# Senza questa traduzione il servizio scriveva 'w11101' mentre la skin leggeva 'w1101': sulla Home
+# tornava (10000 -> 'home') e nell'hub la paginazione spariva del tutto.
+# La conversione si applica SOLO all'intervallo delle finestre custom: 10025 (Video) e' una finestra
+# standard di Kodi e sottrarre 10000 li' darebbe '25', un nome inventato.
+CUSTOM_WINDOW_BASE = 10000
+CUSTOM_WINDOW_RANGE = (11000, 11999)
+def ctl_scope():
+	from modules.kodi_utils import getCurrentWindowId
+	try: wid = getCurrentWindowId()
+	except: return 'home'
+	if wid == 10000: return 'home'
+	if CUSTOM_WINDOW_RANGE[0] <= wid <= CUSTOM_WINDOW_RANGE[1]: return str(wid - CUSTOM_WINDOW_BASE)
+	return str(wid)
+
+# Censimento delle coppie (finestra, contenitore) gia' viste, come elenco di 'scope:cid'. Serve a
+# rispondere a una domanda che le infolabel non possono soddisfare: 'Container(N).ListItem...' risolve
+# solo per la finestra A SCHERMO, quindi da un hub non si puo' sapere cosa contengono i widget della
+# Home. Il token delle pagine invece e' una proprieta' della finestra Home, scrivibile da ovunque:
+# cambiarlo cambia il path di QUEL contenitore in QUELLA finestra, e Kodi lo rilegge quando la finestra
+# torna a schermo. Il censimento e' cio' che permette di indirizzarlo senza vederlo.
+# Lo compila WidgetRefresher/WidgetPaginator a ogni cambio di finestra (~20 infolabel, una volta per
+# passaggio), non a ogni giro.
+CTL_REGISTRY_PROP = 'fenlight.pg.ctlreg'
+# Quanti contenitori di ALTRE finestre ha toccato l'ultima ricarica mirata. Lo legge kodi_refresh_ids
+# nella stessa invocazione per sapere se il lavoro fuori dalla finestra a schermo e' stato fatto qui
+# (e allora non serve nessun rinvio) o se non c'era niente di censito da raggiungere.
+LAST_OTHER_HITS = [0]
+CTL_REGISTRY_CAP = 80
+
+def registry_pairs():
+	from modules.kodi_utils import get_property
+	return [p for p in (get_property(CTL_REGISTRY_PROP) or '').split(',') if ':' in p]
+
+def registry_add(scope, cid):
+	from modules.kodi_utils import get_property, set_property
+	pair = '%s:%s' % (scope, cid)
+	pairs = [p for p in (get_property(CTL_REGISTRY_PROP) or '').split(',') if p]
+	if pair in pairs: return
+	pairs.append(pair)
+	# Tetto per non far crescere la proprieta' senza limite in sessioni lunghe: si scartano le piu'
+	# vecchie, che al massimo tornano al primo passaggio successivo su quella finestra.
+	if len(pairs) > CTL_REGISTRY_CAP: pairs = pairs[-CTL_REGISTRY_CAP:]
+	set_property(CTL_REGISTRY_PROP, ','.join(pairs))
 # Bounded registry of recently-built widget keys, to clean up stale per-widget properties over long
 # sessions (each distinct search query mints a new key and leaks its prop set). Entry = 'key:headhash'.
 # Pruning only ever drops the OLDEST entries; the focused widget is always newest, and a pruned widget
@@ -209,7 +270,14 @@ _INVOCATIONS = [0]
 # c'era modo di distinguere le nostre -- ordinate dal token di ricarica mirata -- da quelle che Kodi
 # fa per conto suo quando la finestra torna in primo piano. Senza quella distinzione ogni ipotesi sul
 # doppione resta indimostrabile, e si finisce a correggere a caso.
-DIAG = True
+# Le domande a cui doveva rispondere hanno gia' risposta (causa=, DOPPIONE, la tempesta post-
+# riproduzione sono tutte diagnosi chiuse in OTTIMIZZAZIONI.md). _diag_note() fa una lettura-modifica-
+# scrittura di UNA proprieta' CONDIVISA (DIAG_BUILDS_PROP) a ogni singola costruzione: durante l'avvio,
+# quando piu' widget si costruiscono in parallelo in interpreti diversi, e' contesa fra processi sulla
+# stessa proprieta' di finestra, proprio nella finestra piu' delicata. Stesso criterio gia' applicato a
+# PERF_SELFTEST: spenta quando ha gia' dato le risposte che doveva dare. Riaccendibile a mano per una
+# diagnosi mirata; non deve piu' pesare sull'uso normale.
+DIAG = False
 # Le ultime costruzioni, per riconoscere i doppioni. UNA proprieta' con un tetto di voci invece di una
 # per chiave: le chiavi cambiano a ogni ricerca e una proprieta' per chiave lascerebbe rifiuti nelle
 # sessioni lunghe (stesso difetto gia' corretto con REGISTRY_CAP).
@@ -591,7 +659,9 @@ def refresh_containers_for_ids(ids, actions=()):
 	if not wanted and not wanted_actions: return 0
 	from time import time
 	nonce = '%d' % (time() * 1000)
-	seen_any, hit, skipped = False, 0, 0
+	# Lo scope si legge UNA volta: la finestra non cambia a meta' di questo ciclo.
+	scope = ctl_scope()
+	seen_any, hit, hit_other, skipped = False, 0, 0, 0
 	for cid in WIDGET_CONTAINER_IDS:
 		first_url = get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % cid)
 		if not first_url or 'plugin.video.fenlight' not in first_url: continue
@@ -607,12 +677,39 @@ def refresh_containers_for_ids(ids, actions=()):
 		# contenitore. Il numero di pagine va conservato tale e quale -- e' quello che l'utente vede --
 		# e il nonce si accoda come parametro a parte: 'reload' e' in _VOLATILE_PARAMS, quindi non
 		# entra nella chiave del widget e la paginazione non lo nota.
-		pages = (get_property(CTL_PAGES_PROP % cid) or '').split('&')[0]
+		pages = (get_property(CTL_PAGES_PROP % (scope, cid)) or '').split('&')[0]
 		if not pages: pages = str(raw_pages(key, initial_batch())) if key else str(initial_batch())
-		set_property(CTL_PAGES_PROP % cid, '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
+		set_property(CTL_PAGES_PROP % (scope, cid), '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
 		hit += 1
-	log('refresh_for_ids ids=%s azioni=%s contenitori=%s ricaricati=%s saltati=%s' %
-		(len(wanted), len(wanted_actions), 'trovati' if seen_any else 'NESSUNO', hit, skipped))
+	# --- le ALTRE finestre -------------------------------------------------------------------------
+	# Fin qui si e' guardata solo la finestra a schermo, perche' e' l'unica che le infolabel sanno
+	# leggere. Ma un widget della Home che contiene il film appena cambiato e' vecchio anche se in
+	# questo momento non si vede, e restava vecchio: dall'hub si aggiornava l'hub, dalla Home la Home.
+	# Segnalato il 24/08 -- 'non ha senso che gli effetti siano in due momenti diversi'.
+	# Qui la decisione si prende per TUTTE le finestre censite, nello stesso istante. Il contenuto non
+	# si ricostruisce subito per quelle non a schermo -- Kodi non puo' ricostruire un contenitore che
+	# non esiste ancora -- ma il loro path e' gia' cambiato, quindi la prima volta che la finestra
+	# torna a schermo Kodi legge il path nuovo. L'utente non vede mai un valore vecchio, e non si paga
+	# nulla per finestre che non guarda.
+	for pair in registry_pairs():
+		other_scope, _, cid = pair.partition(':')
+		if other_scope == scope: continue
+		key = get_property(CTL_KEY_PROP % (other_scope, cid))
+		if not key: continue
+		if get_property(ACTION_PROP % key) not in wanted_actions:
+			stored = get_property(IDS_PROP % key)
+			if stored and not wanted.intersection(stored.split(',')): continue
+			if not stored: continue  # mai pubblicato: qui non si puo' verificare nulla e non si vede niente
+		pages = (get_property(CTL_PAGES_PROP % (other_scope, cid)) or '').split('&')[0]
+		if not pages: pages = str(raw_pages(key, initial_batch()))
+		set_property(CTL_PAGES_PROP % (other_scope, cid), '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
+		hit_other += 1
+	LAST_OTHER_HITS[0] = hit_other
+	log('refresh_for_ids ids=%s azioni=%s contenitori=%s ricaricati=%s altre_finestre=%s saltati=%s' %
+		(len(wanted), len(wanted_actions), 'trovati' if seen_any else 'NESSUNO', hit, hit_other, skipped))
+	# Il conteggio restituito resta quello della finestra a schermo: e' cio' che decide il fallback
+	# globale del chiamante, e ricadere sul globale perche' l'unico contenitore interessato sta in
+	# un'altra finestra sarebbe esattamente il contrario di quello che si vuole.
 	return hit
 
 def head_lookup(first_url):

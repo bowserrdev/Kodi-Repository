@@ -13,6 +13,21 @@ update_string = 'Next Update in %s minutes...'
 # chiederebbe. Tarata sopra il ritardo osservato fra le due (7,1 s) e sotto nessun vincolo:
 # alzarla sopprime piu' duplicati ma ritarda di piu' un cambiamento fatto DAVVERO altrove.
 TRAKT_REFRESH_COALESCE = 30
+# Ritardo prima di avviare BlurService (lotto 48, 23/08). In tre catture indipendenti (17:20,
+# a1edbba, 19:51) la riga finale del log prima del riavvio da watchdog era sempre 'BlurService
+# Starting (Pillow: OK)' o l'equivalente import di Pillow da fen_blur -- l'unico elemento presente
+# in ogni crash da avvio catturato. Test a 4 cicli consecutivi con BlurService disattivato del
+# tutto: 4 su 4 senza riavvio, contro una serie precedente di crash quasi sistematici. Toglierlo
+# per sempre pero' perde la sfocatura (verificato: nessun file nuovo nella cache blur durante il
+# test). Il compromesso e' rimandarne l'avvio oltre la finestra critica (0-25s misurati finora):
+# l'interprete Kodi e' gia' vivo, aspettare qui non costa un processo in piu', solo un thread fermo.
+BLUR_START_DELAY = 25
+# Giri dopo un cambio di finestra in cui si ripassa il censimento dei contenitori. I giri sono da
+# 0,3 s: 0 / 1,5 / 3 / 6 / 10,5 / 16,5 secondi. Copre il tempo in cui i widget si stanno ancora
+# costruendo -- sulla stick una costruzione supera spesso i 5 s -- senza sondare per sempre una
+# finestra che di widget Fen Light non ne ha. registry_add e' idempotente, quindi ripassare non
+# duplica nulla: aggiunge solo cio' che nel frattempo e' comparso.
+CENSUS_TICKS = frozenset((0, 5, 10, 20, 35, 55))
 
 def logger(heading, function):
 	xbmc.log('###%s###: %s' % (heading, function), 1)
@@ -113,8 +128,23 @@ class TraktMonitor:
 						logger('Fen Light', "TraktMonitor: refresh saltato, la modifica e' nostra ed e' gia' a schermo")
 					elif status == 'success' and get_setting('fenlight.trakt.refresh_widgets', 'false') == 'true':
 						age = refresh_age()
-						if age >= TRAKT_REFRESH_COALESCE: run_plugin({'mode': 'kodi_refresh'})
-						else: logger('Fen Light', 'TraktMonitor: refresh saltato, interfaccia ricostruita %.1fs fa' % age)
+						if age < TRAKT_REFRESH_COALESCE:
+							logger('Fen Light', 'TraktMonitor: refresh saltato, interfaccia ricostruita %.1fs fa' % age)
+						else:
+							# Quali titoli sono cambiati lo pubblica trakt_sync_activities dopo la
+							# ricostruzione (lotto 59). Trakt non lo dice mai -- last_activities da solo
+							# marche temporali per categoria -- ma il confronto fra l'insieme prima e
+							# quello dopo lo sa. Tre stati: '' non lo sappiamo -> globale come prima;
+							# '-' nulla e' cambiato davvero -> non si ricostruisce niente; altrimenti
+							# ricarica MIRATA dei soli contenitori che contengono quegli id.
+							changed = window.getProperty('fenlight.trakt.changed_ids')
+							window.clearProperty('fenlight.trakt.changed_ids')
+							if changed == '-':
+								logger('Fen Light', 'TraktMonitor: nessun titolo cambiato davvero, nessuna ricostruzione')
+							elif changed:
+								logger('Fen Light', 'TraktMonitor: refresh MIRATO su %d titoli' % len(changed.split(',')))
+								run_plugin({'mode': 'kodi_refresh_ids', 'ids': changed})
+							else: run_plugin({'mode': 'kodi_refresh'})
 			except Exception as e: logger('Fen Light', trakt_service_string % ('Failed', 'The following Error Occured: %s' % str(e)))
 			wait_for_abort(wait_time)
 		try: del monitor
@@ -128,7 +158,7 @@ class WidgetRefresher:
 		logger('Fen Light', 'WidgetRefresher Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, refresh_flag_expired
+		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, refresh_flag_expired, getCurrentWindowId
 		self.refresh_flag_expired = refresh_flag_expired
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, self.is_playing = monitor.waitForAbort, player.isPlayingVideo
@@ -154,9 +184,22 @@ class WidgetRefresher:
 				# passato da FenLightPlayer (video generico, trailer) nessuno lo rilancia alla chiusura,
 				# e il widget resterebbe vecchio. Qui si recupera appena la riproduzione e' finita.
 				playing = self.is_playing()
-				if not playing and self.window.getProperty(PENDING_REFRESH_PROP):
+				# Il rinvio si applica solo sulla Home, e la condizione era 'diverso da 10025'. Bastava
+				# finche' l'unico posto irraggiungibile era la finestra Video; con una seconda finestra
+				# di widget non basta piu'. 'Container(N).ListItem...' non risolve per una finestra che
+				# non e' a schermo, quindi la ricarica mirata lanciata da un hub raggiunge i widget
+				# dell'hub e nient'altro: se il rinvio partisse li', rifarebbe quegli stessi due e la
+				# Home resterebbe vecchia lo stesso. Si aspetta di essere DOVE i contenitori da
+				# ricostruire esistono davvero. Se l'utente non torna mai in Home non si perde nulla:
+				# quei widget non sono a schermo, e il rinvio e' li' che aspetta.
+				if not playing and self.window.getProperty(PENDING_REFRESH_PROP) and getCurrentWindowId() == 10000:
+					pending_ids = self.window.getProperty(PENDING_IDS_PROP)
 					self.window.clearProperty(PENDING_REFRESH_PROP)
-					run_plugin({'mode': 'refresh_widgets'})
+					self.window.clearProperty(PENDING_IDS_PROP)
+					# Con gli id si ricaricano i soli contenitori che li contengono; senza, si ricade sul
+					# globale come prima. Vedi lotto 60: gli id c'erano gia' e venivano buttati qui.
+					if pending_ids: run_plugin({'mode': 'kodi_refresh_ids', 'ids': pending_ids})
+					else: run_plugin({'mode': 'refresh_widgets'})
 				# In riproduzione si esce QUI. Sotto c'e' get_setting, che quando la chiave non e' anche
 				# una proprieta' di finestra ricade su una query SQLite: era una lettura da disco ogni
 				# 10s per tutta la durata del film, sulla stessa eMMC su cui il player scrive la cache
@@ -220,6 +263,7 @@ class WidgetPaginator:
 		stuck_timeout = 90
 		last_current = {}  # key -> last observed focus index, so we load ahead on real downward movement only
 		last_log = None  # dedup: only log when the observed state actually changes
+		last_scope, census_tick = None, 0  # finestra censita e da quanti giri: vedi CENSUS_TICKS
 		def log_change(state):
 			nonlocal last_log
 			if state != last_log:
@@ -246,6 +290,37 @@ class WidgetPaginator:
 				# for every widget) and resolve its key via the universal first-item bridge: the plugin published
 				# first-item-path -> key, and we read that same path from the container here.
 				cur_ctrl = get_infolabel('System.CurrentControlID')
+				# Gli id dei contenitori si ripetono fra finestre (il generatore riparte da 501 per
+				# ognuna), quindi ogni token va indicizzato anche per finestra: vedi paginator.ctl_scope.
+				scope = paginator.ctl_scope()
+				# Censimento dei contenitori di QUESTA finestra, una volta sola per passaggio. Costa una
+				# ventina di infolabel al cambio di finestra e serve alla ricarica mirata per raggiungere
+				# i widget delle finestre NON a schermo, dove le infolabel non arrivano: senza, un film
+				# azzerato dalla Home lasciava l'hub vecchio (e viceversa). Vedi paginator.registry_add.
+				# Un solo censimento al cambio di finestra NON basta, e il log delle 19:08 lo mostra:
+				# entrando in Home alle 19:08:10.967 i provider partono 2 ms dopo, quindi quando il
+				# censimento passava i contenitori erano ancora VUOTI, non registrava niente e la sua
+				# unica occasione era bruciata. Alle 19:08:27, agendo dall'hub, la Home risultava non
+				# censita ('altre finestre 0') e si ricadeva sul rinvio.
+				# Si ripassa quindi a scatti finche' i widget non hanno finito di costruirsi: i tick
+				# sono da 0,3 s, quindi 0 / 1,5 / 3 / 6 / 10,5 / 16,5 secondi. Sei passate da ~20
+				# infolabel ciascuna per cambio di finestra, non una al secondo per sempre.
+				if scope != last_scope:
+					last_scope, census_tick = scope, 0
+				else:
+					census_tick += 1
+				if census_tick in CENSUS_TICKS:
+					for cid in paginator.WIDGET_CONTAINER_IDS:
+						curl = get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % cid)
+						if not curl or 'plugin.video.fenlight' not in curl: continue
+						ckey = paginator.head_lookup(curl)
+						if not ckey: continue
+						# Stessa regola del contenitore a fuoco: se l'inquilino e' cambiato, il numero di
+						# pagine del precedente non vale piu' per questo.
+						if window.getProperty(paginator.CTL_KEY_PROP % (scope, cid)) != ckey:
+							window.setProperty(paginator.CTL_KEY_PROP % (scope, cid), ckey)
+							window.clearProperty(paginator.CTL_PAGES_PROP % (scope, cid))
+						paginator.registry_add(scope, cid)
 				prop_id = window.getProperty('fenlight.active_widget')
 				widget_id = None
 				if prop_id and xbmc.getCondVisibility('Control.HasFocus(%s)' % prop_id):
@@ -264,15 +339,15 @@ class WidgetPaginator:
 					# zero elementi: durante una ricostruzione gli elementi restano e la chiave torna subito,
 					# quindi non si rischia di svuotare un widget vivo.
 					if int(get_infolabel('Container(%s).NumItems' % widget_id) or 0) == 0:
-						window.clearProperty(paginator.CTL_PAGES_PROP % widget_id)
+						window.clearProperty(paginator.CTL_PAGES_PROP % (scope, widget_id))
 					log_change('idle id=%s no-head first=%s' % (widget_id, (first_url[:50] or '-')))
 					wait_for_abort(0.3); continue
 				# Il token vive sul CONTENITORE, la paginazione sulla CHIAVE del widget: quando il contenitore
 				# cambia inquilino il token del precedente va azzerato, o il widget nuovo si aprirebbe
 				# direttamente alle pagine accumulate da quello vecchio.
-				if window.getProperty(paginator.CTL_KEY_PROP % widget_id) != key:
-					window.setProperty(paginator.CTL_KEY_PROP % widget_id, key)
-					window.clearProperty(paginator.CTL_PAGES_PROP % widget_id)
+				if window.getProperty(paginator.CTL_KEY_PROP % (scope, widget_id)) != key:
+					window.setProperty(paginator.CTL_KEY_PROP % (scope, widget_id), key)
+					window.clearProperty(paginator.CTL_PAGES_PROP % (scope, widget_id))
 				numitems = int(get_infolabel('Container(%s).NumItems' % widget_id) or 0)
 				current = int(get_infolabel('Container(%s).CurrentItem' % widget_id) or 0)
 				if numitems and current:
@@ -323,7 +398,7 @@ class WidgetPaginator:
 							# ricostruivano tutti quelli della schermata, ognuno con il suo interprete
 							# Python nuovo. Era la causa principale della lentezza in home, e la coda di
 							# invocazioni che ne usciva e' quella che faceva scadere il flag LOADING.
-							window.setProperty(paginator.CTL_PAGES_PROP % widget_id, str(pages + 1))
+							window.setProperty(paginator.CTL_PAGES_PROP % (scope, widget_id), str(pages + 1))
 							wait_for_abort(0.5); continue
 			except Exception as e:
 				paginator.log('watcher EXC %s' % e)
@@ -349,15 +424,31 @@ class FenLightMonitor(xbmc.Monitor):
 		self.startServices()
 
 	def startServices(self):
+		# Prima di far partire TraktMonitor: la costruzione iniziale dei widget che Kodi sta facendo
+		# adesso vale come ricostruzione globale, e va registrata o la prima sincronizzazione Trakt ne
+		# ordinera' una seconda a vuoto. Vedi kodi_utils.stamp_startup_rebuild.
+		from modules.kodi_utils import stamp_startup_rebuild
+		stamp_startup_rebuild()
 		SetAddonConstants().run()
 		DatabaseMaintenance().run()
 		SyncSettings().run()
 		Thread(target=CustomFonts().run).start()
-		Thread(target=BlurService().run).start()
+		# BLUR SPENTO (23/08, richiesta dell'utente). Non differito: proprio non parte. Lo sfondo
+		# sfocato ricade sull'artwork nitido, che e' una perdita puramente estetica; in cambio
+		# spariscono l'import di Pillow, il ciclo di polling a 0.3s e ogni generazione di immagine.
+		# Per riaccenderlo basta ripristinare la riga sotto: e' l'unico punto che lo avvia.
+		# Thread(target=self._delayed_blur_start).start()
 		Thread(target=TraktMonitor().run).start()
 		Thread(target=WidgetRefresher().run).start()
 		Thread(target=WidgetPaginator().run).start()
 		AutoStart().run()
+
+	def _delayed_blur_start(self):
+		# Aspetta che la tempesta di avvio sia passata prima di importare Pillow e partire col
+		# polling: vedi BLUR_START_DELAY per la misura che l'ha motivato. waitForAbort (non sleep)
+		# cosi' un abort di Kodi durante l'attesa non lascia il thread appeso.
+		if xbmc.Monitor().waitForAbort(BLUR_START_DELAY): return
+		BlurService().run()
 
 	def onNotification(self, sender, method, data):
 		if method in ('GUI.OnScreensaverActivated', 'System.OnSleep'):

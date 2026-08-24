@@ -131,16 +131,25 @@ def blur_image(params):
 	home_window.setProperty('TMDbHelper.%s.BlurImage.Original' % prefix, source)
 
 class BlurService:
-	def _resolve(self, spec, container=None, use_focused=True):
+	def _resolve(self, spec, container=None, use_focused=True, prefer_container=False):
 		# use_focused=False (dentro un dialog) salta ListItem "nudo" — che nel contesto del
 		# dialog punta all'elemento del dialog — e risolve solo tramite il container ricordato.
+		# prefer_container=True inverte l'ordine, e si usa quando la skin sta DICHIARANDO in questo
+		# istante quale contenitore ha il fuoco (TMDbHelper.WidgetContainer non vuota). Serve nella
+		# vista "Combined" della finestra Video: li' 'ListItem' nudo risolve sul contenitore della
+		# FINESTRA — la lista stagioni, non il pannello episodi che ha davvero il fuoco — e non
+		# essendo mai vuoto vinceva sempre. Esito: base_label restava quella della serie e l'header
+		# del menu contestuale mostrava la serie invece dell'episodio (segnalato il 24/08).
 		for token in spec.split('|'):
 			token = token.strip().replace('{x}', '')
 			if not token: continue
+			if prefer_container and container:
+				value = xbmc.getInfoLabel('Container(%s).ListItem.%s' % (container, token))
+				if value: return value
 			if use_focused:
 				value = xbmc.getInfoLabel('ListItem.%s' % token)
 				if value: return value
-			if container:
+			if container and not prefer_container:
 				value = xbmc.getInfoLabel('Container(%s).ListItem.%s' % (container, token))
 				if value: return value
 		return ''
@@ -174,6 +183,17 @@ class BlurService:
 			else:
 				cont = xbmc.getInfoLabel('Window.Property(TMDbHelper.WidgetContainer)')
 				if cont: last_container = cont  # non sovrascrivere con il vuoto transitorio della navigazione
+				# Solo il valore LETTO ADESSO autorizza a scavalcare 'ListItem' nudo: e' la skin che
+				# dichiara dove sta il fuoco in questo istante. last_container e' un ricordo, e un
+				# ricordo non puo' vincere su un elemento a fuoco reale.
+				# E solo FUORI dalla schermata principale. Sulla home 'ListItem' nudo e' gia' l'elemento
+				# a fuoco e l'ordine vecchio era corretto: li' questo ramo deve restare identico a
+				# prima, byte per byte, perche' l'avvio e' l'unico momento in cui questo servizio gira
+				# insieme alla costruzione di tutti i widget ed e' anche il momento in cui la stick
+				# va in kernel panic (24/08 alle 16:58). Il difetto da correggere -- 'ListItem' nudo che
+				# risolve sul contenitore della finestra invece che sul pannello a fuoco -- esiste solo
+				# nelle finestre media, non sulla home.
+				prefer = bool(cont) and xbmcgui.getCurrentWindowId() != 10000
 				# Ripubblica poster + label dell'elemento in focus per il pannello del menù
 				# contestuale (base_poster guida lo spazio artwork, base_label guida l'header).
 				# Confrontiamo col VALORE ATTUALE della proprietà — non una variabile locale — così
@@ -182,13 +202,13 @@ class BlurService:
 				# Letto dal vivo dall'item corrente: mai un valore vecchio. Solo getInfoLabel/
 				# getProperty, nessun download. Il caso "nessun poster reale" lo lascia all'onfocus
 				# (qui poster esce vuoto e non sovrascriviamo).
-				poster = self._resolve('Art(poster)|Art(tvshow.poster)', container=last_container)
+				poster = self._resolve('Art(poster)|Art(tvshow.poster)', container=last_container, prefer_container=prefer)
 				if poster and poster != home_window.getProperty('TMDbHelper.ListItem.base_poster'):
 					home_window.setProperty('TMDbHelper.ListItem.base_poster', poster)
-				label = self._resolve('Label', container=last_container)
+				label = self._resolve('Label', container=last_container, prefer_container=prefer)
 				if label and label != home_window.getProperty('TMDbHelper.ListItem.base_label'):
 					home_window.setProperty('TMDbHelper.ListItem.base_label', label)
-				source = self._resolve(spec, container=last_container)
+				source = self._resolve(spec, container=last_container, prefer_container=prefer)
 				if source:
 					empty_streak = 0
 				else:

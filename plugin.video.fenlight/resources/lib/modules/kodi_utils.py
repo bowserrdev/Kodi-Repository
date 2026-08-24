@@ -118,9 +118,28 @@ def add_item(handle, url, listitem, isFolder):
 # senza questa misura si sceglierebbe a caso.
 _DELIVERY = [0.0, 0]
 
+# MARCATORI DI INVOCAZIONE (lotto 50). Il log di debug del 23/08 ha mostrato che un'invocazione widget
+# vive 21-23 s mentre il PERF dichiara 3 s di costruzione: l'85-90% del costo sta FUORI da tutto cio'
+# che finora sapevamo misurare. Questi timbri esistono per rispondere a una domanda sola -- DOVE stanno
+# quei secondi -- e non per aggiungere l'ennesima statistica. Sono quattro letture di orologio per
+# invocazione, niente proprieta' di finestra e niente traversate verso la GUI: la diagnostica non deve
+# diventare essa stessa il carico (e' l'errore gia' fatto con DIAG in paginator).
+# Vanno spente quando avranno risposto, come PERF_SELFTEST e DIAG prima di loro.
+_PHASE = {}
+
+def mark_phase(name):
+	# Timbro nudo: una lettura di orologio in un dizionario di processo. Serve a router.routing() per
+	# separare i due pezzi dentro cui si nascondono i ~10 s ciechi -- il caricamento PIGRO del modulo
+	# indexer (gli import che stanno dentro le funzioni e che il conteggio degli import in cima ai file
+	# non vedeva) dal lavoro vero dell'indexer. Nessuna traversata verso la GUI, nessuna proprieta' di
+	# finestra: la diagnostica non deve diventare il carico che sta misurando.
+	from time import perf_counter
+	_PHASE[name] = perf_counter()
+
 def add_items(handle, item_list):
 	from time import perf_counter as _pc
 	_t = _pc()
+	_PHASE['add_start'] = _t
 	addDirectoryItems(handle, item_list)
 	_DELIVERY[0] = (_pc() - _t) * 1000
 	_DELIVERY[1] = len(item_list) if item_list else 0
@@ -145,6 +164,7 @@ def end_directory(handle, cacheToDisc=True):
 	_t = _pc()
 	endOfDirectory(handle, cacheToDisc=cacheToDisc)
 	_eod = (_pc() - _t) * 1000
+	_PHASE['eod_end'] = _pc()
 	try:
 		# Il timbro sta DOPO endOfDirectory, e la ragione non e' stilistica. external() interroga la
 		# GUI (getInfoLabel su Container.PluginName): metterlo PRIMA significava chiedere il lock
@@ -166,23 +186,162 @@ def end_directory(handle, cacheToDisc=True):
 					% (_n, _add, _add / _n, _eod, _eod / _n, _add + _eod))
 		except: pass
 
+def log_invocation(argv, t_start, t_import, t_end):
+	# LA misura del lotto 50. Il log di debug ha mostrato invocazioni widget da 21-23 s dove il PERF
+	# dichiarava 3 s: questa riga divide l'invocazione INTERA nei segmenti che PERF non vede mai.
+	#   import        -> costo di caricare i moduli (verificato piccolo: l'albero e' gia' pigro)
+	#   routing->lista-> dall'ingresso in routing a quando la lista e' pronta. CONTIENE la costruzione
+	#                    che PERF gia' misura: la differenza fra questo numero e il PERF 'totale' e' il
+	#                    preparativo mai visto (impostazioni, database, attese, contesa sul GIL).
+	#   consegna      -> add_items + endOfDirectory (gia' dettagliato da PERF CONSEGNA)
+	#   coda          -> tutto cio' che gira DOPO la consegna e prima dell'uscita
+	# Non tocca la GUI e non scrive proprieta' di finestra: quattro sottrazioni e una riga di log.
+	try:
+		_ms = lambda a, b: (b - a) * 1000
+		mode = ''
+		try:
+			for part in (argv[2] if len(argv) > 2 else '').lstrip('?').split('&'):
+				if part.startswith('mode='): mode = part[5:]; break
+		except: pass
+		add_start, eod_end = _PHASE.get('add_start'), _PHASE.get('eod_end')
+		rt_in, ix_in = _PHASE.get('routing_in'), _PHASE.get('indexer_in')
+		parts = ['import %.0f' % _ms(t_start, t_import)]
+		# Il taglio nuovo (lotto 50 ter): 'import pigri' e' parsing dei parametri + caricamento del modulo
+		# indexer, 'indexer' e' il lavoro vero. Se i ~10 s ciechi stanno nel primo, sono import mascherati
+		# e la correzione e' alleggerire l'albero; se stanno nel secondo, e' lavoro o contesa sul GIL e la
+		# correzione e' la coda. Sono due strade diverse e senza questo taglio si sceglierebbe a caso.
+		if rt_in and ix_in:
+			parts.append('import pigri %.0f' % _ms(rt_in, ix_in))
+			if add_start: parts.append('indexer %.0f' % _ms(ix_in, add_start))
+		elif add_start: parts.append('routing->lista %.0f' % _ms(t_import, add_start))
+		if add_start and eod_end: parts.append('consegna %.0f' % _ms(add_start, eod_end))
+		if eod_end: parts.append('coda %.0f' % _ms(eod_end, t_end))
+		if not add_start: parts.append('nessuna cartella costruita, solo azione %.0f' % _ms(t_import, t_end))
+		if 'view_ms' in _PHASE: parts.append('(set_view %.0f)' % _PHASE['view_ms'])
+		logger('FenLight PERF INVOCAZIONE', '%s | totale %.0f ms | %s ms'
+				% (mode or '?', _ms(t_start, t_end), ' + '.join(parts)))
+	except: pass
+
+_FENLIGHT_PKGS = ('modules', 'indexers', 'apis', 'caches', 'windows')
+
+def log_import_profile(argv, times, order, parents=None, top=18, floor_ms=25.0):
+	# Rendiconto del profilatore installato in fenlight.py (lotto 54, DIAGNOSTICO).
+	# I tempi sono PROPRI, non cumulativi: sommandoli si ottiene il costo totale degli import, e ogni
+	# modulo si vede attribuito solo cio' che esegue davvero. Stampa i primi `top` sopra `floor_ms`,
+	# piu' una riga di totali per sapere quanta parte della somma sta nella coda non elencata.
+	try:
+		if not times: return
+		mode = ''
+		try:
+			for part in (argv[2] if len(argv) > 2 else '').lstrip('?').split('&'):
+				if part.startswith('mode='): mode = part[5:]; break
+		except: pass
+		parents = parents or {}
+		total_ms = sum(times.values()) * 1000
+		fenlight = sum(t for n, t in times.items() if n.split('.')[0] in _FENLIGHT_PKGS) * 1000
+		logger('FenLight PERF IMPORT', '%s | %d moduli | totale %.0f ms | di cui Fen Light %.0f ms | resto %.0f ms'
+				% (mode or '?', len(times), total_ms, fenlight, total_ms - fenlight))
+		# Raggruppa per pacchetto di primo livello: e' li' che si vede dove sta davvero la massa,
+		# perche' il costo e' spalmato su oltre 100 moduli e nessuno singolo domina.
+		groups = {}
+		for name, t in times.items():
+			root = name.split('.')[0] or '(relativo)'
+			groups[root] = groups.get(root, 0.0) + t
+		ext = sorted(((r, t * 1000) for r, t in groups.items() if r not in _FENLIGHT_PKGS), key=lambda kv: kv[1], reverse=True)
+		logger('FenLight PERF IMPORT', '  -- esterni per pacchetto --')
+		for root, ms in ext[:top]:
+			if ms < floor_ms: break
+			# Il richiedente del pacchetto: il primo modulo ESTERNO al pacchetto che lo ha tirato
+			# dentro. Senza il filtro si otterrebbe 'email <- email.header', cioe' il pacchetto che
+			# importa se stesso, che non dice nulla su chi lo ha fatto entrare.
+			who = next((parents[n] for n in order
+						if n.split('.')[0] == root and parents.get(n) and parents[n].split('.')[0] != root), None)
+			if not who: who = parents.get(root) or '?'
+			logger('FenLight PERF IMPORT', '  %7.0f ms  %-22s <- %s' % (ms, root, who))
+		fen = sorted(((n, t * 1000) for n, t in times.items() if n.split('.')[0] in _FENLIGHT_PKGS), key=lambda kv: kv[1], reverse=True)
+		logger('FenLight PERF IMPORT', '  -- Fen Light, primi moduli --')
+		for name, ms in fen[:8]:
+			if ms < floor_ms: break
+			logger('FenLight PERF IMPORT', '  %7.0f ms  %s' % (ms, name))
+	except: pass
+
 def directory_built_since(since_ts):
 	try: return float(get_property(LAST_BUILD_PROP) or 0) > float(since_ts or 0)
 	except: return False
 
+# Quanto si concede al contenitore per dichiarare il contenuto atteso, OLTRE al settle da 100 ms.
+# Tarato su tutti i campioni raccolti il 24/08, non su una stima:
+#   build_season_list  19 campioni, set_view 100-287 ms  -> il minimo E' il settle: in 19 casi su 19
+#                                                           il contenuto era gia' giusto al primo
+#                                                           controllo. Massimo oltre il settle: 187 ms.
+#   build_episode_list  7 campioni, tutti al tetto       -> 7 fallimenti su 7 (vedi sotto).
+# L'attesa non e' quindi "a volte utile": non e' MAI servita. 300 ms coprono con margine 1,6x il caso
+# piu' lento mai osservato, e riducono a ~0,4 s il costo del caso che non puo' riuscire.
+VIEW_MODE_WAIT_SECONDS = 0.3
+
+# I contenuti per cui, in questa skin, l'attesa e' gia' scaduta almeno una volta: non ci si riprova.
+# In Arctic Fuse la lista episodi vive in un pannello (CDirectoryProvider legato al FolderPath
+# dell'elemento a fuoco, Includes_Views_Combined.xml), quindi il contenitore della finestra resta
+# 'seasons' e 'episodes' non arrivera' mai. Non esiste un segnale per saperlo PRIMA -- la proprieta'
+# TMDBHelper.WidgetContainer che la skin userebbe non e' piu' scritta da nessuno dopo la rimozione di
+# TMDbHelper -- quindi lo si impara dal primo tentativo e non lo si ripaga.
+# Si auto-corregge: il controllo d'ingresso avviene comunque, e se un giorno il contenuto combacia si
+# procede e il marchio viene tolto. Nessun rischio di restare bloccati su una vista diversa.
+VIEW_MODE_HOPELESS_PROP = 'fenlight.view_wait_hopeless'
+
 def set_view_mode(view_type, content='files', is_external=None):
+	# Involucro di sola misura (lotto 50): la logica e' intatta in _set_view_mode_impl. Serve perche'
+	# questa funzione contiene un'attesa attiva -- sleep(100) e poi fino a 3000 letture di
+	# Container.Content a 1 ms -- che gira DOPO endOfDirectory, cioe' a lista gia' consegnata, dentro
+	# un'invocazione che sappiamo durare 15-20 s. Per i widget esce subito (is_external), quindi non
+	# spiega il costo dei widget; per stagioni ed episodi puo' valere fino a 3 secondi e non era mai
+	# stata cronometrata.
+	from time import perf_counter as _pc
+	_t = _pc()
+	try: return _set_view_mode_impl(view_type, content, is_external)
+	finally: _PHASE['view_ms'] = (_pc() - _t) * 1000
+
+def _set_view_mode_impl(view_type, content='files', is_external=None):
 	if not get_property('fenlight.use_viewtypes') == 'true': return
 	if is_external == None: is_external = external()
 	if is_external: return
 	view_id = get_property('fenlight.%s' % view_type) or None
 	if not view_id: return
+	# Il limite era a ITERAZIONI (3000 giri di sleep(1) + una lettura di infolabel), cioe' "3 secondi"
+	# solo su un dispositivo dove un giro costa 1 ms. Sulla stick un giro costa ~3,5 ms fra sleep,
+	# passaggio Python->C++ e contesa sul GIL: misurato il 24/08, `build_episode_list` spendeva
+	# 10598 ms e 8636 ms qui dentro -- il 94% dell'invocazione -- per poi **arrendersi** senza
+	# impostare la vista. Dieci secondi buttati, non dieci secondi di lavoro.
+	# Il limite ora e' sul TEMPO, quindi vale lo stesso su qualunque hardware. Per confronto, nella
+	# lista stagioni l'attesa si chiude in 101-287 ms: due secondi sono larghi.
 	try:
-		hold = 0
+		from time import perf_counter as _pc
+		hopeless = set((get_property(VIEW_MODE_HOPELESS_PROP) or '').split(',')) - {''}
 		sleep(100)
-		while not container_content() == content:
-			hold += 1
-			if hold < 3000: sleep(1)
-			else: return
+		seen = container_content()
+		if seen != content:
+			# Gia' scoperto inutile per questo contenuto: si esce senza pagare l'attesa. Il controllo
+			# sopra e' comunque avvenuto, quindi se la situazione cambia il caso buono passa lo stesso.
+			if content in hopeless: return
+			deadline = _pc() + VIEW_MODE_WAIT_SECONDS
+			while seen != content:
+				if _pc() >= deadline:
+					set_property(VIEW_MODE_HOPELESS_PROP, ','.join(sorted(hopeless | {content})))
+					# Si registra anche TMDbHelper.WidgetContainer: e' la proprieta' con cui la skin marca
+					# il contenitore-pannello a fuoco, ed e' l'ultimo candidato per sapere PRIMA che
+					# l'attesa non puo' riuscire. Il dubbio e' che segua il FUOCO e non chi costruisce:
+					# il pannello episodi si ricarica mentre il fuoco e' sulla lista stagioni, dove la
+					# skin la cancella (Includes_Views_Combined.xml:166). Se qui esce vuota, cade.
+					try: _wc = get_infolabel('Window.Property(TMDbHelper.WidgetContainer)')
+					except: _wc = '?'
+					logger('Fen Light', 'DIAG vista: attesa scaduta a %.1fs | Container.Content=%r atteso %r | WidgetContainer=%r | vista NON impostata | %r marcato irraggiungibile per la sessione'
+							% (VIEW_MODE_WAIT_SECONDS, seen, content, _wc, content))
+					return
+				sleep(1)
+				seen = container_content()
+		if hopeless and content in hopeless:
+			# Il contenuto stavolta combacia: la vista e' tornata raggiungibile (skin o vista diversa).
+			set_property(VIEW_MODE_HOPELESS_PROP, ','.join(sorted(hopeless - {content})))
 		execute_builtin('Container.SetViewMode(%s)' % view_id)
 	except: return
 
@@ -227,11 +386,29 @@ def container_content():
 def set_sort_method(handle, method):
 	addSortMethod(handle, sort_method_dict[method])
 
+# Unico punto in cui 'requests' entra in un interprete (lotto 52). Serve a rispondere a una domanda
+# precisa: al boot i widget hanno metadati al 100% in cache e zero rete nel filtro doppiaggio, eppure
+# la fase 'risoluzione' e' passata da 0,65 s a 7,22 s (misure entrambe della stick, log 23:57 e 00:28)
+# quando l'import di requests si e' spostato li' dentro. Quindi qualcuno sveglia la rete su un widget
+# che dovrebbe essere tutto in cache -- e finche' non sappiamo CHI, qualunque correzione sarebbe a
+# indovinare. La riga si scrive una sola volta per interprete: costa un log, non un ciclo.
+_REQUESTS = [None]
+
+def import_requests(who=''):
+	if _REQUESTS[0] is None:
+		from time import perf_counter as _pc
+		_t = _pc()
+		import requests
+		_REQUESTS[0] = requests
+		try: logger('FenLight PERF REQUESTS', 'importato in %.0f ms | primo richiedente: %s' % ((_pc() - _t) * 1000, who or '?'))
+		except: pass
+	return _REQUESTS[0]
+
 def make_session(url='https://'):
-	import requests
+	requests = import_requests('make_session(%s)' % url)
 	session = requests.Session()
 	session.mount(url, requests.adapters.HTTPAdapter(pool_maxsize=8))
-	return session	
+	return session
 
 def make_playlist(playlist_type='video'):
 	return PlayList(playlist_type_dict[playlist_type])
@@ -339,12 +516,28 @@ def reload_skin():
 # 'large audio sync error' e 'timeout waiting for buffer'). La richiesta non viene persa: si annota qui
 # e il player la esegue alla chiusura della riproduzione (FenLightPlayer.flush_pending_refresh).
 PENDING_REFRESH_PROP = 'fenlight.refresh_pending'
+# Gli id che accompagnano un refresh rimandato: senza di loro il rinvio degrada in ricostruzione
+# globale, buttando via un'informazione che avevamo gia'. Vedi kodi_refresh_ids e WidgetRefresher.
+PENDING_IDS_PROP = 'fenlight.refresh_pending_ids'
+# Nella vista "Combined" della finestra Video il pannello episodi NON e' il contenitore della finestra:
+# e' un pannello della skin il cui <content> vale $INFO[Container(52X).ListItem.FolderPath], cioe' la
+# URL della stagione a fuoco. Container.Refresh ricostruisce la lista stagioni, ma quella URL torna
+# IDENTICA e Kodi non ha motivo di ricaricare il pannello: misurato il 24/08 alle 16:49, dopo
+# 'segna come visto' su S1E2 si e' ricostruita solo build_season_list e il badge dell'episodio e'
+# rimasto fermo finche' l'utente non e' uscito e rientrato nella serie.
+# Rimedio: seasons.py accoda questo nonce alla URL di ogni stagione. Cambiarlo cambia la FolderPath,
+# quindi il pannello si ricarica da solo -- stesso principio del token pagine dei widget. 'reload' e'
+# in paginator._VOLATILE_PARAMS, quindi non entra nella chiave del widget ne' nella paginazione.
+PANEL_RELOAD_PROP = 'fenlight.panel_reload'
 
 def playback_active():
 	return get_visibility('Player.HasVideo')
 
 def _defer_refresh_if_playing(kind):
 	if not playback_active(): return False
+	# Questo rinvio non porta id con se': gli eventuali id di un rinvio precedente vanno tolti, o
+	# WidgetRefresher ricaricherebbe i contenitori del titolo SBAGLIATO invece di ricadere sul globale.
+	clear_property(PENDING_IDS_PROP)
 	set_property(PENDING_REFRESH_PROP, kind)
 	logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), riproduzione in corso' % kind)
 	return True
@@ -409,6 +602,17 @@ def _stamp_refresh(scope):
 		set_property(LAST_REFRESH_SCOPE_PROP, scope)
 	except: pass
 
+def stamp_startup_rebuild():
+	# All'avvio Kodi costruisce da sola TUTTI i widget della schermata: e' una ricostruzione globale a
+	# tutti gli effetti, solo che non passa da noi e quindi non timbrava niente. Conseguenza misurata
+	# (log 23/08 20:57): la prima sincronizzazione Trakt dopo l'avvio trovava refresh_age() = 1e9 --
+	# nessuna ricostruzione registrata -- superava SEMPRE la guardia dei 30 s e ordinava UpdateLibrary
+	# 15 s dentro la sessione, sopra la costruzione iniziale ancora in corso. I widget 91378 e 101881
+	# risultavano costruiti DUE volte in quindici secondi, a ogni singolo avvio, senza eccezioni.
+	# Timbrando qui, quella prima sincronizzazione si accorpa e salta il doppione; una modifica Trakt
+	# davvero fatta altrove arriva comunque, perche' dopo TRAKT_REFRESH_COALESCE la guardia riapre.
+	_stamp_refresh('*')
+
 def refresh_age():
 	# Secondi trascorsi dall'ultima ricostruzione globale. Un numero enorme se non ne risulta nessuna,
 	# cosi' chi lo interroga in caso di dubbio ricostruisce invece di saltare.
@@ -434,6 +638,7 @@ def kodi_refresh(coalesce=True):
 	# Si azzera comunque: la richiesta rimandata e' soddisfatta dalla ricostruzione appena avvenuta.
 	# Lasciarla accesa farebbe scattare la rete di sicurezza del WidgetRefresher, cioe' una TERZA onda.
 	clear_property(PENDING_REFRESH_PROP)
+	clear_property(PENDING_IDS_PROP)
 	age = refresh_age()
 	# Si accorpa solo dietro un'altra ricostruzione GLOBALE: quella e' davvero un superset. Dietro una
 	# mirata no -- la globale potrebbe riguardare tutt'altro, e saltarla lo perderebbe.
@@ -470,6 +675,7 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# risolve fuori dal fuoco) si ricade sul globale: non puo' comportarsi peggio di prima.
 	if _defer_refresh_if_playing('kodi_refresh'): return
 	clear_property(PENDING_REFRESH_PROP)
+	clear_property(PENDING_IDS_PROP)
 	# Stessa finestra di kodi_refresh(): due ricostruzioni accavallate sono la stessa, e non importa
 	# se una e' mirata e l'altra globale -- chi arriva secondo lavorerebbe a vuoto.
 	age = refresh_age()
@@ -490,7 +696,28 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	if getCurrentWindowId() == 10025:
 		_stamp_refresh(','.join(sorted(_scope_items(ids, actions))))
 		logger('Fen Light', 'DIAG refresh: MIRATO finestra Video (Container.Refresh sulla lista aperta) | id=%s azioni=%s' % (len(ids or []), len(actions or ())))
+		# Il nonce va cambiato PRIMA del refresh: la lista stagioni si ricostruisce subito dopo e deve
+		# gia' pubblicare le URL nuove, altrimenti il pannello episodi resta sulla vecchia FolderPath.
+		from time import time as _now
+		set_property(PANEL_RELOAD_PROP, '%d' % (_now() * 1000))
 		execute_builtin('Container.Refresh')
+		# Container.Refresh ricarica SOLO la cartella aperta. I widget della schermata principale --
+		# 'continua a guardare' e il conteggio episodi rimanenti sulla serie -- non sono raggiungibili
+		# da qui, e questo ramo usciva senza toccarli. Due guardie a valle davano poi per scontato che
+		# ci avessimo pensato noi -- entrambe fondate su self_mark_recent(), in trakt_api (rebuild
+		# saltato) e in service.py (refresh saltato) -- e sopprimevano le due occasioni successive di
+		# rimediare. La loro premessa e' vera per il DATABASE, falsa per lo SCHERMO. Esito misurato il
+		# 24/08 alle 02:36: segnando un episodio come NON visto, Trakt si aggiornava ma
+		# 'continua a guardare' e il badge della serie restavano fermi a tempo indeterminato.
+		# La proprieta' qui sotto e' lo stesso canale gia' usato per il refresh rimandato durante la
+		# riproduzione: WidgetRefresher (service.py) la vede entro 10 s e lancia 'refresh_widgets'.
+		# Costo: un aggiornamento widget mentre non sono nemmeno a schermo, fuori dal percorso critico.
+		# Gli id vanno tramandati, non buttati (lotto 60). Finora questo ramo alzava solo la bandiera e
+		# WidgetRefresher rispondeva con refresh_widgets, cioe' UpdateLibrary globale: misurato il
+		# 24/08 alle 15:19, un refresh MIRATO su 1 titolo diventava una ricostruzione di tutto solo
+		# perche' l'utente si trovava dentro la finestra Video. L'informazione c'era, la buttavamo noi.
+		set_property(PENDING_IDS_PROP, ','.join(str(i) for i in (ids or []) if i))
+		set_property(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
 		return
 	# Stesso segnale che alza refresh_widgets(): i widget 'random' lo leggono per riestrarre
 	# (random_lists.py:84 e :270). Va tenuto o cambierebbe il loro comportamento di riflesso.
@@ -507,8 +734,24 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# Conta come ricostruzione ai fini dell'accorpamento: senza questo, il monitor Trakt sparerebbe
 	# comunque il globale un secondo dopo per lo stesso evento e il lavoro mirato sarebbe sprecato.
 	_stamp_refresh(','.join(sorted(_scope_items(ids, actions))))
-	logger('Fen Light', 'DIAG refresh: MIRATO %s contenitori ricaricati | id=%s azioni=%s finestra=%s'
-			% (hit, len(ids or []), len(actions or ()), getCurrentWindowId()))
+	window_id = getCurrentWindowId()
+	# Le infolabel dei contenitori risolvono SOLO per la finestra a schermo, quindi 'hit' copre solo
+	# quella. Il resto lo fa refresh_containers_for_ids sul censimento (lotto 69): i token delle altre
+	# finestre vengono cambiati adesso, nello stesso istante, e Kodi li rilegge quando quelle finestre
+	# tornano a schermo. Niente due tempi, e nessuna finestra puo' restare disallineata.
+	try:
+		from modules import paginator as _pg
+		other = _pg.LAST_OTHER_HITS[0]
+	except: other = 0
+	# Rete di sicurezza per il solo caso in cui non ci fosse NIENTE di censito da raggiungere -- una
+	# finestra mai aperta in questa sessione. Se il censimento ha risposto, un rinvio sarebbe lavoro
+	# doppio sugli stessi contenitori.
+	if window_id != 10000 and not other:
+		set_property(PENDING_IDS_PROP, ','.join(str(i) for i in (ids or []) if i))
+		set_property(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
+	logger('Fen Light', 'DIAG refresh: MIRATO %s contenitori ricaricati | altre finestre %s | id=%s azioni=%s finestra=%s%s'
+			% (hit, other, len(ids or []), len(actions or ()), window_id,
+				'' if (window_id == 10000 or other) else ' | nessuna finestra censita, resto RIMANDATO alla Home'))
 
 def refresh_widgets(show_notification='false', coalesce=True):
 	# Due padroni: la voce di menu "Aggiorna widget" (comando esplicito dell'utente, da eseguire
@@ -517,6 +760,7 @@ def refresh_widgets(show_notification='false', coalesce=True):
 	# aggiornamento sarebbe il caso peggiore possibile: l'utente ha chiesto proprio quello.
 	if _defer_refresh_if_playing('refresh_widgets'): return
 	clear_property(PENDING_REFRESH_PROP)
+	clear_property(PENDING_IDS_PROP)
 	hold_refresh_flag('fenlight.refresh_widgets')
 	sleep(250)
 	run_plugin({'mode': 'kodi_refresh', 'coalesce': 'true' if coalesce else 'false'}, block=True)

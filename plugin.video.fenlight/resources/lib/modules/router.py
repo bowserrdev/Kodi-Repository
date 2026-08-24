@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from modules.kodi_utils import external
+from modules.kodi_utils import external, mark_phase
 from urllib.parse import parse_qsl
 # from modules.kodi_utils import logger
 
@@ -72,6 +72,11 @@ def _text_search_done(win, query, media_type, num_items):
 	if movie_done and tv_done: win.setProperty('FenLight.TextSearch.State', 'done')
 
 def routing(sys):
+	# Marcatore (lotto 50 ter): da qui a mark_phase('indexer_in') c'e' SOLO il parsing dei parametri e
+	# l'import PIGRO del modulo indexer. E' il taglio che separa "caricare i moduli" da "fare il
+	# lavoro", dentro i ~10 s che nessuno strumento vedeva. Timbrato solo sui rami usati all'avvio e
+	# nella navigazione serie: non serve sporcare tutti i trenta rami per rispondere a una domanda.
+	mark_phase('routing_in')
 	params = dict(parse_qsl(sys.argv[2][1:], keep_blank_values=True))
 	_get = params.get
 	mode = _get('mode', 'navigator.main')
@@ -109,6 +114,7 @@ def routing(sys):
 	if 'mdblist.' in mode:
 		if '.list' in mode:
 			from indexers import mdblist_lists
+			mark_phase('indexer_in')
 			return getattr(mdblist_lists, mode.split('.')[2])(params)
 		from apis import mdblist_api
 		return getattr(mdblist_api, mode.split('.')[1])(params)
@@ -139,9 +145,11 @@ def routing(sys):
 			return result
 		if mode == 'build_season_list':
 			from indexers.seasons import build_season_list
+			mark_phase('indexer_in')
 			return build_season_list(params)
 		if mode == 'build_episode_list':
 			from indexers.episodes import build_episode_list
+			mark_phase('indexer_in')
 			return build_episode_list(params)
 		if mode == 'build_in_progress_episode':
 			from indexers.episodes import build_single_episode
@@ -154,6 +162,7 @@ def routing(sys):
 			return build_single_episode('episode.next', params)
 		if mode == 'build_continue_watching':
 			from indexers.continue_watching import build_continue_watching
+			mark_phase('indexer_in')
 			return build_continue_watching(params)
 		if mode == 'build_my_calendar':
 			from indexers.episodes import build_single_episode
@@ -385,6 +394,12 @@ def routing(sys):
 	if mode == 'kodi_refresh':
 		from modules.kodi_utils import kodi_refresh
 		return kodi_refresh(_get('coalesce', 'true') != 'false')
+	if mode == 'kodi_refresh_ids':
+		# Ricarica mirata a partire da un elenco di tmdb_id (lotto 59): la usa il monitor Trakt, che
+		# dopo la ricostruzione sa quali titoli sono cambiati. Se l'elenco arriva vuoto kodi_refresh_ids
+		# ricade da sola sul globale, quindi non puo' comportarsi peggio di prima.
+		from modules.kodi_utils import kodi_refresh_ids
+		return kodi_refresh_ids([i for i in _get('ids', '').split(',') if i], coalesce=_get('coalesce', 'true') != 'false')
 	if mode == 'refresh_widgets':
 		from modules.kodi_utils import refresh_widgets
 		# user=true lo mette solo la voce di menu degli indexer, non il servizio.

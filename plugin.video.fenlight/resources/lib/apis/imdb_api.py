@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 import re
 import json
-import requests
+# 'import requests' rimosso (lotto 51): non c'era una sola occorrenza di requests.* in questo file --
+# le richieste passano da make_session() di kodi_utils. Era un import morto, e 'requests' non e' un
+# import qualunque: si porta dietro urllib3, certifi, ssl, http.client, email. Pagato da chiunque
+# toccasse imdb_api, quindi da chiunque toccasse metadata, quindi anche dalla lista stagioni.
 from caches.base_cache import connect_database
 from caches.main_cache import cache_object
 from caches.settings_cache import get_setting
@@ -30,7 +33,15 @@ people_trivia_url = 'name/%s/trivia'
 people_search_url_backup = 'search/name/?name=%s'
 people_search_url = 'https://sg.media-imdb.com/suggests/%s/%s.json'
 timeout = 10.0
-session = make_session('https://')
+# Session pigra (lotto 51 bis): era `session = make_session('https://')` a livello di modulo, e make_session()
+# fa `import requests` al suo interno -- quindi ogni modulo che importava questo file
+# caricava l'albero di requests SENZA nessuna istruzione `import requests` visibile.
+# E' il motivo per cui la prima correzione non aveva prodotto alcun guadagno misurabile.
+_session = [None]
+
+def _get_session():
+	if _session[0] is None: _session[0] = make_session('https://')
+	return _session[0]
 
 def imdb_data(imdb_id, lang):
 	# IMDb is always-on (its ratings/votes are more reliable than TMDb's, see metadata merge). No setting gate.
@@ -51,7 +62,7 @@ def get_imdb_graphql(params):
 			'variables': {'id': params['imdb_id']}
 		}
 		request_headers = dict(graphql_headers, **{'X-Imdb-User-Language': params['lang']})
-		r = session.post(graphql_url, json=query, headers=request_headers, timeout=timeout)
+		r = _get_session().post(graphql_url, json=query, headers=request_headers, timeout=timeout)
 		if r.status_code != 200:
 			logger('FenLight IMDb', 'GraphQL data %s -> HTTP %s' % (params['imdb_id'], r.status_code))
 			return data
@@ -101,7 +112,7 @@ def get_imdb_episode_ratings(params):
 					 '{ edges { node { series { episodeNumber { episodeNumber seasonNumber } } ratingsSummary { aggregateRating voteCount } } } } } } }',
 			'variables': {'id': params['imdb_id'], 'season': [params['season']]}
 		}
-		r = session.post(graphql_url, json=query, headers=graphql_headers, timeout=timeout)
+		r = _get_session().post(graphql_url, json=query, headers=graphql_headers, timeout=timeout)
 		if r.status_code != 200:
 			logger('FenLight IMDb', 'GraphQL episode ratings %s S%s -> HTTP %s' % (params['imdb_id'], params['season'], r.status_code))
 			return data
@@ -175,7 +186,7 @@ def get_imdb(params):
 					if _id.replace('tt','').isnumeric(): yield (_id)
 				except: pass
 		try:
-			result = session.get(url, timeout=timeout, headers=headers).text
+			result = _get_session().get(url, timeout=timeout, headers=headers).text
 			result = result.split('<span>Storyline</span>')[0].split('<span>More like this</span>')[1]
 			items = str(result).split('poster-card__title--clickable" aria-label="')
 		except: items = []
@@ -193,7 +204,7 @@ def get_imdb(params):
 				except: pass
 		if action == 'imdb_trivia': _str = 'TRIVIA'
 		else: _str =  'BLUNDERS'
-		result = session.get(url, timeout=timeout, headers=headers)
+		result = _get_session().get(url, timeout=timeout, headers=headers)
 		result = remove_accents(result.text)
 		result = result.replace('\n', ' ')
 		items = parseDOM(result, 'div', attrs={'class': 'ipc-html-content-inner-div'})
@@ -209,7 +220,7 @@ def get_imdb(params):
 					yield content
 				except: pass
 		trivia_str = 'TRIVIA'
-		result = session.get(url, timeout=timeout, headers=headers)
+		result = _get_session().get(url, timeout=timeout, headers=headers)
 		result = remove_accents(result.text)
 		result = result.replace('\n', ' ')
 		items = parseDOM(result, 'div', attrs={'class': 'ipc-html-content-inner-div'})
@@ -242,7 +253,7 @@ def get_imdb(params):
 					yield review
 				except: pass
 		spoiler_str = 'CONTAINS SPOILERS'
-		result = session.get(url, timeout=timeout, headers=headers)
+		result = _get_session().get(url, timeout=timeout, headers=headers)
 		result = remove_accents(result.text)
 		result = result.replace('\n', ' ')
 		body = re.findall(r'{"node":{"id":(.*)"__typename":"ReviewEdge"', result)[0]
@@ -251,13 +262,13 @@ def get_imdb(params):
 	elif action == 'imdb_people_id':
 		try:
 			name = params['name']
-			result = session.get(url, timeout=timeout)
+			result = _get_session().get(url, timeout=timeout)
 			results = json.loads(re.sub(r'imdb\$(.+?)\(', '', result.text)[:-1])['d']
 			imdb_list = [i['id'] for i in results if i['id'].startswith('nm') and i['l'].lower() == name][0]
 		except: imdb_list = []
 		if not imdb_list:
 			try:
-				result = session.get(params['url_backup'], timeout=timeout)
+				result = _get_session().get(params['url_backup'], timeout=timeout)
 				result = remove_accents(result.text)
 				result = result.replace('\n', ' ')
 				result = parseDOM(result, 'div', attrs={'class': 'lister-item-image'})[0]
@@ -266,7 +277,7 @@ def get_imdb(params):
 	elif action == 'imdb_parentsguide':
 		imdb_list = []
 		imdb_append = imdb_list.append
-		result = session.get(url, timeout=timeout, headers=headers)
+		result = _get_session().get(url, timeout=timeout, headers=headers)
 		result = remove_accents(result.text)
 		result = result.replace('\n', ' ')
 		results = parseDOM(result, 'section', attrs={'class': 'ipc-page-section ipc-page-section--base'})

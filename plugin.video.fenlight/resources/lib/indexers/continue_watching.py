@@ -28,6 +28,15 @@ def build_continue_watching(params):
 		hidden = get_hidden_progress_items(indicators)
 		next_eps = [i for i in get_next_episodes(nextep_content) if not i['media_ids']['tmdb'] in hidden]
 	except: next_eps = []
+	# Marcatore diagnostico (lotto 59): 'continua a guardare' fonde TRE sorgenti indipendenti e a
+	# schermo sono indistinguibili. Segnalato il caso di una serie con UN solo episodio visto che,
+	# tolto il visto, continua a mostrare il successivo: senza sapere da quale sorgente esce quella
+	# voce si correggerebbe a caso. Una riga per costruzione, solo id e S/E, nessuna chiamata di rete.
+	try:
+		_fmt = lambda seq: ','.join('%s(S%sE%s)' % (i.get('media_ids', {}).get('tmdb'), i.get('season'), i.get('episode')) for i in seq[:12])
+		kodi_utils.logger('FenLight CW', 'film in pausa %d | episodi in pausa %d [%s] | prossimi %d [%s] | nascosti %d'
+				% (len(movies), len(prog_eps), _fmt(prog_eps), len(next_eps), _fmt(next_eps), len(hidden or [])))
+	except: pass
 	# chiavi degli episodi in pausa (S/E esatta, già nota dai dati): usate per scartare i prossimi episodi identici
 	exclude_keys = set((int(i['media_ids']['tmdb']), int(i['season']), int(i['episode'])) for i in prog_eps)
 	# pool unico ordinato per last_played desc; tutte le sorgenti usano lo stesso formato (stesso DB locale),
@@ -62,5 +71,9 @@ def build_continue_watching(params):
 	add_items(handle, final_items)
 	set_content(handle, content)
 	set_category(handle, 'Continue Watching')
+	# ESPERIMENTO DEL LOTTO 61, REVOCATO: cacheToDisc=True qui NON cambia niente. Provato il 24/08 con
+	# gli altri tre widget lasciati a False come gruppo di controllo: al rientro in Home questo widget
+	# e' stato ri-invocato esattamente come loro (16:25:05 e 16:25:09). Un CDirectoryProvider che si
+	# aggiorna rilegge la sorgente e scavalca la cache delle cartelle: non e' un attrezzo che abbiamo.
 	end_directory(handle, cacheToDisc=False if is_external else True)
 	if not is_external: set_view_mode('view.%s' % content, content, is_external)

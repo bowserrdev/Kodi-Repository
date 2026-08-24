@@ -170,14 +170,19 @@ def build_episode_list(params):
 	set_sort_method(handle, content_type)
 	set_content(handle, content_type)
 	set_category(handle, category_name)
-	# cacheToDisc=False anche in finestra Video. Con la cache accesa, tornando indietro Kodi serviva
-	# la cartella dalla cache su disco invece di rileggerla, e il badge (episodi rimanenti, visto)
-	# restava vecchio: e' il difetto che nel lotto 43 aveva fatto ritirare Container.Refresh e
-	# costretto a ricostruire TUTTO. Il prezzo e' una rilettura del plugin al ritorno, e ora sappiamo
-	# quanto costa perche' e' misurata: 30-100 ms sulla stick (log 22/08, 'seasons Furious | totale
-	# 0.03s', 'episodes Season 1 | totale 0.05s'). Era un baratto sensato quando queste liste erano
-	# lente; oggi non lo e' piu', e paghiamo la cache in correttezza.
-	end_directory(handle, cacheToDisc=False)
+	# RITIRATO il cacheToDisc=False incondizionato di a1edbba (lotto 50). Il baratto era stato prezzato
+	# a "30-100 ms di rilettura al ritorno", ma quei millisecondi erano il PERF 'totale', cioe' la sola
+	# COSTRUZIONE. Il log di debug del 23/08 misura l'invocazione intera: questa stessa funzione,
+	# build_episode_list, 15,99 s (inv=33) e 20,41 s (inv=40). Sbagliato di oltre 200 volte, e non era
+	# il solo prezzo: senza cache, tornando dal player Kodi non ha la cartella da ripristinare, il path
+	# arriva vuoto ('CDirectoryProvider[]: refreshing', 'GetDirectory - Error getting ' alle 22:41:15)
+	# e si ricade sul genitore. Da li' i tre difetti segnalati dall'utente: pagina vuota dopo il player,
+	# "segna come visto" senza effetto a schermo, menu contestuale sulla serie invece che sull'episodio
+	# -- perche' a schermo c'era davvero la serie.
+	# Questo e' un TAMPONE, non la soluzione: il badge "episodi rimanenti" puo' tornare a restare
+	# vecchio finche' non si riapre la serie. La soluzione vera e' invalidare la cache in modo MIRATO
+	# quando siamo noi a cambiare lo stato visto, non spegnerla sempre per tutti.
+	end_directory(handle, cacheToDisc=False if is_external else True)
 	set_view_mode(list_view, content_type, is_external)
 
 def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaired=False):

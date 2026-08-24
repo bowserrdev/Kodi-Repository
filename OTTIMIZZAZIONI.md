@@ -5699,3 +5699,2764 @@ perche' su questo repo la versione viene incrementata a ogni sviluppo.
 
 Rimedio: Impostazioni -> Sistema -> Add-on -> Aggiornamenti = **«Notifica»** invece di «Installa
 automaticamente». Non e' dannoso: a aggiornamento finito tutto riprende.
+
+---
+
+# Lotto 48 — adb sulla stick, il bisect che ha smentito se stesso, e tre correzioni
+
+Sessione del 23/08 pomeriggio-sera. Prima volta con controllo diretto della Mi Stick via `adb` (rete,
+gia' configurato), invece del ciclo commit -> deploy -> test manuale. Il resoconto e' lungo perche'
+contiene un errore di metodo mio, non solo risultati.
+
+## L'errore di metodo, per primo
+
+Le prime due misure hanno usato `adb` con un campionatore che interrogava il dispositivo una volta al
+secondo (`adb shell` in loop) mentre Kodi avviava. La stick si e' riavviata due volte durante quelle
+misure, e per un momento ho scambiato il mio stesso carico per la causa. **Non lo era**, ma il sospetto
+era legittimo e andava escluso, non ipotizzato. La prova: `am start` seguito da `adb kill-server`
+(zero traffico per 200s) ha lasciato Kodi in piedi senza incidenti. Da quel momento ogni misura ha
+seguito un protocollo fisso: orchestrazione intera scritta su file **sul device** (script push+`nohup`),
+`adb kill-server` subito dopo il lancio, nessun comando fino al prelievo a fine corsa. E' il protocollo
+da tenere per ogni test futuro via adb.
+
+## La scoperta che conta: non e' un commit, e' una finestra di tempo
+
+Cinque crash misurati in questa sessione, cinque versioni di codice diverse (HEAD, `a1edbba`,
+`2599160`, `c887628` due volte), piu' i due nei log gia' raccolti (allegato 15:30, lotto 29 21:33):
+
+| origine | scarto dall'avvio di Kodi |
+|---|---|
+| log utente 15:30 | +16,4 s |
+| lotto 29 (storico) | +16,1 s |
+| HEAD (sessione odierna) | ~16 s |
+| `a1edbba` | 16,6 s |
+| `2599160` | 18,2 s |
+| `c887628` (2a corsa) | 23,3 s |
+
+**Sempre e solo li'**, mai a meta' sessione, mai durante la navigazione normale -- tranne un caso
+diverso discusso sotto. E' la finestra in cui 4 widget della home, `BlurService` (+ import Pillow),
+`TraktMonitor`, `WidgetPaginator`, `CustomFonts` e i processi Python di `script.skinvariables` (skin
+esterna, non nostra: vedi sotto) partono tutti insieme. Il tipo di riavvio e' sempre
+`ro.boot.reboot_mode=watchdog_reboot` -- un blocco a livello di sistema, non un crash applicativo, non
+un OOM kill (i kill di `lowmemorykiller` visti nei log sono tutti `adj=906`, cache normale, mai Kodi).
+
+## Il bisect ha smentito se stesso
+
+Ipotesi iniziale: la diagnostica aggiunta in `a1edbba` (`external()` dentro `end_directory`, prima
+messo PRIMA di `endOfDirectory` -- vero rischio di abbraccio mortale, poi spostato dopo in `3c0d3d4`
+-- e `_diag_note()` in `paginator.py`, lettura-modifica-scrittura di una proprieta' CONDIVISA a ogni
+build) avesse abbassato il margine. La sequenza dei test:
+
+1. `c887628` (prima corsa): **regge**, MemAvailable sceso fino a 149 MB.
+2. `a1edbba`: **crasha**.
+3. `2599160` (un solo commit prima di `a1edbba`, diff limitato al fix Trakt, niente sul percorso di
+   avvio): **crasha comunque** -- diff insufficiente a spiegarlo.
+4. `c887628` (seconda corsa, stesso identico codice della prova 1, verificato bit a bit): **crasha**.
+
+Il punto 4 chiude la questione: **la stessa versione ha retto una volta e crashato la successiva.**
+Il crash non e' una funzione deterministica del commit installato. E' probabilistico, e la sequenza di
+riavvii bruschi da watchdog (niente spegnimento pulito, niente raffreddamento) fatta susseguire in poco
+tempo puo' essa stessa peggiorare la prova successiva -- lo stesso "degrado di sessione" gia'
+documentato altrove in questo file, qui applicato a una catena di riavvii invece che a una sessione
+lunga.
+
+**Lezione**: su un fenomeno probabilistico un singolo test pass/fail per commit non prova niente. Il
+bisect per commit presuppone determinismo; qui non c'era, e insistere avrebbe solo consumato altri
+riavvii della stick dell'utente senza una risposta valida.
+
+## Tre correzioni applicate, indipendenti dalla causa esatta
+
+Non sapendo quale singola riga sia necessaria e sufficiente, la strada scelta e' stata ridurre il
+carico concorrente totale nella finestra 0-25s, su tre fronti misurati:
+
+**1. `dub_filter` senza pool sprecato** (`modules/metadata.py`, `dub_keep_mask`). Apriva un
+`ThreadPoolExecutor` per OGNI pagina di 20 elementi, anche a verdetto gia' tutto in cache: dal log del
+23/08, **10,74 s su 47 pagine, zero chiamate di rete**. Stesso difetto che il lotto 14 aveva gia'
+chiuso per la costruzione delle listitem, mai applicato qui. Corretto in due fasi: risoluzione dei
+verdetti in cache in sequenza (zero rete, solo SQLite/dict), pool aperto solo per chi resta senza
+verdetto. Verificato sul device: stessi esiti, stesso log, solo senza l'overhead.
+
+**2. `fen_blur` ridondante all'avvio** (skin, `shortcuts/skinvariables-startup.json`). Un
+`RunPlugin(mode=fen_blur)` sparato da `Startup.xml` per pre-sfocare lo sfondo dello splash, misurato
+**4-11 secondi** di lavoro Pillow in un interprete Python a se', anche nelle sessioni che completano
+con successo (log 16:16, tre chiamate: 11,3s / 4,5s / 4,6s). Ridondante: `BlurService`, gia' in
+esecuzione, produce lo stesso sfondo (stessa cache su disco) pochi secondi dopo. Rimossa la sola riga
+`RunPlugin`; il resto del file (stato dello splash) intatto. Gia' segnalato come "eliminabile" nel
+lotto 29 e mai tolto fino ad ora.
+
+**3. `DIAG` spenta** (`modules/paginator.py`). `_diag_note()` faceva una lettura-modifica-scrittura di
+`DIAG_BUILDS_PROP`, una proprieta' di finestra CONDIVISA, a ogni singola costruzione -- contesa fra
+processi proprio quando piu' widget si costruiscono in parallelo. Le domande a cui doveva rispondere
+(causa=, DOPPIONE) hanno gia' avuto risposta nei log raccolti finora. Stesso criterio di
+`PERF_SELFTEST` (lotto 47.4): spenta quando ha gia' dato le risposte, riaccendibile a mano.
+
+Tutte e tre verificate: sintassi, simboli (nessuna funzione persa nella riscrittura), stesso
+comportamento a parita' di input. Nessuna nuova diagnostica aggiunta.
+
+## Il test che ha funzionato, e quello ambiguo subito dopo
+
+Nono tentativo della giornata (HEAD + le tre correzioni): **primo boot completo su nove**, tutti e 4 i
+widget costruiti, `dub_filter` verificato corretto nel nuovo percorso, `TraktMonitor` completa il suo
+giro. Poi, nell'istante esatto del primo `input keyevent` mandato via adb per simulare la navigazione,
+crash -- ultima riga di log: caricamento di un layout tastiera/controller, il percorso che Android
+attraversa quando registra un nuovo dispositivo di input. Sospetto forte che sia un effetto collaterale
+di `adb input keyevent` (puo' comportarsi come "nuovo HID collegato") e non un difetto dell'app: la
+memoria in quel momento era tutt'altro che in crisi (MemAvailable 228 MB, sopra tutti i livelli visti
+negli altri crash). Non verificabile senza un tasto vero premuto sul telecomando fisico -- motivo per
+cui il test finale e' stato lasciato all'utente.
+
+## Rifatto un giro su `c887628`, e ha crashato anche quello
+
+Su richiesta dell'utente (convinto che le versioni precedenti fossero piu' stabili), il codice del
+plugin e' stato riportato esattamente a `c887628` ("miglioramenti player e navigazione") e ridistribuito
+per un test con telecomando vero, sessione lunga. **Crash allo stesso identico punto.** Conferma diretta,
+sul campo, di quanto gia' visto nel bisect: nessuna versione storica del plugin e' stata immune. Il
+codice del plugin e' stato quindi riportato a HEAD + le tre correzioni sopra.
+
+## Due piste segnalate, non nostre da correggere
+
+- `script.texturemaker`: nessuna invocazione trovata nel percorso di avvio della skin (solo pannello
+  impostazioni). Probabilmente non c'entra, ma importa anche `script.module.pil` -- se in futuro
+  qualcosa lo richiama, e' un altro punto Pillow da controllare.
+- `script.skinvariables`: addon Python esterno (non in questo repository), invocato PIU' VOLTE
+  separatamente durante l'avvio (`skinvariables-startup.json`, poi `skinvariables-build-templates.json`
+  -- rigenerazione sincrona e bloccante gia' segnalata nel lotto 29 --, poi `skinvariables-splash.json`
+  che si rilancia da solo ogni 0,5s finche' i widget aggiornano). Ogni invocazione e' un interprete
+  Python della skin, concorrente con quelli di Fen Light nella stessa finestra critica. Codice non
+  nostro: nessuna correzione possibile da qui, ma e' un pezzo reale del carico totale che va tenuto
+  presente prima di dire "e' colpa nostra" o "e' colpa loro".
+
+## Stato a fine sessione
+
+Sul device: HEAD del plugin + le tre correzioni sopra, skin con `fen_blur` rimosso dallo startup.
+Working tree del repository allineato (stesse tre modifiche, non ancora committate). L'utente user'a'
+la stick per qualche giorno in condizioni reali -- il test piu' onesto che esista per un fenomeno
+probabilistico -- prima di decidere il prossimo passo.
+
+## Metodo, per la prossima sessione
+
+Un test pass/fail non prova niente su un fenomeno probabilistico: servono piu' ripetizioni della STESSA
+build prima di attribuire un esito al codice. Il protocollo adb (orchestrazione su device, kill-server
+durante la misura, nessun comando fino al prelievo) resta valido e va riusato. `adb input keyevent` non
+e' equivalente a un tasto fisico e non va usato per riprodurre problemi vicini al confine
+hardware/sistema -- solo per navigazione in condizioni non critiche.
+
+---
+
+# Lotto 48 bis — la sera dopo: telecomando vero, tre crash diversi, e BlurService isolato
+
+Continuazione dello stesso giorno, con l'utente che ha ripreso a usare la stick col telecomando reale
+(non piu' `adb input keyevent`). Tre crash in successione, ognuno diverso dagli altri -- la prova piu'
+netta finora che non esiste una causa sola.
+
+## Crash A: durante l'avvio di un film, non nostro
+
+Log pulito, nessun'altra riga Fen Light nel mezzo. Sequenza:
+
+```
+Display resolution ADJUST: 1920x1080 @ 23.976025   <- 1o cambio modalita' (film a 23,976 fps)
+VideoPlayer: OnLostDisplay received
+error: Flush - timed out waiting for renderer to flush
+VideoPlayer: OnResetDisplay received
+Creating video thread (OMX.amlogic.avc.decoder.awesome aperto)
+Loading skin file: VideoFullScreen.xml
+Display resolution ADJUST: 1920x1080 @ 23.976025   <- 2o cambio modalita', 3s dopo il primo
+[fine log]
+```
+
+Nessuna riga di codice nostro in questo tratto: e' la pipeline video di Kodi (VideoPlayer, MediaCodec,
+il driver GPU Mali) che ricrea il contesto grafico due volte in tre secondi per adattare la frequenza
+al file. Conferma diretta, con le prove, di quanto il lotto 47.7 aveva gia' sospettato senza log a
+supporto. La leva possibile e' **Impostazioni -> Player -> Video -> "Adatta la frequenza di
+aggiornamento del display"** = Off: costo, un po' di judder sui contenuti a 24fps; non ancora testato
+pulito.
+
+## Il test decisivo: BlurService isolato, 4 cicli, 4 su 4
+
+In tre catture indipendenti raccolte fino a quel punto (17:20, `a1edbba`, e un nuovo crash delle
+19:51), la riga finale del log prima del riavvio da watchdog era **sempre** `BlurService Starting
+(Pillow: OK)` o l'equivalente import di Pillow da `fen_blur`. Mai visto prima con questa nettezza
+perche' il bisect per commit del pomeriggio aveva distratto da un pattern piu' semplice.
+
+Test: `Thread(target=BlurService().run).start()` commentato in `service.py`, poi **4 avvii consecutivi
+via script sul device** (adb staccato, uptime controllato automaticamente + confermato dall'utente in
+diretta guardando lo schermo). **4 su 4 senza riavvio** -- la prima sequenza pulita di tutta la
+giornata, dopo una serie di crash quasi sistematici.
+
+### La sfocatura sembrava esserci comunque: verificato, non lo era
+
+L'utente ha notato che le immagini di sfondo sembravano ancora sfocate nonostante `BlurService` fermo,
+e ha ipotizzato che il crash successivo fosse dovuto a un tentativo di generarne una nuova a servizio
+spento. Controllata la cartella cache su disco (`addon_data/plugin.video.fenlight/blur/`): **l'ultimo
+file scritto risaliva al 18 agosto**, cinque giorni prima. Zero produzione nuova durante i quattro
+avvii di test. Quello che si vedeva era il **fallback gia' previsto dal codice** (`pil_available()`:
+"la skin ricade sullo sfondo semplice + artwork nitido invece che sul nero") -- non sfocatura vera,
+solo un fallback abbastanza dignitoso da non sembrare rotto a uno sguardo veloce. Buona notizia in se':
+il fallback regge.
+
+### La correzione: non tolto, differito
+
+Disattivare per sempre perde la sfocatura. La cura e' rimandarne l'avvio oltre la finestra critica:
+
+```python
+BLUR_START_DELAY = 25
+
+def _delayed_blur_start(self):
+    if xbmc.Monitor().waitForAbort(BLUR_START_DELAY): return
+    BlurService().run()
+```
+
+Chiamato con `Thread(target=self._delayed_blur_start).start()` al posto dell'avvio diretto.
+`waitForAbort` invece di `sleep`, cosi' un abort di Kodi durante l'attesa non lascia il thread appeso.
+L'interprete e' gia' vivo: aspettare qui non costa un processo in piu', solo un thread fermo.
+
+## Crash B: una raffica di rete vera, non l'avvio
+
+Sessione lunga e produttiva -- 4 minuti e mezzo di uso reale, non un crash da avvio. Cronologia
+ricostruita dal log:
+
+1. Riproduzione di un film avviata con successo (stessi sintomi del Crash A -- `Flush - timed out`,
+   `ReleaseOutputBuffer error in render` -- ma stavolta **non e' crashato**: prova che quel sintomo non
+   e' deterministico nemmeno lui).
+2. Rientro alla home, widget ricostruiti.
+3. Ricerca aperta, poi cronologia ricerche, poi un pannello di selezione.
+4. Apertura di "Discover" con filtro di genere (Horror + Romance): titoli mai visti prima, quindi il
+   filtro doppiaggio deve interrogare **davvero** la rete (TMDb + blu-ray.com) per una ventina di
+   titoli insieme -- due chiamate da 1,84s e 1,94s di lavoro di rete vero, dentro il pool a 6 worker
+   della correzione del lotto 48 (che qui lavora come previsto: non e' lo spreco chiuso prima, e'
+   proprio il caso in cui il parallelismo serve).
+5. La build di quella lista Discover impiega **11,64 secondi in totale**, quasi tutti di rete.
+6. **Un'altra build di filtro doppiaggio parte in contemporanea** (altro widget in aggiornamento).
+7. Il log si interrompe di netto.
+
+Zero righe di blur, zero Pillow in tutta la sessione -- `BlurService` differito non aveva ancora
+raggiunto i 25s da nessun avvio recente, quindi e' escluso con certezza da questo crash specifico.
+La causa qui e' **una raffica di richieste di rete vere sovrapposta a un'altra costruzione di lista in
+corso** -- un momento di carico che nessuna delle tre correzioni del lotto 48 tocca.
+
+## Il quadro che emerge, detto senza girarci intorno
+
+Tre crash, tre meccanismi scatenanti diversi: tempesta all'avvio (lotto 48), cambio di contesto grafico
+all'apertura di un film (non nostro, Crash A), raffica di rete durante la navigazione (Crash B). Il
+filo comune non e' un componente specifico -- e' che **su questo hardware qualsiasi sovrapposizione
+sufficiente di operazioni pesanti e' un momento a rischio**, e i punti in cui questo succede sono
+diversi ogni volta. Le correzioni fatte finora tolgono carico reale da alcuni di questi momenti, non
+da tutti.
+
+### Le leve rimaste, distinte per cosa richiedono
+
+**Senza root (la stick non lo ha: `/sys/fs/pstore/` nega il permesso), da impostazioni, zero rischio:**
+- Player -> Video -> "Adatta la frequenza di aggiornamento" = Off (Crash A).
+- Fen Light -> `paginate.interactive` = Off (spegne il polling di `WidgetPaginator`, mai testato isolato).
+- Fen Light -> `paginate.limit_widgets`/`limit_addon` piu' basso (liste piu' corte).
+- Android -> disattivare/forzare l'arresto di app di sistema non usate (Google Cast, Play Games: visti
+  girare in concorrenza con Kodi nei log, stesso 1 GB di RAM, non e' carico nostro ma lo occupa).
+
+**Non disponibile senza root**: governor della CPU, dimensione/parametri dello zram, priorita' dello
+scheduler, soglie dell'OOM killer -- le leve che servirebbero per un limite di sistema vero, chiuse su
+un dispositivo Android non rootato di serie.
+
+**Richiede codice, non ancora fatto**: limitare la concorrenza di rete del filtro doppiaggio quando
+scopre molti titoli mai visti insieme (Crash B) -- proposto, non applicato, perche' la sessione era
+gia' troppo lunga per un altro giro di test dal vivo.
+
+## La skin: pista aperta, non ancora lavorata
+
+L'utente sostiene che Arctic Fuse sia una delle cause di fondo -- troppo codice, molto inutilizzato --
+e l'ipotesi e' coerente con la prima analisi di questa sessione (47.458 righe di XML in 239 file; alcune
+variabili immagine rivalutate con fino a 18 condizioni concatenate **per elemento visibile, per
+fotogramma**, durante lo scorrimento -- carico CPU vero, non solo peso a riposo). Non e' stato aperto
+stasera: e' un progetto a se', per una sessione dedicata, non l'ultimo mezz'ora di una giornata gia'
+pesante.
+
+## Stato a fine sessione
+
+Sul device: HEAD del plugin + le quattro correzioni (filtro doppiaggio senza pool sprecato, `fen_blur`
+ridondante tolto dalla skin, `DIAG` spenta, `BlurService` differito di 25s). Repository allineato, non
+ancora committato. Nessun altro test dal vivo previsto per stasera.
+
+---
+
+# Lotto 49 — La stick girava un ibrido di due generazioni di codice
+
+## Il fatto, prima di ogni interpretazione
+
+Confrontando gli MD5 dei file **sul device** con quelli di ogni commit recente, il quadro era questo:
+
+| file | MD5 sul device | corrisponde a |
+|---|---|---|
+| `modules/kodi_utils.py` | `dfa079cf` | `c887628` / `07d747a` / `2599160` (22/08) |
+| `modules/player.py` | `2d720a2c` | `c887628` / `07d747a` / `2599160` (22/08) |
+| `modules/paginator.py` | `7258dc7f` | `a1edbba` (23/08) + patch `DIAG=False` |
+| `service.py` | `eea2bc89` | HEAD + patch BlurService differito |
+| `modules/metadata.py` | `945db478` | HEAD + patch filtro doppiaggio |
+
+Cioe': **due file chiave fermi al 22/08, gli altri al 23/08.** Nessuna versione in git corrispondeva
+all'insieme. Non era "HEAD + quattro correzioni" come scritto a fine lotto 48 bis: era un ibrido.
+
+## Perche' questo spiega cose che sembravano inspiegabili
+
+**1. Il bisect che si smentiva.** Nel lotto 48 lo stesso commit era stato spinto due volte e aveva
+prodotto due esiti diversi, e la conclusione era stata "il crash e' probabilistico". Puo' anche
+esserlo, ma la premessa era falsa: se i push non sostituivano tutti i file, due prove "dello stesso
+commit" non stavano provando lo stesso codice. **La conclusione del lotto 48 va considerata non
+dimostrata**, non smentita: semplicemente non era un esperimento valido.
+
+**2. Il refresh globale invisibile nel log.** La riga `DIAG refresh: GLOBALE (UpdateLibrary)` e' stata
+aggiunta in `kodi_utils.py` dopo il 22/08. Il `kodi_utils.py` sul device e' del 22/08 e **quella riga
+non ce l'ha** (`grep` conferma: zero occorrenze). Quindi ogni ricostruzione globale avvenuta sulla
+stick in questi giorni **non ha lasciato traccia nel log**: leggendo i log si vedevano gli effetti
+(ondate di build) senza mai la causa. Abbiamo diagnosticato per giorni con lo strumento di misura
+staccato.
+
+**3. La guardia anti-scrobble non era mai arrivata.** In `player.py` il blocco che timbra "questa
+modifica e' nostra" anche quando NON si marca niente -- quello che impedisce al monitor Trakt di
+rileggere il proprio scrobble-stop come cambiamento remoto e ordinare `UpdateLibrary` -- **non e'
+presente nella copia sul device**. E' esattamente la correzione descritta nel lotto 47, applicata nel
+repository e mai finita sulla stick.
+
+## Il log del crash delle 20:46 letto alla luce di questo
+
+```
+20:45:37  Display resolution ADJUST : 1920x1080 @ 23.976  <- inizio riproduzione
+20:45:55  CVideoPlayer::CloseFile()                       <- l'utente chiude dopo ~18s (film NON finito)
+20:45:56  SetNativeResolution 60.000004 / GLES: Maximum texture width: 4096  <- contesto GL ricreato
+20:45:59  refresh mirato: 2 contenitori ricaricati        <- UNICO ordine di refresh loggato
+20:46:08  ...prima build, 8.6s DOPO l'ordine
+20:46:11  mdblist 101881 | 54 elementi | +14949 ms da CloseFile
+20:46:12  mdblist 91378  | 62 elementi | +16101 ms da CloseFile   <- ondata 1: i 2 contenitori attesi
+20:46:21  mdblist 101881 | 54 elementi | +25501 ms da CloseFile   <- LO STESSO di prima, di nuovo
+20:46:23  mdblist 2194   | 42 elementi | +26951 ms da CloseFile   <- ondata 2, senza ordine loggato
+          -> watchdog_reboot
+```
+
+Un solo ordine di refresh a log, due ondate di ricostruzione, e un contenitore costruito **due volte
+in dieci secondi**. Con il `kodi_utils.py` vecchio l'ondata 2 non poteva loggarsi; con il `player.py`
+vecchio la sua causa piu' probabile -- chiusura a meta' film -> scrobble stop -> monitor Trakt ->
+ricostruzione globale -- non era intercettata. Le due cose combaciano.
+
+Da notare anche il sintomo riferito dall'utente, "lo schermo diventa tutto di un colore": e' coerente
+con il momento esatto in cui il contesto GL viene ricreato (uscita dal player, 60 Hz) e subito dopo
+quattro interpreti Python con sei worker ciascuno si mettono a costruire ~180 listitem.
+
+## Un difetto di progetto emerso per strada, indipendente dall'ibrido
+
+`REFRESH_COALESCE_SECONDS = 5`, e l'accorpamento si misura da `_stamp_refresh()`, cioe' **dall'istante
+in cui il refresh e' ORDINATO**. Ma su questa stick fra l'ordine e l'inizio effettivo della
+costruzione passano 8-11 secondi (misurato: 20:45:59.797 -> 20:46:08.387, cioe' 8.6s; il lotto 43
+aveva gia' misurato 11s). Un secondo ordine che arriva a +6s **passa la guardia** e accoda una
+seconda ondata completa, che finisce per sovrapporsi alla prima ancora in corso. La finestra di
+accorpamento e' piu' corta della latenza che dovrebbe coprire: cosi' com'e' non puo' funzionare.
+Segnalato, non ancora corretto -- va corretto misurando il lavoro in volo, non l'orologio.
+
+## Fatto in questo lotto
+
+1. **Allineata la stick a una sola generazione di codice.** `am force-stop`, rimossi tutti i
+   `__pycache__` (bytecode di una generazione diversa dai sorgenti), push dell'intera `resources/lib`
+   (168 file) e del file skin. **MD5 dei cinque file chiave verificati uno per uno dopo il push**:
+   device e working tree coincidono. Da adesso "la versione sul device" e' un'affermazione verificata,
+   non un'assunzione.
+2. **BlurService spento del tutto** (richiesta dell'utente), non piu' solo differito: la riga che lo
+   avvia in `startServices()` e' commentata, `_delayed_blur_start` resta definito per riaccenderlo.
+3. Restano attive le altre tre correzioni del lotto 48 (filtro doppiaggio senza pool sprecato,
+   `fen_blur` ridondante tolto dalla skin, `DIAG=False`).
+
+## Metodo, e vale piu' delle correzioni
+
+**Dopo ogni deploy, verificare gli hash.** Tutta questa sessione e la precedente hanno ragionato su
+"cosa gira sulla stick" senza mai controllarlo. Il costo e' stato due giorni di diagnosi su un
+bersaglio che non era quello che credevamo, piu' una conclusione (il crash probabilistico del lotto
+48) che ora va rimessa in discussione. Un `md5sum` costa un secondo.
+
+## Lotto 49 bis — La sessione dell'utente sul codice allineato, e cosa NON dimostra
+
+Dodici minuti di uso reale (20:56:53 -> 21:09:10), due riproduzioni complete, navigazione, load average
+a 3,88. **Nessun crash**, uptime continuo. Primo risultato positivo su uso vero da giorni.
+
+### La domanda dell'utente: "il BlurService spento e' la discriminante?"
+
+**No, non lo si puo' dire, e le prove indicano semmai l'altra cosa.** Fra il crash delle 20:46 e questa
+sessione sono cambiate DUE cose insieme: blur spento *e* codice allineato. Sono confuse fra loro, e una
+sola delle due si vede agire nel log:
+
+```
+21:02:13  DIAG refresh: NON ordinato, Kodi ha gia' ricostruito da sola 12.0s dopo la chiusura
+21:05:43  DIAG refresh: NON ordinato, Kodi ha gia' ricostruito da sola  4.0s dopo la chiusura
+```
+
+E' la guardia del `player.py` di HEAD -- quella che il lotto 49 ha scoperto non essere mai arrivata sul
+device -- che sopprime il refresh ridondante alla chiusura del film. Ha lavorato due volte, esattamente
+nel momento che nel crash delle 20:46 aveva prodotto la doppia ondata. Del blur, invece, il log non puo'
+dire niente: e' spento, non lascia tracce, e non c'e' modo di sapere se sarebbe intervenuto.
+
+Attribuire il miglioramento al blur sarebbe ripetere l'errore del lotto 48 bis, dove la stessa
+conclusione era stata tratta su una correlazione e poi smentita. Per isolarlo davvero servirebbe
+riaccendere il blur lasciando il codice allineato: una variabile per volta. Non fatto -- non vale il
+costo di altri riavvii forzati per una domanda estetica.
+
+### Quello che invece il log dimostra: il doppione post-riproduzione e' ancora li'
+
+```
+21:02:14  widget 101881 | 54 elementi | +13692 ms da CloseFile
+21:02:15  widget  91378 | 48 elementi | +14380 ms
+21:02:29  widget  91378 | 48 elementi | +28708 ms   <- lo stesso
+21:02:30  widget 101881 | 54 elementi | +29737 ms   <- lo stesso
+```
+
+Gli stessi due contenitori, due volte, a quindici secondi di distanza. Stavolta non ha fatto crashare,
+ma il lavoro doppio si fa ancora e resta un candidato aperto. Da notare che la guardia AVEVA soppresso
+il refresh: la seconda ondata nasce altrove (paginator, o rilettura dei DirectoryProvider da parte di
+Kodi al ritorno in primo piano) e va identificata prima di correggerla -- **non** corretta a intuito.
+
+### Osservazione laterale, da verificare
+
+`TraktMonitor` scrive "Next Update in 30 minutes" ma nel log ricorre ogni ~30 SECONDI (21:01:17,
+21:02:10, 21:02:42, 21:05:45, 21:06:16). O il messaggio mente sull'unita', o l'intervallo non e'
+rispettato. Ogni occorrenza e' una chiamata di rete piu' un potenziale innesco di ricostruzione
+globale. Segnalato, non indagato.
+
+### Correzione applicata (la "seconda strada", scelta dall'utente)
+
+`kodi_utils.stamp_startup_rebuild()`, chiamata in cima a `service.startServices()` prima che parta
+`TraktMonitor`: timbra la costruzione iniziale dei widget -- che Kodi fa comunque, per conto suo -- come
+la ricostruzione globale che di fatto e'. Cosi' la prima sincronizzazione Trakt trova `refresh_age()`
+piccolo invece di 1e9, si accorpa, e non ordina il `UpdateLibrary` duplicato 15 s dentro la sessione.
+Una modifica Trakt fatta davvero altrove arriva comunque: dopo `TRAKT_REFRESH_COALESCE` la guardia
+riapre. E' lavoro tolto, non aggiunto.
+
+Deploy: `force-stop`, `__pycache__` rimossi, intera `lib` (168 file) spinta, **hash verificati**.
+
+### Verifica della correzione: A/B sullo stesso device, stesso tipo di avvio
+
+Costruzioni di widget durante l'avvio, prima e dopo `stamp_startup_rebuild()`:
+
+```
+PRIMA (avvio 20:57)                         DOPO (avvio 21:12)
+20:57:16  DIAG refresh: GLOBALE             (nessun refresh globale)
+20:57:18  91378   48 elementi               21:12:53  101881  54 elementi
+20:57:18  101881  54 elementi               21:12:53  91378   48 elementi
+20:57:28  2194    42 elementi               21:12:57  2194    42 elementi
+20:57:30  91378   48 elementi  <- doppione
+20:57:33  101881  54 elementi  <- doppione
+--------------------------------            --------------------------------
+5 costruzioni, 246 elementi                 3 costruzioni, 144 elementi
+```
+
+In entrambi i casi `Trakt Update Performed` e' avvenuto (21:12:49): la sincronizzazione fa il suo
+lavoro, semplicemente non ordina piu' la ricostruzione duplicata. **Circa il 41% degli elementi
+costruiti all'avvio non viene piu' costruito**, e sparisce la sovrapposizione fra la ricostruzione
+globale e la costruzione iniziale ancora in corso -- cioe' la finestra in cui i crash da avvio si
+concentravano. Nessun riavvio nell'avvio di verifica.
+
+## Lotto 49 ter — Un modo di morire DIVERSO: Kodi cade, la stick resta in piedi
+
+Alle 21:15:00.861 Kodi (pid 8173) e' morto **mentre era in primo piano**. La stick **non** si e'
+riavviata: `uptime` continuo, 28 minuti, nessun `watchdog_reboot`. **Non e' lo stesso guasto** di tutti
+i lotti precedenti e non va confuso con quello.
+
+### Quello che le fonti dicono, e quello che non possono dire
+
+| fonte | esito |
+|---|---|
+| `kodi.log` | finisce pulito alle 21:14:50.983 su una riga di routine di TraktMonitor. Nessun errore, nessuna eccezione Python, nessun traceback. |
+| `logcat -b crash` | **vuoto**: nessun tombstone accessibile. |
+| `logcat` (main+system, copre 20:48:17 -> 21:16:18, quindi tutta la sessione) | **zero righe `lowmemorykiller`, zero `Killing`**. Kodi non e' stato ucciso dal low memory killer di Android. |
+| `logcat` righe del pid 8173 | **nessuna**: il processo non ha lasciato nulla nei buffer di sistema. |
+| `dmesg` | `klogctl: Operation not permitted` -- serve root. **L'OOM killer del kernel scrive li' e solo li'**: se e' stato lui, non possiamo vederlo. |
+| `addon.xml` sul device | `reuselanguageinvoker=false` -- intatto. |
+| `fenlight.py` sul device | `if sys_exit_check(): sys.exit(1)` -- intatto. |
+
+Le due protezioni note come fatali se rimosse ci sono entrambe: quella pista e' chiusa.
+
+### L'indizio che resta, ed e' indiretto ma non debole
+
+Subito **dopo** la morte di Kodi, Android ha riavviato in blocco: `mediashell` (CastReceiverService),
+`gms`, `providers.tv`, `katniss`, `vending`, `inputmethod.latin`, `videos`, `gapps`. Non e' la causa --
+e' l'effetto: quei servizi erano stati **sfrattati** mentre Kodi girava, e sono tornati appena la
+memoria si e' liberata. Android aveva svuotato la casa per tenere in piedi Kodi, e Kodi e' morto lo
+stesso. Su 1 GB, con `MemTotal` 1004 MB e il sistema a riposo (senza Kodi) gia' a 906 MB usati.
+
+Cosa stava facendo l'utente: serie TV -> stagioni -> episodi. `Loading skin file: MyVideoNav.xml, load
+type: KEEP_IN_MEMORY` alle 21:14:38, `seasons Lucky` alle 21:14:42 e **di nuovo** alle 21:14:44 (altro
+doppione, 1 elemento, trascurabile come costo ma sintomo dello stesso difetto), `episodes Season 1`
+alle 21:14:48, poi dieci secondi di silenzio e la morte.
+
+### Ipotesi, dichiarata come tale
+
+Esaurimento di memoria del processo Kodi (allocazione fallita o OOM killer del kernel), non un carico
+CPU. **Non e' dimostrata** e con gli strumenti disponibili non e' dimostrabile a posteriori: senza root
+non si legge `dmesg`, e senza tombstone non si sa se e' stato un `abort` o un segnale.
+
+### Cosa e' stato messo in piedi invece di indovinare
+
+Un campionatore che gira **sulla stick**, non da adb: `/sdcard/rss.sh`, ogni 10 s scrive in
+`/sdcard/kodi_rss.csv` l'RSS di Kodi, `MemAvailable` e `SwapFree`. Due letture da `/proc`, nessuna rete,
+nessun `adb shell` ripetuto -- cioe' nessuno dei difetti di metodo del lotto 48. Se Kodi cresce fino a
+morire, la curva lo mostra; se muore a memoria stabile, l'ipotesi memoria cade e si guarda altrove.
+E' la prima misura vera su questo modo di guasto.
+
+### Nota sulla skin, che ora e' pertinente e non piu' solo un sospetto
+
+47.458 righe di XML in 239 file; i piu' grandi: `Includes_Layouts.xml` 2517, `Includes_Objects.xml`
+2096, `Dialog_DialogCustom.xml` 1716, `script-skinvariables-images-includes.xml` 1502. `MyVideoNav.xml`
+si carica `KEEP_IN_MEMORY`, cioe' resta residente. Se la misura conferma la pista memoria, alleggerire
+la skin smette di essere un'intuizione dell'utente e diventa la correzione indicata dai dati.
+
+## Lotto 49 quater — La prima misura di memoria, e cosa si puo' onestamente dire dell'allineamento
+
+Sessione 21:19:01 -> 21:24:50, chiusa **dall'utente** (`Saving settings`, tutti i servizi `Finished`,
+`Exiting the application...`): chiusura pulita, nessun crash. Circa sei minuti, con una riproduzione.
+
+### La curva di memoria (campionatore on-device, adb staccato)
+
+```
+21:19:09   RSS 250 MB   MemAvail 194 MB   SwapFree 431 MB
+21:20:41   RSS 274 MB   MemAvail 276 MB   SwapFree 427 MB
+21:21:03   RSS 391 MB   MemAvail 139 MB   SwapFree 407 MB   <- picco
+21:21:56   RSS 206 MB   MemAvail 103 MB   SwapFree 369 MB   <- minimo di disponibile
+21:22:16   RSS 127 MB   MemAvail 203 MB   SwapFree 348 MB
+21:24:41   RSS 127 MB   MemAvail 217 MB   SwapFree 368 MB
+```
+
+**Non e' una perdita di memoria: e' il contrario.** L'RSS *scende* da 391 a ~120 MB mentre l'app e' in
+uso attivo. Significa che il sistema ha compresso e spostato in zram una larga parte del working set di
+Kodi: `SwapFree` cala da 431 a 348 MB, cioe' **~85 MB spinti nello swap**. Da quel momento in poi ogni
+accesso a quelle pagine costa una decompressione su una CPU ARM32 debole. E' il meccanismo per cui "va
+tutto lento" -- e rende il sistema fragile, perche' il margine e' gia' speso.
+
+**Il picco ha una causa identificata nel log**, ed e' la skin:
+```
+21:20:52  Loading skin file: MyVideoNav.xml, load type: KEEP_IN_MEMORY
+21:21:03  RSS 391 MB, MemAvailable 139 MB
+```
+Su `MemTotal` di 1004 MB. `KEEP_IN_MEMORY` vuol dire che quella finestra resta residente. **La pista
+"alleggerire Arctic Fuse" non e' piu' un'intuizione: e' il picco misurato.**
+
+Da segnalare anche che in questa sessione compare la firma del Crash A del lotto 48 bis
+(`OnLostDisplay`, `Flush - timed out waiting for renderer to flush`, `OnResetDisplay`, 21:21:46-48)
+**senza** che sia successo niente. Conferma che quella firma da sola non basta a spiegare un crash.
+
+### Le guardie che non erano mai state sulla stick, all'opera
+
+Quattro volte in sei minuti, ognuna una ricostruzione globale evitata:
+```
+21:22:16  TraktMonitor: refresh saltato, la modifica e' nostra ed e' gia' a schermo
+21:22:28  DIAG refresh: MIRATO finestra Video (Container.Refresh sulla lista aperta)
+21:24:09  DIAG refresh: NON ordinato, Kodi ha gia' ricostruito da sola 2.0s dopo la chiusura
+21:24:18  TraktMonitor: refresh saltato, la modifica e' nostra ed e' gia' a schermo
+```
+E all'avvio i tre widget si costruiscono **una volta ciascuno** (21:19:25, :26, :30): la correzione
+`stamp_startup_rebuild` tiene.
+
+### La domanda dell'utente: "era il codice non allineato?"
+
+**E' la spiegazione meglio sostenuta che abbiamo, e non e' piu' solo una correlazione**: le guardie
+sopra sono codice che sulla stick fisicamente non c'era, sono state scritte esattamente per fermare le
+tempeste di ricostruzione post-riproduzione, e le si vede agire nel log.
+
+Ma va detto per intero, perche' la tentazione di dichiarare vittoria e' gia' costata due volte oggi:
+- Dall'allineamento (20:56) **nessun `watchdog_reboot`**: uptime continuo di 1h22, due sessioni, tre
+  riproduzioni, navigazione. Prima erano frequenti. E' il segnale migliore della giornata.
+- Ma **Kodi e' comunque morto una volta** alle 21:15:00 gia' sul codice allineato (lotto 49 ter).
+  L'allineamento ha plausibilmente chiuso una *classe* di guasto, non tutti i guasti.
+- E il campione e' piccolo: ore, non giorni. "Sembra meglio" e' un'impressione corretta e coerente coi
+  dati, non ancora una dimostrazione.
+
+### Difetto residuo, invariato e ancora aperto
+
+Il doppione post-riproduzione c'e' ancora: 21:24:09 `101881` + 21:24:12 `91378`, poi **di nuovo**
+21:24:25 `101881` + 21:24:26 `91378` + 21:24:28 `2194`. E `91378` nel frattempo e' cresciuto a 87
+elementi per la paginazione interattiva, quindi ogni doppione costa sempre di piu'. Prossimo bersaglio
+naturale, da identificare (paginator? rilettura dei DirectoryProvider da parte di Kodi?) prima di
+correggere.
+
+# Lotto 50 — Il log di debug: quanto pesa la skin, quanto Fen Light, e la regressione di ieri notte
+
+## 1. La quantificazione richiesta (sessione 22:34:22 -> 22:42:15, log di debug)
+
+Tempo di vita degli interpreti Python, per addon, misurato accoppiando `start processing` con
+`execution done` di `CPythonInvoker`:
+
+| addon | invocazioni | totale | media |
+|---|---|---|---|
+| **plugin.video.fenlight** | 12 | **180,84 s** | 15,07 s |
+| **script.skinvariables** (e' della SKIN) | 11 | **47,20 s** | 4,29 s |
+| service.xbmc.versioncheck | 1 | 7,51 s | 7,51 s |
+
+**Fen Light pesa circa 3,8 volte la skin.** All'avvio il rapporto e' anche piu' netto: tre interpreti
+Fen Light da ~22 s ciascuno (~67 s) contro due `skinvariables` da 4,07 e 7,75 s piu' uno da 2,18 s
+(~14 s), cioe' **~5x**. La priorita' indicata dall'utente e' confermata dai numeri.
+
+**Ma il dettaglio decisivo e' un altro.** Per ogni widget, confronto fra vita dell'interprete e lavoro
+dichiarato dalla nostra strumentazione:
+
+| widget | interprete vivo | PERF "totale" | overhead |
+|---|---|---|---|
+| `mdblist 101881` (54 el.) | 22,95 s | 3,06 s | **19,9 s (87%)** |
+| `mdblist 91378` (48 el.) | 23,67 s | 3,82 s | **19,9 s (84%)** |
+| `mdblist 2194` (42 el.) | 7,23 s | 0,69 s | **6,5 s (90%)** |
+| `build_continue_watching` | 21,44 s | (nessun PERF) | -- |
+
+**L'85-90% del costo di Fen Light non e' la costruzione della lista.** E' avvio dell'interprete +
+import dell'albero dei moduli + contesa sul GIL. Tutta la strumentazione costruita finora misurava il
+10-15% del problema: ecco perche' ottimizzare la costruzione dava miglioramenti che l'utente non
+sentiva.
+
+L'avvio in chiaro: alle 22:34:35.137-.175, **cinque interpreti Python partono in 38 millisecondi**
+(3 Fen Light + 2 skinvariables), piu' `versioncheck` e `cocoscrapers` gia' in volo, piu' il servizio
+Fen Light. Un solo GIL per tutti.
+
+Nota di metodo: le 29 invocazioni Fen Light su 41 che finiscono con `script aborted` **non sono un
+guasto**: `fenlight.py` chiama `sys.exit(1)` quando `sys_exit_check()` -> `external()` e' vero, cioe'
+per ogni widget. E' il comportamento voluto che previene il segfault di Kodi. Verificato prima di
+segnalarlo.
+
+## 2. I tre difetti segnalati dall'utente hanno UNA causa sola
+
+Sintomi: (a) chiudendo il player la pagina paginata risultava "crashata"; (b) "segna come visto" su un
+episodio non ha avuto effetto visibile; (c) il menu contestuale agisce sulla serie invece che
+sull'episodio.
+
+Il log li spiega tutti e tre con la stessa sequenza:
+```
+22:41:15.366  CGUIWindowManager::PreviousWindow: Activate new
+22:41:15.368  ------ Window Init (MyVideoNav.xml) ------
+22:41:15.373  CDirectoryProvider[]: refreshing..          <- path VUOTO
+22:41:15.373  GetDirectory - Error getting                <- path VUOTO
+22:41:15.417  Control 521 in window 10025 asked to focus, but it can't
+22:41:16.725  inv=46  ?mode=build_season_list&tmdb_id=296756   <- ricade sul PADRE
+22:41:21.301  inv=47  ?mode=build_episode_list&season=1&tmdb_id=296756
+```
+e identicamente dopo "segna come visto":
+```
+22:37:44.517  inv=34  mark_episode action=mark_as_watched season=1 episode=2
+22:37:49.310  inv=35  build_season_list tmdb_id=328735    <- ricostruisce il PADRE
+```
+
+**Causa**: `end_directory(handle, cacheToDisc=False)` incondizionato in `indexers/seasons.py:153` e
+`indexers/episodes.py:180`, introdotto in **`a1edbba` (test stick 3, 23/08 00:15)**. Senza cache su
+disco, tornando dal player Kodi non ha la cartella da ripristinare: il path arriva vuoto, la lista e'
+vuota, il fuoco non si posa, e si ricade sul genitore. Il menu contestuale agisce quindi sulla serie
+perche' **a schermo c'e' davvero la serie**, non l'episodio.
+
+Tutti gli altri indexer usano `cacheToDisc=False if is_external else True` (`tvshows.py:192`,
+`movies.py:190`, `mdblist_lists.py:138`, `random_lists.py:255`, `continue_watching.py:65`). Solo
+seasons ed episodes sono stati resi incondizionati: e' un'asimmetria, non una scelta di sistema.
+
+**E il baratto era basato su una misura sbagliata.** Il commento nel codice scrive: *"Il prezzo e' una
+rilettura del plugin al ritorno, e ora sappiamo quanto costa perche' e' misurata: 30-100 ms sulla
+stick"*. Ma quei 30-100 ms sono il PERF "totale", cioe' la sola costruzione. Il prezzo VERO della
+rilettura, misurato stasera con il debug:
+
+```
+inv=33  build_episode_list season=1 tmdb_id=328735   15,99 s
+inv=40  build_episode_list season=1 tmdb_id=296756   20,41 s
+```
+
+**16-20 secondi, non 30-100 millisecondi: sbagliato di oltre 200 volte.** Stesso identico punto cieco
+del paragrafo 1 -- si misurava la costruzione e si ignorava l'interprete.
+
+## 3. Correzione indicata (proposta, non applicata)
+
+Riportare `seasons.py` ed `episodes.py` alla forma usata da tutti gli altri indexer:
+`end_directory(handle, cacheToDisc=False if is_external else True)`. Si riprende la cache in finestra
+Video, quindi il ritorno dal player e' immediato e la lista non si svuota. Si riaccetta il difetto per
+cui il badge "episodi rimanenti" puo' restare vecchio finche' non si riapre la serie -- che e'
+estetico, contro tre difetti funzionali. Il baratto originale era sensato con 30-100 ms di prezzo; con
+16-20 s non lo e'.
+
+## Lotto 50 bis — Tampone applicato e marcatori messi
+
+### Tampone (i tre difetti dell'utente)
+
+`indexers/seasons.py` e `indexers/episodes.py` (`build_episode_list`) tornano a
+`end_directory(handle, cacheToDisc=False if is_external else True)`, cioe' esattamente la forma che
+avevano prima di `a1edbba` e che usano tutti gli altri indexer. Verificato con `git show 922743c`:
+`seasons.py:114` e `episodes.py:141` erano gia' cosi'. **`episodes.py:416` (episodi singoli) era `False`
+gia' prima e NON e' stato toccato** -- non fa parte della regressione.
+
+E' dichiarato tampone nel commento del codice, non soluzione: il badge "episodi rimanenti" puo'
+tornare a restare vecchio. La soluzione vera e' invalidare la cache in modo MIRATO quando siamo noi a
+cambiare lo stato visto -- cache accesa di default, una rilettura sola sulla cartella davvero cambiata.
+Oggi non abbiamo ne' freschezza ne' velocita': il tampone e' strettamente meglio dello stato attuale su
+ogni dimensione tranne il badge.
+
+### Marcatori (i 18 secondi invisibili)
+
+Prima di scriverli e' stato verificato il sospetto piu' ovvio, e **si e' rivelato falso**: l'albero dei
+moduli e' gia' pigro (`router.py` importa 2 cose, `kodi_utils.py` 4). **Gli import non sono la causa.**
+Evitata cosi' una correzione basata su un'ipotesi, che e' l'errore di metodo contestato dall'utente
+all'inizio di tutto.
+
+Verificato anche che `set_view_mode` **esce subito per i widget** (`if is_external: return`): la sua
+attesa attiva non spiega il costo dei widget, ma non era mai stata cronometrata per stagioni/episodi,
+dove puo' valere fino a 3 s. Ora e' misurata da un involucro che lascia la logica intatta
+(`_set_view_mode_impl`).
+
+Nuova riga di log, una per invocazione:
+```
+###FenLight PERF INVOCAZIONE###: <mode> | totale N ms | import A + routing->lista B + consegna C + coda D ms
+```
+- `import` -- caricamento moduli (atteso piccolo, conferma o smentisce quanto sopra)
+- `routing->lista` -- da fine import a quando la lista e' pronta. **Contiene la costruzione che PERF
+  gia' misura: la differenza fra questo numero e il PERF 'totale' e' il preparativo mai visto.**
+- `consegna` -- `add_items` + `endOfDirectory` (gia' dettagliato da PERF CONSEGNA)
+- `coda` -- tutto cio' che gira dopo la consegna, prima dell'uscita
+
+Costo della misura: quattro letture di orologio e una riga di log per invocazione. Nessuna proprieta'
+di finestra, nessuna traversata verso la GUI -- l'errore fatto con `DIAG` in `paginator` non si ripete.
+Da spegnere quando avranno risposto.
+
+`fenlight.py` cresce da 7 a 19 righe. Verificato con `ast` che **`sys.exit(1)` resta l'ULTIMA
+istruzione** (memoria: e' cio' che previene il segfault sui widget) e che `kodi_utils` passa da 105 a
+107 simboli, nessuno perso.
+
+### Cosa serve dal prossimo log
+
+Il confronto fra `CPythonInvoker start processing` (Kodi, livello debug) e il nostro `totale`: la
+differenza e' il costo di creazione dell'interprete, l'unico pezzo che dall'interno non possiamo
+vedere. **Per questo il debug va lasciato acceso ancora una sessione**, poi si spegne.
+
+## Lotto 50 ter — I marcatori parlano, e un crash DA FERMA con un colpevole nuovo
+
+### Prima lettura dei marcatori (avvio 23:46:48)
+
+| invocazione | totale | import | routing->lista | di cui costruzione (PERF) | **cieco** | consegna | coda |
+|---|---|---|---|---|---|---|---|
+| `build_continue_watching` | 15207 | 2480 | 12715 | -- | -- | 6 | 5 |
+| `mdblist 101881` (54 el.) | 16665 | 2761 | 13856 | 2410 | **11446** | 41 | 6 |
+| `mdblist 91378` (48 el.) | 16950 | 2777 | 13904 | 2590 | **11314** | 259 | 9 |
+| `mdblist 2194` (42 el.) | 4769 | 580 | 4163 | 440 | **3723** | 19 | 8 |
+
+*(millisecondi)*
+
+**Consegna e coda sono irrilevanti** (6-259 ms su 17 s). Questo **chiude** la domanda posta dal lotto
+48 -- "il costo sta in `add_items` (peso dell'elemento) o in `endOfDirectory` (numero)?": **nessuno dei
+due**. Alleggerire il singolo elemento non avrebbe spostato niente, e sarebbe stato il prossimo lavoro
+se non avessimo misurato.
+
+**Restano ~11,4 s ciechi** fra la fine degli import e l'inizio della costruzione misurata: l'85%
+dell'invocazione, ancora senza nome.
+
+**La contesa vale un fattore 3-4.** `2194` e' partita 3,5 s dopo le altre, quasi da sola: import 580 ms
+contro 2760, preparativo 3,7 s contro 11,4. Stesso codice, un terzo del costo. **Sfalsare le partenze
+non e' un ritocco: e' il fattore piu' grosso misurato finora.**
+
+### Correzione a quanto scritto nel lotto 50
+
+Nel lotto 50 avevo dichiarato "gli import non sono la causa", basandomi sul conteggio degli import in
+cima ai file (`router.py` 2, `kodi_utils.py` 4). **Il controllo era sbagliato**: l'import misurato e'
+2,5-2,8 s, non zero. E soprattutto gli import di Fen Light sono in maggioranza **pigri**, dentro le
+funzioni: non compaiono in testa ai file e non finiscono nel segmento `import`, finiscono **dentro
+`routing->lista`**, cioe' dentro gli 11,4 s ciechi. L'ipotesi scartata e' probabilmente viva, stava
+solo in un altro segmento. Prossimo marcatore: ingresso di `routing()` e subito dopo l'import
+dell'indexer.
+
+### Il crash: nuovo per il momento in cui avviene
+
+23:46:48 avvio, 23:47:16 tempesta d'avvio conclusa **regolarmente** (tre widget costruiti, marcatori
+scritti, nessun errore). Poi Kodi resta **fermo sulla home, senza input dell'utente**. Le uniche righe
+sono i tick di TraktMonitor: 23:47:38, 23:48:08, 23:48:41. Il tick successivo atteso (~23:49:11) non
+arriva. Riavvio da watchdog alle ~23:50:40.
+
+**Tutti i crash precedenti erano sotto carico** (tempesta d'avvio, riproduzione, navigazione). Questo
+e' a riposo. Cautela d'obbligo: le scritture del log sono bufferizzate e un reset hardware ne perde una
+parte, quindi l'ultima attivita' vera puo' essere leggermente posteriore alle 23:48:41.
+
+### Il colpevole nuovo: TraktMonitor gira 60 volte troppo spesso
+
+```python
+wait_time = 1800                                   # fallback: 1800 secondi = 30 minuti
+sync_interval, wait_time = trakt_sync_interval()   # wait_time = 30, che sono MINUTI
+next_update_string = update_string % sync_interval # "Next Update in 30 minutes..."
+wait_for_abort(wait_time)                          # waitForAbort vuole SECONDI
+```
+`trakt_sync_interval()` (`modules/settings.py:152`) restituisce l'impostazione in **minuti** (default
+`30`, e il fallback `1800` secondi = 30 minuti lo conferma). **Manca la conversione `* 60`.** Il
+servizio interroga Trakt via rete **ogni 30 secondi invece che ogni 30 minuti**: 120 chiamate l'ora
+invece di 2, ognuna con handshake TLS su ARM32 debole, e ognuna un potenziale innesco di ricostruzione.
+
+E' anche **l'unica cosa che girava** nel momento in cui la stick e' morta da ferma. Non e' una prova di
+causalita', ma e' un difetto reale, dimostrato dal disaccordo fra cio' che il log dichiara ("30
+minutes") e cio' che fa (30 secondi), indipendentemente dal crash.
+
+### Due errori miei, registrati
+
+1. **Il campionatore di memoria era morto alle 22:26**, un'ora prima del crash: per questo riavvio non
+   ci sono dati di memoria. Era avviato con `nohup` e non e' sopravvissuto. Ora riparte con `setsid`,
+   in sessione propria. Inoltre `/proc/loadavg` e' negato da SELinux: il load si legge da `uptime`.
+2. **La sessione crashata l'avevo avviata io**, non l'utente, e durante quella sessione ho fatto due
+   `adb pull` del log (23:47:00 e ~23:48:08). Sono letture, ma non sono gratis. Il codice **non** e'
+   stato cambiato con Kodi attivo -- `am force-stop` precede il push e gli hash sono stati verificati
+   prima di riaccendere -- ma la domanda dell'utente era legittima e la risposta va data con la
+   sequenza, non con una rassicurazione.
+
+### Marcatore dentro routing() (24/08)
+
+`router.routing()` timbra `routing_in` in cima, e `indexer_in` subito dopo l'import PIGRO del modulo
+indexer, sui quattro rami che ci interessano: `mdblist.*.list`, `build_season_list`,
+`build_episode_list`, `build_continue_watching`. Non su tutti e trenta i rami: non serve sporcare il
+router per rispondere a una domanda.
+
+La riga di log diventa:
+```
+###FenLight PERF INVOCAZIONE###: <mode> | totale N ms | import A + import pigri B + indexer C + consegna D + coda E ms
+```
+**`import pigri`** = parsing dei parametri + caricamento del modulo indexer e di tutto il suo albero.
+**`indexer`** = il lavoro vero, che contiene la costruzione gia' misurata da PERF.
+
+E' il taglio che decide fra due correzioni diverse:
+- se i ~10 s ciechi stanno in **`import pigri`**, sono import mascherati (stanno dentro le funzioni,
+  per questo il conteggio degli import in cima ai file non li vedeva) e la correzione e' alleggerire
+  l'albero dei moduli;
+- se stanno in **`indexer`**, e' lavoro vero o contesa sul GIL, e la correzione e' la coda proposta
+  dall'utente.
+
+Senza questo taglio si sceglierebbe a caso fra le due.
+
+### Decisione dell'utente su TraktMonitor
+
+Il polling ogni 30 s **resta com'e'**: l'utente riferisce che non e' mai stato un problema e che tiene
+lo stato Trakt sempre allineato. Decisione informata, registrata. Resta il fatto che l'impostazione si
+chiama "minuti" e il log scrive "Next Update in 30 minutes": se un giorno il valore venisse alzato a 60
+aspettandosi un'ora, si otterrebbero 60 secondi. Da allineare almeno nel testo, quando si tocchera'
+altro in quella zona.
+
+---
+
+# Lotto 51 — Trovato: i ~10 secondi ciechi sono gli IMPORT PIGRI
+
+## La misura che chiude la domanda (24/08, marcatore dentro routing)
+
+```
+build_continue_watching | import 1727 + import pigri 10882 + indexer 1345 + consegna 2 + coda 2
+mdblist 101881          | import 1959 + import pigri 10661 + indexer 2375 + consegna 21 + coda 23
+mdblist 91378           | import 1629 + import pigri 11104 + indexer 2731 + consegna 69 + coda 7
+mdblist 2194 (da sola)  | import  529 + import pigri  2966 + indexer  403 + consegna 41 + coda 6
+build_season_list       | import  214 + import pigri  2094 + indexer   23 + consegna 1 + coda 128
+build_season_list       | import  270 + import pigri  3972 + indexer   30 + consegna 1 + coda 101
+```
+
+**`build_season_list`: 2094 ms per caricare i moduli, 23 ms per fare il lavoro. Novanta volte tanto.**
+
+Costruire le liste era gia' praticamente gratis. Il costo di Fen Light e' **ricaricare da capo il
+proprio albero di moduli a ogni invocazione**, perche' con `reuselanguageinvoker=false` fra
+un'invocazione e l'altra non sopravvive niente.
+
+La contesa moltiplica: 10,9 s in parallelo contro 3,0 s da soli per lo stesso tipo di lavoro (fattore
+3,6). Tre interpreti leggono **gli stessi file** dalla stessa flash lenta nello stesso momento,
+ciascuno costruendosi la propria copia, senza condividere nulla.
+
+## L'albero, misurato
+
+`indexers.seasons` caricava **20 moduli Fen Light, 8297 righe** -- piu' `requests` con tutto il suo
+albero -- per 23 ms di lavoro. La catena:
+
+```
+indexers.seasons
+ |- modules.metadata (867)
+ |   |- apis.imdb_api (320) --> requests
+ |   |   \- modules.dom_parser (115)
+ |   \- apis.skyhook_api (122)
+ \- modules.watched_status (573)
+     |- apis.trakt_api (1155) --> requests
+     \- caches.trakt_cache (245)
+```
+
+## Tre correzioni applicate
+
+1. **`apis/imdb_api.py`: `import requests` era MORTO.** Zero occorrenze di `requests.*` nel file --
+   le richieste passano da `make_session()` di `kodi_utils`. Rimosso: guadagno puro, rischio nullo.
+2. **`modules/watched_status.py`: `apis.trakt_api` non si importa piu' a livello di modulo.** Lo
+   pagava chiunque toccasse `watched_status`, compresa la lista stagioni, che di Trakt non chiede
+   niente (legge il visto dal database locale). Spostato dentro le **sei** funzioni che lo usano
+   davvero, verificato con `ast` che ogni uso abbia il suo import in scope e che non resti nessun
+   import in cima.
+3. **`apis/trakt_api.py` e `apis/mdblist_api.py`: `requests` e la `Session` nascono alla prima
+   richiesta.** Erano `session = requests.Session()` a livello di modulo. Ora un `_get_session()`
+   pigro; la Session resta una sola per interprete, cambia solo *quando* nasce. 7 + 1 chiamate
+   riscritte, verificato che nessun altro modulo usi `trakt_api.session` o `mdblist_api.session`.
+
+## Risultato statico
+
+| catena | prima | dopo | `requests` |
+|---|---|---|---|
+| `indexers.seasons` | 20 mod / 8297 righe + requests | 19 mod / 7155 righe | **NO** |
+| `indexers.episodes` | 21 mod / 8600 + requests | 21 mod / 8610 | **NO** |
+| `indexers.mdblist_lists` | 27 mod / 10265 + requests | 27 mod / 10282 | **NO** |
+| `indexers.continue_watching` | 23 mod / 9127 + requests | 23 mod / 9137 | **NO** |
+
+Il conteggio di righe cambia poco (le poche in piu' sono i commenti di queste correzioni), ma
+**`requests` sparisce da tutte e quattro le catene**: e' quello il pezzo caro, perche' si tira dietro
+`urllib3`, `certifi`, `ssl`, `http.client`, `email`.
+
+## Da verificare sul device
+
+Baseline da battere, stesse operazioni: `build_season_list` **2094 ms** di import pigri, widget
+dell'avvio **10,6-11,1 s**. Se il numero non scende, l'ipotesi e' sbagliata e va detto.
+
+## Correzione a un mio conteggio precedente
+
+Avevo scritto "16 moduli, 6202 righe": il mio tracciatore saltava i casi `from apis import tmdb_api`,
+dove il sottomodulo importato non veniva seguito. I numeri veri sono quelli sopra.
+
+## Lotto 51 bis — La prima correzione non era servita a niente, ed ecco perche'
+
+### Il confronto, senza addolcirlo
+
+| invocazione | `import pigri` prima | dopo | delta |
+|---|---|---|---|
+| `build_continue_watching` | 10882 | 10654 | -2% |
+| `mdblist 101881` | 10661 | 10561 | -1% |
+| `mdblist 91378` | 11104 | 10782 | -3% |
+| `mdblist 2194` (da sola) | 2966 | 2437 | -18% |
+| `build_season_list` | 2094 | **2460** | **+17%** |
+
+Nessun guadagno. E il segmento `import` iniziale -- codice che **non ho toccato** -- e' passato da
+1727/1959/1629/529 a 2545/2563/2407/1284, cioe' +31% / +143%. Due letture indicano quindi anche un
+rumore di fondo notevole fra un avvio e l'altro (nella sola sessione baseline, `build_season_list` era
+gia' variato da 2094 a 3972 ms per lavoro identico). Ma la causa principale e' un'altra ed e' un mio
+errore di analisi.
+
+### L'errore: un import che non si vede
+
+`apis/imdb_api.py` aveva `import requests` (morto, rimosso) **ma anche**, alla riga 36:
+```python
+session = make_session('https://')
+```
+e `kodi_utils.make_session()` fa `import requests` al suo interno. Quindi `requests` continuava a
+essere caricato all'import del modulo, **senza che nel file comparisse una sola istruzione
+`import requests`**. Il mio tracciatore statico seguiva solo le istruzioni `import` e non vedeva una
+CHIAMATA DI FUNZIONE a livello di modulo che importa.
+
+Cercando la stessa forma in tutto il codice: `make_session()` a livello di modulo compare in
+**sette** file, e tre stanno nelle catene dell'avvio e della navigazione:
+`apis/tmdb_api.py:15`, `apis/skyhook_api.py:10`, `apis/imdb_api.py:36`
+(gli altri quattro -- torbox, offcloud, easydebrid, easynews -- sono sul percorso della riproduzione,
+non ancora toccati).
+
+Avevo quindi tolto **una dichiarazione su quattro vie d'accesso**. Il risultato nullo era corretto.
+
+### Correzione applicata
+
+Stessa `_get_session()` pigra di `trakt_api`/`mdblist_api` applicata a `tmdb_api`, `skyhook_api`,
+`imdb_api`. Riscritte 2 + 1 + 9 chiamate `session.*`. Verificato che nessun altro modulo usi
+`<modulo>.session`.
+
+**E il verificatore e' stato corretto**: ora considera import morto anche una chiamata a
+`make_session()` a livello di modulo, e salta i corpi delle funzioni (la prima versione contava come
+"sporche" anche le catene appena ripulite, perche' scendeva dentro `_get_session`). Esito:
+
+```
+indexers.seasons             NO -- catena pulita
+indexers.episodes            NO -- catena pulita
+indexers.mdblist_lists       NO -- catena pulita
+indexers.continue_watching   NO -- catena pulita
+```
+
+### Nota di metodo per la prossima misura
+
+Il rumore fra avvii e' grande (lo stesso `build_season_list` ha oscillato 2094 -> 3972 ms nella stessa
+sessione). Una singola coppia prima/dopo non basta a decidere differenze sotto il 20%: servono piu'
+ripetizioni e il **minimo**, non la media, perche' il minimo e' il caso meno disturbato.
+
+---
+
+# Lotto 52 — `reuselanguageinvoker` resta chiuso; potatura completata; una misura mirata
+
+## 1. Il punto B non si riapre, ed e' documentato dal 14/08
+
+L'utente ha scelto di attaccare `reuselanguageinvoker`. **Era gia' stato tentato e chiuso: lotto 11c.**
+Crash report macOS `EXC_BAD_ACCESS (SIGSEGV)` in `CPythonInvoker::execute` -> `PyDict_SetItemString`,
+thread `LanguageInvoker`. Due esiti, entrambi inutili: con `sys.exit(1)` il flag e' **inerte**
+(`inv=1` su 17 build), senza `sys.exit(1)` il riuso avviene e **Kodi segfaulta all'avvio**.
+
+**E c'e' un limite che rende il punto discutibile a prescindere**, scritto nel lotto 11b e che avevo
+ignorato proponendolo: *Kodi riusa un interprete solo fra invocazioni NON sovrapposte*. I tre widget
+dell'avvio sono concorrenti, quindi ognuno avrebbe comunque il suo interprete. **La mia stima "vale
+~23 s a boot" era sbagliata** e va cancellata: il riuso non tocca il caso che stiamo inseguendo.
+
+## 2. Due ipotesi eliminate
+
+**Il bytecode funziona.** I `.pyc` sul device vengono rigenerati (dir `__pycache__` del 24/08 00:24,
+piu' recenti dei sorgenti) e riusati: la compilazione da sorgente non e' il costo.
+
+**Ma si spingevano 75 `.pyc` di giugno a ogni deploy.** Erano dentro il repo e finivano nel `push`,
+per poi essere invalidati sul device. Rimossi: il push passa da **168 file / 2,9 MB a 93 file /
+1,2 MB**. Non e' un guadagno di runtime, e' igiene -- e toglie un confondente dalle misure, perche' il
+primo avvio dopo ogni deploy pagava la ricompilazione di quei file.
+
+## 3. La misura mirata (il "chi sveglia la rete")
+
+Sulla stick, stesso widget, **entrambe misure del device**:
+```
+23:57 (boot2.log)  mdblist 101881 | risoluzione 0.65s + costruzione 1455 ms
+00:28 (c2.log)     mdblist 101881 | risoluzione 7.22s + costruzione 1079 ms
+```
+I metadati sono al 100% in cache e il filtro doppiaggio fa zero rete, eppure la risoluzione esplode:
+e' `requests` che si importa li' dentro. Ma la cache delle liste mdblist ha **TTL 24 ore**
+(`mdblist_api.py:65`), quindi qualcuno sveglia la rete su un widget che dovrebbe essere tutto in cache.
+
+`kodi_utils.import_requests(who)` e' ora **l'unico punto** da cui `requests` entra in un interprete:
+cronometra l'import e scrive **una riga per interprete**:
+```
+###FenLight PERF REQUESTS###: importato in N ms | primo richiedente: <chi>
+```
+`make_session()` e i `_get_session()` di `trakt_api` e `mdblist_api` ci passano tutti. Cosi' sapremo
+CHI e QUANTO, invece di indovinare.
+
+## 4. Fronte 2 completato: potatura
+
+**Avvio** -- `modules/metadata.py` non importa piu' `apis.imdb_api` ne' `apis.skyhook_api` a livello di
+modulo (li usavano solo `movie_meta`, `tvshow_meta`, `episodes_meta`). `metadata` e' importato da quasi
+tutti gli indexer, quindi li pagava anche chi non ne aveva bisogno -- ed entrambi creavano una Session
+di modulo, cioe' tiravano dentro `requests`.
+
+**Riproduzione** -- gli otto moduli API rimasti (`torbox`, `alldebrid`, `real_debrid`, `easydebrid`,
+`premiumize`, `offcloud`, `bluray`, `easynews`) avevano `import requests` e/o `session = make_session()`
+a livello di modulo. Ora tutto pigro. Due degli import erano **morti** (`torbox`, `easydebrid`: zero
+occorrenze di `requests.*`).
+
+### Risultato
+
+| catena | righe prima | righe dopo | `requests` all'import |
+|---|---|---|---|
+| `indexers.seasons` | 8297 | **6628** | NO |
+| `indexers.episodes` | 8600 | **8083** | NO |
+| `indexers.mdblist_lists` | 10265 | **9755** | NO |
+| `indexers.continue_watching` | 9127 | **8610** | NO |
+| `modules.sources` (riproduzione) | -- | 11653 | NO |
+| `modules.player` | -- | 8027 | NO |
+
+Verificato con `ast` su tutti i file di `apis/`: **nessun simbolo perso** rispetto al backup, solo i
+nuovi `_get_session`/`_requests`. Nessun `import requests` ne' `session = ` di modulo residuo.
+L'intero `lib` compila.
+
+## Nota di metodo dall'utente
+
+I test sono stati fatti **anche su Mac**, che ha tempi molto piu' piccoli. `OTTIMIZZAZIONI.md` mescola
+le due fonti: **ogni numero storico va letto con l'etichetta del dispositivo**. I confronti di questo
+lotto sono tutti fra log della stick, verificati uno per uno.
+
+## Lotto 52 bis — Il risultato, e chi resta a svegliare la rete
+
+### Il guadagno, misurato (secondo boot, `.pyc` caldi, tutte misure stick)
+
+| invocazione | run B (00:17) | run C2 (00:28) | **d2 (00:57)** | delta vs C2 |
+|---|---|---|---|---|
+| `mdblist 101881` | 15487 | 14689 | **9453** | **-36%** |
+| `mdblist 91378` | 16022 | 15262 | **10049** | **-34%** |
+| `build_continue_watching` | 14654 | 14191 | **13239** | -7% |
+| `mdblist 2194` (da sola) | 4380 | 3827 | **3389** | -11% |
+
+La `risoluzione` del widget mdblist torna a **1,10 s** dai 7,22 s: quei widget non toccano piu'
+`requests`. E' il primo guadagno grosso e non ambiguo della serie.
+
+### La misura che serviva: quanto costa `requests`, e chi lo chiede
+
+```
+[boot 1]  importato in 8749 ms | primo richiedente: trakt_api
+          importato in 4533 ms | primo richiedente: make_session(https://api.themoviedb.org/3)
+[boot 2]  importato in 7617 ms | primo richiedente: trakt_api
+          importato in 5425 ms | primo richiedente: make_session(https://api.themoviedb.org/3)
+```
+
+**`requests` costa 4,5-8,7 s** a freddo su questa stick, misurato direttamente e non piu' dedotto. E si
+paga **due volte per avvio**, non quattro:
+
+1. **`trakt_api` -> l'interprete del SERVIZIO.** Il timestamp lo dimostra: `PERF REQUESTS` alle
+   00:58:04.592, `TraktMonitor Service Update Success` alle 00:58:05.525. E' la prima sincronizzazione
+   Trakt dopo l'avvio. **L'utente ha scelto di tenere il polling**, quindi questo costo e' voluto --
+   ma va saputo che l'avvio ne paga 7,6 s.
+2. **`tmdb_api` -> `build_continue_watching`.** `PERF REQUESTS` alle 00:58:06.141, l'invocazione
+   chiude alle 00:58:06.683. Dei 7099 ms del suo segmento `indexer`, **5425 sono l'import di
+   requests**: "continua a guardare" fa una chiamata TMDb a ogni avvio. Perche' -- cioe' cosa non e'
+   in cache -- non e' ancora stabilito. **Prossimo bersaglio.**
+
+I due widget mdblist non lo caricano piu' affatto.
+
+### Un difetto mio, trovato rileggendo il proprio lavoro
+
+In `get_hidden_progress_items` avevo messo l'import pigro **in cima alla funzione**, ma serve solo in
+uno dei due rami:
+```python
+if watched_indicators == 0: return main_cache.get(...)   # ramo locale, NON usa Trakt
+else: return trakt_get_hidden_items('progress_watched')
+```
+E `watched_indicators` vale **0** sulla stick (predefinito 'Fen Light', non 'Trakt'): il ramo preso e'
+sempre quello locale, e l'import in cima caricava comunque `apis.trakt_api`, 1155 righe, per niente --
+su `continue_watching`, cioe' a ogni avvio. Import spostato dentro il ramo che lo usa.
+
+Lezione generale: **rendere un import pigro non basta, va messo nel ramo giusto.** Gli altri cinque
+punti di `watched_status.py` sono su percorsi da azione dell'utente (marcature, segnalibri) dove Trakt
+serve davvero, e restano dove sono.
+
+### Igiene
+
+`__pycache__` tolti dal repo: il push passa da **168 file / 2,9 MB a 93 / 1,2 MB**. Erano 75 `.pyc` di
+giugno che finivano sul device per essere invalidati -- e sporcavano il primo avvio dopo ogni deploy.
+
+## Lotto 52 ter -- verifica della correzione `get_hidden_progress_items` (boot e1, 24/08 01:04)
+
+Tutte le misure sotto vengono dalla **stick** (`adb pull` di `kodi.log`), non dal Mac.
+
+### Il totale mente: il primo boot dopo un deploy paga la ricompilazione del bytecode
+
+A colpo d'occhio e1 sembra una regressione (mdblist 12510/12801 contro i 9453/10049 di d2). Non lo e':
+**tutti i `.pyc` sul device sono datati 01:04**, cioe' generati *durante* e1. Il deploy aveva svuotato
+`__pycache__`, quindi e1 e' un primo-avvio-a-bytecode-freddo, d2 era caldo. Il costo si scarica quasi
+per intero sul segmento `import`:
+
+| segmento `import` | d1 (freddo) | d2 (caldo) | e1 (freddo) |
+|---|---|---|---|
+| mdblist A | 2833 | 1374 | 3928 |
+| mdblist B | 2892 | 1561 | 4914 |
+| continue_watching | 2827 | 1523 | 4006 |
+
+**Regola di misura:** dopo un deploy che tocca `__pycache__`, il segmento `import` del primo boot va
+scartato. Confrontare freddo-con-freddo (d1 vs e1) o caldo-con-caldo.
+
+### Confronto valido: il segmento `indexer`, l'unico che la correzione poteva toccare
+
+| `indexer` | d1 (freddo, pre-fix) | e1 (freddo, post-fix) | delta |
+|---|---|---|---|
+| mdblist A | 4541 | **3494** | -23% |
+| mdblist B | 4949 | **3180** | -36% |
+| build_continue_watching | 7618 | **6244** | -18% |
+| mdblist piccola | 768 | **325** | -58% |
+
+Il guadagno c'e' ed e' coerente anche contro d2 (caldo): 3586->3494, 3871->3180, 7099->6244. Togliere
+le 1155 righe di `apis.trakt_api` dal ramo sbagliato vale **1,0-1,8 s per invocazione**.
+
+### Cosa NON e' cambiato
+
+- **`import pigri` e' piatto:** 4993-5182 (d1), 4464-4586 (d2), 4619-5048 (e1). L'albero dei moduli e'
+  intatto, e resta il bersaglio piu' grosso rimasto.
+- **`requests` si importa ancora due volte**, 7445 ms (`trakt_api`, interprete del servizio: costo
+  voluto) + 4355 ms (`make_session(tmdb)` dentro `build_continue_watching`). La chiamata TMDb
+  all'avvio di 'continua a guardare' e' ancora li'. **Prossimo bersaglio, invariato.**
+
+### Salute del boot
+
+3 costruzioni (stabile da lotto 51), nessun errore reale in log, 4 `script aborted` = le 4 invocazioni
+widget (intenzionale, lotto 11c), uscita pulita alle 01:05:01. Wall-clock avvio -> ultimo widget:
+23,6 s (d1) / 21,4 s (d2) / 23,9 s (e1) -- dominato dal bytecode freddo, non confrontabile.
+
+### Conferma a bytecode caldo (boot e2, 24/08 01:10)
+
+I `.pyc` sono rimasti datati 01:04: e2 li ha riusati, e il segmento `import` e' tornato a
+1502-1776 ms (contro i 3928-4914 di e1). **L'ipotesi della ricompilazione e' confermata**, e ora il
+confronto caldo-contro-caldo con d2 e' valido. Invocazioni appaiate per `list_id` via thread ID --
+l'ordine di completamento nel log **non** e' stabile fra boot, quindi appaiare per posizione sarebbe
+sbagliato:
+
+| lista | `indexer` d2 (pre-fix) | `indexer` e2 (post-fix) | delta | totale d2 -> e2 |
+|---|---|---|---|---|
+| 101881 Top 250 Movies | 3586 | **3020** | -16% | 9453 -> **8962** |
+| 91378 Latest releases | 3871 | **3466** | -10% | 10049 -> **9827** |
+| build_continue_watching | 7099 | **5953** | -16% | 13239 -> **12210** |
+| 2194 Latest TV Shows | 1019 | **379** | -63% | 3389 -> **2346** |
+
+Segmenti `import` (1374-1561 -> 1502-1776) e `import pigri` (4464-4586 -> 4333-4750) **piatti**, come
+devono essere: la correzione toccava solo il lavoro dell'indexer. Il guadagno e' tutto li' e si
+ripete in due boot indipendenti.
+
+**Scomposizione del wall-clock** (avvio Kodi -> ultimo widget consegnato):
+
+| | pre-fase Kodi+skin | widget Fen Light | totale |
+|---|---|---|---|
+| d2 | 7,1 s | 14,3 s | 21,4 s |
+| e2 | **6,2 s** | **13,5 s** | **19,8 s** |
+
+Risponde alla domanda "quanto pesa la skin e quanto Fen Light": **circa 6 s di Kodi+skin prima che il
+primo interprete Fen Light parta, e ~13,5 s di widget dopo.** Fen Light resta i due terzi del boot.
+
+Boot pulito: 3 costruzioni, 4 `script aborted` (le 4 invocazioni widget, intenzionale), nessun
+SIGSEGV, nessun crash. `requests` ancora importato due volte: 6872 ms (`trakt_api`, servizio) +
+4459 ms (`make_session(tmdb)` in `build_continue_watching`).
+
+## Lotto 53 -- la chiamata TMDb all'avvio: e' UNA serie che non finisce mai in cache
+
+### Correzione di un assunto del lotto 52 bis
+
+`watched_indicators` sulla stick vale **1 = Trakt**, non 0. Letto da `settings.db`:
+`('watched_indicators','action','0','1')` -- terza colonna il predefinito, quarta il valore reale --
+e `watched_indicators_name = 'Trakt'`. La `watched.db` locale ha **0 righe** in tutte e tre le tabelle;
+`indicators_dict = {0: 'watched_db', 1: 'trakt_db'}`, quindi tutto passa da `traktcache.db`
+(1880 episodi, 38 serie).
+
+Conseguenza: la spiegazione data nel lotto 52 bis per il guadagno misurato **e' sbagliata**. Il ramo
+`if watched_indicators == 0` non e' quello preso, quindi spostare l'import di `apis.trakt_api` dentro
+di esso non puo' aver prodotto quel miglioramento. **I numeri (-10/-16% sul segmento `indexer`,
+riprodotti su due boot) restano validi; la causa attribuita no, ed e' tuttora ignota.**
+
+### Il marcatore `TMDB CALL`
+
+Aggiunto in `get_tmdb`: registra le prime 12 chiamate per interprete con endpoint, `sys.argv[2]`
+dell'invocazione e catena dei chiamanti (`sys._getframe`, nessun traceback costruito).
+Boot f1 (24/08 01:17) -> **una sola chiamata in tutto l'avvio**:
+
+```
+/tv/46298 | da: tvshow_details <- tvshow_meta <- _process <- run <- _worker <- run
+```
+
+**46298 = Hunter x Hunter** (da `traktcache.db`: 148 episodi visti, ultimo S3E148). L'intero costo di
+`requests` all'avvio -- 4311 ms in questo boot -- si paga per i metadati di **una** serie.
+
+Nota metodologica: la sola finestra temporale **non** basta a dire quale invocazione la fa, perche' le
+tre finestre `indexer` si sovrappongono (24,1-30,3 / 24,2-27,8 / 24,2-28,1 s). Il marcatore ora logga
+`sys.argv[2]`, che e' per-interprete anche dentro i thread worker.
+
+### Il record non e' scaduto: non c'e' proprio
+
+Interrogato `metacache.db` (13,7 MB) scaricato a Kodi chiuso -- quindi con il WAL gia' consolidato,
+e infatti sul device non esiste alcun file `-wal`:
+
+- `SELECT ... WHERE tmdb_id='46298'` -> **nessuna riga**
+- `SELECT ... WHERE meta LIKE '%Hunter x Hunter%'` -> **nessuna riga in tutta la tabella**
+- ma `season_metadata` contiene `46298_4_it`, con scadenza futura valida
+
+Quindi `episodes_meta` memorizza correttamente, e a fallire e' **solo** `tvshow_meta`. Su 1612 record
+totali (349 serie) questa e' l'unica anomalia: le altre 37 serie vanno in cache.
+
+### Dove si perde la scrittura
+
+`metadata.py:677-679` era:
+```python
+	metacache_set('tvshow', id_type, meta, tvshow_expiry(current_date, meta), current_time)
+except: pass
+return meta
+```
+Qualunque eccezione sollevata **prima** di `metacache_set` salta la scrittura in silenzio, e la serie
+viene riscaricata a ogni avvio per sempre. Hunter x Hunter e' giapponese, quindi
+`_is_anime = original_language in ('ja','ko','zh')` e' vero e attiva il ramo skyhook
+(`get_skyhook_season_data`, `get_tvdb_to_tmdb_map`) che le altre serie non percorrono.
+
+Tre `except: pass` potevano nascondere il fatto, tutti e tre ora strumentati:
+- `metadata.py` `tvshow_meta` -> `META FALLITA` (tipo ed eccezione)
+- `meta_cache.py` `MetaCache.set` -> `CACHE SET FALLITA`
+- `meta_cache.py` `MetaCache.get` -> `CACHE SCADUTA` (distingue "mai scritto" da "scritto e scaduto")
+
+**Da misurare al prossimo boot.** L'ipotesi anime/skyhook e' plausibile ma NON dimostrata: entrambe
+le funzioni skyhook restituiscono `None`/`{}` sugli errori invece di sollevare, quindi il punto di
+rottura va visto, non dedotto.
+
+### L'eccezione, misurata (boot g1, 24/08 01:28)
+
+```
+CACHE SET FALLITA###: tvshow tmdb=46298 | TypeError: keys must be str, int, float, bool or None, not tuple
+TMDB CALL###: /tv/46298 | inv: ?mode=build_continue_watching |
+              da: tmdb_api.py:tvshow_details <- metadata.py:tvshow_meta <- episodes.py:_process <- ...
+```
+
+`META FALLITA` **vuoto**: nessuna eccezione in `tvshow_meta`. Il punto di rottura e' `json.dumps`
+dentro `MetaCache.set`. `CACHE SCADUTA` vuoto: il record non era scritto-e-poi-cancellato, non veniva
+proprio scritto. E `sys.argv[2]` conferma l'invocazione: **`build_continue_watching`**.
+
+L'ipotesi anime/skyhook del paragrafo precedente era giusta come zona ma sbagliata come meccanismo:
+non e' una chiamata di rete che fallisce, e'
+`get_tvdb_to_tmdb_map` che costruisce `mapping[(seasonNumber, episodeNumber)] = (s, e)` -- un
+dizionario con **chiavi tuple**, che JSON non puo' rappresentare. Vale per qualunque anime la cui
+numerazione TVDb non coincida con quella TMDb.
+
+### La correzione
+
+Rappresentazione in memoria invariata (tutti i punti di lettura fanno `ep_map.get((s, e))`, sono 8 in
+5 file), conversione **solo al confine con la cache**: `"s|e" -> [s, e]`.
+
+- `_pack_ep_maps(meta)` -- ritorna una **copia superficiale**: se mutasse `meta` sul posto, i
+  consumatori si ritroverebbero chiavi stringa. Applicata ai 2 `metacache_set('tvshow', ...)` che
+  possono contenere le mappe (il terzo scrive una voce `blank_entry`, senza mappe).
+- `_unpack_ep_maps(meta)` -- inverso, sul posto (il dizionario viene da `json.loads`, non e'
+  condiviso). Applicata al ritorno da cache di `tvshow_meta` e ai risultati `tvshow` di
+  `meta_prefetch`, che legge da `get_many` senza passare da `tvshow_meta`.
+
+Verificato fuori da Kodi estraendo le due funzioni dall'AST: `json.dumps` riesce, il dizionario
+originale conserva le chiavi tuple, il giro completo e' identico all'originale, il lookup con tupla
+funziona, e i casi limite tengono (meta senza mappe, mappe vuote, unpack idempotente su dati gia'
+a tuple, meta `None`).
+
+**Attenzione alla verifica:** il primo boot dopo questa correzione fara' **comunque** la chiamata TMDb
+(la cache e' vuota, non c'e' nulla da leggere) ma questa volta la scrittura deve riuscire. E' il
+**secondo** boot che deve mostrare zero `TMDB CALL` e zero `CACHE SET FALLITA`. Servono due boot.
+
+### Verifica (boot h0 01:37 e h1 01:39): la correzione regge
+
+Marcatori: **zero `CACHE SET FALLITA`, zero `META FALLITA`, zero `CACHE SCADUTA`, zero `TMDB CALL`**.
+`PERF REQUESTS` compare **una volta sola** per avvio (`trakt_api`, l'interprete del servizio) invece
+di due: l'import di `requests` dentro `build_continue_watching` e' sparito del tutto.
+
+Il record e' in cache, verificato leggendo `metacache.db`:
+```
+tvshow | Hunter x Hunter | lingua it | scade 2027-02-22 (182 giorni) | 10 KB
+tvdb_to_tmdb_ep: 78 voci | chiavi '2|1', '2|2', '2|3', ...
+```
+78 voci di rimappatura, esattamente il formato impacchettato previsto.
+
+**Errore di misura mio, da non ripetere:** la prima interrogazione ha dato "0 righe" e stavo per
+concludere che la correzione non funzionasse. Il database aveva un file **`-wal` da 24 KB** che non
+avevo scaricato (nel controllo precedente Kodi era chiuso e il WAL era gia' consolidato, quindi il
+solo `.db` bastava; qui Kodi era stato chiuso ma il WAL era rimasto). **Con `journal_mode=wal` vanno
+sempre scaricati `.db`, `.db-wal` e `.db-shm` insieme**, oppure il file va letto a Kodi chiuso dopo
+aver verificato che il `-wal` non esista.
+
+| `build_continue_watching` | d2 (pre) | e2 (pre) | h0 (post) | h1 (post) |
+|---|---|---|---|---|
+| segmento `indexer` | 7099 | 5953 | **2056** | **2109** |
+| totale | 13239 | 12210 | 10708 | 8658 |
+
+Sul segmento `indexer`, il solo che la correzione poteva toccare: **-65%**.
+
+**Il wall-clock complessivo NON e' migliorato** (23,5 s in h1 contro 19,8 s in e2), e la ragione non
+e' la correzione: la stick **si e' riavviata verso le 01:38**, cioe' fra h0 e h1 (`uptime` = 5 min).
+h1 e' quindi un avvio a cache del sistema operativo completamente fredda -- si vede nella pre-fase
+Kodi+skin, 9,3 s contro 6,2 s, che con Fen Light non c'entra nulla. h0, che precede il riavvio, e' il
+confronto piu' onesto. (`ro.boot.bootreason` dice `reboot,adb` e `ro.boot.reboot_mode` dice
+`watchdog_reboot`: si contraddicono, e nessun comando di riavvio e' partito da qui. Rimandato con il
+resto dell'analisi crash.)
+
+Boot sano: 3 costruzioni, 4 `script aborted` (le invocazioni widget), nessun SIGSEGV.
+
+### Misura pulita a cache calda (boot i1, 24/08 01:45)
+
+Bytecode caldo (`import` 1537-2091 ms, la stessa fascia di e2), sistema operativo caldo (stick attiva
+da 8 minuti), nessun riavvio in mezzo. Marcatori diagnostici **tutti a zero**; `PERF REQUESTS` una
+sola volta (6850 ms, `trakt_api`, servizio).
+
+Invocazioni appaiate per `list_id` via thread ID:
+
+| | `indexer` e2 | `indexer` i1 | delta | totale e2 | totale i1 |
+|---|---|---|---|---|---|
+| **build_continue_watching** | 5953 | **1578** | **-73%** | 12210 | **8100** (-34%) |
+| 101881 Top 250 Movies | 3020 | 2760 | -9% | 8962 | 8539 |
+| 91378 Latest releases | 3466 | 3199 | -8% | 9827 | 9962 |
+| 2194 Latest TV Shows | 379 | 363 | -4% | 2346 | 2960 |
+
+Wall-clock, tre boot tutti a bytecode caldo:
+
+| | Kodi+skin | widget Fen Light | totale |
+|---|---|---|---|
+| d2 (pre-lotto 52) | 7,1 s | 14,3 s | 21,4 s |
+| e2 (pre-lotto 53) | 6,2 s | 13,5 s | 19,8 s |
+| **i1 (post-lotto 53)** | 6,6 s | **12,2 s** | **18,8 s** |
+
+**Cambio strutturale, piu' importante del numero:** `build_continue_watching` era il palo piu' lungo
+dell'avvio (12210 ms contro i 9827 della mdblist peggiore). Ora finisce **per prima** (8100 contro
+9962): il percorso critico del boot e' passato a un widget mdblist. Il prossimo lavoro va mirato li',
+non piu' su 'continua a guardare'.
+
+Boot sano: 3 costruzioni, 4 `script aborted`, nessun SIGSEGV.
+
+### Stato dei fronti dopo il lotto 53
+
+1. **`import pigri`: 4178-4813 ms per widget**, praticamente identico in tutti gli 8 boot misurati da
+   d1 a i1. Mai toccato. E' il singolo costo piu' grosso e piu' prevedibile rimasto.
+2. **`requests` del servizio: 6850-8749 ms**, una volta per avvio. E' la sincronizzazione Trakt
+   iniziale, costo accettato consapevolmente (lotto 52).
+3. **Pre-fase Kodi+skin: ~6,2-7,1 s.** Arctic Fuse, non Fen Light.
+
+## Lotto 54 -- fronte 1: profilare l'albero degli import
+
+### Cosa e' davvero `import pigri`
+
+Guardando `router.py`, il segmento fra `mark_phase('routing_in')` e `mark_phase('indexer_in')`
+contiene il parsing dei parametri e **una sola istruzione di import**:
+
+```python
+if 'mdblist.' in mode:
+    if '.list' in mode:
+        from indexers import mdblist_lists      # <-- 4,2-4,8 s
+        mark_phase('indexer_in')
+```
+
+Quindi i 4,2-4,8 s sono interamente il caricamento dell'albero dei moduli di quell'indexer. Per
+potarlo serve sapere quale modulo costa cosa: senza quel dato si potrebbe solo tirare a indovinare,
+ed e' il modo in cui in questo progetto si e' gia' sbagliato bersaglio piu' volte.
+
+### Il profilatore
+
+In `fenlight.py`, prima di qualunque import di Fen Light, `builtins.__import__` viene sostituito con
+una versione che cronometra ogni caricamento. Misura il tempo **proprio** di ciascun modulo -- al
+netto di quelli che importa a sua volta -- tenendo una pila dei tempi figli: altrimenti la radice si
+prenderebbe il merito dell'intero albero e il rendiconto sarebbe inutile.
+
+Rendiconto in `kodi_utils.log_import_profile`: totale, quota Fen Light contro quota esterna, e i
+primi 22 moduli sopra i 25 ms.
+
+Sicurezza: `reuselanguageinvoker=false` garantisce un interprete nuovo a ogni invocazione (lotto 11c),
+quindi la modifica a `builtins` non sopravvive e non puo' contaminare nulla; l'originale viene
+comunque ripristinato prima del rendiconto, e `sys.exit(1)` resta l'ultima istruzione del file.
+
+Verificato fuori da Kodi su un albero reale (`email.mime`, `xml.dom`, `unittest`, `http.client`):
+95 moduli, somma dei tempi propri **127,4 ms contro 127,5 ms di wall reale, scarto 0,0%**, nessun
+tempo negativo, e nessun modulo che monopolizza il totale.
+
+**Nota di misura:** questo deploy NON svuota `__pycache__` -- servirebbe solo a gonfiare il profilo
+con la ricompilazione, che e' esattamente cio' che non vogliamo misurare. Rimosso il solo `.pyc` di
+`kodi_utils`, l'unico modulo modificato (`fenlight.py` gira come `__main__` e non ha bytecode
+memorizzato). Restano 32 `.pyc` caldi.
+
+### Prima misura (boot j1, 24/08 01:51): il fronte 1 non e' dove pensavamo
+
+| invocazione | totale import | di cui Fen Light | resto (libreria standard) | moduli |
+|---|---|---|---|---|
+| build_continue_watching | 6651 ms | **1547 ms** | **5105 ms** | 109 |
+| mdblist 101881 | 6467 ms | 1589 ms | 4878 ms | 111 |
+| mdblist 91378 | 6176 ms | 1461 ms | 4714 ms | 111 |
+| mdblist 2194 | 2716 ms | 971 ms | 1745 ms | 111 |
+
+**Il 76% del costo degli import NON e' codice Fen Light.** Potare l'albero dei moduli dell'addon --
+la cosa che stavamo per fare -- puo' recuperare al massimo ~1,5 s dei ~6,5. Il resto e' la libreria
+standard di Python caricata da un interprete ARM 32-bit su flash lenta.
+
+Nessun modulo domina: il piu' caro e' `indexers.movies` a 242 ms, e il costo e' spalmato su 109
+moduli. I primi per `build_continue_watching`:
+
+```
+242 ms indexers.movies      234 ms (import relativo)   221 ms logging
+212 ms decoder (json)       191 ms indexers.episodes   182 ms concurrent.futures
+164 ms modules.kodi_utils   163 ms enum                156 ms ipaddress
+140 ms nt                   135 ms caches.settings_cache  135 ms _sre
+119 ms apis                 117 ms functools           115 ms _compression
+110 ms html.entities        103 ms string               96 ms _weakrefset
+ 96 ms modules.router        94 ms _locale              90 ms modules.dom_parser
+```
+
+Due osservazioni che valgono da sole:
+- **`nt` costa 140 ms** ed e' il modulo `os` di Windows: su Android l'import **fallisce**, dentro il
+  `try/except` di `os.py`. Un import fallito si paga comunque.
+- **`ipaddress` (156 ms) e `_compression` (115 ms)** appartengono alla catena `ssl`/`gzip`. Ma in
+  questo boot `requests` NON viene importato da `continue_watching`: qualcos'altro tira dentro
+  quella catena.
+
+Sapere quanto costa la libreria standard non basta: serve sapere **da dove entra**. Il profilatore ora
+registra anche il **richiedente** di ciascun modulo (`sys._getframe(1).f_globals['__name__']`, preso
+solo al primo caricamento) e il rendiconto raggruppa per pacchetto di primo livello, indicando il
+primo richiedente **esterno** al pacchetto -- senza quel filtro si otterrebbe `email <- email.header`,
+cioe' un pacchetto che importa se stesso, che non dice nulla.
+
+Verificato fuori da Kodi: la somma dei gruppi coincide con il totale, e l'attribuzione e' corretta
+(`ssl <- http.client`, `socket <- email.utils`).
+
+### La mappa dei richiedenti (boot k1, 24/08 01:55)
+
+`build_continue_watching`: 6098 ms di import, di cui Fen Light 1304 e libreria standard **4795**.
+Esterni per pacchetto, con chi li ha tirati dentro:
+
+```
+186 ms contextlib  <- traceback      179 ms concurrent <- modules.utils
+175 ms decoder     <- json           167 ms nt         <- ntpath
+158 ms (relativo)  <- ?              146 ms enum       <- re
+141 ms traceback   <- logging        133 ms ipaddress  <- urllib.parse
+124 ms html        <- modules.utils  123 ms sqlite3    <- caches.base_cache
+110 ms logging     <- concurrent.futures._base   109 ms textwrap <- traceback
+104 ms importlib   <- zipfile        103 ms re         <- urllib.parse
+```
+
+**Una sola riga di codice spiega la catena piu' costosa.** Ordinando per richiedente invece che per
+costo:
+
+```
+modules.utils --> concurrent.futures --> logging --> traceback --> contextlib
+                                                              --> textwrap
+                                                              --> linecache -> tokenize -> token
+                                                     logging --> weakref
+```
+
+Verificato: `concurrent` compare in **un solo punto** di tutto il codice (`modules/utils.py:12`), e
+`logging` e `traceback` non sono importati da nessuna parte a livello di modulo (solo due
+`import traceback` dentro gestori di errore). L'intero sottoalbero esisteva per quella riga.
+
+### La correzione: sostituire, non rendere pigro
+
+I tre `make_thread_list*` stanno sul **percorso caldo** (episodes, movies, tvshows, trakt_api): un
+import pigro avrebbe solo spostato gli 800-900 ms da `import pigri` a `indexer`. `ThreadPoolExecutor`
+e' stato quindi **sostituito** con `_run_pool`, costruito sui soli `threading.Thread` gia' importati.
+
+Semantica preservata, tutta verificata contro l'originale:
+- concorrenza limitata a `WORKER_COUNT`, con distribuzione **dinamica** (contatore condiviso sotto
+  `Lock`) e non a partizione statica, che con lavori di durata diversa lascerebbe thread fermi;
+- la chiamata **blocca** fino al termine, come l'uscita dal blocco `with`;
+- le eccezioni del target restano **inghiottite**. Non e' una svista lasciata li': `submit()` le
+  depositava in una `Future` che nessun chiamante legge, quindi il comportamento osservabile era gia'
+  quello. "Correggerlo" qui avrebbe fatto emergere errori finora invisibili in tutt'altro punto.
+
+Altri tre import resi pigri in `modules/utils.py`, ciascuno con un solo punto d'uso:
+`html.unescape` (~230 ms con `html.entities`), `zipfile.ZipFile` (tirava dentro `importlib`, ~100-200
+ms), `importlib.import_module`.
+
+**Verifica fuori da Kodi**, 8 gruppi di prove su `_run_pool`: i tre stili di chiamata (item, `*item`,
+`(indice, item)`) con accoppiamento indice/elemento corretto, blocco fino al termine, eccezioni non
+propagate ma resto della lista elaborato, **risultato identico a `ThreadPoolExecutor` sullo stesso
+carico**, picco di concorrenza misurato = 6 = `WORKER_COUNT`, lista vuota, generatore in ingresso,
+elemento singolo. Simboli confrontati con `git show HEAD`: nessuno perso, uno aggiunto (`_run_pool`).
+
+Guadagno atteso: **600-900 ms per interprete**, moltiplicato per i 3-4 interpreti dell'avvio. Da
+misurare.
+
+### Verifica (boot l1, 24/08 02:01): la catena e' sparita
+
+Nel profilo **non compare piu' nessuno** di `concurrent`, `logging`, `traceback`, `contextlib`,
+`textwrap`, `tokenize`, `token`, `linecache`, `html`, `importlib`. Sparito anche **`nt` (167 ms)**:
+era `ntpath`, tirato dentro da `zipfile`. Un import che su Android **fallisce** e si pagava comunque.
+
+| | k1 (prima) | l1 (dopo) | delta |
+|---|---|---|---|
+| moduli caricati | 109-111 | **69-71** | **-40** |
+| import totale | 6098-6467 ms | **4660-4819 ms** | **-1400 ms** |
+| di cui libreria standard | 4795 ms | **2828 ms** | **-1967 ms** |
+| segmento `import pigri` | 4402-4607 ms | **3040-3149 ms** | **-1350 ms** |
+
+Per invocazione: `build_continue_watching` 7997 -> **6511**, mdblist 9379/9688 -> **7935/8202**.
+
+Wall-clock, tutti boot a bytecode caldo:
+
+| | Kodi+skin | widget Fen Light | totale |
+|---|---|---|---|
+| e2 (pre-lotto 53) | 6,2 s | 13,5 s | 19,8 s |
+| i1 (post-lotto 53) | 6,6 s | 12,2 s | 18,8 s |
+| j1 (con profilatore) | 6,4 s | 12,0 s | 18,3 s |
+| **l1 (post-lotto 54)** | 6,6 s | **10,3 s** | **16,9 s** |
+
+**Un dato che non torna, segnalato e non insabbiato:** la quota attribuita a Fen Light *sale*, da 1304
+a 1991 ms, mentre i suoi moduli sono gli stessi. Non e' spiegato dalla modifica. Le cause plausibili
+sono la ricompilazione del `.pyc` di `utils` (cancellato prima di questo boot) e la varianza del
+dispositivo -- il `load average` era 7,07 al momento della misura. I numeri robusti, che non
+dipendono dall'attribuzione, sono gli altri quattro della tabella. Da riverificare a freddo.
+
+Boot sano: 3 costruzioni, 4 `script aborted`, nessun SIGSEGV, zero marcatori di cache fallita.
+
+### Cosa resta nell'albero (l1, `build_continue_watching`)
+
+```
+esterni:  json+decoder+encoder 346 | re+_constants+enum+copyreg 446 | sqlite3+datetime+math+calendar 334
+          urllib+ipaddress+collections 262 | (relativo) 207 | _locale 110 | threading+_weakrefset 167
+Fen Light: indexers.movies 405 | modules.kodi_utils 186 | caches.main_cache 182 |
+           caches.settings_cache 148 | apis.trakt_api 144
+```
+
+`json`, `re`, `sqlite3` sono strutturali: Fen Light non puo' funzionare senza. I due bersagli residui
+plausibili sono `urllib <- modules.kodi_utils` (~170-260 ms, se bastano `parse_qsl`/`quote` si possono
+riscrivere a mano) e `indexers.movies` (405 ms, importato a livello di modulo da
+`continue_watching.py` ma usato solo dentro `_do_movies`). Rendimenti in calo: siamo passati dal
+tagliare 1350 ms al ragionare su 200-400.
+
+## Lotto 55 -- "segna come non visto": Trakt si aggiorna, l'interfaccia no
+
+Sintomi riferiti: su 4 effetti attesi funziona **solo** la scrittura su Trakt. Non spariva il badge
+visto dall'episodio, non si ricalcolava 'continua a guardare', non si ricalcolava il badge episodi
+rimanenti sulla serie. E nemmeno la sincronizzazione Trakt ogni 30 s rimediava.
+
+### Cronologia dal log (m1, 24/08 02:36)
+
+```
+02:36:42.359  INIZIO  build_episode_list                          <- 10,3 s per costruirsi
+02:36:47.7    UTENTE  segna come non visto (menu contestuale)
+02:36:47.989  INIZIO  watched_status.mark_episode
+02:36:49.214  DIAG refresh: MIRATO finestra Video (Container.Refresh) | id=1 azioni=0
+02:36:49.689  INIZIO  build_season_list       <- ricostruita la lista STAGIONI, non gli episodi
+02:36:52.6    fine    build_episode_list      <- consegnata con i dati letti PRIMA della modifica
+02:37:06.277  GUARDIA Trakt: rebuild saltato, la modifica e' nostra ed e' gia' applicata in locale
+```
+
+### Difetto 1 -- il ramo "finestra Video" non tocca i widget, ma zittisce chi potrebbe farlo
+
+In `kodi_refresh_ids`, dentro la finestra Video (10025) si esegue `Container.Refresh` e si **esce
+subito**, senza mai arrivare a `hold_refresh_flag('fenlight.refresh_widgets')` ne' a
+`paginator.refresh_containers_for_ids`. `Container.Refresh` ricarica **solo la cartella aperta**: i
+widget della schermata principale non sono raggiungibili da li'.
+
+Il guaio e' che a valle **due** guardie danno per scontato che ci abbiamo pensato noi, entrambe
+fondate su `self_mark_recent()`:
+- `apis/trakt_api.py:913` -- salta la ricostruzione della cache Trakt
+- `service.py:121` -- salta il refresh dell'interfaccia ("la modifica e' nostra ed e' gia' a schermo")
+
+**La loro premessa e' vera per il database e falsa per lo schermo.** Il commento in service.py lo dice
+a lettere chiare: "mark_movie/mark_episode scrivono in locale e ricaricano i contenitori toccati". Il
+primo pezzo e' vero, il secondo lo e' solo per la cartella aperta. Risultato: le due sole occasioni di
+rimediare vengono soppresse, e i widget restano fermi **a tempo indeterminato** -- non fino al
+prossimo poll, proprio finche' non succede altro.
+
+**Correzione:** il ramo 10025 ora imposta anche `PENDING_REFRESH_PROP`. E' lo stesso canale gia' usato
+per il refresh rimandato durante la riproduzione: `WidgetRefresher` (service.py:166) lo vede entro
+10 s, a riproduzione ferma, e lancia `refresh_widgets`. Nessun meccanismo nuovo, nessun rebuild
+globale, e l'aggiornamento avviene mentre i widget non sono nemmeno a schermo.
+
+### Difetto 2 -- la ricarica mirata ha colpito il contenitore sbagliato (NON corretto)
+
+`Container.Refresh` alle 02:36:49 ha prodotto un `build_season_list`, non un `build_episode_list`.
+Nessuna costruzione della lista episodi e' partita dopo la marcatura: quella a schermo e' rimasta
+quella iniziata alle 02:36:42, cioe' **con i dati letti prima della modifica**. Ecco perche' il badge
+non spariva.
+
+Causa piu' probabile: al momento della ricarica la cartella che Kodi considerava corrente era ancora
+la lista stagioni, perche' la lista episodi lanciata 5 s prima non era stata consegnata. **La lentezza
+apre da sola la corsa critica:** `build_episode_list` ha impiegato 10,3 s (e 12,0 s in un'altra
+navigazione dello stesso log). Con una costruzione veloce la finestra non esisterebbe.
+
+Non corretto di proposito: e' una corsa critica dipendente dai tempi, e "aggiustarla" a intuito senza
+prima misurare e' esattamente il modo in cui in questo progetto si e' gia' sbagliato bersaglio.
+Va affrontata come problema a se', e il primo sospetto da verificare e' il costo di
+`build_episode_list`.
+
+### Verifica (log n2, 24/08 02:48): funziona, e costa un rebuild globale
+
+```
+02:48:18.167  mark_episode
+02:48:19      DIAG refresh: MIRATO finestra Video (Container.Refresh) + PENDING_REFRESH_PROP
+02:48:27.582  refresh_widgets AVVIATO      <- WidgetRefresher raccoglie il pending, 8 s dopo
+02:48:28      DIAG refresh: GLOBALE (UpdateLibrary) | finestra=10025
+02:48:29      build_episode_list  (9910 ms)  <- ricostruita DOPO la marcatura: dati aggiornati
+02:48:36-42   build_continue_watching + 3 mdblist
+```
+
+**Tutti e quattro gli effetti attesi ora avvengono**, difetto 2 compreso: la lista episodi viene
+ricostruita alle 02:48:29, dopo la marcatura delle 02:48:18, quindi con i dati giusti. Non e' pero'
+"istantaneo": arriva ~11 s dopo, ed e' un effetto collaterale del rebuild globale, non una ricarica
+mirata riuscita. La corsa critica del difetto 2 **non e' stata corretta**, e' stata scavalcata.
+
+**Il costo, misurato:** `refresh_widgets` chiama `run_plugin({'mode': 'kodi_refresh'})`
+(kodi_utils:674), cioe' `UpdateLibrary` -- globale. Dalla marcatura in poi si contano **7 costruzioni
+di cartella**: 2 liste stagioni, 2 liste episodi, 'continua a guardare' e 3 widget mdblist, per circa
+40 s di lavoro di fondo cumulativo. Per un episodio segnato come non visto.
+
+E' il compromesso onesto della situazione attuale: prima era 0 lavoro e 0 correttezza, ora e'
+correttezza piena a prezzo pieno. La via mirata non e' applicabile cosi' com'e', perche' nella
+finestra Video i widget non sono a schermo e nessun `Container.Refresh` puo' raggiungerli --
+`UpdateLibrary` e' l'unico canale che li fa rileggere.
+
+Boot e sessione sani: 0 `CACHE SET FALLITA`, 0 `META FALLITA`, 0 `TMDB CALL`, 0 SIGSEGV.
+
+**Prossimo passo indicato dai dati:** `build_episode_list` costa **9,9-11,3 s**. E' insieme (a) la
+voce piu' lenta rimasta, (b) la causa della corsa critica del difetto 2 -- con una costruzione veloce
+la finestra fra lancio e consegna non esisterebbe -- e (c) meta' del costo del rebuild globale qui
+sopra. Un solo bersaglio che chiude tre problemi.
+
+## Lotto 56 -- i 10 secondi della lista episodi sono un'attesa che scade a vuoto
+
+`build_episode_list` era gia' strumentata: `paginator.log_build` separa risoluzione e costruzione.
+Nel log n2:
+
+```
+PERF###: episodes Season 1 | 3 elementi | totale 0.06s = risoluzione 0.04s + costruzione 20 ms
+PERF###: episodes Season 1 | 3 elementi | totale 0.16s = risoluzione 0.15s + costruzione 15 ms
+```
+
+**La costruzione della cartella costa 0,06-0,16 s.** L'invocazione intera ne costava 9,9-11,3. Il
+segmento `coda` -- cio' che gira DOPO la consegna della lista -- dice dove:
+
+```
+build_episode_list | totale 11273 ms | import 243 + import pigri 370 + indexer  61 + consegna 1 + coda 10598 + (set_view 10588)
+build_episode_list | totale  9910 ms | import 526 + import pigri 580 + indexer 167 + consegna 2 + coda  8636 + (set_view  8634)
+```
+
+**`set_view_mode` da solo vale il 94% dell'invocazione.** Per confronto, nella lista stagioni la
+stessa funzione costa 101-287 ms.
+
+### La causa
+
+`_set_view_mode_impl` aspetta che il contenitore dichiari il contenuto atteso, e il limite era a
+**iterazioni**:
+```python
+hold = 0; sleep(100)
+while not container_content() == content:
+    hold += 1
+    if hold < 3000: sleep(1)
+    else: return          # <-- si arrende SENZA impostare la vista
+```
+3000 giri sono "3 secondi" solo dove un giro costa 1 ms. Sulla stick un giro costa ~3,5 ms fra
+`sleep`, passaggio Python->C++ per l'infolabel e contesa sul GIL: **10,6 s**. E il ramo che si
+raggiunge e' `return`, cioe' la vista **non viene impostata**. Non sono dieci secondi di lavoro: sono
+dieci secondi buttati per poi rinunciare.
+
+Nota: nel lotto 50 questa funzione era stata esaminata e archiviata come irrilevante perche' "per i
+widget esce subito (is_external)". Vero per i widget, e infatti il costo dei widget non e' questo. La
+lista episodi **non e' un widget**: `is_external` e' falso e il corpo gira per intero. L'archiviazione
+era corretta nel suo ambito e sbagliata come conclusione generale.
+
+### La correzione
+
+Limite sul **tempo** invece che sui giri (`VIEW_MODE_WAIT_SECONDS = 2.0`), cosi' vale uguale su
+qualunque hardware: il caso peggiore passa da "3000 giri, quanto durino dipende dal dispositivo" a
+"2 secondi, punto". Due secondi sono larghi: nella lista stagioni l'attesa si chiude in 101-287 ms.
+
+**Perche' il confronto non riesca mai per gli episodi non e' ancora stabilito.** La correzione limita
+il danno ma non spiega il difetto, quindi alla scadenza si registra ora il valore osservato:
+`DIAG vista: attesa scaduta a 2.0s | Container.Content=... atteso 'episodes' | vista NON impostata`.
+Una riga al massimo per invocazione. Se il valore osservato e' diverso da 'episodes' abbiamo anche il
+motivo per cui la vista degli episodi non viene mai applicata -- che sarebbe un secondo difetto,
+funzionale, nascosto dietro il primo.
+
+Atteso: `build_episode_list` da ~10 s a **~2,2 s**. Da misurare.
+
+### Verifica (log p1, 24/08 13:58): il tetto tiene, e nomina il difetto vero
+
+`set_view` passa da 8634-10588 ms a **2001-2148 ms**, cioe' il tetto. `build_episode_list`:
+5460 / 7690 / 2887 ms contro i 9910-11999 di prima. Il 2887 e' il caso a cache calda, dove ormai
+**il tetto E' il costo**: indexer 111 ms, coda 2148.
+
+La riga di diagnosi ha risposto, 3 volte su 3, sempre la stessa cosa:
+```
+DIAG vista: attesa scaduta a 2.0s | Container.Content='seasons' atteso 'episodes' | vista NON impostata
+```
+
+### Perche' non puo' funzionare
+
+Nel log, subito prima dell'invocazione:
+```
+CDirectoryProvider[plugin://plugin.video.fenlight/?mode=build_episode_list&season=1&tmdb_id=298168]: refreshing
+```
+
+La lista episodi **non e' il contenitore della finestra**: e' un pannello della skin caricato da un
+`CDirectoryProvider` (Arctic Fuse mostra gli episodi accanto alle stagioni). Il contenitore principale
+e', e resta, la lista stagioni. `Container.Content` **non diventera' mai 'episodes'**: l'attesa non e'
+lenta, e' impossibile. Prima costava 10,6 s per arrendersi, ora 2, ma resta un'attesa che non puo'
+riuscire.
+
+Ne discendono due cose:
+1. **La vista degli episodi non viene mai applicata.** Difetto funzionale finora invisibile perche'
+   nascosto dietro quello di prestazioni. A schermo si vede la vista predefinita della skin, che a
+   quanto pare va bene: l'utente non se n'era accorto.
+2. **E' la stessa causa del difetto 2 del lotto 55.** `Container.Refresh` ricarica il contenitore
+   principale -- le stagioni -- ed e' esattamente cio' che il log mostrava: `build_season_list` al
+   posto di `build_episode_list`. Non era una corsa critica sui tempi: era il contenitore sbagliato,
+   sempre.
+
+`external()` non se ne accorge: `'fenlight' not in Container.PluginName` e' **falso**, perche' il
+contenitore principale e' comunque una lista Fen Light (le stagioni). La funzione distingue
+"widget di un'altra skin" da "nostra finestra", ma non "pannello caricato da un provider" da
+"contenitore della finestra". Correggerla ha pero' un raggio d'azione ampio -- decide anche
+`cacheToDisc`, i menu contestuali, `set_view_mode` -- e non va toccata di corsa dentro un lotto sulle
+prestazioni.
+
+### Cosa e' stato fatto e cosa no
+
+Tetto abbassato a **1,0 s**: ogni attesa andata a buon fine misurata finora (5 campioni, liste
+stagioni) si e' chiusa entro 229 ms di `coda`, cioe' meno di 130 ms di ciclo dopo il settle da 100 ms.
+Un secondo lascia un margine di 8x. Non si scende oltre perche' il caso della navigazione in avanti su
+un contenitore di finestra vero, dove il cambio puo' tardare legittimamente, non e' ancora stato
+misurato in isolamento.
+
+**Non corretto:** il riconoscimento dei pannelli `CDirectoryProvider`. E' la correzione giusta -- farebbe
+uscire subito `set_view_mode` e chiuderebbe anche il difetto 2 del lotto 55 -- ma passa da `external()`,
+che e' usata ovunque. Va affrontata da sola, con la sua verifica.
+
+## Lotto 57 -- non e' un bug della skin: e' la vista "Combined" di Arctic Fuse
+
+Domanda posta dall'utente: quel comportamento e' voluto o e' un difetto della skin? Risposta letta
+nella skin, `1080i/Includes_Views_Combined.xml`:
+
+```xml
+<variable name="View_530_Content">
+    <value condition="... !String.IsEmpty(Container(520).ListItem.FolderPath) + Container(520).ListItem.IsFolder">
+        $INFO[Container(520).ListItem.FolderPath]
+    </value>
+</variable>
+```
+
+Il contenitore **52X e' la lista della finestra** (le stagioni); il contenitore **53X e' un pannello
+affiancato** il cui contenuto e' il `FolderPath` dell'elemento **a fuoco**. Mettendo a fuoco una
+stagione, 53X carica `build_episode_list` per quella stagione. E' il funzionamento previsto della
+vista Combined, non un difetto: percio' all'uso sembra tutto corretto, e lo e'.
+
+**Correzione di una mia formulazione ambigua del lotto 56:** avevo scritto "il contenitore resta sulle
+stagioni" in un modo che si poteva leggere come "gli episodi non vengono mostrati". Non e' cosi'. Gli
+episodi vengono costruiti e consegnati regolarmente (`9 elementi` nel log) e si vedono. Cio' che non
+avviene e' l'applicazione della **vista** da parte di Fen Light, che e' tutt'altra cosa e non ha
+effetti visibili qui.
+
+### Cosa ne discende, ora su basi solide
+
+1. **`Container.Content='seasons'` e' il valore GIUSTO.** Il contenitore della finestra e' davvero la
+   lista stagioni. `set_view_mode('view.episodes', 'episodes')` non e' "in attesa di un cambio che
+   tarda": sta aspettando una condizione che in questa vista non deve verificarsi. Di piu':
+   `Container.SetViewMode` agisce sul contenitore ATTIVO, quindi se l'attesa riuscisse imporrebbe la
+   vista episodi al contenitore delle **stagioni**. Che fallisca e', in questa vista, la cosa giusta;
+   sbagliato e' solo che ci metta un secondo a scoprirlo.
+
+2. **Il pannello 53X non e' raggiungibile dai nostri meccanismi mirati.** `Container.Refresh` agisce
+   sul contenitore della finestra (le stagioni) -- ed e' esattamente cio' che il log del lotto 55
+   mostrava. Il paginatore non aiuta: `WIDGET_CONTAINER_IDS = range(500, 521)` non arriva a 53X, e
+   soprattutto il suo meccanismo funziona alterando il **percorso** del contenitore con un token,
+   mentre il percorso di 53X e' dettato dal `FolderPath` dell'elemento a fuoco e non e' modificabile
+   dall'esterno. Il paginatore infatti esce con `return 0` dentro la finestra 10025.
+
+3. **Quindi il "martello globale" del lotto 55 non e' una reazione sproporzionata: e' l'unico
+   attrezzo disponibile.** `UpdateLibrary` produce l'annuncio che i `CDirectoryProvider` ascoltano, ed
+   e' per questo che alle 02:48:29 la lista episodi si e' davvero ricostruita. Sostituirlo con una
+   ricarica mirata, come si era ipotizzato, **non e' possibile** con i meccanismi presenti.
+
+### Conseguenza sul piano di lavoro
+
+L'idea di "correggere `external()` per riconoscere i pannelli e tornare al mirato" **cade**: la meta'
+"tornare al mirato" non ha un bersaglio raggiungibile. Resta in piedi solo la parte prestazionale --
+riconoscere il caso pannello per uscire subito da `set_view_mode` invece di scoprirlo dopo 1 s -- che
+vale 1 secondo per apertura di stagione e non sblocca nient'altro.
+
+Da verificare separatamente, perche' discende dalla stessa classificazione errata: in `episodes.py`
+`end_directory(handle, cacheToDisc=False if is_external else True)`. Per il pannello `is_external` e'
+falso, quindi la cartella viene messa in cache su disco. Se Kodi la servisse dalla cache al posto di
+rileggerla, sarebbe una seconda sorgente di dati vecchi -- ma il log del lotto 55 mostra che dopo
+`UpdateLibrary` la ricostruzione avviene davvero, quindi il sospetto **non e' confermato** e va
+misurato prima di toccare qualcosa.
+
+### Lotto 57 bis -- risolto, non limitato
+
+Obiezione dell'utente, corretta: un comportamento che sappiamo sbagliato non va limitato, va tolto. Il
+tetto era un ripiego presentato come se la soluzione non esistesse, quando semplicemente non era stata
+cercata.
+
+**Pista 1, caduta.** `Window.Property(TMDBHelper.WidgetContainer)` -- la proprieta' con cui la skin
+distingue i propri pannelli -- nella skin viene solo **letta**, in 7 file, e mai impostata: la
+scriveva TMDbHelper, rimosso. Quelle condizioni sono sempre false, il segnale e' morto.
+
+**Il dato che ha chiuso la questione.** Distribuzione di `set_view` su tutti i log raccolti:
+
+| modo | campioni | min | max |
+|---|---|---|---|
+| `build_season_list` | **19** | 100 ms | 287 ms |
+| `build_episode_list` | 7 | 2001 ms | 10588 ms |
+
+Il minimo di 100 ms **e' il `sleep(100)` iniziale**: in 19 casi su 19 il contenuto era gia' corretto
+al primo controllo, e il massimo oltre il settle e' 187 ms. Gli episodi falliscono 7 volte su 7.
+**L'attesa non e' mai servita, in nessun campione.** Non e' un meccanismo che a volte aiuta: e' un
+costo fisso che paga una domanda alla quale non puo' rispondere.
+
+**Correzione, due parti:**
+1. `VIEW_MODE_WAIT_SECONDS` da 1,0 a **0,3 s** -- 1,6x il caso piu' lento mai osservato oltre il
+   settle, invece di un numero scelto a occhio.
+2. **Il caso irraggiungibile si impara.** Alla prima scadenza il contenuto viene marcato in una
+   proprieta' di finestra; dalle volte successive `set_view_mode` esce dopo il solo settle. Poiche' il
+   segnale a priori non esiste, lo si ricava dal primo tentativo e non lo si ripaga mai piu'.
+   **Si auto-corregge:** il controllo del contenuto avviene comunque prima di guardare il marchio,
+   quindi se un giorno gli episodi diventassero il contenitore della finestra (altra vista, altra
+   skin) il caso buono passerebbe e il marchio verrebbe tolto. Nessun rischio di blocco permanente.
+
+Verificato fuori da Kodi con 7 scenari sulla funzione estratta dall'AST: contenuto gia' giusto (105 ms,
+vista impostata), primo fallimento (405 ms, impara), secondo e terzo (100-105 ms, salta), caso buono
+che continua a funzionare con il marchio attivo, auto-correzione quando il contenuto torna
+raggiungibile (marchio rimosso, vista impostata), e ritorno alla normalita'.
+
+`set_view` per `build_episode_list`: **10588 -> 2001 -> ~100 ms** dalla seconda apertura in poi. I
+100 ms residui sono il settle, tenuto apposta: e' cio' che rende possibile l'auto-correzione.
+
+## Lotto 58 -- la sincronizzazione Trakt CONSUMA i cambiamenti remoti e li butta
+
+Log q1, 24/08 14:20-14:25.
+
+```
+14:21:12  rebuild completo, motivo: nessun play piu' recente del piu' recente locale (rimozioni?)
+14:21:14  watched episodes rebuild: 33 shows, 1287 history plays, 1275 episodes   <- all'avvio i dati SI sincronizzano
+14:21:15  TraktMonitor: refresh saltato, interfaccia ricostruita 16.9s fa
+14:21:46  Update Success. No Changes Needed
+14:22:16  Update Success. No Changes Needed
+14:24:40  watched episodes: rebuild saltato, la modifica e' nostra ed e' gia' applicata in locale
+14:24:40  TraktMonitor: refresh saltato, la modifica e' nostra ed e' gia' a schermo
+14:25:16  (identico)
+```
+
+Le righe delle 14:24:40 e 14:25:16 arrivano dal ramo `status == 'success'`, cioe' **Trakt aveva
+davvero dei cambiamenti**. Sono stati scartati due volte: prima il rebuild dei dati
+(`trakt_api.py:913`), poi il refresh dell'interfaccia (`service.py:121`). Entrambe le guardie
+poggiano su `self_mark_recent()`, valido **120 secondi** e riarmato da ogni marcatura locale.
+
+### Perche' il cambiamento non torna mai piu'
+
+`trakt_sync_activities` chiama `reset_activity(latest)` (riga 1101). Quella funzione, in
+`caches/trakt_cache.py:115`, legge i timestamp precedenti **e subito li sovrascrive con quelli
+nuovi**. Il segnalibro "visto fino a qui" avanza PRIMA che il lavoro a valle venga fatto.
+
+Se il rebuild viene poi saltato dalla guardia, il cambiamento e' **consumato e perso**: al giro dopo
+`_compare(latest, cached)` trova i due valori uguali e restituisce `'not needed'`. Per sempre. E'
+esattamente la sequenza dei log: due 'success' scartati alle 14:24-14:25, e prima due
+'No Changes Needed'.
+
+### Perche' colpisce proprio le modifiche fatte dall'app Trakt
+
+La condizione della guardia e' `not new_plays and last_synced and self_mark_recent('tvshow')`.
+`not new_plays` significa "nessuna riproduzione piu' recente di quella gia' nota in locale", cioe'
+proprio il caso delle **rimozioni** -- segnare come NON visto dall'app Trakt non produce nessun play
+nuovo. E il log delle 14:21:12 lo dice a chiare lettere: *"nessun play piu' recente del piu' recente
+locale (rimozioni?)"*. Quindi lo scenario piu' comune dell'utente e' anche quello che la guardia
+inghiotte meglio.
+
+Basta una marcatura locale per aprire una finestra di 120 s in cui qualunque modifica remota viene
+letta, marcata come vista e cestinata. Chi sta provando le cose sulla stick -- cioe' quello che stiamo
+facendo da due giorni -- tiene quella finestra quasi sempre aperta.
+
+### Correzione di un mio errore (lotto 57)
+
+Avevo scritto che la proprieta' con cui la skin marca i propri pannelli "non e' piu' scritta da
+nessuno". **Falso, ed e' colpa di una mia ricerca sbagliata:** avevo cercato `TMDBHelper` con la B
+maiuscola, ma la skin la SCRIVE come `TMDbHelper` (b minuscola) e la LEGGE come `TMDBHelper` -- le
+proprieta' di finestra di Kodi sono insensibili alle maiuscole, quindi funziona. Ci sono **22 punti**
+che la impostano, fra cui proprio il pannello della vista Combined:
+
+```xml
+<onfocus>SetProperty(TMDbHelper.WidgetContainer,53$PARAM[id])</onfocus>
+```
+
+Il segnale deterministico che avevo dichiarato inesistente **esiste**. La soluzione del lotto 57 bis
+(impararlo al primo tentativo) funziona ed e' verificata, ma poggiava su una premessa sbagliata: si
+puo' sapere *prima*, leggendo quella proprieta'. Da rifare come si deve.
+
+### Lotto 58 bis -- la guardia diventa un rinvio, non un cestino
+
+La guardia del lotto 47 non viene rimossa: il problema che risolveva e' reale (una marcatura locale
+faceva ripartire un rebuild da 6 pagine e 1275 episodi, ~1,5 s, per un dato gia' esatto in locale).
+Cambia cio' che comporta saltarlo.
+
+**Perche' non si e' verificata l'affermazione della guardia.** L'idea piu' pulita sarebbe confrontare
+l'istante dell'attivita' Trakt (`latest['episodes']['watched_at']`, UTC) con quello della nostra
+marcatura (`time.time()`). Scartata: mescolare i due orologi richiede una conversione UTC/locale
+esplicita, e `_get_timestamp` usa gia' `time.mktime` su un orario UTC -- un errore che oggi si annulla
+perche' confronta Trakt con Trakt, ma che si manifesterebbe appena introdotto il nostro orologio.
+Troppo fragile per il difetto piu' grave aperto.
+
+**Correzione, tre pezzi:**
+1. `caches/trakt_cache.py` -> nuova `restore_activity(previous)`: rimette il segnalibro al valore
+   precedente.
+2. `apis/trakt_api.py` -> `_SYNC_DEFERRED`, alzato dalle due guardie (film ed episodi) quando saltano
+   una ricostruzione, azzerato subito dopo `reset_activity`.
+3. In fondo a `trakt_sync_activities`, se il flag e' alzato il segnalibro **torna indietro**. Il giro
+   successivo ritrova il cambiamento invece di 'not needed'.
+
+`TRAKT_SELF_MARK_SECONDS` da 120 a **45 s**: ora la costante non decide piu' *cosa si perde* ma solo
+*quanto si aspetta*, e a 45 s si conserva l'accorpamento di piu' marcature consecutive -- il motivo per
+cui la guardia esiste -- dimezzando abbondantemente il caso peggiore.
+
+**Verifica per simulazione** della macchina a stati (marcatura locale a t=0, modifica dall'app Trakt a
+t=10, poll ogni 30 s):
+
+| | esito |
+|---|---|
+| prima (guardia = cestino) | **mai applicata, persa** |
+| dopo, finestra 120 s | applicata a t=120 |
+| **dopo, finestra 45 s** | **applicata a t=60** |
+
+Il messaggio di log cambia di conseguenza, da "rebuild saltato ... gia' applicata in locale" a
+"rebuild RIMANDATO ... segnalibro attivita' NON avanzato": la vecchia dicitura affermava una cosa che
+il codice non verificava.
+
+**Costo accettato:** dopo una marcatura locale la ricostruzione non e' piu' evitata, solo rinviata di
+al massimo 45 s. Si perde parte del guadagno del lotto 47 e si riprende la correttezza. Non e' un
+compromesso alla pari: quel guadagno valeva ~1,5 s di lavoro di fondo, il difetto costava la perdita
+silenziosa e definitiva di modifiche fatte dall'utente.
+
+## Lotto 59 -- refresh MIRATO dopo la sincronizzazione Trakt
+
+Verifica del lotto 58 bis sul dispositivo (log r1): i `rebuild RIMANDATO` si ripetono e poi il lavoro
+viene **ripreso** -- `sync/watched/movies: 600 elementi` alle 14:57:56, `599` alle 14:59:29 (cioe' la
+rimozione arrivata), rebuild episodi alle 15:00:04. Nessun cambiamento piu' perso.
+
+### Il limite dell'API, e cio' che invece dipende da noi
+
+`sync/last_activities` restituisce solo marche temporali **per categoria** (`movies.watched_at`,
+`episodes.watched_at`, `shows.hidden_at`, ...). Non dice mai QUALI titoli sono cambiati: per saperlo
+bisogna scaricare l'insieme completo e confrontarlo, che e' il `rebuild completo`. Questa meta' non e'
+migliorabile.
+
+**Ma dopo la ricostruzione l'elenco ce l'abbiamo**, e finora veniva buttato: si chiamava
+`refresh_widgets` -> `kodi_refresh` -> `UpdateLibrary`, cioe' ogni widget della schermata a
+prescindere da quali titoli fossero cambiati e dal fatto che fossero presenti.
+
+### Correzione
+
+1. `caches/trakt_cache.py`: `_watched_keys` + `_changed_media_ids` calcolano la differenza fra
+   l'insieme prima e quello dopo. `set_bulk_movie_watched` / `set_bulk_tvshow_watched` /
+   `add_tvshow_watched` restituiscono ora i media_id toccati. Costo: una SELECT sulla tabella che si
+   sta comunque per riscrivere.
+2. `apis/trakt_api.py`: `trakt_sync_activities` raccoglie gli id dalle due ricostruzioni e li pubblica
+   in `fenlight.trakt.changed_ids`. **Tre stati distinti, e servono tutti e tre:** `''` = non lo
+   sappiamo (globale, come prima), `'-'` = lo sappiamo e non e' cambiato nulla (nessuna
+   ricostruzione), altrimenti l'elenco.
+3. `modules/router.py`: nuovo modo `kodi_refresh_ids`.
+4. `service.py`: il monitor legge la proprieta' e sceglie fra mirato, niente e globale.
+
+**Perche' la distinzione fra `''` e `'-'` non e' pedanteria:** un insieme vuoto trattato come
+"sconosciuto" farebbe partire un rebuild globale proprio nel caso in cui si e' dimostrato che non
+serve, cioe' quello piu' frequente.
+
+**Normalizzazione dei tipi:** le chiavi vengono confrontate come stringhe perche' dal database
+stagione ed episodio arrivano INTEGER e dalla lista da inserire spesso come stringa. Senza, ogni riga
+risulterebbe cambiata e il mirato degenererebbe in un globale piu' costoso.
+
+Verificato fuori da Kodi su SQLite in memoria, 7 casi: nessun cambiamento -> `set()`; rimozione di un
+episodio -> solo la sua serie; aggiunta -> solo il nuovo titolo; azzeramento -> tutti; **stessi dati
+con stagione/episodio come stringhe -> `set()`** (il caso che senza normalizzazione fallirebbe); riga
+malformata -> `None` (ricaduta sul globale); db_type diverso che non interferisce.
+
+Nota: dentro la finestra Video `refresh_containers_for_ids` esce con `return 0` e `kodi_refresh_ids`
+ricade da sola sul globale. Il mirato agisce quindi dove ha senso, cioe' sulla schermata principale.
+
+### Marcatore per 'continua a guardare' (difetto aperto)
+
+Segnalato: una serie con **un solo** episodio visto, tolto il visto, continua a mostrare l'episodio
+successivo invece di sparire. 'Continua a guardare' fonde TRE sorgenti (film in pausa, episodi in
+pausa, prossimo episodio) e a schermo sono indistinguibili. Aggiunto in `build_continue_watching` un
+marcatore che stampa quante voci arrivano da ciascuna e con quali id e S/E. Nel log r1 non c'e' nessuna
+marcatura di episodi -- solo film -- quindi l'evento non era osservabile. **Da riprodurre.**
+
+## Lotto 60 -- il refresh mirato funziona, ma lo degradavamo noi
+
+Verifica del lotto 59 sul dispositivo (log s1). Sulla schermata principale funziona come voluto:
+```
+15:16:17  titoli cambiati: 1 -> ['1297842']
+15:16:17  TraktMonitor: refresh MIRATO su 1 titoli
+15:16:18  DIAG refresh: MIRATO 2 contenitori ricaricati | finestra=10000
+```
+**Due contenitori** invece dell'intera schermata. Ripetuto piu' volte nel log con 1, 2 e 3 titoli.
+
+### Il difetto: gli id venivano buttati nella finestra Video
+
+```
+15:19:00.72  TraktMonitor: refresh MIRATO su 1 titoli          <- gli id li avevamo
+15:19:01.12  DIAG refresh: MIRATO finestra Video (Container.Refresh)
+15:19:01     refresh_widgets avviato                            <- il PENDING del lotto 55
+15:19:03.15  DIAG refresh: GLOBALE (UpdateLibrary) | finestra=10025
+```
+
+Il ramo aggiunto nel lotto 55 alzava la bandiera del rinvio **senza portarsi dietro gli id**, e
+`WidgetRefresher` rispondeva con `refresh_widgets`, cioe' `UpdateLibrary`. Un refresh mirato su UN
+titolo diventava una ricostruzione di tutto, solo perche' l'utente si trovava dentro la finestra
+Video. L'informazione c'era: la buttavamo noi.
+
+**Correzione:**
+1. `PENDING_IDS_PROP`: il rinvio porta con se' gli id.
+2. `WidgetRefresher` li usa (`kodi_refresh_ids`) e ricade sul globale solo quando non ci sono.
+3. Il rinvio si **tiene** finche' si e' dentro la finestra Video: li' i widget non sono a schermo,
+   quindi ricostruirli non mostra nulla a nessuno, e la ricarica mirata non raggiungerebbe comunque i
+   contenitori (`refresh_containers_for_ids` esce con `return 0`). Si aspetta di essere tornati dove i
+   widget si vedono.
+4. `_defer_refresh_if_playing` azzera gli id: quel rinvio non ne porta, e senza l'azzeramento
+   erediterebbe quelli di un rinvio precedente ricaricando i contenitori del titolo **sbagliato**.
+
+Verificato fuori da Kodi con la macchina a stati, 5 casi: rinvio in finestra Video che conserva gli id;
+refresher che tiene il rinvio finche' si e' in 10025; refresher che a schermata principale esegue il
+mirato con quegli id; mirato immediato quando si e' gia' in home; e il caso 4, cioe' un rinvio senza id
+dopo uno con id, che deve dare GLOBALE e non riusare i vecchi.
+
+### Cosa NON dipende da noi (chiusura del player)
+
+Dopo la chiusura, alle 15:19:40-43 si ricostruiscono `build_continue_watching` e due widget mdblist.
+Non li ordiniamo noi: alla stessa ora `player.py` registra *"DIAG refresh: NON ordinato, Kodi ha gia'
+ricostruito da sola 10.6s dopo la chiusura"*. E' Kodi che rilegge i widget rientrando nella schermata
+principale, e lo fa perche' le cartelle dei widget vengono consegnate con `cacheToDisc=False` quando
+`is_external` -- quindi non esiste una copia da servire e vanno ricostruite.
+
+E' lo stesso compromesso del lotto 50: con la cache attiva Kodi le servirebbe vecchie. Ridurre questa
+ricostruzione e' un lavoro a se', che tocca la cache delle cartelle e non il percorso di refresh.
+
+## Lotto 61 -- la tempesta di ricostruzioni dopo il player: TRE ondate, non una
+
+Log t1, 24/08 16:06. Il player chiude alle 16:06:11.
+
+```
+16:06:12.439  Window Init (Home)
+16:06:12      CDirectoryProvider x4 -> continue_watching + 3 mdblist          <- ONDATA 1 (Kodi)
+16:06:13      CDirectoryProvider x4 -> gli stessi quattro, di nuovo           <- ONDATA 2 (Kodi)
+16:06:25.819  build_continue_watching chiude (11886 ms)
+16:06:26.171  DIAG refresh: nessuna ricostruzione spontanea entro 14s, la ordiniamo noi
+16:06:26.371  DIAG refresh: MIRATO 2 contenitori ricaricati                   <- ONDATA 3 (nostra)
+```
+
+`build_continue_watching` viene costruita **tre volte** (16:06:25, 16:06:30, 16:06:33), le mdblist due
+o tre volte ciascuna.
+
+### Difetto 1 -- il rilevatore manca per 352 ms (corretto)
+
+`kodi_rebuilt_by_itself` cicla `while _now() < deadline` e controlla **solo prima** di dormire 500 ms.
+La ricostruzione e' arrivata alle 16:06:25.819, la scadenza e' caduta alle 16:06:26.171: 352 ms di
+scarto, e un'ondata intera ordinata per niente. Aggiunto un **ultimo controllo dopo la scadenza**.
+Da solo elimina l'ondata 3.
+
+### Difetto 2 -- le ondate 1 e 2 sono di Kodi, e nascono da `cacheToDisc`
+
+I widget escono con `cacheToDisc=False` (`False if is_external else True`), quindi Kodi non ha nessuna
+copia da servire e **ri-invoca il plugin** ogni volta che la schermata principale torna in primo piano.
+Non e' un difetto di Fen Light: e' la conseguenza diretta di quella scelta.
+
+**Esperimento controllato (lotto 61), NON una correzione adottata:** cambiato `cacheToDisc=True` per
+**il solo** `build_continue_watching`. Gli altri tre widget restano com'erano e fanno da gruppo di
+controllo nello stesso log. Se al rientro in Home mancano le invocazioni di 'continua a guardare' e ci
+sono quelle delle mdblist, la cache fa quel che speriamo e si puo' estendere.
+
+**Rischio noto, da tenere presente prima di estendere:** con la cache attiva una ricostruzione ordinata
+via `UpdateLibrary` **non basta piu'** a rinfrescare il widget, perche' l'URL non cambia e Kodi
+servirebbe la copia. Tutta l'invalidazione dovrebbe passare dal nonce del paginatore
+(`RELOAD_PARAM`), che invece cambia il percorso e quindi supera la cache -- verificato leggendo
+`refresh_containers_for_ids`. Oggi pero' diversi percorsi usano ancora `kodi_refresh` globale come
+ripiego: estendere la cache senza prima convertirli significherebbe widget che non si aggiornano piu',
+cioe' la stessa classe di difetto appena chiusa nei lotti 55-60. Per questo si misura un widget solo.
+
+### Lotto 61 bis -- esito: una correzione confermata, un'ipotesi smentita
+
+Log u1, 24/08 16:24-16:25 (film riprodotto e interrotto a meta').
+
+**Confermato -- il controllo finale funziona.** Alle 16:25:05.367:
+`DIAG refresh: NON ordinato, Kodi ha gia' ricostruito da sola 8.0s dopo la chiusura`.
+La terza ondata, quella nostra, e' sparita.
+
+**Smentito -- `cacheToDisc=True` non ha alcun effetto.** `build_continue_watching` aveva la cache
+attiva e gli altri tre widget no; al rientro in Home e' stata **ri-invocata come loro** (16:25:05 e
+16:25:09). Un `CDirectoryProvider` che si aggiorna rilegge la sorgente e scavalca la cache delle
+cartelle. Modifica **revocata**: teneva un rischio di dati vecchi senza dare niente in cambio.
+
+**Cosa fa scattare davvero le ricostruzioni.** Ogni ondata segue un cambio di finestra, a millisecondi:
+```
+16:24:58.278  Window Init (Home.xml)
+16:24:58.281  CDirectoryProvider x4: refreshing          <- 3 ms dopo
+16:24:59.166  Window Init (Custom_1182_Dialog_Topmenu_Overlay.xml)
+16:24:59.430  CDirectoryProvider x4: refreshing
+```
+Nessuna delle due parte da noi. Uscendo dal player la schermata principale viene riattivata, e Kodi
+rilegge i propri provider; l'overlay del menu della skin la riattiva una seconda volta.
+
+### Il limite vero, che non e' un difetto di Fen Light
+
+La richiesta ragionevole -- "metti il badge al film nei widget in cui compare, senza toccare il resto"
+-- **non e' esprimibile nel modello dei widget di Kodi**. Un widget e' una *directory*: il plugin la
+consegna intera e Kodi la rilegge intera. Non esiste un'API per modificare un singolo elemento di un
+contenitore gia' costruito, ne' dal plugin ne' dalla skin. Quando Kodi decide che un provider va
+riletto, l'unica cosa che il plugin puo' fare e' ricostruire tutta la lista.
+
+Cio' che controlliamo:
+- **le nostre ricariche**, ora mirate ai soli contenitori interessati (lotto 59-60, verificato:
+  2 contenitori invece di tutta la schermata) e non piu' duplicate (questo lotto);
+- **il costo di ogni ricostruzione**, che e' il filo conduttore dei lotti 50-56.
+
+Cio' che NON controlliamo dal plugin: la rilettura dei provider alla riattivazione della finestra.
+L'unica leva sarebbe nella skin (attributo `refreshinterval` sul nodo `<content>`, o meno transizioni
+di finestra), non in Fen Light.
+
+## Lotto 62 -- due affermazioni da rettificare
+
+### 1. "Si puo' correggere dalla skin": RITIRATA
+
+Nel lotto 61 bis avevo indicato l'attributo `refreshinterval` sul nodo `<content>` come leva per
+impedire a Kodi di rileggere i provider alla riattivazione della finestra. **Verificato: in tutta la
+skin `refreshinterval` non compare mai**, e non e' stato accertato che Kodi lo supporti per i
+`CDirectoryProvider`. Era una supposizione presentata come una via praticabile.
+
+Stato reale: **non e' noto un modo affidabile, ne' dal plugin ne' dalla skin,** per evitare la
+rilettura dei provider quando la finestra torna in primo piano. Cio' che resta dimostrato e' solo che
+la causa non e' nostra e non e' `cacheToDisc` (misurato nel lotto 61 bis).
+
+### 2. `TMDbHelper.WidgetContainer`: il candidato ha un difetto strutturale
+
+Il ciclo di vita della proprieta', letto nella skin:
+```
+Includes_Views_Combined.xml:116  <onfocus>SetProperty(TMDbHelper.WidgetContainer,53X)</onfocus>   pannello
+Includes_Views_Combined.xml:166  <onfocus>ClearProperty(TMDbHelper.WidgetContainer)</onfocus>     lista principale
+```
+piu' altri 7 `ClearProperty` sulle viste normali (Row, List, Wall, DialogInfo).
+
+**Segue il FUOCO, non chi sta costruendo.** E il pannello episodi si ricarica proprio quando cambia
+l'elemento a fuoco nella lista stagioni -- cioe' mentre il fuoco e' su 52X, dove la skin la cancella.
+Nel momento in cui servirebbe potrebbe quindi essere vuota, e in tal caso non distingue un pannello da
+un contenitore di finestra.
+
+Non si deduce: si misura. Aggiunto il valore osservato alla riga `DIAG vista`, che grazie al marchio
+del lotto 57 bis esce **una sola volta per sessione** -- un campione, che e' quanto basta per decidere
+se questo ramo e' percorribile o va chiuso.
+
+Se esce `'530'` il candidato regge e `set_view_mode` (e probabilmente il menu contestuale) si possono
+sistemare all'origine. Se esce vuota, l'unico modo di sapere che l'attesa e' inutile resta scoprirlo
+provando -- cioe' il marchio che gia' abbiamo.
+
+---
+
+## Lotto 63 -- `TMDbHelper.WidgetContainer`: verdetto (24/08)
+
+Misura eseguita, un campione, log della sessione delle 16:37.
+
+```
+16:37:51.160  DIAG vista: attesa scaduta a 0.3s | Container.Content='seasons' atteso 'episodes'
+              | WidgetContainer='' | vista NON impostata | 'episodes' marcato irraggiungibile
+```
+
+**Vuota.** Il difetto strutturale ipotizzato nel lotto 62 e' reale: al momento in cui il pannello
+episodi si costruisce il fuoco e' ancora sulla lista stagioni (52X), che la cancella. La proprieta'
+segue il fuoco, non chi costruisce.
+
+**Ramo chiuso per `set_view_mode`.** Non esiste, dal plugin, un modo di sapere quale contenitore sta
+ricevendo la cartella che si sta consegnando. Il marchio "irraggiungibile" del lotto 57 bis resta
+l'unica soluzione, e funziona: `set_view` 459 ms alla prima costruzione di `build_episode_list` della
+sessione (100 ms di sleep + 300 ms di attesa + contorno), poi ~100 ms per tutte le successive.
+
+**Ma la proprieta' NON e' morta.** La riga 116 la imposta a `53X` quando il pannello prende il fuoco:
+e' vuota al momento della *costruzione*, e valorizzata al momento dell'*interazione*. Se un problema
+si manifesta mentre l'utente e' fermo sul pannello -- il menu contestuale, per esempio -- li' la
+proprieta' e' leggibile e discrimina. Va tenuta a mente per quel fronte, non per questo.
+
+### Boot della stessa sessione
+
+16:37:13.729 avvio Kodi -> 16:37:30.187 ultimo widget della home consegnato = **16.5 s**, in linea con
+il migliore misurato finora. Nessun errore, nessuna cache fallita, nessuna chiamata di rete nei quattro
+widget (`verdetto in cache 20` su tutti i lotti DUB, `54/54 gia' in cache` nei prefetch).
+
+Trakt: `titoli cambiati: 0` dopo l'azzeramento di un segnalibro, e refresh saltato perche' l'interfaccia
+era stata ricostruita 25.2 s prima. Comportamento corretto: nessuna ricostruzione sprecata.
+
+---
+
+## Lotto 64 -- Menu contestuale nella vista Combined: due difetti distinti (24/08)
+
+Log delle 16:49. Il menu contestuale sul pannello episodi **e' quello giusto**: alla scelta
+dell'utente e' partito
+
+```
+16:49:34.228  mark_episode&action=mark_as_watched&tmdb_id=283297&season=1&episode=2
+```
+
+cioe' l'episodio a fuoco, non la stagione ne' la serie. Quello che e' sbagliato sono altre due cose.
+
+### 1. L'intestazione mostra la serie invece dell'episodio
+
+L'header e' `$VAR[DialogContextMenu_HeaderLabel]` = `Window(Home).Property(TMDbHelper.ListItem.base_label)`
+(Dialog_DialogContextMenu.xml:5). Quella proprieta' la pubblichiamo **noi**, in `blur_service.py`:
+
+```python
+label = self._resolve('Label', container=last_container)
+```
+
+e `_resolve` provava per primo `ListItem.Label` "nudo". Da un widget della home quello e' l'elemento a
+fuoco -- l'episodio -- e infatti li' l'header e' corretto. Dentro la finestra Video, invece, `ListItem`
+nudo risolve sul contenitore della **finestra**, cioe' la lista stagioni: non e' mai vuoto, quindi
+vinceva sempre, e il pannello episodi non veniva mai interrogato.
+
+Correzione: quando la skin sta **dichiarando in questo istante** quale contenitore ha il fuoco --
+`TMDbHelper.WidgetContainer` letta non vuota nel giro corrente -- quel contenitore ha la precedenza su
+`ListItem` nudo. Solo il valore appena letto, mai `last_container`, che e' un ricordo e non puo'
+scavalcare un elemento a fuoco reale.
+
+E' il primo uso concreto della proprieta' dopo il verdetto del lotto 63: **vuota in costruzione,
+valorizzata in interazione**. Qui siamo nel secondo caso.
+
+### 2. Il badge dell'episodio non si aggiorna dopo "segna come visto"
+
+```
+16:49:34.2  mark_as_watched S1E2
+16:49:35.5  fatto (1049 ms)
+16:49:37.4  build_season_list ricostruita     <- solo la lista stagioni
+            build_episode_list MAI            <- il pannello resta fermo
+16:49:53.6  l'utente torna in Home -> kodi_refresh_ids&ids=283297 (rimandato dal lotto 58)
+16:50:08.5  rientra nella serie -> build_episode_list -> ora il badge c'e'
+```
+
+`Container.Refresh` ricarica la cartella aperta, che nella vista Combined e' la lista **stagioni**. Il
+pannello episodi non e' un contenitore di finestra: il suo `<content>` vale
+`$INFO[Container(52X).ListItem.FolderPath]`, e quella URL dopo il refresh torna **identica**. Kodi non
+ha alcun motivo di ricaricarlo. Non era lentezza ne' attesa di Trakt: non succedeva proprio niente
+finche' l'utente non usciva e rientrava.
+
+Correzione, stesso principio del token pagine dei widget: `kodi_refresh_ids` scrive un nonce in
+`PANEL_RELOAD_PROP` **prima** di `Container.Refresh`, e `seasons.py` lo accoda alla URL di ogni
+stagione. La lista stagioni si ricostruisce con FolderPath nuove, il pannello se ne accorge e si
+ricarica da solo. `reload` e' gia' in `paginator._VOLATILE_PARAMS`, quindi non entra nella chiave del
+widget ne' nella paginazione. Il nonce si legge una volta per costruzione, non una per stagione.
+
+Costo: una `build_episode_list` in piu' (~850 ms misurati) e **solo** dopo un'azione dell'utente.
+
+---
+
+## Lotto 64 bis -- Il crash del 24/08 alle 16:58: leggere il log senza sbagliare
+
+Il log si interrompe alle **16:58:33.767**, durante il caricamento degli XML della skin, 2,2 s prima
+che parta qualunque codice Fen Light. La lettura ovvia -- "e' morto li'" -- e' **sbagliata**.
+
+```
+adb shell "date; cat /proc/uptime"   ->  17:01:26, uptime 160 s  ->  boot alle 16:58:46
+```
+
+Il riavvio e' avvenuto **12 secondi dopo** l'ultima riga scritta. Il log vive su storage emulato con
+scritture bufferizzate: un kernel panic perde la coda non ancora scaricata su disco. Quei 12 secondi --
+invisibili -- sono esattamente la finestra in cui, nel boot buono delle 16:48, si costruivano tutti e
+quattro i widget della home (16:48:44 -> 16:48:54).
+
+Quindi: **il punto di troncamento non e' il punto del crash.** Prenderlo per tale avrebbe accusato la
+skin e scagionato l'addon, sbagliando due volte.
+
+```
+ro.boot.reboot_mode: kernel_panic     <- non 'watchdog_reboot' come nei casi precedenti
+ro.boot.bootreason:  reboot,userrequested   <- fuorviante, va ignorata
+```
+
+Cio' che il log dimostra davvero: il prefisso scaricato su disco e' identico, riga per riga fino alla
+471, a quello del boot riuscito delle 16:48. Nessuna anomalia prima del buio.
+
+### Le tre modifiche del lotto 64 davanti a questo crash
+
+- `seasons.py` e il ramo 10025 di `kodi_utils`: **non girano all'avvio**. La home costruisce film,
+  liste mdblist e 'continua a guardare'; `seasons.py` non viene nemmeno importato.
+- `blur_service.py`: e' l'unico che gira in quella fascia -- ma non in quella finestra.
+  `BLUR_START_DELAY = 25` (mitigazione del 23/08) lo fa partire 25 s dopo i servizi, e il panic e'
+  arrivato a 16 s dall'avvio di Kodi. Non era ancora partito.
+
+Nessuna delle tre puo' aver causato il panic. Resta comunque applicata una precauzione: la nuova
+precedenza al contenitore dichiarato dalla skin ora vale **solo fuori dalla schermata principale**
+(`getCurrentWindowId() != 10000`). Sulla home l'ordine vecchio era gia' corretto -- il difetto esiste
+solo nelle finestre media -- e cosi' il ramo che gira durante la tempesta dei widget resta identico a
+prima. Non e' una correzione: e' togliere una variabile dal tavolo prima della prossima misura.
+
+---
+
+## Lotto 64 ter -- Verifica sul campo e il "lampeggio" del pannello episodi (24/08, 17:04)
+
+### Il lotto 64 funziona, dal log
+
+```
+17:04:12  mark_as_watched S1E3 -> DIAG refresh: MIRATO finestra Video
+17:04:15  build_episode_list&reload=1787583853070   <- il pannello SEGUE, non serve piu' uscire
+17:04:24  mark_as_unwatched S1E2 -> stessa cosa, reload=1787583864679
+17:04:27  Trakt: rebuild RIMANDATO, la modifica sembra nostra
+          TraktMonitor: refresh saltato, la modifica e' nostra ed e' gia' a schermo
+17:04:32  rientro in Home -> kodi_refresh_ids&ids=283297
+17:04:35  DIAG refresh: MIRATO 2 contenitori ricaricati | finestra=10000
+```
+
+Nessun `GLOBALE`, nessun `UpdateLibrary`, nessuna cache fallita, nessuna eccezione. `DIAG vista` esce
+una volta sola, come previsto dal marchio del lotto 57 bis.
+
+Boot 17:03:37.384 -> 17:03:55.618 = **18.2 s** contro i 16.5 s del boot precedente. Non e' una
+regressione: e' il confondente noto dei `.pyc`. I tre file modificati sono stati ricompilati
+(`import pigri` 3.5 s contro 2.4-3.0 s). Il prossimo boot torna in linea.
+
+Unica stranezza minore: alle 17:04:41 `Latest TV Shows` viene riletto una seconda volta **senza**
+parametro `reload`. E' la rilettura spontanea dei provider alla riattivazione della finestra gia'
+documentata nel lotto 61 bis, non un nostro doppione.
+
+### Perche' nella home il ricarico e' netto e nel pannello episodi no
+
+Non e' un caso, ed e' nella skin. Le due regole sono opposte.
+
+**Widget della home** (`Includes_Widgets.xml:101`):
+```xml
+<visible>... + [Container(X).IsUpdating | !Integer.IsEqual(Container(X).NumItems,0) | ...]</visible>
+```
+Il widget resta visibile mentre si aggiorna **oppure** finche' ha elementi. Non attraversa mai uno
+stato vuoto: e' esattamente il "netto" che si vede.
+
+**Pannello episodi** (`Includes_Views_Combined.xml:107`):
+```xml
+<animation type="Conditional" reversible="false" condition="Container(53X).IsUpdating">
+    <effect type="fade" start="100" end="0" time="200" delay="600" />
+</animation>
+```
+Il pannello **sfuma a zero** appena l'aggiornamento supera 600 ms. Una nostra ricostruzione ne impiega
+1400-1900 (interprete Python nuovo compreso), quindi la soglia viene superata **sempre**. Poi rientra,
+e le texture si ricaricano in modo asincrono: da qui il "ricompaiono senza immagine".
+
+La regola della skin ha senso per il caso a cui era destinata -- hai cambiato stagione, gli episodi
+vecchi sono sbagliati, meglio nasconderli -- ma scatta identica sul refresh in posto, dove la lista e'
+la stessa di prima.
+
+Non e' aggirabile dal plugin: 600 ms non sono raggiungibili con un interprete Python nuovo per
+invocazione, e la durata non distingue un refresh da un cambio stagione. L'unica via e' una riga di
+skin: condizionare la dissolvenza anche a `Integer.IsEqual(Container(53X).NumItems,0)`, cioe' sfumare
+solo quando non c'e' davvero niente da mostrare -- la stessa regola dei widget della home. Non
+applicata: e' cosmetica e tocca la skin, quindi va decisa a parte.
+
+---
+
+## Lotto 65 -- Il cambio finestra NON ricostruisce i widget: correzione di quanto detto finora
+
+Misurato nel log delle 17:04, contando le riletture dei provider evento per evento:
+
+```
+17:03:43.679  Window Init (Home.xml)          -> 4 provider riletti   (avvio, la pagina corrente)
+17:04:01.398  Window Init (MyVideoNav.xml)    -> 2 provider           (stagioni + pannello episodi)
+17:04:32.744  Window Init (Home.xml)          -> ZERO provider riletti
+17:04:35.893  kodi_refresh_ids (nostro)       -> 2 provider, mirati
+```
+
+**Tornando dalla serie alla Home, Kodi non ha riletto nulla.** Le uniche due ricostruzioni sono le
+nostre, mirate, con il nonce. Lo stesso si legge nel log delle 16:37 (rientro in Home alle 16:38:47,
+nessuna rilettura).
+
+Va quindi corretto quanto scritto nei lotti 61 bis e 62: **non e' il cambio di finestra a invalidare i
+provider.** Quella formulazione era troppo larga e nasceva dall'unico caso osservato, che era un altro.
+
+Il caso reale e' la **riproduzione**: alla chiusura del player tutti i widget video della pagina
+corrente si ricostruiscono (misurato piu' volte nei lotti 59-61). Spiegazione che regge su entrambe le
+misure: `CDirectoryProvider` si iscrive agli annunci `Player` di Kodi e si invalida su OnPlay/OnStop.
+E' codice di Kodi, senza leve dal plugin ne' dalla skin. Il cambio finestra, da solo, non produce
+nessun annuncio e infatti non ricostruisce niente.
+
+Conseguenza pratica per le **pagine di widget separate** di Arctic Fuse: funzionano come sperato. Un
+provider invalidato rilegge solo quando torna VISIBILE, quindi i widget delle altre pagine non pagano
+nulla finche' non ci si va. La prova e' nell'avvio: 4 provider letti, non tutti quelli della skin.
+
+## Lotto 65 bis -- Dissolvenza del pannello episodi (applicata, da provare)
+
+`Includes_Views_Combined.xml:107`, condizione dell'animazione:
+
+```xml
+condition="Container(53X).IsUpdating"
+         -> "Container(53X).IsUpdating + Integer.IsEqual(Container(53X).NumItems,0)"
+```
+
+Si sfuma solo quando non c'e' davvero niente da mostrare: la stessa regola dei widget della home
+(`Includes_Widgets.xml:101`), che infatti non lampeggiano mai. Il cambio stagione, che svuota davvero
+il pannello, continua a sfumare come prima.
+
+Nota per il futuro: i commenti XML non possono contenere due trattini di fila. Il primo tentativo ha
+prodotto un file non valido, intercettato dal parse prima del deploy.
+
+---
+
+## Lotto 66 -- Seconda finestra di widget: diagnosi (24/08, log delle 17:17-17:28)
+
+### 1. La lentezza NON e' memoria: e' rete su cache fredda
+
+Nessun OOM, nessun `lowmemorykiller`, nessun avviso di memoria in tutto il log. Il costo sta altrove.
+
+I due widget nuovi sono liste **Trakt** (Movies Watchlist, Trending), i cui titoli non erano mai stati
+messi in cache. Costo per pagina, dal log:
+
+```
+17:24:25  build_movie_list | 14866 ms | routing->lista 14401   (3 pagine, 43 elementi)
+17:24:45  build_movie_list | 17882 ms | routing->lista 17452   (4 pagine, 61 elementi)
+17:25:31  build_movie_list | 42047 ms | routing->lista 41089   (5 pagine, 80 elementi)
+17:27:31  build_movie_list | 24655 ms | routing->lista 21316
+```
+
+`routing->lista` e' il 97% del totale. Dentro ci sono due sorgenti di rete:
+
+- **30 chiamate TMDb** `/movie/<id>`, una per titolo mai visto (55 in tutta la sessione, 30 delle
+  quali di Trending).
+- **`dub_filter`**: `rete: streaming 3-8, bluray 0-7 | valutazione 5.4 - 14.6 s` **per pagina**. E'
+  la voce singola piu' cara e la piu' variabile.
+
+Confronto sullo stesso dispositivo e nella stessa sessione: i widget mdblist della home, con
+`verdetto in cache 20` e `rete: streaming 0, bluray 0`, costano 2-6 s. **Non e' un muro hardware: e'
+la cache fredda.** Ogni titolo si paga una volta sola, e infatti la stessa lista Trending scende a
+9,6 s quando si riscalda.
+
+Resta pero' un costo strutturale: Trending e Watchlist **cambiano nel tempo**, quindi avranno sempre
+titoli nuovi. Un widget su lista Trakt non arrivera' mai al regime dei widget mdblist.
+
+### 2. Perche' si e' sentita cosi' tanto: la paginazione a scorrimento
+
+Ogni pagina caricata dal `WidgetPaginator` mentre l'utente scorre e' una di quelle invocazioni da
+15-18 s. Non e' lavoro di sfondo: e' esattamente il momento in cui l'utente sta guardando la lista.
+
+### 3. Dopo il player: undici ricostruzioni
+
+Riproduzione 17:27:05 -> 17:27:47. Poi:
+
+```
+17:27:48.137  OnPlayBackStopped  (CApplication)
+17:27:48.76   Hub: 2 provider
+17:27:50.005  OnPlayBackStopped  (CXBMCApp -- SECONDO annuncio)
+17:27:50.18   Hub: 2 provider     <- gli stessi due, di nuovo
+17:28:02.56   Home: 4 provider
+17:28:10.74   Hub: 1 provider
+17:28:20.71   Home
+```
+
+Kodi emette **due** annunci di stop a 1,9 s di distanza e i provider si invalidano due volte. Sommando,
+nove ricostruzioni fra 17:27:48 e 17:28:17, ~67 s di lavoro cumulato in 29 s di orologio. Il nostro
+codice non ha aggiunto nulla: `DIAG refresh: NON ordinato, Kodi ha gia' ricostruito da sola`.
+
+### 4. Il collasso della pagina dinamica: causa trovata, e' una collisione di id
+
+Il token delle pagine vive sull'**id del contenitore** (`fenlight.pg.ctl<ID>.pages`). Gli id dei
+contenitori **non sono unici fra finestre**. Dal file generato dalla skin sulla stick:
+
+```
+Home        ctl501 = continua a guardare   ctl502 = Latest releases Gary
+                    ctl503 = Top 250              ctl504 = Latest TV Shows
+Hub 1101    ctl501 = Movies Watchlist      ctl502 = Trending
+Ricerca                                    ctl502 = ricerca film
+```
+
+**`ctl502` e' condiviso da tre widget diversi in tre finestre diverse.** E `service.py:306-308` fa,
+correttamente per il caso a cui era destinato:
+
+```python
+if window.getProperty(paginator.CTL_KEY_PROP % widget_id) != key:
+    window.setProperty(paginator.CTL_KEY_PROP % widget_id, key)
+    window.clearProperty(paginator.CTL_PAGES_PROP % widget_id)   # cambio inquilino -> azzera
+```
+
+Ogni passaggio di finestra fa cambiare inquilino a ctl502 e **azzera il token condiviso**. Nel log si
+vede due volte:
+
+```
+17:28:02.577  PROV ...Gary&pages=5        17:28:04.795  PROV ...Gary   (senza pages) -> collassa
+17:28:10.597  Trending path_pages=5       17:28:16.816  Trending path_pages=- , 26 elementi (2 pagine)
+```
+
+Con una sola finestra di widget il difetto non poteva manifestarsi: nasce esattamente aggiungendo la
+seconda. Non e' un bug della logica di azzeramento, che e' giusta: e' che lo **spazio dei nomi** (l'id
+del contenitore) smette di essere univoco appena le finestre sono piu' di una.
+
+Due strade, da decidere:
+- **Lato plugin**: tenere il conteggio in un deposito per (finestra, contenitore) e confrontare la
+  chiave sempre per (finestra, contenitore). Problema di tempistica: alla riattivazione Kodi rilegge
+  il provider entro 2 ms dall'Init (misurato: 17:28:02.560 -> .562), mentre il watcher gira ogni
+  300 ms; ripristinare il valore dopo sarebbe una ricostruzione in piu', non in meno.
+- **Lato skin**: dare a ogni finestra un intervallo di id proprio nel generatore (Home 501+,
+  hub 1101 511+, ...). Risolve alla radice e non ha problemi di tempistica, ma tocca la catena di
+  generazione degli include della skin.
+
+---
+
+## Lotto 67 -- Token di paginazione indicizzato per (finestra, contenitore)
+
+### La sonda
+
+Prima di toccare qualunque cosa, una riga di commento nel template per verificare che `{window_id}`
+arrivasse fin dentro `widgets_row.xmltemplate`, dove non era mai stato usato. Esito nel file generato:
+
+```
+228: <!-- fenlight-pgscope-probe: whome ctl501 -->     455: <!-- ... w1101 ctl501 -->
+256: <!-- fenlight-pgscope-probe: whome ctl502 -->     483: <!-- ... w1101 ctl502 -->
+```
+
+La sostituzione funziona, e conferma anche la collisione: `ctl502` esiste in Home e in 1101.
+
+**Nessun id di controllo e' stato cambiato.** La domanda era se rinumerarli non facesse ricaricare i
+widget a ogni cambio finestra: la risposta e' no -- Kodi rilegge un provider per attivazione della
+finestra o per invalidazione da annuncio, e il numero non entra in nessuno dei due (nel log delle
+17:27 le riletture seguono gia' la finestra, non l'id) -- ma la domanda ha portato a una soluzione
+migliore, che gli id non li tocca affatto: cambiare il **nome della proprieta'**, non il controllo.
+
+### Cinque punti nella skin
+
+```
+widgets_row.xmltemplate         fenlight.pg.ctl{widget_id}.pages
+                             -> fenlight.pg.w{window_id}.ctl{widget_id}.pages
+widgets_wall.xmltemplate        + <param name="pgscope">{window_id}</param>
+widgets_combined.xmltemplate    + <param name="pgscope">{window_id}</param>
+search_row_standard.xmltemplate -> fenlight.pg.w1105.ctl{widget_id}.pages
+                                   (la ricerca vive in Custom_1105_Search.xml e nel generatore
+                                    non ha window_id: nessuna lista lo definisce per quel ramo)
+Includes_Hubs.xml:125,180       -> fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages
+                                   con <param name="pgscope">home</param> come default, cosi' un
+                                   chiamante che non lo passa produce comunque un nome scrivibile
+                                   invece di uno letterale che nessuno scrive.
+```
+
+### Due punti nel plugin
+
+`CTL_PAGES_PROP` e `CTL_KEY_PROP` prendono due argomenti, e `paginator.ctl_scope()` traduce la
+finestra corrente nel nome che usa la skin: 10000 -> `home`, altrimenti il numero (hub 1101-1104,
+ricerca 1105). Lo scope si legge una volta per ciclo in `service.py` e una volta per refresh in
+`refresh_containers_for_ids`.
+
+Il controllo di cambio inquilino resta identico -- e' giusto per il caso a cui serviva, la ricerca che
+cambia chiave a ogni query -- ma ora opera su (finestra, contenitore) e non scatta piu' quando a
+cambiare e' soltanto la finestra.
+
+### Ordine di attivazione
+
+Finche' gli include non sono rigenerati, il file generato legge ancora il nome vecchio mentre il
+plugin scrive quello nuovo: la paginazione non si espande. Va rigenerato subito dopo il riavvio,
+salvando dall'editor dei widget. Non e' un rischio, e' una finestra di qualche minuto in cui i widget
+restano al lotto iniziale.
+
+### Lotto 67 bis -- La skin dice 1101, Kodi dice 11101
+
+La paginazione dell'hub e' sparita del tutto (la Home continuava a funzionare). Causa: i due lati non
+chiamano la finestra con lo stesso numero.
+
+Il file si chiama `Custom_1101_Hub.xml`, dichiara `<window type="window" id="1101">` e il generatore
+scrive `w1101`. Ma Kodi assegna alla finestra `WINDOW_HOME + 1101 = 11101`. Lo stampa da solo nelle
+righe dei tasti, che sono l'unico posto del log dove l'id numerico compare:
+
+```
+17:50:45.593  HandleKey: right, window 10000     <- Home
+17:50:45.595  Window Init (Custom_1101_Hub.xml)
+17:50:46.113  HandleKey: down,  window 11101     <- l'hub
+17:51:08.904  HandleKey: down,  window 11170     <- Custom_1170_Dialog_Options
+```
+
+Quindi `ctl_scope()` restituiva `'11101'` e il servizio scriveva `fenlight.pg.w11101.ctl502.pages`
+mentre la skin leggeva `fenlight.pg.w1101.ctl502.pages`. Sulla Home i due nomi coincidevano
+(10000 -> `home` da entrambe le parti) e infatti li' funzionava: e' il motivo per cui il difetto si
+vedeva solo nella seconda finestra.
+
+Corretto in `ctl_scope()` sottraendo `WINDOW_HOME` **solo** nell'intervallo delle finestre custom
+(11000-11999). Fuori da li' si lascia il numero com'e': 10025 e' la finestra Video standard di Kodi e
+sottrarre 10000 darebbe `'25'`, un nome che nessuno scrive.
+
+Verificato in locale sulla sola logica di traduzione, senza dispositivo:
+`10000 -> home`, `11101 -> 1101`, `11105 -> 1105`, `10025 -> 10025`.
+
+Nota di metodo: la sonda del lotto 67 ha verificato il lato **skin** e l'ha dato per buono a ragione.
+Il lato **plugin** non e' stato sondato, e li' stava l'errore. Quando due sistemi devono concordare su
+un nome, vanno misurati tutti e due, non uno.
+
+---
+
+## Lotto 68 -- La ricarica mirata raggiunge solo la finestra a fuoco
+
+Segnalato: azzerando l'avanzamento di un film da una finestra diversa dalla Home, 'continua a
+guardare' resta col vecchio stato, e nemmeno Trakt lo rimedia. Dal log delle 18:24:
+
+```
+18:24:23.722  erase_bookmark media_type=movie tmdb_id=324857
+18:24:24.542  DIAG refresh: MIRATO 2 contenitori ricaricati | finestra=11101
+              (i due contenitori sono Watchlist e Trending: quelli dell'HUB)
+18:24:33.377  Window Init (Home.xml)   -> nessun provider riletto, la Home NON si ricostruisce
+18:24:41.095  TraktMonitor: refresh saltato, interfaccia ricostruita 16.6s fa
+```
+
+`Container(N).ListItem...` non risolve per una finestra che non e' a schermo: dall'hub la ricarica
+mirata poteva raggiungere **solo** i due widget dell'hub. Il difetto non e' che fallisce -- e' che
+**riesce parzialmente e si dichiara completa**. `hit=2 > 0`, quindi niente fallback, e il timbro
+`_stamp_refresh` zittiva pure il monitor Trakt, che era l'ultima occasione di rimediare.
+
+La sincronizzazione Trakt, come si vede, non c'entrava: `titoli cambiati: 0` e' corretto, la modifica
+era davvero nostra e il database era allineato. A non essere allineato era lo **schermo**, e solo in
+un'altra finestra. Stessa distinzione gia' incontrata nel lotto 58.
+
+**Correzione, due punti.**
+
+`kodi_refresh_ids`: quando la finestra corrente non e' la Home, il lavoro e' parziale per costruzione
+anche a `hit > 0`. Gli id si tramandano in `PENDING_IDS_PROP` invece di essere considerati chiusi. La
+riga di diagnostica lo dice: `| resto RIMANDATO alla Home`.
+
+`WidgetRefresher`: la condizione per applicare un rinvio era `getCurrentWindowId() != 10025`, cioe'
+"ovunque tranne la finestra Video". Bastava finche' l'unico posto irraggiungibile era quello; con una
+seconda finestra di widget no. Ora e' `== 10000`: si applica **dove i contenitori da ricostruire
+esistono davvero**. Se l'utente non torna mai in Home non si perde niente -- quei widget non sono a
+schermo e il rinvio resta li' ad aspettare.
+
+L'accorpamento non lo sopprime: `REFRESH_COALESCE_SECONDS` e' 5 s e il servizio gira ogni 10 s, quindi
+il rinvio arriva sempre fuori dalla finestra di accorpamento.
+
+---
+
+## Lotto 69 -- La ricarica mirata attraversa le finestre
+
+Il lotto 68 funzionava ma era **a due tempi**, e solo in un verso. Dal log delle 18:57:
+
+```
+18:57:20.802  MIRATO 1 | finestra=11101 | resto RIMANDATO      (azione dall'hub)
+18:57:32.712  MIRATO 1 | finestra=10000                        -> continua a guardare, 12 s dopo
+18:57:41.739  erase_bookmark 569094                            (azione dalla Home)
+18:57:42.531  MIRATO 2 | finestra=10000
+18:57:47.911  Window Init (Custom_1101_Hub.xml)                -> nessun provider: hub FERMO
+```
+
+Obiezione dell'utente, corretta: gli effetti non devono arrivare in due momenti diversi, e nessun hub
+deve poter restare disallineato.
+
+### Il vincolo vero, e come si aggira
+
+`Container(N).ListItem...` risolve **solo** per la finestra a schermo. Da un hub non si puo' chiedere
+a Kodi cosa contengano i widget della Home. Questo non cambia.
+
+Ma il token delle pagine non e' una infolabel: e' una **proprieta' della finestra Home**, scrivibile da
+qualunque contesto. Cambiarla cambia il `<content>` di QUEL contenitore in QUELLA finestra. Serviva
+solo sapere quali coppie (finestra, contenitore) esistono e cosa contengono -- e quello ce lo possiamo
+ricordare.
+
+### Censimento
+
+`WidgetPaginator` gia' calcola lo scope a ogni giro. Quando **cambia** -- cioe' a ogni passaggio di
+finestra, non a ogni giro -- fa una passata sui contenitori della finestra corrente (~20 infolabel) e
+registra `(finestra, contenitore) -> chiave del widget` in `CTL_KEY_PROP`, aggiungendo la coppia a
+`CTL_REGISTRY_PROP`. La stessa passata applica per ogni contenitore la regola di cambio inquilino che
+prima valeva solo per quello a fuoco: piu' corretta di prima, non meno.
+
+### Ricarica
+
+`refresh_containers_for_ids` fa due giri:
+1. la finestra a schermo, dalle infolabel, come prima (autorevole e copre anche i widget mai messi a fuoco);
+2. tutte le altre coppie censite: chiave da `CTL_KEY_PROP`, verifica su `IDS_PROP`/`ACTION_PROP`
+   esattamente come nel primo giro, e cambio del token.
+
+La **decisione** e' quindi sincrona su tutte le finestre. Il ridisegno di una finestra non a schermo
+avviene quando torna a schermo -- Kodi non puo' ricostruire un contenitore che non esiste ancora -- ma
+il suo path e' gia' cambiato, quindi l'utente non vede mai un valore vecchio e non si paga nulla per
+finestre che non guarda.
+
+Il valore restituito resta il conteggio della sola finestra a schermo: e' cio' che governa il fallback
+globale, e ricadere sul globale perche' l'unico contenitore interessato sta altrove sarebbe il
+contrario di quanto si vuole. Il conteggio delle altre finestre viaggia in `LAST_OTHER_HITS`.
+
+### Il rinvio del lotto 68 si restringe
+
+Non si rimanda piu' nulla quando il censimento ha risposto: sarebbe lavoro doppio sugli stessi
+contenitori, e sarebbe di nuovo il comportamento a due tempi. Resta solo come rete di sicurezza per il
+caso in cui non ci sia proprio niente di censito da raggiungere -- una finestra mai aperta nella
+sessione.
+
+Verificato a secco, senza dispositivo: dalla Home, con 569094 presente in 'continua a guardare' e in
+Trending (hub) ma non in Watchlist, il giro sulle altre finestre tocca **solo** `1101:502`.
+
+### Lotto 69 bis -- Verifica sul campo, e il difetto che la verifica ha scoperto
+
+**L'assunzione regge, ed e' dimostrata dai nonce.** Log delle 19:08, azione fatta dalla Home:
+
+```
+19:08:44.763  erase_bookmark tmdb_id=1314481                              (Home)
+19:08:45.573  PROV build_continue_watching&pages=2&reload=1787591325571
+19:08:45.617  PROV ...Gary&pages=2&reload=1787591325571
+19:08:45.649  DIAG refresh: MIRATO 2 | altre finestre 1 | finestra=10000
+19:08:51.637  Window Init (Custom_1101_Hub.xml)
+19:08:51.639  PROV ...Trending...&pages=3&reload=1787591325571            <- 2 ms dopo l'Init
+```
+
+Il nonce che l'hub rilegge e' **lo stesso** generato sei secondi prima, sulla Home, mentre l'hub non
+era a schermo. Kodi onora quindi un cambio di `<content>` avvenuto a finestra nascosta e rilegge alla
+riattivazione. Il meccanismo del lotto 69 e' valido, non per deduzione ma per confronto di identita'.
+
+Da notare anche `pages=3`: l'hub ha conservato la propria paginazione attraverso la ricarica.
+
+**Il difetto scoperto: il censimento sbagliava il momento.** Nella stessa sessione:
+
+```
+19:08:10.967  Window Init (Home.xml)
+19:08:10.969  i quattro provider partono          <- 2 ms dopo
+19:08:27.642  DIAG refresh: ... | altre finestre 0 | finestra=11101 | nessuna finestra censita
+```
+
+Il censimento girava **una volta sola** al cambio di finestra, cioe' entro 0,3 s dall'Init: i
+contenitori erano ancora vuoti, non registrava niente e la sua unica occasione era bruciata. Agendo
+dall'hub, la Home risultava quindi non censita e si ricadeva sul rinvio -- la rete di sicurezza
+funzionava, ma stava coprendo il caso normale invece di quello raro.
+
+Corretto ripassando a scatti dopo ogni cambio di finestra: giri 0 / 5 / 10 / 20 / 35 / 55, cioe'
+0 / 1,5 / 3 / 6 / 10,5 / 16,5 secondi, che copre il tempo di costruzione dei widget sulla stick (spesso
+oltre 5 s). Sei passate da ~20 infolabel per cambio di finestra, non un sondaggio perpetuo.
+`registry_add` e' idempotente, quindi ripassare non duplica: aggiunge solo cio' che nel frattempo e'
+comparso.
+
+**Metodo.** La verifica non doveva confermare l'impressione ("sembra funzionare"), ma cercare cosa
+l'impressione non poteva vedere. L'utente vedeva l'hub aggiornato in entrambi i versi -- ed era vero.
+Solo che in un verso ci arrivava per la strada giusta e nell'altro per la rete di sicurezza, e senza i
+nonce nel log le due cose sono indistinguibili a schermo.
+
+### Lotto 69 ter -- Conferma completa (log delle 19:14)
+
+Un'unica azione, dalla Home, e tutti i segnali attesi al posto giusto:
+
+```
+19:14:58.792  erase_bookmark tmdb_id=931285                                   (Home)
+19:14:59.587  PROV build_continue_watching&pages=2&reload=1787591699585
+19:14:59.588  PROV ...Gary&pages=3&reload=1787591699585
+19:14:59.655  DIAG refresh: MIRATO 2 | altre finestre 1 | finestra=10000
+19:15:07.883  PROV ...Trending&pages=4&reload=1787591699585                   (hub, alla riapertura)
+```
+
+- Stesso nonce nelle tre riletture: la decisione e' UNA, presa in un istante solo.
+- Nell'hub si e' ricostruito **solo Trending**. `Movies Watchlist` non compare: zero riletture nella
+  finestra. La selezione per id funziona anche attraverso le finestre, non solo in quella a schermo.
+- `pages=2`, `pages=3`, `pages=4` conservati ovunque: nessun widget e' tornato al lotto iniziale.
+- `nessuna finestra censita`: **0 occorrenze**. Il censimento a scatti del lotto 69 bis regge.
+- `GLOBALE`, `UpdateLibrary`, `FALLITA`, `SCADUTA`, `Traceback`: **0 occorrenze**.
+- Trakt: `titoli cambiati: 0` e `refresh saltato, la modifica e' nostra ed e' gia' a schermo`. Corretto:
+  il database era gia' allineato e nessuna ricostruzione ridondante e' partita.
+- Post-riproduzione: `NON ordinato, Kodi ha gia' ricostruito da sola 4.3s dopo la chiusura`. Non
+  aggiungiamo ondate.
+
+Avvio 19:12:39.979 -> ultimo widget 19:12:56.748 = **16.8 s**, in linea col migliore misurato, e ora
+con sei widget configurati su due finestre invece di quattro su una (la seconda finestra si costruisce
+solo quando la si apre: vedi lotto 65).
+
+Il fronte "allineamento fra finestre" si puo' considerare chiuso.

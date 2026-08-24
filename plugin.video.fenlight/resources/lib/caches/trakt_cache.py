@@ -53,13 +53,45 @@ class TraktWatched:
 		dbcon = connect_database('trakt_db')
 		dbcon.execute(TC_BASE_SET, ('trakt_tvshow_status', json.dumps(insert_dict, ensure_ascii=False)))
 
+	def _watched_keys(self, db_type):
+		# Chiavi (media_id, stagione, episodio) gia' presenti, normalizzate a stringa: dal database
+		# arrivano come INTEGER e dalla lista da inserire spesso come stringa, e un confronto fra i due
+		# tipi darebbe ogni riga per cambiata.
+		try:
+			dbcon = connect_database('trakt_db')
+			rows = dbcon.execute('SELECT media_id, season, episode FROM watched WHERE db_type = ?', (db_type,))
+			return set((str(r[0]), str(r[1]), str(r[2])) for r in rows)
+		except: return None
+
+	def _changed_media_ids(self, db_type, insert_list):
+		"""Quali titoli cambiano stato con questa scrittura. None se non e' stato possibile stabilirlo.
+
+		Serve al refresh mirato (lotto 59): l'API di Trakt dice solo che "qualcosa fra gli episodi
+		visti e' cambiato", mai quali. Dopo la ricostruzione pero' abbiamo l'insieme prima e quello
+		dopo, quindi la differenza la sappiamo calcolare noi. Costo: una SELECT sulla stessa tabella
+		che stiamo per riscrivere, trascurabile accanto alle 6 pagine appena scaricate.
+		La distinzione fra None (non lo so) e set() (nulla e' cambiato) e' importante: chi chiama deve
+		poter ricadere sul refresh globale invece di concludere che non c'e' niente da aggiornare.
+		"""
+		before = self._watched_keys(db_type)
+		if before is None: return None
+		after = set()
+		for row in insert_list:
+			try: after.add((str(row[1]), str(row[2]), str(row[3])))
+			except: return None
+		return set(key[0] for key in (before ^ after))
+
 	def set_bulk_movie_watched(self, insert_list):
+		changed = self._changed_media_ids('movie', insert_list)
 		self._delete(WATCHED_DELETE, ('movie',))
 		self._executemany(WATCHED_INSERT, insert_list)
+		return changed
 
 	def set_bulk_tvshow_watched(self, insert_list):
+		changed = self._changed_media_ids('episode', insert_list)
 		self._delete(WATCHED_DELETE, ('episode',))
 		self._executemany(WATCHED_INSERT, insert_list)
+		return changed
 
 	def set_bulk_movie_progress(self, insert_list):
 		self._delete(PROGRESS_DELETE, ('movie',))
@@ -72,6 +104,9 @@ class TraktWatched:
 	def add_tvshow_watched(self, insert_list):
 		# used by the incremental sync: keeps the existing rows and refreshes last_played on rewatches
 		self._executemany(WATCHED_UPSERT, insert_list)
+		# Via incrementale: i titoli toccati sono esattamente quelli inseriti, senza bisogno di diff.
+		try: return set(str(row[1]) for row in insert_list)
+		except: return None
 
 	def last_watched_episode_date(self):
 		try:
@@ -122,6 +157,22 @@ def reset_activity(latest_activities):
 		trakt_cache.set(string, latest_activities)
 	except: cached_data = default_activities()
 	return cached_data
+
+def restore_activity(previous_activities):
+	"""Rimette il segnalibro delle attivita' al valore precedente.
+
+	`reset_activity` lo fa avanzare SUBITO, prima che il lavoro a valle sia stato fatto. Se quel
+	lavoro viene poi saltato, il cambiamento risulta gia' visto e non torna mai piu': al giro dopo il
+	confronto fra ultimo e memorizzato da 'nessuna modifica'. Questa funzione serve a chi salta il
+	lavoro per dichiararlo NON fatto, cosi' il giro successivo lo riprende. Vedi lotto 58.
+	"""
+	string = 'trakt_get_activity'
+	try:
+		dbcon = connect_database('trakt_db')
+		dbcon.execute(DELETE, (string,))
+		trakt_cache.set(string, previous_activities)
+		return True
+	except: return False
 
 def clear_daily_cache():
 	clear_trakt_calendar()

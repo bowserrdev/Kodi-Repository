@@ -1,11 +1,18 @@
 # -*- coding: utf-8 -*-
-import requests
 from caches.main_cache import cache_object
 from caches.lists_cache import lists_cache_object
 from modules.settings import mdblist_api_key
 from modules.kodi_utils import notification
 
-session = requests.Session()
+# Vedi trakt_api (lotto 51): 'requests' e la Session nascono alla prima richiesta, non all'import.
+# Qui pesava su ogni costruzione di lista mdblist, cioe' su tre dei quattro widget dell'avvio.
+_session = [None]
+
+def _get_session():
+	if _session[0] is None:
+		from modules.kodi_utils import import_requests
+		_session[0] = import_requests('mdblist_api').Session()
+	return _session[0]
 API_ENDPOINT = 'https://api.mdblist.com/%s'
 timeout = 20
 
@@ -17,7 +24,7 @@ def call_mdblist(endpoint, params=None):
 		return None
 	params['apikey'] = api_key
 	try:
-		resp = session.get(API_ENDPOINT % endpoint, params=params, timeout=timeout)
+		resp = _get_session().get(API_ENDPOINT % endpoint, params=params, timeout=timeout)
 		resp.raise_for_status()
 		return resp.json()
 	except: return None

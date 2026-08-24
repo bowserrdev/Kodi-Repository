@@ -2,12 +2,14 @@
 import re
 from time import perf_counter as _perf
 from apis import tmdb_api
-from apis.imdb_api import imdb_data, imdb_episode_ratings
+# imdb_api e skyhook_api NON si importano piu' qui (lotto 52): erano import a livello di modulo, e
+# metadata e' importato da quasi tutti gli indexer -- quindi li pagava anche chi non ne aveva
+# bisogno. Entrambi creavano inoltre una Session a livello di modulo, cioe' tiravano dentro
+# 'requests'. Ora stanno nelle tre funzioni che li usano davvero.
 from caches.meta_cache import meta_cache
 from modules.settings import meta_language
 from modules import paginator
 from modules.utils import jsondate_to_datetime, subtract_dates, make_thread_list
-from apis.skyhook_api import get_skyhook_season_data, get_skyhook_episodes, get_tvdb_to_tmdb_map
 
 movie_details, tvshow_details, season_episodes_details = tmdb_api.movie_details, tmdb_api.tvshow_details, tmdb_api.season_episodes_details
 movie_set_details, movie_external_id, tvshow_external_id = tmdb_api.movie_set_details, tmdb_api.movie_external_id, tmdb_api.tvshow_external_id
@@ -200,23 +202,9 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 	_t_dub1 = _perf()
 	# Conteggi per il log: le liste sono append-only, quindi sicure fra i thread senza lock.
 	_hit_cache, _net_streaming, _net_bluray = [], [], []
-	def _evaluate(index):
+	def _evaluate_net(entry):
+		index, meta, tmdb_id, title_dbg = entry
 		try:
-			_pk = meta_prefetch_key(id_type, ids[index], media_type)
-			meta = prefetched.get(_pk) if _pk else None
-			if meta is None:
-				meta = meta_func(id_type, ids[index], api_key, mpaa_region, current_date, current_time)
-			if not meta or meta.get('blank_entry'):
-				_dub_log('item idx=%s no-meta -> KEEP (fail open)' % index); return
-			tmdb_id = meta.get('tmdb_id')
-			title_dbg = meta.get('english_title') or meta.get('original_title') or meta.get('title')
-			if not tmdb_id:
-				_dub_log('item "%s" no-tmdb_id -> KEEP (fail open)' % title_dbg); return
-			cached = dub_cache.get_availability(country, media_type, tmdb_id)
-			if cached is not None:
-				keep[index] = cached
-				_hit_cache.append(1)
-				_dub_log('item "%s" tmdb=%s CACHE -> %s' % (title_dbg, tmdb_id, 'KEEP' if cached else 'DROP')); return
 			_net_streaming.append(1)
 			streaming = tmdb_api.streaming_available(media_type, tmdb_id, country, api_key)
 			if streaming is True:
@@ -243,7 +231,34 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 		except Exception as e:
 			_dub_log('item idx=%s EXCEPTION %s -> KEEP (fail open)' % (index, e))
 	_dub_log('dub_filter START media=%s id_type=%s country=%s items=%s' % (media_type, id_type, country, len(ids)))
-	make_thread_list(_evaluate, range(len(ids)))
+	# Fase 1, in sequenza: risolve i verdetti gia' in cache -- zero rete, solo SQLite/dict, lo stesso
+	# lavoro per cui il lotto 14 aveva gia' dimostrato che il pool costa piu' del farlo direttamente
+	# (il GIL serializza comunque, il pool aggiunge solo l'overhead di crearlo). Qui non era mai stato
+	# applicato: il log mostra decine di pagine con "rete: streaming 0, bluray 0" -- cioe' un pool di
+	# thread aperto e chiuso per lavoro che non tocca mai la rete. Solo chi resta senza verdetto va
+	# nella fase 2, nel pool: e' li' che il parallelismo serve davvero (attesa di rete, GIL rilasciato).
+	pending = []
+	for index in range(len(ids)):
+		try:
+			_pk = meta_prefetch_key(id_type, ids[index], media_type)
+			meta = prefetched.get(_pk) if _pk else None
+			if meta is None:
+				meta = meta_func(id_type, ids[index], api_key, mpaa_region, current_date, current_time)
+			if not meta or meta.get('blank_entry'):
+				_dub_log('item idx=%s no-meta -> KEEP (fail open)' % index); continue
+			tmdb_id = meta.get('tmdb_id')
+			title_dbg = meta.get('english_title') or meta.get('original_title') or meta.get('title')
+			if not tmdb_id:
+				_dub_log('item "%s" no-tmdb_id -> KEEP (fail open)' % title_dbg); continue
+			cached = dub_cache.get_availability(country, media_type, tmdb_id)
+			if cached is not None:
+				keep[index] = cached
+				_hit_cache.append(1)
+				_dub_log('item "%s" tmdb=%s CACHE -> %s' % (title_dbg, tmdb_id, 'KEEP' if cached else 'DROP')); continue
+			pending.append((index, meta, tmdb_id, title_dbg))
+		except Exception as e:
+			_dub_log('item idx=%s EXCEPTION %s -> KEEP (fail open)' % (index, e))
+	if pending: make_thread_list(_evaluate_net, pending)
 	dropped = sum(1 for k in keep if not k)
 	_dub_log('dub_filter END media=%s in=%s out=%s (dropped %s)' % (media_type, len(ids), len(ids) - dropped, dropped))
 	# Riga sempre attiva (non gated da DUB_DEBUG): e' l'unico punto che dice quanto della lentezza
@@ -303,7 +318,7 @@ def meta_prefetch(media_type, id_type, media_ids, current_time=None):
 		for resolved_type, ids in groups.items():
 			for row_id, meta in meta_cache.get_many(media_type, resolved_type, list(ids), current_time).items():
 				if not _is_blank(meta) and meta.get('meta_language', 'en') != lang: continue
-				results['%s|%s' % (resolved_type, row_id)] = meta
+				results['%s|%s' % (resolved_type, row_id)] = _unpack_ep_maps(meta) if media_type == 'tvshow' else meta
 	except: pass
 	return results
 
@@ -314,6 +329,7 @@ def tvshow_meta_prefetch(id_type, media_ids, current_time=None):
 	return meta_prefetch('tvshow', id_type, media_ids, current_time)
 
 def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_time=None):
+	from apis.imdb_api import imdb_data
 	if id_type == 'trakt_dict':
 		if media_id.get('tmdb', None): id_type, media_id = 'tmdb_id', media_id['tmdb']
 		elif media_id.get('imdb', None): id_type, media_id = 'imdb_id', media_id['imdb']
@@ -482,7 +498,47 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 	except: pass
 	return meta
 
+# Le due mappe episodio degli anime (tvdb_to_tmdb_ep / tmdb_to_tvdb_ep) hanno chiavi E valori tuple
+# (stagione, episodio). JSON non ammette chiavi tuple: json.dumps sollevava
+# "TypeError: keys must be str, int, float, bool or None, not tuple" dentro MetaCache.set, il cui
+# `except: pass` rendeva il fallimento invisibile. Effetto: la serie non finiva MAI in cache e veniva
+# riscaricata da TMDb a ogni singolo avvio (lotto 53, misurato su Hunter x Hunter / tmdb 46298).
+# La rappresentazione in memoria resta a tuple -- tutti i punti di lettura fanno ep_map.get((s, e)) --
+# e la conversione avviene solo al confine con la cache: "s|e" -> [s, e].
+_EP_MAP_KEYS = ('tvdb_to_tmdb_ep', 'tmdb_to_tvdb_ep')
+
+def _pack_ep_maps(meta):
+	# Ritorna una COPIA superficiale con le mappe serializzabili: il dizionario passato al chiamante
+	# non va toccato, altrimenti i consumatori si ritroverebbero chiavi stringa al posto delle tuple.
+	if not isinstance(meta, dict): return meta
+	packed = None
+	for key in _EP_MAP_KEYS:
+		value = meta.get(key)
+		if not isinstance(value, dict) or not value: continue
+		try: converted = {('%s|%s' % k if isinstance(k, tuple) else k): (list(v) if isinstance(v, tuple) else v) for k, v in value.items()}
+		except: continue
+		if packed is None: packed = dict(meta)
+		packed[key] = converted
+	return packed if packed is not None else meta
+
+def _unpack_ep_maps(meta):
+	# Inverso di _pack_ep_maps, applicato a quanto letto dalla cache. Modifica sul posto: il dizionario
+	# arriva da json.loads e non e' condiviso con nessuno. Le voci scritte prima di questa correzione
+	# non esistono (la scrittura falliva), ma la guardia sul formato tiene comunque.
+	if not isinstance(meta, dict): return meta
+	for key in _EP_MAP_KEYS:
+		value = meta.get(key)
+		if not isinstance(value, dict) or not value: continue
+		try:
+			first = next(iter(value))
+			if not isinstance(first, str) or '|' not in first: continue
+			meta[key] = {tuple(int(part) for part in k.split('|')): tuple(v) for k, v in value.items()}
+		except: pass
+	return meta
+
 def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_time=None):
+	from apis.imdb_api import imdb_data
+	from apis.skyhook_api import get_skyhook_season_data, get_tvdb_to_tmdb_map
 	if id_type == 'trakt_dict':
 		if media_id.get('tmdb', None): id_type, media_id = 'tmdb_id', media_id['tmdb']
 		elif media_id.get('imdb', None): id_type, media_id = 'imdb_id', media_id['imdb']
@@ -492,7 +548,7 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 	lang = meta_language()
 	meta = metacache_get('tvshow', id_type, media_id, current_time)
 	if meta and not _is_blank(meta) and meta.get('meta_language', 'en') != lang: meta = None
-	if meta: return meta
+	if meta: return _unpack_ep_maps(meta)
 	try:
 		if id_type == 'tmdb_id': data = tvshow_details(media_id, api_key, lang)
 		else:
@@ -656,8 +712,15 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			meta['total_aired_eps'] = sum(s['episode_count'] for s in _skyhook_seasons if s['season_number'] > 0)
 			meta['tvdb_to_tmdb_ep'] = get_tvdb_to_tmdb_map(tvdb_id, season_data)
 			meta['tmdb_to_tvdb_ep'] = {v: k for k, v in meta['tvdb_to_tmdb_ep'].items()}
-		metacache_set('tvshow', id_type, meta, tvshow_expiry(current_date, meta), current_time)
-	except: pass
+		metacache_set('tvshow', id_type, _pack_ep_maps(meta), tvshow_expiry(current_date, meta), current_time)
+	except Exception as _e:
+		# Marcatore diagnostico (lotto 53): questo except era `pass`, e ingoiava qualunque errore
+		# occorso PRIMA di metacache_set -- cioe' la serie veniva riscaricata da TMDb a ogni avvio
+		# senza mai finire in cache, senza lasciare traccia. Vedi /tv/46298.
+		try:
+			from modules.kodi_utils import logger
+			logger('FenLight META FALLITA', 'tvshow %s=%s | %s: %s' % (id_type, media_id, type(_e).__name__, _e))
+		except: pass
 	return meta
 
 def movieset_meta(media_id, api_key, current_time=None):
@@ -687,6 +750,8 @@ def movieset_meta(media_id, api_key, current_time=None):
 	return meta
 
 def episodes_meta(season, meta):
+	from apis.imdb_api import imdb_episode_ratings
+	from apis.skyhook_api import get_skyhook_episodes
 	def _process():
 		midseason_premiere = False
 		for ep_data in details:
@@ -775,7 +840,7 @@ def episodes_meta(season, meta):
 				_corrected.update(_map_updates)
 				meta['tvdb_to_tmdb_ep'] = _corrected
 				meta['tmdb_to_tvdb_ep'] = {v: k for k, v in _corrected.items()}
-				metacache_set('tvshow', 'tmdb_id', meta, EXPIRES_182_DAYS, None)
+				metacache_set('tvshow', 'tmdb_id', _pack_ep_maps(meta), EXPIRES_182_DAYS, None)
 		except: pass
 		_apply_imdb_ep_ratings(_skyhook_eps)
 		metacache_set_season(prop_string, _skyhook_eps, _expiry)

@@ -1,11 +1,18 @@
 # -*- coding: utf-8 -*-
 # Thanks to kodifitzwell for allowing me to borrow his code
-import requests
 from threading import Thread
 from caches.main_cache import cache_object
 from caches.settings_cache import get_setting, set_setting
 from modules.source_utils import supported_video_extensions, seas_ep_filter, EXTRAS
 from modules.kodi_utils import make_session, kodi_dialog, ok_dialog, notification
+
+# Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
+# caricavano all'import anche quando l'utente non toccava questo servizio. requests costa ~5,7 s
+# a freddo sulla stick (misura del 24/08) e si paga per ogni interprete. Ora entra solo se serve.
+def _requests():
+	from modules.kodi_utils import import_requests
+	return import_requests('offcloud_api')
+
 # from modules.kodi_utils import logger
 
 base_url = 'https://offcloud.com/api/'
@@ -18,7 +25,15 @@ explore = 'cloud/explore/%s'
 cache = 'cache'
 download = 'https://%s.offcloud.com/cloud/download/%s/%s'
 remove = 'https://offcloud.com/cloud/remove/%s'
-session = make_session(base_url)
+# Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
+# caricavano all'import anche quando l'utente non toccava questo servizio. requests costa ~5,7 s
+# a freddo sulla stick (misura del 24/08) e si paga per ogni interprete. Ora entra solo se serve.
+_session = [None]
+
+def _get_session():
+	if _session[0] is None: _session[0] = make_session(base_url)
+	return _session[0]
+
 timeout = 20.0
 
 class OffcloudAPI:
@@ -34,9 +49,9 @@ class OffcloudAPI:
 		if not all((username, password)): return self.ok_message('You need a valid Email & Password for Off Cloud')
 		try:
 			url = base_url + login
-			response = session.post(url, data={'username': username, 'password': password}, timeout=timeout).json()
+			response = _get_session().post(url, data={'username': username, 'password': password}, timeout=timeout).json()
 			url = base_url + key
-			response = session.post(url, timeout=timeout).json()
+			response = _get_session().post(url, timeout=timeout).json()
 			token = response['apiKey']
 			set_setting('oc.token', token)
 			set_setting('oc.enabled', 'true')
@@ -83,7 +98,7 @@ class OffcloudAPI:
 
 	def delete_torrent(self, request_id=''):
 		url = remove % request_id
-		response = session.get(url, params={'key': self.token}, timeout=timeout)
+		response = _get_session().get(url, params={'key': self.token}, timeout=timeout)
 		try: response = response.json()
 		except: response = {}
 		return response
@@ -133,7 +148,7 @@ class OffcloudAPI:
 		if self.token in ('empty_setting', ''): return None
 		if '?' not in url: url += '?key=%s' % self.token
 		else: url += '&key=%s' % self.token
-		response = session.get(url, timeout=timeout)
+		response = _get_session().get(url, timeout=timeout)
 		try: return response.json()
 		except: return response
 
@@ -142,12 +157,12 @@ class OffcloudAPI:
 		if self.token in ('empty_setting', ''): return None
 		if '?' not in url: url += '?key=%s' % self.token
 		else: url += '&key=%s' % self.token
-		response = session.post(url, data=data, timeout=timeout)
+		response = _get_session().post(url, data=data, timeout=timeout)
 		try: return response.json()
 		except: return response
 
 	def requote_uri(self, url):
-		return requests.utils.requote_uri(url)
+		return _requests().utils.requote_uri(url)
 
 	def build_url(self, server, request_id, file_name):
 		return self.download % (server, request_id, file_name)

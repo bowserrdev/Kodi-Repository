@@ -7,14 +7,22 @@ EXPIRY_7_DAYS = 168
 invalid_tvdb = ('', 'None', None, 0, '0')
 finished_statuses = ('Ended', 'Canceled')
 
-session = make_session('https://skyhook.sonarr.tv')
+# Session pigra (lotto 51 bis): era `session = make_session('https://skyhook.sonarr.tv')` a livello di modulo, e make_session()
+# fa `import requests` al suo interno -- quindi ogni modulo che importava questo file
+# caricava l'albero di requests SENZA nessuna istruzione `import requests` visibile.
+# E' il motivo per cui la prima correzione non aveva prodotto alcun guadagno misurabile.
+_session = [None]
+
+def _get_session():
+	if _session[0] is None: _session[0] = make_session('https://skyhook.sonarr.tv')
+	return _session[0]
 
 def _fetch_raw(tvdb_id):
 	cache_key = 'skyhook_raw_%s' % tvdb_id
 	data = meta_cache.get_function(cache_key)
 	if data: return data
 	try:
-		response = session.get(SKYHOOK_URL % tvdb_id, timeout=15)
+		response = _get_session().get(SKYHOOK_URL % tvdb_id, timeout=15)
 		if response.status_code != 200: return None
 		data = response.json()
 		meta_cache.set_function(cache_key, data, expiration=EXPIRY_7_DAYS)

@@ -2,13 +2,20 @@
 import re
 import sys
 import time
-import requests
 from threading import Thread
 from caches.main_cache import cache_object
 from caches.settings_cache import get_setting, set_setting
 from modules.utils import copy2clip
 from modules.source_utils import supported_video_extensions, seas_ep_filter, EXTRAS
 from modules import kodi_utils
+
+# Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
+# caricavano all'import anche quando l'utente non toccava questo servizio. requests costa ~5,7 s
+# a freddo sulla stick (misura del 24/08) e si paga per ogni interprete. Ora entra solo se serve.
+def _requests():
+	from modules.kodi_utils import import_requests
+	return import_requests('real_debrid_api')
+
 # logger = kodi_utils.logger
 
 sleep, confirm_dialog, ok_dialog, xbmc_monitor = kodi_utils.sleep, kodi_utils.confirm_dialog, kodi_utils.ok_dialog, kodi_utils.xbmc_monitor
@@ -35,7 +42,7 @@ class RealDebridAPI:
 		self.secret = ''
 		self.client_ID = 'X245A4XAIBGVM'
 		url = auth_url + device_url % 'client_id=%s&new_credentials=yes' % self.client_ID
-		response = requests.get(url, timeout=timeout).json()
+		response = _requests().get(url, timeout=timeout).json()
 		user_code = response['user_code']
 		try: copy2clip(user_code)
 		except: pass
@@ -49,7 +56,7 @@ class RealDebridAPI:
 		start, time_passed = time.time(), 0
 		while not progressDialog.iscanceled() and time_passed < expires_in and not self.secret:
 			sleep(1000 * sleep_interval)
-			try: response = requests.get(poll_url, timeout=timeout).json()
+			try: response = _requests().get(poll_url, timeout=timeout).json()
 			except: continue
 			if 'error' in response:
 				time_passed = time.time() - start
@@ -70,7 +77,7 @@ class RealDebridAPI:
 		if self.secret:
 			data = {'client_id': self.client_ID, 'client_secret': self.secret, 'code': device_code, 'grant_type': 'http://oauth.net/grant_type/device/1.0'}
 			url = '%stoken' % auth_url
-			response = requests.post(url, data=data, timeout=timeout).json()
+			response = _requests().post(url, data=data, timeout=timeout).json()
 			self.token = response['access_token']
 			self.refresh = response['refresh_token']
 			username = self.account_info()['username']
@@ -84,7 +91,7 @@ class RealDebridAPI:
 		try:
 			url = auth_url + 'token'
 			data = {'client_id': self.client_ID, 'client_secret': self.secret, 'code': self.refresh, 'grant_type': 'http://oauth.net/grant_type/device/1.0'}
-			response = requests.post(url, data=data).json()
+			response = _requests().post(url, data=data).json()
 			self.token = response['access_token']
 			self.refresh = response['refresh_token']
 			set_setting('rd.token', self.token)
@@ -191,13 +198,13 @@ class RealDebridAPI:
 	def delete_torrent(self, folder_id):
 		if self.token in ('empty_setting', ''): return None
 		url = 'torrents/delete/%s&auth_token=%s' % (folder_id, self.token)
-		response = requests.delete(base_url + url, timeout=timeout)
+		response = _requests().delete(base_url + url, timeout=timeout)
 		return response
 
 	def delete_download(self, download_id):
 		if self.token in ('empty_setting', ''): return None
 		url = 'downloads/delete/%s&auth_token=%s' % (download_id, self.token)
-		response = requests.delete(base_url + url, timeout=timeout)
+		response = _requests().delete(base_url + url, timeout=timeout)
 		return response
 
 	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode):
@@ -310,7 +317,7 @@ class RealDebridAPI:
 		if self.token in ('empty_setting', ''): return None
 		if '?' not in url: url += '?auth_token=%s' % self.token
 		else: url += '&auth_token=%s' % self.token
-		response = requests.get(url, timeout=timeout)
+		response = _requests().get(url, timeout=timeout)
 		if any(value in response.text for value in ('bad_token', 'Bad Request')):
 			if self.refresh_token(): response = self._get(original_url)
 			else: return None
@@ -323,7 +330,7 @@ class RealDebridAPI:
 		if self.token in ('empty_setting', ''): return None
 		if '?' not in url: url += '?auth_token=%s' % self.token
 		else: url += '&auth_token=%s' % self.token
-		response = requests.post(url, data=post_data, timeout=timeout)
+		response = _requests().post(url, data=post_data, timeout=timeout)
 		if any(value in response.text for value in ('bad_token', 'Bad Request')):
 			if self.refresh_token(): response = self._post(original_url, post_data)
 			else: return None

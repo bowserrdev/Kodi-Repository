@@ -5,14 +5,22 @@ from caches.lists_cache import lists_cache_object
 from modules.meta_lists import oscar_winners, years_tvshows
 from modules.settings import get_meta_filter, tmdb_api_key
 from modules.utils import make_thread_list_enumerate
-from modules.kodi_utils import make_session, tmdb_dict_removals, remove_keys, notification
+from modules.kodi_utils import make_session, tmdb_dict_removals, remove_keys, notification, logger
 
 EXPIRY_4_HOURS, EXPIRY_1_DAY, EXPIRY_1_WEEK = 4, 24, 168
 base_url = 'https://api.themoviedb.org/3'
 movies_append = 'external_ids,videos,credits,release_dates,translations,alternative_titles,images'
 tvshows_append = 'external_ids,videos,credits,content_ratings,translations,alternative_titles,images'
 empty_setting_check = (None, 'empty_setting', '')
-session = make_session(base_url)
+# Session pigra (lotto 51 bis): era `session = make_session(base_url)` a livello di modulo, e make_session()
+# fa `import requests` al suo interno -- quindi ogni modulo che importava questo file
+# caricava l'albero di requests SENZA nessuna istruzione `import requests` visibile.
+# E' il motivo per cui la prima correzione non aveva prodotto alcun guadagno misurabile.
+_session = [None]
+
+def _get_session():
+	if _session[0] is None: _session[0] = make_session(base_url)
+	return _session[0]
 timeout = 10.0
 
 def no_api_key():
@@ -648,8 +656,33 @@ def get_data(url):
 	data['results'] = [remove_keys(i, tmdb_dict_removals) for i in data['results']]
 	return data
 
+_TMDB_CALLS = [0]
+
+def _log_tmdb_call(url):
+	# Marcatore diagnostico (lotto 53): quali chiamate TMDb partono davvero, e da quale catena di
+	# chiamanti. Serve a capire perche' 'continua a guardare' esce in rete a ogni avvio.
+	# Costo trascurabile: solo le prime 12 per interprete, e sys._getframe non costruisce un traceback.
+	if _TMDB_CALLS[0] >= 12: return
+	_TMDB_CALLS[0] += 1
+	try:
+		import sys as _sys
+		path = url.replace(base_url, '').split('?')[0]
+		# sys.argv e' per-interprete anche dentro i thread worker: identifica l'invocazione senza ambiguita'
+		# (la sola finestra temporale non basta, tre invocazioni si sovrappongono).
+		try: who = _sys.argv[2][:70]
+		except: who = '?'
+		chain = []
+		for _i in range(2, 8):
+			try:
+				_f = _sys._getframe(_i).f_code
+				chain.append('%s:%s' % (_f.co_filename.rsplit('/', 1)[-1], _f.co_name))
+			except: break
+		logger('FenLight TMDB CALL', '%s | inv: %s | da: %s' % (path, who, ' <- '.join(chain)))
+	except: pass
+
 def get_tmdb(url):
-	try: response = session.get(url, timeout=timeout)
+	_log_tmdb_call(url)
+	try: response = _get_session().get(url, timeout=timeout)
 	except: response = None
 	return response
 
@@ -665,7 +698,7 @@ def streaming_available(media_type, tmdb_id, country, api_key):
 	country = country.upper()
 	url = '%s/%s/%s/watch/providers?api_key=%s' % (base_url, media, tmdb_id, api_key)
 	try:
-		response = session.get(url, timeout=timeout)
+		response = _get_session().get(url, timeout=timeout)
 		if response is None: return None
 		data = response.json()
 	except: return None
