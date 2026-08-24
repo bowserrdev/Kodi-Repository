@@ -41,6 +41,12 @@ class MetaCache:
 			if row:
 				meta, expiry = json.loads(row[0]), row[1]
 				if expiry < current_time:
+					# Marcatore diagnostico (lotto 53): distingue "mai scritto in cache" da
+					# "scritto e poi cancellato perche' gia' scaduto alla lettura successiva".
+					try:
+						from modules.kodi_utils import logger
+						logger('FenLight CACHE SCADUTA', '%s %s=%s | scaduto da %s s' % (media_type, id_type, media_id, current_time - expiry))
+					except: pass
 					self.delete(media_type, id_type, media_id, meta=meta)
 					meta = None
 		except: meta = None
@@ -90,7 +96,13 @@ class MetaCache:
 			meta_get = meta.get
 			expires = (current_time + (expiration * 3600)) if current_time else get_timestamp(expiration)
 			dbcon.execute(SET_MOVIE_SHOW, (media_type, string(meta_get('tmdb_id')), meta_get('imdb_id'), string(meta_get('tvdb_id')), json.dumps(meta, ensure_ascii=False), expires))
-		except: pass
+		except Exception as _e:
+			# Marcatore diagnostico (lotto 53): era `pass`. Se la scrittura in cache fallisce qui,
+			# l'elemento viene riscaricato dalla rete a ogni avvio senza lasciare traccia.
+			try:
+				from modules.kodi_utils import logger
+				logger('FenLight CACHE SET FALLITA', '%s tmdb=%s | %s: %s' % (media_type, meta.get('tmdb_id'), type(_e).__name__, _e))
+			except: pass
 
 	def set_season(self, prop_string, meta, expiration=168):
 		try:

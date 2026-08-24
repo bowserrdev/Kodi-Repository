@@ -1,13 +1,20 @@
 # -*- coding: utf-8 -*-
 import re
 import time
-import requests
 from threading import Thread
 from caches.main_cache import cache_object
 from caches.settings_cache import get_setting, set_setting
 from modules.utils import copy2clip
 from modules.source_utils import supported_video_extensions, seas_ep_filter, EXTRAS
 from modules import kodi_utils
+
+# Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
+# caricavano all'import anche quando l'utente non toccava questo servizio. requests costa ~5,7 s
+# a freddo sulla stick (misura del 24/08) e si paga per ogni interprete. Ora entra solo se serve.
+def _requests():
+	from modules.kodi_utils import import_requests
+	return import_requests('alldebrid_api')
+
 # logger = kodi_utils.logger
 
 path_exists, get_icon = kodi_utils.path_exists, kodi_utils.get_icon
@@ -27,7 +34,7 @@ class AllDebridAPI:
 	def auth(self):
 		self.token = ''
 		url = base_url + 'pin/get?agent=%s' % user_agent
-		response = requests.get(url, timeout=timeout).json()
+		response = _requests().get(url, timeout=timeout).json()
 		response = response['data']
 		expires_in = int(response['expires_in'])
 		poll_url = response['check_url']
@@ -42,7 +49,7 @@ class AllDebridAPI:
 		sleep(2000)
 		while not progressDialog.iscanceled() and time_passed < expires_in and not self.token:
 			sleep(1000 * sleep_interval)
-			response = requests.get(poll_url, timeout=timeout).json()
+			response = _requests().get(poll_url, timeout=timeout).json()
 			response = response['data']
 			activated = response['activated']
 			if not activated:
@@ -196,7 +203,7 @@ class AllDebridAPI:
 		try:
 			if self.token in ('empty_setting', ''): return None
 			url = base_url + url + '?agent=%s&apikey=%s' % (user_agent, self.token) + url_append
-			result = requests.get(url, timeout=timeout).json()
+			result = _requests().get(url, timeout=timeout).json()
 			if result.get('status') == 'success' and 'data' in result: result = result['data']
 		except: pass
 		return result
@@ -206,7 +213,7 @@ class AllDebridAPI:
 		try:
 			if self.token in ('empty_setting', ''): return None
 			url = base_url + url + '?agent=%s&apikey=%s' % (user_agent, self.token)
-			result = requests.post(url, data=data, timeout=timeout).json()
+			result = _requests().post(url, data=data, timeout=timeout).json()
 			if result.get('status') == 'success' and 'data' in result: result = result['data']
 		except: pass
 		return result

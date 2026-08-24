@@ -1,5 +1,6 @@
 <include content="Hub_Combined_Widget">
     <param name="id">{widget_id}</param>
+    <param name="pgscope">{window_id}</param>
     <param name="content">{widget_path}</param>
     <param name="include">{widget_include}</param>
     <param name="target">{widget_target}</param>

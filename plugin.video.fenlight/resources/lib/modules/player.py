@@ -293,6 +293,13 @@ class FenLightPlayer(xbmc_player):
 								% (float(ku.get_property(ku.LAST_BUILD_PROP) or 0) - float(close_ts)))
 					return True
 				ku.sleep(500)
+			# Un ULTIMO controllo dopo la scadenza. Il ciclo verifica solo prima di dormire, quindi una
+			# ricostruzione arrivata negli ultimi 500 ms passava inosservata e ne ordinavamo un'altra
+			# sopra. Misurato il 24/08: build_continue_watching chiude alle 16:06:25.819 e questo
+			# messaggio esce alle 16:06:26.171 -- 352 ms di scarto, e un'ondata di ricostruzioni in piu'.
+			if ku.directory_built_since(close_ts):
+				ku.logger('Fen Light', 'DIAG refresh: NON ordinato, ricostruzione rilevata al controllo finale')
+				return True
 			ku.logger('Fen Light', 'DIAG refresh: nessuna ricostruzione spontanea entro %ss, la ordiniamo noi' % self.REBUILD_WAIT_SECONDS)
 		except: pass
 		return False

@@ -6,12 +6,16 @@ import hashlib
 import random
 import _strptime
 import unicodedata
-from html import unescape
 import os
-from threading import Thread
-from concurrent.futures import ThreadPoolExecutor
-from zipfile import ZipFile
-from importlib import import_module, reload as rel_module
+from threading import Thread, Lock
+# Import resi pigri (lotto 54). Misurato sulla stick, per OGNI interprete widget:
+#   concurrent.futures -> tirava dentro logging -> traceback -> contextlib, textwrap,
+#     linecache, tokenize, token, weakref. Nessuno di questi e' importato altrove in Fen Light:
+#     esistevano tutti per questa sola riga. Sostituito, non reso pigro, perche' i pool stanno sul
+#     percorso caldo e renderlo pigro avrebbe solo spostato il costo. Vedi _run_pool.
+#   html (unescape)  -> html + html.entities, ~230 ms, per un solo uso in replace_html_codes
+#   zipfile          -> tirava dentro importlib, ~100-200 ms, per un solo uso in extract_zip
+#   importlib        -> usato solo dai tre helper manual_*_import
 from datetime import datetime, timedelta, date
 from modules.kodi_utils import translate_path, sleep, show_busy_dialog, hide_busy_dialog, path_exists
 
@@ -30,12 +34,15 @@ def append_module_to_syspath(location):
 	sys.path.append(translate_path(location))
 
 def manual_function_import(location, function_name):
+	from importlib import import_module
 	return getattr(import_module(location), function_name)
 
 def reload_module(location):
+	from importlib import reload as rel_module
 	return rel_module(manual_module_import(location))
 
 def manual_module_import(location):
+	from importlib import import_module
 	return import_module(location)
 
 class _Done:
@@ -44,23 +51,45 @@ class _Done:
 
 _DONE = (_Done(),)
 
-def make_thread_list(_target, _list):
-	with ThreadPoolExecutor(max_workers=WORKER_COUNT) as pool:
-		for item in _list:
-			pool.submit(_target, item)
+def _run_pool(_target, _list, _style):
+	# Rimpiazzo di ThreadPoolExecutor con i soli `threading.Thread` (lotto 54). Semantica da
+	# preservare, verificata sull'originale:
+	#  - concorrenza limitata a WORKER_COUNT, distribuzione DINAMICA (un contatore condiviso, non una
+	#    partizione statica: con lavori di durata diversa la partizione statica lascia thread fermi);
+	#  - la chiamata BLOCCA fino al termine di tutto, come faceva l'uscita dal blocco `with`;
+	#  - le eccezioni del target vengono INGHIOTTITE. Non e' una svista da correggere: submit() le
+	#    depositava in una Future che nessun chiamante legge mai, quindi il comportamento osservabile
+	#    era gia' questo. Cambiarlo qui vorrebbe dire far emergere errori finora invisibili in
+	#    tutt'altro punto del programma.
+	if not isinstance(_list, (list, tuple)): _list = list(_list)
+	total = len(_list)
+	if not total: return _DONE
+	next_index, lock = [0], Lock()
+	def _worker():
+		while True:
+			with lock:
+				index = next_index[0]
+				if index >= total: return
+				next_index[0] = index + 1
+			try:
+				item = _list[index]
+				if _style == 0: _target(item)
+				elif _style == 1: _target(*item)
+				else: _target(index, item)
+			except: pass
+	workers = [Thread(target=_worker) for _ in range(min(WORKER_COUNT, total))]
+	for worker in workers: worker.start()
+	for worker in workers: worker.join()
 	return _DONE
+
+def make_thread_list(_target, _list):
+	return _run_pool(_target, _list, 0)
 
 def make_thread_list_multi_arg(_target, _list):
-	with ThreadPoolExecutor(max_workers=WORKER_COUNT) as pool:
-		for item in _list:
-			pool.submit(_target, *item)
-	return _DONE
+	return _run_pool(_target, _list, 1)
 
 def make_thread_list_enumerate(_target, _list):
-	with ThreadPoolExecutor(max_workers=WORKER_COUNT) as pool:
-		for count, item in enumerate(_list):
-			pool.submit(_target, count, item)
-	return _DONE
+	return _run_pool(_target, _list, 2)
 
 def chunks(item_list, limit):
 	"""
@@ -212,6 +241,7 @@ def regex_get_all(text, start_with, end_with):
 	return r
 
 def replace_html_codes(txt):
+	from html import unescape
 	txt = re.sub(r"(&#[0-9]+)([^;^0-9]+)", "\\1;\\2", txt)
 	txt = unescape(txt)
 	txt = txt.replace("<ul>", "\n")
@@ -291,6 +321,7 @@ def paginate_list(item_list, page, limit=20, paginate_start=0):
 def unzip(zip_location, destination_location, destination_check, show_busy=True):
 	if show_busy: show_busy_dialog()
 	try:
+		from zipfile import ZipFile
 		zipfile = ZipFile(zip_location)
 		zipfile.extractall(path=destination_location)
 		if path_exists(destination_check): status = True

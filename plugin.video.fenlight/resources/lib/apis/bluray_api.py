@@ -12,7 +12,13 @@
 # contains the flag image, so flag-presence alone is a false positive. The reliable discriminator is the
 # oswaldcollection header followed by the country flag (the original working pattern).
 import re
-import requests
+
+# Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
+# caricavano all'import anche quando l'utente non toccava questo servizio. requests costa ~5,7 s
+# a freddo sulla stick (misura del 24/08) e si paga per ogni interprete. Ora entra solo se serve.
+def _requests():
+	from modules.kodi_utils import import_requests
+	return import_requests('bluray_api')
 
 _SEARCH_URL = 'https://www.blu-ray.com/search/quicksearch.php'
 _AJAX_URL = 'https://www.blu-ray.com/products/menu_ajax.php?p=%s&action=showreleases'
@@ -40,8 +46,8 @@ _session = None
 def _get_session():
 	global _session
 	if _session is None:
-		s = requests.Session()
-		s.mount('https://', requests.adapters.HTTPAdapter(pool_maxsize=8))
+		s = _requests().Session()
+		s.mount('https://', _requests().adapters.HTTPAdapter(pool_maxsize=8))
 		s.headers.update(_HEADERS)
 		_session = s
 	return _session
@@ -78,7 +84,7 @@ def has_home_video_release(title, year, country='IT', verify_released=False):
 		if not verify_released:
 			return True
 		return _any_released(block, cookies, session)
-	except requests.exceptions.RequestException:
+	except _requests().exceptions.RequestException:
 		return None
 	except Exception:
 		return None
@@ -92,7 +98,7 @@ def _any_released(block, cookies, session):
 		try:
 			page = session.get(url, cookies=cookies, timeout=_TIMEOUT)
 			page.raise_for_status()
-		except requests.exceptions.RequestException:
+		except _requests().exceptions.RequestException:
 			return None
 		if _PREORDER_MARK not in page.text:
 			return True

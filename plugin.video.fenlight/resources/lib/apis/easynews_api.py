@@ -20,7 +20,14 @@ IMAGE_SEARCH_PARAMS = {'st': 'adv', 'safeO': 0, 'sb': 1, 's1': 'relevance', 's1d
 search_types_params = {'VIDEO': SEARCH_PARAMS, 'IMAGE': IMAGE_SEARCH_PARAMS}
 image_remove_filters = ['comic', 'fake', 'erotica']
 timeout = 20.0
-session = make_session()
+# Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
+# caricavano all'import anche quando l'utente non toccava questo servizio. requests costa ~5,7 s
+# a freddo sulla stick (misura del 24/08) e si paga per ogni interprete. Ora entra solo se serve.
+_session = [None]
+
+def _get_session():
+	if _session[0] is None: _session[0] = make_session()
+	return _session[0]
 
 def import_easynews():
 	''' API version setting currently disabled '''
@@ -207,14 +214,14 @@ class EasyNewsAPI:
 
 	def _get(self, url, params={}):
 		headers = {'Authorization': self.auth}
-		try: response = session.get(url, params=params, headers=headers, timeout=timeout).text
+		try: response = _get_session().get(url, params=params, headers=headers, timeout=timeout).text
 		except: return None
 		try: return json.loads(response)
 		except: return response
 
 	def _get_v3(self, url, params={}):
 		headers = {'Authorization': self.auth}
-		try: response = session.get(url, params=params, headers=headers, timeout=timeout).content
+		try: response = _get_session().get(url, params=params, headers=headers, timeout=timeout).content
 		except: return None
 		response = re.compile(self.regex, re.DOTALL).findall(response)
 		response = response + '}'
@@ -227,13 +234,13 @@ class EasyNewsAPI:
 	def resolver(self, url_dl):
 		try:
 			headers = {'Authorization': self.auth}
-			resolved_link = session.get(url_dl, headers=headers, stream=True, timeout=timeout).url
+			resolved_link = _get_session().get(url_dl, headers=headers, stream=True, timeout=timeout).url
 		except: resolved_link = url_dl
 		return resolved_link
 
 	def resolver_v3(self, url_dl):
 		headers = {'Authorization': self.auth}
-		response = session.get(url_dl, headers=headers, stream=True, timeout=timeout)
+		response = _get_session().get(url_dl, headers=headers, stream=True, timeout=timeout)
 		stream_url = response.url
 		resolved_link = stream_url + '|Authorization=%s' % self.auth_quoted
 		return resolved_link

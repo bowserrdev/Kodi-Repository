@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 from threading import Thread
-from apis.trakt_api import trakt_watched_status_mark, trakt_official_status, trakt_progress, trakt_get_hidden_items
+# apis.trakt_api NON si importa piu' qui (lotto 51). Era un import a livello di modulo, quindi lo
+# pagava CHIUNQUE toccasse watched_status -- compresa la lista stagioni, che di Trakt non chiede
+# niente: legge lo stato visto dal database locale. trakt_api sono 1155 righe e si porta dietro
+# 'requests' con tutto il suo albero. Misura del 24/08: build_season_list spendeva 2094 ms di
+# import per 23 ms di lavoro vero. Ora l'import sta nelle sette funzioni che lo usano davvero.
 from caches.base_cache import connect_database, database, get_timestamp
 from caches.main_cache import main_cache, cache_object
 from caches.trakt_cache import clear_trakt_collection_watchlist_data
@@ -232,6 +236,7 @@ def _mark_on_trakt(args, cache_media_type, ep_map_for=None):
 	# lo stato locale resta in anticipo su quello remoto fino alla prima sincronizzazione utile.
 	# ep_map_for porta la conversione episodio tvdb->tmdb, che a cache fredda e' un'altra chiamata di
 	# rete (skyhook): va nel thread anche quella, o meta' del guadagno resterebbe sul percorso caldo.
+	from apis.trakt_api import trakt_watched_status_mark
 	try:
 		if ep_map_for is not None:
 			args = tuple(args) + _map_to_tmdb_episode(*ep_map_for)
@@ -255,6 +260,7 @@ def _clear_progress_on_trakt(media_type, media_id, season, episode, resume_id):
 	# L'attesa di un secondo era gia' qui prima: ora la paga un thread di sfondo invece
 	# dell'interfaccia. Se fallisce, la riga locale e' comunque gia' andata: il segnalibro remoto
 	# viene ripulito alla prima sincronizzazione Trakt utile.
+	from apis.trakt_api import trakt_progress
 	try:
 		sleep(1000)
 		trakt_progress('clear_progress', media_type, media_id, 0, season, episode, resume_id)
@@ -290,6 +296,7 @@ def batch_erase_bookmark(watched_indicators, insert_list, action):
 		else: modified_list = insert_list
 		if watched_indicators == 1:
 			def _process():
+				from apis.trakt_api import trakt_progress
 				for i in insert_list:
 					try:
 						media_id, season, episode = i[1], i[2], i[3]
@@ -307,6 +314,7 @@ def _push_bookmark_to_trakt(media_type, tmdb_id, season, episode, resume_point):
 	# metadati serie) ed e' quella che bloccava tutto per decine di secondi a ogni chiusura del
 	# player. Serve a recepire i cambiamenti fatti ALTROVE, ed e' compito del TraktMonitor periodico:
 	# quello che abbiamo appena guardato lo sappiamo gia' noi.
+	from apis.trakt_api import trakt_progress
 	try:
 		_ts, _te = _map_to_tmdb_episode(tmdb_id, season, episode)
 		resume_id = trakt_progress('set_progress', media_type, tmdb_id, resume_point, _ts, _te) or 0
@@ -316,6 +324,7 @@ def _push_bookmark_to_trakt(media_type, tmdb_id, season, episode, resume_point):
 	except: pass
 
 def set_bookmark(params):
+	from apis.trakt_api import trakt_official_status
 	try:
 		media_type, tmdb_id, curr_time, total_time = params.get('media_type'), params.get('tmdb_id'), params.get('curr_time'), params.get('total_time')
 		refresh = False if params.get('from_playback', 'false') == 'true' else True
@@ -567,7 +576,13 @@ def get_recently_watched(media_type, short_list=1):
 	return data
 
 def get_hidden_progress_items(watched_indicators):
+	# L'import sta DENTRO il ramo che lo usa, non in cima (lotto 52 bis). Con watched_indicators == 0
+	# -- il valore predefinito, 'Fen Light', ed e' quello attivo sulla stick -- questa funzione legge
+	# dalla cache locale e Trakt non lo tocca mai: avere l'import in cima caricava comunque
+	# apis.trakt_api, cioe' 1155 righe, per un ramo che non lo chiama. E' su questo percorso che si
+	# costruisce 'continua a guardare' a ogni avvio.
 	try:
 		if watched_indicators == 0: return main_cache.get(progress_db_string) or []
-		else: return trakt_get_hidden_items('progress_watched')
+		from apis.trakt_api import trakt_get_hidden_items
+		return trakt_get_hidden_items('progress_watched')
 	except: return []

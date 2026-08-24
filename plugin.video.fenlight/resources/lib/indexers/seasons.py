@@ -62,7 +62,11 @@ def build_season_list(params):
 					playcount, watched, unwatched = get_watched_status_season(watched_info.get(season_number, None), aired_eps)
 					progress = get_progress_status_season(watched, aired_eps)
 				visible_progress = 0 if progress == 100 else progress
-				url_params = URL_EPISODE_LIST % (tmdb_id, season_number)
+				# panel_nonce: vedi kodi_utils.PANEL_RELOAD_PROP. Nella vista "Combined" il pannello
+				# episodi si aggancia a questa URL tramite $INFO[Container(52X).ListItem.FolderPath]:
+				# senza il nonce un Container.Refresh ricostruisce le stagioni ma lascia il pannello
+				# -- e quindi i badge degli episodi -- fermo su quello di prima.
+				url_params = URL_EPISODE_LIST % (tmdb_id, season_number) + panel_nonce
 				# extras_params non e' piu' una voce di menu (come nei film e nelle serie) ma resta
 				# pubblicato come proprieta': lo legge il tasto rapido di custom_keys.py.
 				extras_params = URL_EXTRAS % (tmdb_id, is_external)
@@ -108,6 +112,9 @@ def build_season_list(params):
 	# non si riporta nulla, quindi non si azzera nulla.
 	if params.get('custom_order', None) is None: paginator.phase_reset()
 	fanart_empty = kodi_utils.addon_fanart()
+	# Letto UNA volta per costruzione: e' lo stesso valore per tutte le stagioni della lista.
+	_nonce = kodi_utils.get_property(kodi_utils.PANEL_RELOAD_PROP)
+	panel_nonce = ('&reload=%s' % _nonce) if _nonce else ''
 	watched_indicators, adjust_hours, hide_watched = watched_indicators_info(), date_offset_info(), is_home and widget_hide_watched()
 	current_date = get_datetime()
 	watched_title = 'Trakt' if watched_indicators == 1 else 'Fen Light'
@@ -143,14 +150,18 @@ def build_season_list(params):
 	category_name = show_title
 	set_content(handle, content_type)
 	set_category(handle, category_name)
-	# cacheToDisc=False anche in finestra Video. Con la cache accesa, tornando indietro Kodi serviva
-	# la cartella dalla cache su disco invece di rileggerla, e il badge (episodi rimanenti, visto)
-	# restava vecchio: e' il difetto che nel lotto 43 aveva fatto ritirare Container.Refresh e
-	# costretto a ricostruire TUTTO. Il prezzo e' una rilettura del plugin al ritorno, e ora sappiamo
-	# quanto costa perche' e' misurata: 30-100 ms sulla stick (log 22/08, 'seasons Furious | totale
-	# 0.03s', 'episodes Season 1 | totale 0.05s'). Era un baratto sensato quando queste liste erano
-	# lente; oggi non lo e' piu', e paghiamo la cache in correttezza.
-	end_directory(handle, cacheToDisc=False)
+	# RITIRATO il cacheToDisc=False incondizionato di a1edbba (lotto 50). Il baratto era stato prezzato
+	# a "30-100 ms di rilettura al ritorno", ma quei millisecondi erano il PERF 'totale', cioe' la sola
+	# COSTRUZIONE. Il log di debug del 23/08 misura l'invocazione intera: build_episode_list 15,99 s e
+	# 20,41 s. Sbagliato di oltre 200 volte, e non era il solo prezzo: senza cache, tornando dal player
+	# Kodi non ha la cartella da ripristinare, il path arriva vuoto ('CDirectoryProvider[]: refreshing',
+	# 'GetDirectory - Error getting ' alle 22:41:15) e si ricade sul genitore. Da li' i tre difetti
+	# segnalati dall'utente: pagina vuota dopo il player, "segna come visto" senza effetto a schermo,
+	# menu contestuale sulla serie invece che sull'episodio -- perche' a schermo c'era davvero la serie.
+	# Questo e' un TAMPONE, non la soluzione: il badge "episodi rimanenti" puo' tornare a restare
+	# vecchio finche' non si riapre la serie. La soluzione vera e' invalidare la cache in modo MIRATO
+	# quando siamo noi a cambiare lo stato visto, non spegnerla sempre per tutti.
+	end_directory(handle, cacheToDisc=False if is_external else True)
 	set_view_mode(view_mode, content_type, is_external)
 
 def single_seasons(seasons_list):

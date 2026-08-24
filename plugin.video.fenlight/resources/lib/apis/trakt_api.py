@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
 import time
-import requests
 from threading import Lock
 from urllib.parse import unquote
 from caches import trakt_cache
@@ -12,7 +11,18 @@ from modules import kodi_utils, settings
 from modules.metadata import movie_meta_external_id, tvshow_meta_external_id
 from modules.utils import sort_list, sort_for_article, make_thread_list, get_datetime, timedelta, replace_html_codes, copy2clip, title_key, jsondate_to_datetime as js2date
 
-session = requests.Session()
+# 'requests' e la Session si creano alla PRIMA richiesta, non all'import (lotto 51). Erano a livello
+# di modulo, quindi chiunque importasse trakt_api pagava l'albero di requests (urllib3, certifi, ssl,
+# http.client, email) anche solo per leggere lo stato visto dal database locale. Misura del 24/08:
+# build_season_list spendeva 2094 ms di import per 23 ms di lavoro. La Session resta una sola per
+# interprete, esattamente come prima -- cambia solo QUANDO nasce.
+_session = [None]
+
+def _get_session():
+	if _session[0] is None:
+		from modules.kodi_utils import import_requests
+		_session[0] = import_requests('trakt_api').Session()
+	return _session[0]
 sleep, with_media_removals, get_property = kodi_utils.sleep, kodi_utils.with_media_removals, kodi_utils.get_property
 logger, notification, xbmc_player, confirm_dialog = kodi_utils.logger, kodi_utils.notification, kodi_utils.xbmc_player, kodi_utils.confirm_dialog
 kodi_dialog, addon_installed, addon_enabled, addon = kodi_utils.kodi_dialog, kodi_utils.addon_installed, kodi_utils.addon_enabled, kodi_utils.addon
@@ -23,6 +33,10 @@ progress_dialog, external, trakt_user_active, show_unaired_watchlist = kodi_util
 lists_sort_order, trakt_client, trakt_secret, tmdb_api_key = settings.lists_sort_order, settings.trakt_client, settings.trakt_secret, settings.tmdb_api_key
 clear_all_trakt_cache_data, cache_trakt_object, clear_trakt_calendar = trakt_cache.clear_all_trakt_cache_data, trakt_cache.cache_trakt_object, trakt_cache.clear_trakt_calendar
 trakt_watched_cache, reset_activity, clear_trakt_list_contents_data = trakt_cache.trakt_watched_cache, trakt_cache.reset_activity, trakt_cache.clear_trakt_list_contents_data
+restore_activity = trakt_cache.restore_activity
+# Alzato dalle guardie self_mark quando saltano una ricostruzione: dice a trakt_sync_activities che il
+# segnalibro delle attivita' NON puo' avanzare, perche' c'e' del lavoro non fatto. Vedi lotto 58.
+_SYNC_DEFERRED = [False]
 clear_daily_cache = trakt_cache.clear_daily_cache
 clear_trakt_collection_watchlist_data, clear_trakt_hidden_data = trakt_cache.clear_trakt_collection_watchlist_data, trakt_cache.clear_trakt_hidden_data
 clear_trakt_recommendations, clear_trakt_list_data = trakt_cache.clear_trakt_recommendations, trakt_cache.clear_trakt_list_data
@@ -61,15 +75,15 @@ def call_trakt(path, params=None, data=None, is_delete=False, with_auth=True, me
 		try:
 			if method:
 				if method == 'post':
-					resp = session.post(API_ENDPOINT % path, headers=headers, timeout=timeout)
+					resp = _get_session().post(API_ENDPOINT % path, headers=headers, timeout=timeout)
 				elif method == 'delete':
-					resp = session.delete(API_ENDPOINT % path, headers=headers, timeout=timeout)
+					resp = _get_session().delete(API_ENDPOINT % path, headers=headers, timeout=timeout)
 				elif method == 'sort_by_headers':
-					resp = session.get(API_ENDPOINT % path, params=params, headers=headers, timeout=timeout)
+					resp = _get_session().get(API_ENDPOINT % path, params=params, headers=headers, timeout=timeout)
 			elif data is not None:
-				resp = session.post(API_ENDPOINT % path, json=data, headers=headers, timeout=timeout)
-			elif is_delete: resp = session.delete(API_ENDPOINT % path, headers=headers, timeout=timeout)
-			else: resp = session.get(API_ENDPOINT % path, params=params, headers=headers, timeout=timeout)
+				resp = _get_session().post(API_ENDPOINT % path, json=data, headers=headers, timeout=timeout)
+			elif is_delete: resp = _get_session().delete(API_ENDPOINT % path, headers=headers, timeout=timeout)
+			else: resp = _get_session().get(API_ENDPOINT % path, params=params, headers=headers, timeout=timeout)
 			if resp.status_code not in (401, 429): resp.raise_for_status()
 		except Exception as e: return logger('Trakt Error', str(e))
 		return resp
@@ -148,7 +162,7 @@ def trakt_get_device_token(device_codes):
 			time_passed = 0
 			while not progressDialog.iscanceled() and time_passed < expires_in:
 				sleep(max(sleep_interval, 1)*1000)
-				response = session.post(API_ENDPOINT % 'oauth/device/token', data=json.dumps(data), headers=headers, timeout=timeout)
+				response = _get_session().post(API_ENDPOINT % 'oauth/device/token', data=json.dumps(data), headers=headers, timeout=timeout)
 				status_code = response.status_code
 				if status_code == 200:
 					result = response.json()
@@ -780,7 +794,13 @@ def _get_all_sync_pages(path, with_auth=True):
 
 # Quanto resta valido il timbro di "questa modifica e' nostra". Stretto apposta: se scade si
 # ricostruisce come prima, quindi il caso peggiore e' il comportamento vecchio, mai un dato perso.
-TRAKT_SELF_MARK_SECONDS = 120
+# Finestra entro cui una marcatura fatta da noi puo' RIMANDARE una ricostruzione (non piu' annullarla:
+# vedi restore_activity e lotto 58). Poiche' ora il lavoro rimandato viene comunque svolto alla
+# scadenza, questa costante non decide piu' "cosa si perde" ma solo "quanto si aspetta": era 120 s,
+# cioe' fino a 2 minuti di ritardo per una modifica fatta dall'app Trakt. A 45 s si conserva
+# l'accorpamento di piu' marcature consecutive -- il motivo per cui la guardia esiste -- e si dimezza
+# abbondantemente l'attesa nel caso peggiore.
+TRAKT_SELF_MARK_SECONDS = 45
 
 def self_mark_recent(cache_media_type=None):
 	"""Vero se la marcatura appena fatta da NOI e' abbastanza recente. Senza tipo: una qualsiasi.
@@ -809,7 +829,8 @@ def trakt_indicators_movies():
 	# sono state scaricate 6 pagine per ottenere '599 da Trakt, 599 in cache, 0 scartati' -- cioe' per
 	# non cambiare una riga -- e per giunta mentre la stessa CPU stava costruendo la lista stagioni.
 	if self_mark_recent('movie'):
-		return logger('FenLight Trakt', 'watched movies: rebuild saltato, la modifica e' + "'" + ' nostra ed e' + "'" + ' gia' + "'" + ' applicata in locale')
+		_SYNC_DEFERRED[0] = True
+		return logger('FenLight Trakt', 'watched movies: rebuild RIMANDATO, la modifica sembra nostra -- segnalibro attivita' + "'" + ' NON avanzato')
 	# Due canali silenziosi facevano sparire il badge "visto" da un sottoinsieme apparentemente casuale
 	# di film, senza lasciare traccia nel log: get_trakt_movie_id restituisce None quando l'id TMDb non
 	# e' risolvibile (e il film veniva saltato), e pool.submit non rilancia mai le eccezioni sollevate
@@ -838,7 +859,7 @@ def trakt_indicators_movies():
 	make_thread_list(_process, result)
 	logger('FenLight Trakt', 'watched movies: %s da Trakt, %s in cache, %s scartati%s'
 			% (len(result), len(insert_list), len(dropped), (' -> %s' % dropped[:10]) if dropped else ''))
-	trakt_watched_cache.set_bulk_movie_watched(insert_list)
+	return trakt_watched_cache.set_bulk_movie_watched(insert_list)
 
 def trakt_indicators_tv():
 	# Trakt no longer returns the seasons/episodes breakdown in sync/watched/shows, so the watched episodes
@@ -888,8 +909,9 @@ def trakt_indicators_tv():
 				insert_list.append(_make_row(item, tmdb_id, item['show']['title'], _episode_remap(tmdb_id)))
 			except: pass
 		if insert_list:
-			trakt_watched_cache.add_tvshow_watched(insert_list)
-			return logger('FenLight Trakt', 'watched episodes sync: %s new plays added, no rebuild needed' % len(insert_list))
+			_changed = trakt_watched_cache.add_tvshow_watched(insert_list)
+			logger('FenLight Trakt', 'watched episodes sync: %s new plays added, no rebuild needed' % len(insert_list))
+			return _changed
 	# Con gli indicatori Trakt, watched_status_mark scrive nello STESSO database che
 	# last_watched_episode_date() legge (indicators_dict: 1 -> trakt_db). Quindi dopo una nostra
 	# marcatura il piu' recente locale E' gia' la marcatura stessa, nessun play remoto risulta piu'
@@ -901,7 +923,8 @@ def trakt_indicators_tv():
 	# Finestra stretta: se scade, si ricostruisce come prima. Le modifiche fatte da un ALTRO
 	# dispositivo portano play piu' recenti, quindi passano dalla via incrementale qui sopra.
 	if not new_plays and last_synced and self_mark_recent('tvshow'):
-		return logger('FenLight Trakt', 'watched episodes: rebuild saltato, la modifica e' + "'" + ' nostra ed e' + "'" + ' gia' + "'" + ' applicata in locale')
+		_SYNC_DEFERRED[0] = True
+		return logger('FenLight Trakt', 'watched episodes: rebuild RIMANDATO, la modifica sembra nostra -- segnalibro attivita' + "'" + ' NON avanzato')
 	# full rebuild: no stored history, plays were removed, or more new plays than a single page holds
 	# PERF: il rebuild completo scarica 6 pagine di cronologia e ricostruisce 1274 episodi. Sul Mi
 	# Stick costa 2-6 s di rete e CPU, e nel log del 22/08 e' partito a OGNI marcatura mentre la via
@@ -937,7 +960,7 @@ def trakt_indicators_tv():
 	insert_list = list(watched_episodes.values())
 	logger('FenLight Trakt', 'watched episodes rebuild: %s shows, %s history plays over %s pages, %s episodes' \
 			% (len(shows), len(history), page_count, len(insert_list)))
-	trakt_watched_cache.set_bulk_tvshow_watched(insert_list)
+	return trakt_watched_cache.set_bulk_tvshow_watched(insert_list)
 
 def trakt_playback_progress():
 	params = {'path': 'sync/playback%s', 'with_auth': True, 'pagination': False}
@@ -1089,6 +1112,12 @@ def trakt_sync_activities(force_update=False):
 	except: return 'failed'
 	if not latest: return 'failed'
 	cached = reset_activity(latest)
+	# reset_activity fa avanzare il segnalibro "visto fino a qui" QUI, prima che il lavoro sia fatto.
+	# Se una guardia self_mark salta poi una ricostruzione, il cambiamento risulta gia' visto e non
+	# torna mai piu': il giro dopo il confronto da 'not needed', per sempre. Misurato il 24/08 (log q1,
+	# 14:24:40 e 14:25:16): due 'success', cioe' due cambiamenti veri arrivati da Trakt, entrambi
+	# consumati e persi. Il flag viene azzerato qui e riletto in fondo. Vedi lotto 58.
+	_SYNC_DEFERRED[0] = False
 	if not _compare(latest['all'], cached['all']):
 		if trakt_watched_cache.has_any_progress():
 			progress_info = trakt_playback_progress()
@@ -1119,12 +1148,20 @@ def trakt_sync_activities(force_update=False):
 	if _compare(latest_shows['hidden_at'], cached_shows['hidden_at']):
 		clear_properties('episode')
 		clear_trakt_hidden_data('progress_watched')
+	# Raccolta degli id toccati, per il refresh mirato (lotto 59). `None` da una ricostruzione significa
+	# "non so quali", e allora si deve ricadere sul refresh globale: e' diverso da un insieme vuoto,
+	# che significa "nessun titolo e' cambiato davvero".
+	changed_ids, changed_unknown = set(), False
 	if _compare(latest_movies['watched_at'], cached_movies['watched_at']):
 		clear_properties('movie')
-		trakt_indicators_movies()
+		_ids = trakt_indicators_movies()
+		if _ids is None: changed_unknown = True
+		else: changed_ids |= _ids
 	if _compare(latest_episodes['watched_at'], cached_episodes['watched_at']):
 		clear_properties('episode')
-		trakt_indicators_tv()
+		_ids = trakt_indicators_tv()
+		if _ids is None: changed_unknown = True
+		else: changed_ids |= _ids
 	if _compare(latest_movies['paused_at'], cached_movies['paused_at']): refresh_movies_progress = True
 	if _compare(latest_episodes['paused_at'], cached_episodes['paused_at']): refresh_shows_progress = True
 	if _compare(latest_lists['updated_at'], cached_lists['updated_at']): lists_actions.append('my_lists')
@@ -1152,4 +1189,22 @@ def trakt_sync_activities(force_update=False):
 			clear_trakt_list_data(item)
 			clear_trakt_list_contents_data(item)
 	# if clear_tvshow_watched_cache: clear_watched_tvshow_cache()
+	# Qualcosa e' stato rimandato: il segnalibro torna indietro, cosi' il prossimo giro riprende il
+	# lavoro invece di trovare 'nessuna modifica'. La guardia self_mark diventa cosi' un RINVIO e non
+	# piu' un cestino: al massimo ritarda di una finestra self_mark, non perde piu' niente.
+	if _SYNC_DEFERRED[0]:
+		_SYNC_DEFERRED[0] = False
+		restore_activity(cached)
+	# Pubblica QUALI titoli sono cambiati, perche' il monitor possa ricaricare i soli contenitori che
+	# li contengono invece di sparare UpdateLibrary su tutta la schermata (lotto 59). Vuoto = non lo
+	# sappiamo, e chi legge ricade sul globale. L'API di Trakt non lo dice mai: questo elenco esce dal
+	# confronto fra l'insieme prima e quello dopo la ricostruzione, che facciamo comunque.
+	try:
+		# Tre stati distinti, e servono tutti e tre: '' = non lo sappiamo (globale), '-' = lo sappiamo ed
+		# e' cambiato nulla (nessun refresh), altrimenti l'elenco degli id (mirato).
+		_payload = '' if changed_unknown else (','.join(sorted(str(i) for i in changed_ids if i)) or '-')
+		kodi_utils.set_property('fenlight.trakt.changed_ids', _payload)
+		if not changed_unknown:
+			logger('FenLight Trakt', 'titoli cambiati: %d%s' % (len(changed_ids), (' -> %s' % sorted(changed_ids)[:10]) if changed_ids else ''))
+	except: pass
 	return 'success'

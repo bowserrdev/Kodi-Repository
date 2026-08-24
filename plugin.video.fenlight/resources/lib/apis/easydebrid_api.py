@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 # Thanks to kodifitzwell for allowing me to borrow his code
 import json
-import requests
 from urllib.parse import urlencode
 from caches.settings_cache import get_setting, set_setting
 from modules.kodi_utils import make_session, kodi_dialog, notification, ok_dialog, confirm_dialog
@@ -14,8 +13,14 @@ stats = 'user/details'
 cache = 'link/lookup'
 user_agent = 'Fen Light for Kodi'
 timeout = 20.0
-session = make_session(base_url)
+# Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
+# caricavano all'import anche quando l'utente non toccava questo servizio. requests costa ~5,7 s
+# a freddo sulla stick (misura del 24/08) e si paga per ogni interprete. Ora entra solo se serve.
+_session = [None]
 
+def _get_session():
+	if _session[0] is None: _session[0] = make_session(base_url)
+	return _session[0]
 
 class EasyDebridAPI:
 
@@ -25,13 +30,13 @@ class EasyDebridAPI:
 	def _get(self, url, data={}):
 		if self.token in ('empty_setting', ''): return None
 		url = base_url + url
-		response = session.get(url, data=data, headers=self.headers(), timeout=timeout)
+		response = _get_session().get(url, data=data, headers=self.headers(), timeout=timeout)
 		return response.json()
 
 	def _post(self, url, params=None, json=None, data=None):
 		if self.token in ('empty_setting', '') and not 'token' in url: return None
 		url = base_url + url
-		response = session.post(url, params=params, json=json, data=data, headers=self.headers(), timeout=timeout)
+		response = _get_session().post(url, params=params, json=json, data=data, headers=self.headers(), timeout=timeout)
 		return response.json()
 
 	def account_info(self):

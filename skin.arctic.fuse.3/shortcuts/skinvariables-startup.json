@@ -133,8 +133,7 @@
                     "rules": ["String.IsEmpty(Skin.String(HomeSwitcher.1108.Mode))"],
                     "value": "Skin.SetString(HomeSwitcher.1108.Mode,Wall)"
                 }],
-                "SetProperty(InitStatus,Reticulating Splines,1198)",
-                "RunPlugin(plugin://plugin.video.fenlight/?mode=fen_blur&image={var_image_simplebackground}&prefix=SimpleBackground)"
+                "SetProperty(InitStatus,Reticulating Splines,1198)"
             ]
         }],
 

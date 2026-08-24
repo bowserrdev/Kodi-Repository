@@ -104,7 +104,14 @@
                             <param name="id">$PARAM[id]</param>
                         </include>
 
-                        <animation type="Conditional" reversible="false" condition="Container(53$PARAM[id]).IsUpdating">
+                        <!-- Fen Light: la dissolvenza serve quando cambi stagione e gli episodi a schermo
+                             sono quelli sbagliati. Scattava pero' anche sul refresh IN POSTO (segna come
+                             visto), dove la lista e' identica a prima: 600 ms sono sotto il costo di una
+                             ricostruzione con interprete nuovo (1400/1900 ms misurati), quindi si superava
+                             sempre. Aggiunto NumItems=0: si sfuma solo quando non c'e' davvero niente da
+                             mostrare, la stessa regola dei widget della home (Includes_Widgets.xml:101),
+                             che infatti non lampeggiano mai. -->
+                        <animation type="Conditional" reversible="false" condition="Container(53$PARAM[id]).IsUpdating + Integer.IsEqual(Container(53$PARAM[id]).NumItems,0)">
                             <effect type="fade" start="100" end="0" time="200" delay="600" />
                         </animation>
 

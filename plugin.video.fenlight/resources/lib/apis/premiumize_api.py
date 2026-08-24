@@ -2,7 +2,6 @@
 import re
 import json
 import time
-import requests
 from threading import Thread
 from urllib.parse import urlencode
 from caches.main_cache import cache_object
@@ -10,6 +9,14 @@ from caches.settings_cache import get_setting, set_setting
 from modules.utils import copy2clip
 from modules.source_utils import supported_video_extensions, seas_ep_filter, EXTRAS
 from modules import kodi_utils
+
+# Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
+# caricavano all'import anche quando l'utente non toccava questo servizio. requests costa ~5,7 s
+# a freddo sulla stick (misura del 24/08) e si paga per ogni interprete. Ora entra solo se serve.
+def _requests():
+	from modules.kodi_utils import import_requests
+	return import_requests('premiumize_api')
+
 # logger = kodi_utils.logger
 
 notification = kodi_utils.notification
@@ -202,7 +209,7 @@ class PremiumizeAPI:
 		if self.token in ('empty_setting', ''): return None
 		headers = {'User-Agent': user_agent, 'Authorization': 'Bearer %s' % self.token}
 		url = base_url + url
-		response = requests.get(url, data=data, headers=headers, timeout=timeout).text
+		response = _requests().get(url, data=data, headers=headers, timeout=timeout).text
 		try: return json.loads(response)
 		except: return response
 
@@ -210,7 +217,7 @@ class PremiumizeAPI:
 		if self.token in ('empty_setting', '') and not 'token' in url: return None
 		headers = {'User-Agent': user_agent, 'Authorization': 'Bearer %s' % self.token}
 		if not 'token' in url: url = base_url + url
-		response = requests.post(url, data=data, headers=headers, timeout=timeout).text
+		response = _requests().post(url, data=data, headers=headers, timeout=timeout).text
 		try: return json.loads(response)
 		except: return response
 
