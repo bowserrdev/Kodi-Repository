@@ -767,7 +767,7 @@
                           <property name="setting_label">    - Scroll Lookahead (pages)</property>
                           <property name="setting_type">numeric</property>
                           <property name="setting_value">$INFO[Window(10000).Property(fenlight.paginate.lookahead)]</property>
-                          <property name="setting_description">How much runway to keep loaded ahead of the focus. 1 page = smoothest, loads the next page as soon as you enter the last loaded page.</property>
+                          <property name="setting_description">How much runway to keep loaded ahead of the focus, counted in pages of the Widgets Item Limit. The next page starts loading when fewer than that many items remain past the focus, so a HIGHER value starts it earlier and hides the wait: raise it if you often reach the end of a widget before the next page appears. It does not add page loads, it only starts them sooner.</property>
                           <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_numeric&amp;setting_id=paginate.lookahead)</onclick>
                       </item>
                       <item>

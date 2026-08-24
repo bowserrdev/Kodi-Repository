@@ -1,5 +1,9 @@
 <include content="Hub_Combined_Widget">
     <param name="id">{widget_id}</param>
+    <!-- Le righe di ricerca vivono solo in Custom_1105_Search: il token di paginazione va letto nello
+         scope 1105, che e' quello in cui il lato plugin lo scrive (paginator.ctl_scope). Senza, vale il
+         default 'home' di Hub_Combined_Widget e il contenitore leggerebbe il token della Home. -->
+    <param name="pgscope">1105</param>
     <param name="content">$VAR[{widget_search_variable},{widget_path},{widget_path_end}]</param>
     <param name="include">{widget_include}</param>
     <param name="target">{widget_target}</param>
