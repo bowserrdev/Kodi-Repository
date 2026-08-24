@@ -8460,3 +8460,377 @@ con sei widget configurati su due finestre invece di quattro su una (la seconda 
 solo quando la si apre: vedi lotto 65).
 
 Il fronte "allineamento fra finestre" si puo' considerare chiuso.
+
+---
+
+## Lotto 70 -- Filtro doppiaggio: indagine, e una mia affermazione da correggere
+
+### Il dato che ribalta l'inquadramento
+
+1251 righe `PERF DUB` raccolte in tutti i log conservati:
+
+```
+SENZA rete : 1234 pagine (99%) | valutazione mediana 0,07 s | max 1,64 s
+CON rete   :   17 pagine ( 1%) | valutazione mediana 5,37 s | max 14,58 s
+verdetti risolti da cache: 24825 su 24923 (99,6%)
+```
+
+Ieri avevo scritto che `dub_filter` costa "5-15 s per pagina". E' vero **una volta su cento**. A regime
+il filtro e' invisibile: 70 millisecondi. Le pagine lente che avevo misurato erano tutte quelle dei due
+widget Trakt appena aggiunti, cioe' liste in cui nessun titolo era mai stato valutato. Avevo
+generalizzato un campione interamente a freddo.
+
+E anche sulle pagine fredde non e' il costo dominante: dal log delle 17:20-17:25 la sua quota va dal
+23% al 67% del totale, mediana ~40%. Il resto sono i metadati per titolo.
+
+### Dove sta il costo RICORRENTE
+
+La cache sul dispositivo (`dub.db`, letta con WAL):
+
+```
+1433 voci | 1078 disponibili (TTL 180 giorni) | 355 NON disponibili (TTL 7 giorni)
+144 gia' scadute
+```
+
+Le 355 "non disponibili" si ricontrollano **ogni 7 giorni**, e sono proprio quelle che pagano il
+percorso caro: non sono su streaming, quindi ogni ricontrollo e' una chiamata TMDb *piu'* la ricerca su
+blu-ray.com (e fino a 4 pagine HTML pesanti in piu' se il titolo e' recente, `_MAX_RELEASE_CHECKS`).
+
+Incrociando i loro tmdb_id con gli anni in `metacache.db`:
+
+```
+0-1 anno        155  (48%)
+2 anni            5  ( 2%)
+3-5 anni         19  ( 6%)
+6-15 anni        48  (15%)
+oltre 15 anni    95  (30%)
+```
+
+**Meta' dei ricontrolli settimanali riguarda titoli usciti da piu' di due anni, e il 30% da piu' di
+quindici.** Un film del 2005 senza edizione italiana non ne avra' una la settimana prossima. Il TTL di
+7 giorni ha senso per il 48% recente, e' sprecato sul resto.
+
+### Perche' una chiamata in piu' costa tanto su questa stick
+
+Una pagina con 8 sole verifiche streaming e zero blu-ray ha impiegato 10,1 s con 6 worker: circa 5 s a
+ondata, cioe' ~5 s per una singola GET a TMDb. Non e' latenza di rete: e' l'handshake TLS di sei
+richieste concorrenti su un ARM32 a 4 core. Nello stesso senso va il costo dell'import di `requests`,
+misurato 17 volte in una sessione per un totale di **64 s** (media 3,8 s, punte a 9,5 s), perche' ogni
+invocazione ha il suo interprete.
+
+Conseguenza di metodo: qui **il numero di connessioni distinte conta piu' del numero di byte**, e
+allargare il pool non e' una soluzione -- e' anche la cosa che le note sui crash indicano come rischio.
+
+### Tre interventi possibili, in ordine di rapporto risultato/rischio
+
+**1. TTL proporzionale all'eta' del titolo** (piccolo, isolato, misurabile).
+`EXPIRY_UNAVAILABLE` e' oggi 7 giorni per tutti. Scalarlo: recente -> 7 giorni; entro 2 anni -> 30
+giorni; oltre -> 180 giorni come i disponibili. L'anno e' gia' in `meta` nel punto di chiamata.
+Dimezza i ricontrolli settimanali e li toglie proprio dai titoli su cui non cambiera' mai nulla.
+
+**2. `watch/providers` dentro la chiamata dei metadati** (strutturale, richiede attenzione).
+`movie_details` gia' usa `append_to_response` con sette risorse, ma non `watch/providers`. TMDb ne
+accetta fino a venti nella stessa richiesta, senza costo aggiuntivo. Sulle 140 chiamate di rete
+misurate, 98 sono verifiche streaming: **il 70% sparirebbe**, non "diventerebbe piu' veloce".
+L'insidia e' la freschezza: i metadati restano in cache a lungo, i provider cambiano. Va usato **solo**
+quando i metadati sono stati appena scaricati -- che e' esattamente il caso della lista fredda, cioe'
+quello che l'utente ha vissuto. Per i ricontrolli a 7 giorni non aiuta: li' serve l'intervento 1.
+
+**3. Tetto alla concorrenza della fase di rete** (sicurezza, non velocita').
+Oggi eredita `WORKER_COUNT` (6 qui). Abbassarlo per la sola fase dub renderebbe le pagine fredde piu'
+LENTE, in cambio di una raffica TLS piu' bassa -- il fattore gia' indicato come terza causa di crash.
+E' un compromesso, non un miglioramento: da decidere, non da applicare di default.
+
+**Cosa NON vale la pena toccare:** il percorso a regime. 70 ms su una pagina interamente in cache non
+si ottimizzano, e il 99% delle pagine e' quello.
+
+---
+
+## Lotto 71 -- Filtro doppiaggio: i tre interventi
+
+### 1. TTL del verdetto negativo proporzionale all'eta'
+
+`dub_cache.EXPIRY_UNAVAILABLE` era 7 giorni per tutti. Ora:
+
+```
+<= 1 anno    7 giorni    (48% delle voci: puo' ancora uscire)
+   2 anni   30 giorni    ( 2%)
+ oltre     180 giorni    (50%: 30% ha piu' di quindici anni)
+```
+
+`unavailable_expiry(year)` sta nella cache, `set_availability` prende l'anno dal chiamante (che lo ha
+gia' in `meta`). Anno ignoto -> 7 giorni, cioe' il comportamento prudente di prima.
+
+Verificato a secco: 2026->7g, 2025->7g, 2024->30g, 2023->180g, 1994->180g, None->7g.
+
+### 2. `watch/providers` dentro la richiesta dei metadati
+
+Prima di scrivere il codice, verificato **contro TMDb vero** con la chiave del dispositivo:
+
+```
+appese presenti: [..., 'watch/providers']   -> supportato
+IT presente: si | bucket: ads, buy, flatrate, rent
+```
+
+`_store_streaming_verdict` viene chiamata solo dove i dati sono **appena scaricati** (subito prima di
+`metacache_set`, in `movie_meta` e `tvshow_meta`), mai su quelli letti dalla cache: e' la freschezza a
+rendere il dato utilizzabile. Il verdetto non entra in `meta` -- li' invecchierebbe insieme ai metadati,
+che restano in cache per mesi mentre i provider cambiano -- ma nella cache del filtro, che ha un TTL suo.
+
+Scrive due cose distinte:
+- **e' su streaming** -> il verdetto complessivo e' gia' deciso, si scrive anche quello. In
+  `dub_keep_mask` il titolo risulta gia' in cache in fase 1 e non arriva nemmeno al pool di rete.
+- **non e' su streaming** -> si annota solo questo (`dubs_` nella stessa tabella). Non si puo'
+  concludere 'indisponibile': manca la meta' blu-ray. Ma la prossima valutazione salta la chiamata
+  TMDb e va dritta a blu-ray.com.
+
+**Il costo che la verifica ha rivelato, e che non avevo previsto.** TMDb restituisce i provider di
+TUTTI i paesi. Misurato su cinque film e una serie:
+
+```
+550     Fight Club            152,8 -> 236,5 KB   +83,7 KB (+55%)   131 paesi
+1314481 Il diavolo veste...   109,7 -> 148,5 KB   +38,8 KB (+35%)    69 paesi
+931285  Mortal Kombat II       93,3 -> 146,4 KB   +53,1 KB (+57%)    89 paesi
+68721   Iron Man 3            184,3 -> 236,1 KB   +51,8 KB (+28%)    80 paesi
+1493400 Camp Rock 3            41,6 ->  56,5 KB   +14,9 KB (+36%)    65 paesi
+tv 283297                      61,6 ->  90,9 KB   +29,3 KB (+48%)
+```
+
+Il conto resta ampiamente a favore -- decine di KB su una connessione **gia' aperta** contro secondi di
+handshake TLS -- ma solo per chi il filtro ce l'ha acceso. Per tutti gli altri sarebbe peso puro,
+quindi l'append e' condizionato a `dub_filter_enabled()` (`_append_for`). Il valore predefinito
+dell'impostazione e' `false`: senza questa guardia avremmo tassato chi non usa la funzione.
+
+### 3. Tetto alla concorrenza della fase di rete
+
+`DUB_NET_WORKERS = 3` tramite il nuovo `make_thread_list_capped`, che aggiunge un parametro opzionale a
+`_run_pool` lasciando invariato tutto il resto. E' un compromesso dichiarato, non un miglioramento:
+allunga un poco le pagine fredde (l'1% del totale) e abbassa la raffica TLS, indicata come terza causa
+di riavvio nelle note sui crash.
+
+### Come si verifica che abbia funzionato
+
+La riga `PERF DUB` ora riporta anche le chiamate risparmiate:
+
+```
+rete: streaming N (risparmiate M), bluray K
+```
+
+Su una lista fredda ci si aspetta `verdetto in cache` molto piu' alto di prima (i titoli su streaming
+si risolvono in fase 1, senza toccare il pool), `streaming` vicino a zero e `risparmiate` > 0. Se
+invece `risparmiate` resta 0 e `streaming` alto, `_store_streaming_verdict` non sta scrivendo e va
+capito perche'.
+
+### Lotto 71 bis -- Verifica (log delle 19:4x, ricerca Discover)
+
+**Il meccanismo funziona, provato da due lati indipendenti.**
+
+Dal log:
+```
+movie | 19 elementi | verdetto in cache 15 | rete: streaming 1 (risparmiate 3), bluray 3 | valutazione 0,84 s
+movie | 20 elementi | verdetto in cache 19 | rete: streaming 0 (risparmiate 1), bluray 1 | valutazione 0,33 s
+```
+
+Dalla cache sul dispositivo (`dub.db`, 1486 voci contro le 1433 di prima):
+```
+nuove voci 'dubs_': 27  ->  su streaming 22 | NON su streaming 5
+```
+
+Le 27 voci sono la prova diretta che `_store_streaming_verdict` scrive leggendo il `watch/providers`
+appeso. Le 22 "su streaming" hanno ricevuto anche il verdetto complessivo, quindi quei titoli si sono
+risolti in fase 1 e **non hanno nemmeno raggiunto la fase di rete**: e' il motivo per cui
+"verdetto in cache" e' 15 su 19 in una pagina di risultati nuovi.
+
+Quota del filtro sulla pagina fredda: 1,17 s su 9,3 s di risoluzione = **13%**, contro il 23-67%
+misurato prima. Il resto sono i metadati dei 39 titoli nuovi, che restano irriducibili.
+
+**Due cautele, per non sopravvalutare il risultato.**
+
+1. Il campione e' piccolo: 5 elementi valutati in due pagine. Il meccanismo e' dimostrato, l'entita' del
+   guadagno no.
+2. Il TTL per eta' vale solo per i verdetti scritti **da adesso**. In cache si vedono ancora
+   `144 scadute + 211 a 7 giorni` (eredita' della vecchia regola uniforme) contro `4 a 180 giorni`
+   appena scritte. Il dimezzamento dei ricontrolli settimanali arrivera' gradualmente, man mano che
+   ogni voce scaduta viene rivalutata una volta e riceve la scadenza giusta per la sua eta'. Non e' un
+   effetto immediato e non va cercato nel prossimo log.
+
+Nessun `Traceback`, `FALLITA`, `SCADUTA`, `GLOBALE` in tutta la sessione.
+
+### Lotto 71 ter -- Verdetto positivo permanente
+
+`EXPIRY_AVAILABLE` era 180 giorni (valore originale dell'addon, non introdotto da noi). Ora e' 100 anni.
+
+Il motivo e' che il verdetto non accerta **dove** un titolo si trova adesso, ma che una traccia
+italiana **esista**: se un film e' stato su una piattaforma italiana o e' uscito in home video,
+doppiato lo e', e lo restera' anche quando sparira' dai cataloghi -- e Fen Light non riproduce comunque
+da quelle piattaforme. Ricontrollarlo ogni sei mesi era ~1078 verifiche di una domanda la cui risposta
+non puo' cambiare.
+
+100 anni e non "mai": la voce non scade in nessun orizzonte utile, ma resta un intero ordinario e
+`clean_database` (`DELETE ... WHERE expires <= now`) continua a funzionare senza casi speciali.
+
+Le due obiezioni possibili, e perche' non reggono: un falso positivo resterebbe per sempre, ma sbaglia
+nella direzione sicura (mostra un titolo in piu', non lo nasconde) che e' la stessa scelta del *fail
+open* adottata in tutto il filtro; e 1122 righe non sono un problema di spazio.
+
+**Migrazione delle voci esistenti.** Senza, la modifica avrebbe riguardato solo i verdetti scritti da
+adesso e le 1122 voci gia' in cache sarebbero state ricontrollate una volta ciascuna nei sei mesi
+successivi. Il dispositivo non ha il binario `sqlite3`, quindi: Kodi fermato, `dub.db` scaricato (copia
+di sicurezza in `BACKUP_dub.db`), `UPDATE ... WHERE data = 'true'` in locale, `wal_checkpoint(TRUNCATE)`,
+push del solo file principale e rimozione di `-wal`/`-shm` residui, che si riferivano al file sostituito.
+
+Verificato con una rilettura indipendente dal dispositivo:
+```
+1486 voci | permanenti 1122 | negative 364 (211 a 7g, 144 scadute, 9 a 180g)
+```
+Le negative non sono state toccate: la loro distribuzione di scadenze e' identica a prima.
+
+---
+
+## Lotto 72 — la ricerca non paginava: token di paginazione nello scope sbagliato
+
+**Sintomo riportato.** Con il tetto per widget alzato a 100, una ricerca avanzata con il solo filtro
+"genere horror" si fermava a ~35 elementi invece di continuare a caricare pagine. L'ipotesi era che il
+tetto venisse applicato *prima* del filtro doppiaggio, troncando la lista troppo presto.
+
+**L'ipotesi e' sbagliata, e il log lo dice.** Il conteggio e' sempre di superstiti, mai di grezzi.
+Ordine reale di una pagina di ricerca avanzata (log del 24/08, 19:57:44-19:57:50):
+
+```
+/discover/movie pagina 1 -> 20 grezzi -> discover_filter_sort -> 17 -> dub_filter -> 13 (scartati 4)
+/discover/movie pagina 2 -> 20 grezzi -> discover_filter_sort -> 16 -> dub_filter -> 14 (scartati 2)
+PERF: movies tmdb_movies_discover | 27 elementi | 2 pagine | path_pages=-
+```
+
+27 e' il numero di superstiti dopo entrambi i filtri: `_apply_dub_filter` avvolge `fetch_page`, quindi
+`load_cumulative` accumula gia' filtrato e `min_items` conta cio' che si vedra' davvero. Il tetto di 100
+non c'entra: non e' stato nemmeno sfiorato.
+
+**La causa vera: `path_pages=-`.** Quel campo dice che il path del contenitore non portava il parametro
+`pages`, cioe' che la build era quella iniziale e nessuna paginazione l'ha mai seguita. Non e' successo
+una volta: nell'intera sessione la ricerca ha prodotto **una sola build**, mentre i widget della Home
+crescevano regolarmente (`path_pages=3,4,5,6,7` fino a 113 elementi).
+
+Il motivo e' un disallineamento introdotto dal lotto 66, quando il token di paginazione e' stato
+indicizzato per `(finestra, contenitore)`:
+
+| | scrive | legge |
+|---|---|---|
+| lato plugin (`paginator.ctl_scope`, finestra 11105) | `fenlight.pg.w1105.ctlNNN.pages` | |
+| lato skin (`Hub_Combined_Widget`, `pgscope` non passato) | | `fenlight.pg.whome.ctlNNN.pages` |
+
+Il default `pgscope=home` dell'include era stato pensato per la Home; i contenitori della finestra di
+ricerca lo ereditavano senza che nulla lo segnalasse. Le conseguenze erano due, di gravita' diversa:
+
+- **contenitore 505** (risultati della ricerca avanzata): la Home non ha un 505, quindi
+  `whome.ctl505.pages` non viene scritto da nessuno. Il token resta vuoto per sempre e la riga e'
+  congelata sulla build iniziale. E' il sintomo riportato.
+- **contenitori 501/502/503** (ricerca testuale): quei token la Home *li scrive*. La riga di ricerca
+  poteva quindi ereditare il conteggio pagine di un widget della Home — e ritrovarsi a caricare in una
+  sola build tutte le pagine che l'utente aveva accumulato altrove. Non e' osservato in questo log
+  (nessuna build `tmdb_movies_search_filtered`); e' una conseguenza letta nel codice, non misurata.
+
+Vale la pena notare *perche'* l'errore e' sopravvissuto al lotto 66: la ricerca ha due varianti e ne era
+stata corretta una sola. `search_row_standard.xmltemplate` (variante non combinata) usava `Widget_Row` e
+scriveva il token esplicitamente, quindi era stato aggiornato a `w1105` e sembrava che la ricerca fosse
+coperta. La variante attiva sul dispositivo e' pero' quella *combinata*, che passa da
+`Hub_Combined_Widget` e non scrive nessun token: eredita il default. Verificare un ramo non dice nulla
+sull'altro.
+
+**Correzione.** Tre punti, tutti lato skin, nessuna rinumerazione di controlli:
+
+- `1080i/Includes_Search.xml` — `<param name="pgscope">1105</param>` sugli include dei contenitori 505
+  (risultati Discover) e 501 (Discover durante la digitazione).
+- `shortcuts/generator/data/parts/search_row.xmltemplate` — stesso parametro, cosi' le righe generate
+  nascono corrette.
+- il file gia' generato sul dispositivo (`1080i/script-skinvariables-generator-includes-.xml`) e' stato
+  ritoccato allo stesso modo, perche' il generatore lo riscrive solo quando cambia la configurazione dei
+  widget: senza, la correzione del template sarebbe arrivata a data ignota.
+
+Hash dei tre file verificati sul dispositivo dopo il push.
+
+**Cosa aspettarsi.** La ricerca ora si allunga come un widget qualsiasi, non di 20 elementi per pagina ma
+di quanti ne sopravvivono ai due filtri: nel campione misurato 13 e 14. Per arrivare a 100 servono quindi
+circa sei paginazioni, non due. E' il costo di una ricerca selettiva, non un difetto.
+
+---
+
+## Lotto 73 — segnali di attesa: il dialogo bloccante, la rotellina mancante, il margine di paginazione
+
+Tre cose diverse che hanno la stessa radice: l'utente non sa se deve aspettare, o e' costretto ad
+aspettare senza poter fare nulla.
+
+### 1. Il dialogo "Generating content" al centro dello schermo
+
+E' `script.skinvariables` che rigenera i template della skin. Il codice lo sa fare in due modi
+(`jurialmunkey/dialog.py`): `background=True` usa `DialogProgressBG`, la barretta discreta in un angolo;
+`background=False` usa `DialogProgress`, il riquadro centrale che blocca l'interfaccia. Arctic Fuse
+chiedeva esplicitamente il secondo, in `shortcuts/skinvariables-build-templates.json`:
+
+```
+route=action=buildtemplate&background=false&...   ->   &background=true&...
+```
+
+Perche' compare solo "ogni tanto": `update_xml` calcola un hash degli input *e del contenuto del file
+generato* e si ferma subito se coincide con quello memorizzato in `Skin.String`. Rigenera quindi solo
+quando qualcosa e' davvero cambiato — e alla fine chiama `ReloadSkin()`, che resta comunque uno strappo:
+con `background=true` non si e' piu' bloccati, ma la ricarica della skin avviene lo stesso.
+
+Nota onesta sulla diagnosi: **nei log a disposizione (24/08 19:53, 24/08 16:48, 23/08 23:57) quel dialogo
+non e' mai comparso** — nessuna riga `[script.module.jurialmunkey]`, nessun `ReloadSkin`. La
+rigenerazione non e' avvenuta in quelle sessioni. La correzione e' fatta leggendo il codice, non
+misurando l'evento.
+
+Conseguenza da mettere in conto: la patch del lotto 72 al file gia' generato ne cambia il contenuto,
+quindi l'hash non coincide piu' e **alla prossima apertura la rigenerazione partira' di sicuro, una
+volta**. Ora sara' pero' la barretta d'angolo, e il file rigenerato conterra' il `pgscope` corretto
+perche' viene dal template.
+
+### 2. La rotellina accanto a "Risultati"
+
+I widget mostrano una rotellina accanto al proprio nome mentre il contenitore si ricostruisce:
+`Widget_Label` passa a `View_Line` i parametri `use_spinner=true` e
+`run_spinner=Container(id).IsUpdating`. L'intestazione "Risultati" della ricerca avanzata, in
+`Includes_Search.xml`, e' invece una label scritta a mano: nessuna rotellina, quindi nessun modo di
+sapere se stava caricando altre pagine o se non c'era piu' niente da aspettare.
+
+Aggiunto lo stesso include gia' usato dai widget (`View_Line_Spinner`, con la copia trasparente
+dell'etichetta che serve al grouplist per posizionare l'icona subito dopo il testo) e lo stesso segnale,
+`Container(505).IsUpdating`.
+
+Resta scoperta la ricerca **testuale** in modalita' combinata: quelle righe passano da
+`Hub_Combined_Widget`, che non ha alcuna etichetta: l'unico testo a schermo e' il selettore di categoria
+(contenitore 601). Non c'e' un nome accanto a cui mettere la rotellina senza inventare
+un'intestazione nuova.
+
+### 3. Da quale elemento parte la pagina successiva
+
+Domanda posta in modo diretto, risposta diretta. In `service.py`:
+
+```python
+runway = page_limit(True) * paginator.lookahead_pages()
+if hasmore and numitems - current <= runway and numitems >= built and moved:
+```
+
+Non e' l'ultimo elemento e non e' la meta': e' **una finestra di `runway` elementi dalla fine di quelli
+gia' costruiti**. Con le impostazioni lette dalla stick (`paginate.limit_widgets` 20,
+`paginate.lookahead` 1) `runway = 20`: su una lista di 113 elementi il caricamento parte al numero 93.
+
+Le altre tre condizioni: `hasmore` (esistono altre pagine), `numitems >= built` (il contenitore ha gia'
+mostrato tutto cio' che era stato costruito — antivalanga, evita di accodare build mentre una e' in
+volo), `moved` (il fuoco si e' spostato *in avanti*: arrivare su un widget non basta, altrimenti
+atterrare sull'elemento 1 di una lista corta farebbe partire subito una pagina).
+
+**Perche' sembra comunque l'ultimo elemento.** Il margine e' misurato in elementi, ma cio' che conta e'
+il tempo. 20 elementi sono 2-4 secondi di scorrimento; sulla stick una build misurata va da 0,6 a 13
+secondi (widget Trending, log 24/08 19:56-19:57). Il caricamento parte in tempo ma **non finisce** in
+tempo: si arriva in fondo e si aspetta. Da qui i "gradini".
+
+La leva e' `paginate.lookahead`, e non costa build in piu': il numero di build per arrivare al tetto e'
+fissato dal tetto stesso, il margine decide solo *quanto prima* ciascuna parte. Default portato da 1 a 2
+(40 elementi, ~2 pagine); la descrizione nel settings manager diceva l'esatto contrario del vero
+("1 page = smoothest") ed e' stata riscritta.
+
+Il valore memorizzato su questa stick e' pero' `1` in modo esplicito, quindi **il cambio di default non
+la tocca**: va alzato a mano in Impostazioni > Liste > "Scroll Lookahead (pages)". Con 2 il margine
+diventa 40 elementi (~4-8 s), con 3 sessanta.

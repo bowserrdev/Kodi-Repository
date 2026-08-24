@@ -9,7 +9,7 @@ from apis import tmdb_api
 from caches.meta_cache import meta_cache
 from modules.settings import meta_language
 from modules import paginator
-from modules.utils import jsondate_to_datetime, subtract_dates, make_thread_list
+from modules.utils import jsondate_to_datetime, subtract_dates, make_thread_list, make_thread_list_capped
 
 movie_details, tvshow_details, season_episodes_details = tmdb_api.movie_details, tmdb_api.tvshow_details, tmdb_api.season_episodes_details
 movie_set_details, movie_external_id, tvshow_external_id = tmdb_api.movie_set_details, tmdb_api.movie_external_id, tmdb_api.tvshow_external_id
@@ -40,6 +40,36 @@ def _dub_log(msg):
 # listing on blu-ray.com, not one actually on sale. For such titles the blu-ray check is asked to verify
 # the release is really out (extra heavy fetches); older titles skip that, so the cost stays rare.
 DUB_RECENT_DAYS = 120
+# Worker massimi per la fase di rete del filtro. Vedi il commento in dub_keep_mask.
+DUB_NET_WORKERS = 3
+def _store_streaming_verdict(media_type, data, year):
+	# Chiamata SOLO su dati appena scaricati da TMDb, mai su quelli letti dalla cache: e' proprio la
+	# freschezza a rendere il dato utilizzabile. I metadati restano in cache per mesi, i provider
+	# cambiano -- quindi il verdetto non viaggia dentro 'meta', dove invecchierebbe insieme al resto,
+	# ma va nella cache del filtro, che ha un TTL suo e sa gestirlo.
+	# Scrive DUE cose distinte: se il titolo e' su streaming il verdetto complessivo e' gia' deciso
+	# (streaming OPPURE home video), altrimenti si annota solo che lo streaming non c'e', cosi' la
+	# prossima valutazione salta la chiamata e va dritta a blu-ray.com. Non si conclude mai
+	# 'indisponibile' da qui: manca la meta' blu-ray.
+	try:
+		from modules.settings import dub_filter_enabled, dub_filter_country
+		# Con il filtro spento non si scrive niente: sarebbe una riga di cache e una lettura di
+		# impostazione per ogni titolo scaricato, per un verdetto che nessuno andra' a leggere.
+		if not dub_filter_enabled(): return
+		country = dub_filter_country()
+		if not country: return
+		providers = data.get('watch/providers') or {}
+		results = providers.get('results')
+		if not isinstance(results, dict): return   # risposta assente o malformata: non si conclude nulla
+		tmdb_id = data.get('id')
+		if not tmdb_id: return
+		country_data = results.get(country.upper())
+		on_streaming = bool(country_data) and any(country_data.get(b) for b in ('flatrate', 'free', 'ads', 'rent', 'buy'))
+		from caches.dub_cache import dub_cache
+		dub_cache.set_streaming(country, media_type, tmdb_id, on_streaming, year)
+		if on_streaming: dub_cache.set_availability(country, media_type, tmdb_id, True, year)
+	except: pass
+
 def _is_recent_release(premiered, current_date):
 	if not premiered: return False
 	try:
@@ -201,14 +231,23 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 	prefetched = meta_prefetch(media_type, id_type, ids, current_time)
 	_t_dub1 = _perf()
 	# Conteggi per il log: le liste sono append-only, quindi sicure fra i thread senza lock.
-	_hit_cache, _net_streaming, _net_bluray = [], [], []
+	_hit_cache, _net_streaming, _net_bluray, _net_saved = [], [], [], []
 	def _evaluate_net(entry):
 		index, meta, tmdb_id, title_dbg = entry
 		try:
-			_net_streaming.append(1)
-			streaming = tmdb_api.streaming_available(media_type, tmdb_id, country, api_key)
+			year = meta.get('imdb_year') or meta.get('year')
+			# Il verdetto streaming puo' essere gia' noto: lo scrive _store_streaming_verdict quando i
+			# metadati vengono scaricati, leggendo il watch/providers che ora viaggia nella stessa
+			# richiesta. Se c'e', qui non si apre nessuna connessione.
+			streaming = dub_cache.get_streaming(country, media_type, tmdb_id)
+			if streaming is None:
+				_net_streaming.append(1)
+				streaming = tmdb_api.streaming_available(media_type, tmdb_id, country, api_key)
+				if streaming is not None: dub_cache.set_streaming(country, media_type, tmdb_id, streaming, year)
+			else:
+				_net_saved.append(1)
 			if streaming is True:
-				dub_cache.set_availability(country, media_type, tmdb_id, True)
+				dub_cache.set_availability(country, media_type, tmdb_id, True, year)
 				_dub_log('item "%s" tmdb=%s STREAMING -> KEEP' % (title_dbg, tmdb_id)); return
 			if streaming is None:
 				_dub_log('item "%s" tmdb=%s streaming INCONCLUSIVE -> KEEP (fail open)' % (title_dbg, tmdb_id)); return
@@ -216,7 +255,6 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 			# IMDb release year (already merged into meta) and the English/original title as the closest
 			# proxy for the IMDb title (blu-ray.com indexes international/original titles).
 			title = meta.get('english_title') or meta.get('original_title') or meta.get('title')
-			year = meta.get('imdb_year') or meta.get('year')
 			# Recently-released titles: verify the blu-ray.com listing is actually on sale, not just an
 			# announced/pre-order edition (which doesn't mean a dubbed copy is available yet).
 			verify = _is_recent_release(meta.get('premiered'), current_date)
@@ -225,7 +263,7 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 			if home_video is None:
 				_dub_log('item "%s" tmdb=%s bluray("%s" %s verify=%s) INCONCLUSIVE -> KEEP (fail open)' % (title_dbg, tmdb_id, title, year, verify)); return
 			available = bool(home_video)
-			dub_cache.set_availability(country, media_type, tmdb_id, available)
+			dub_cache.set_availability(country, media_type, tmdb_id, available, year)
 			keep[index] = available
 			_dub_log('item "%s" tmdb=%s no-streaming, bluray("%s" %s verify=%s)=%s -> %s' % (title_dbg, tmdb_id, title, year, verify, available, 'KEEP' if available else 'DROP'))
 		except Exception as e:
@@ -258,7 +296,14 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 			pending.append((index, meta, tmdb_id, title_dbg))
 		except Exception as e:
 			_dub_log('item idx=%s EXCEPTION %s -> KEEP (fail open)' % (index, e))
-	if pending: make_thread_list(_evaluate_net, pending)
+	# Tetto alla concorrenza SOLO qui. Il pool generale (WORKER_COUNT, 6 sulla stick) e' tarato su
+	# lavoro che rilascia il GIL a costo basso; questa fase apre invece handshake TLS verso due host
+	# diversi, ed e' la terza causa di riavvio elencata nelle note sui crash. Misurato il 24/08: otto
+	# verifiche streaming con 6 worker = 10,1 s, cioe' ~5 s a ondata -- il tempo se ne va negli
+	# handshake concorrenti, non nella latenza. Abbassare il tetto allunga un poco le pagine fredde
+	# (che sono l'1% del totale misurato) e abbassa la raffica: e' un compromesso scelto, non un
+	# miglioramento di velocita'.
+	if pending: make_thread_list_capped(_evaluate_net, pending, DUB_NET_WORKERS)
 	dropped = sum(1 for k in keep if not k)
 	_dub_log('dub_filter END media=%s in=%s out=%s (dropped %s)' % (media_type, len(ids), len(ids) - dropped, dropped))
 	# Riga sempre attiva (non gated da DUB_DEBUG): e' l'unico punto che dice quanto della lentezza
@@ -269,9 +314,9 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 		if _pg.PERF:
 			from modules.kodi_utils import logger
 			logger('FenLight PERF DUB', '%s | %s elementi | meta anticipati %s | verdetto in cache %s | '
-					'rete: streaming %s, bluray %s | scartati %s | prefetch %.1f ms + valutazione %.2f s'
+					'rete: streaming %s (risparmiate %s), bluray %s | scartati %s | prefetch %.1f ms + valutazione %.2f s'
 					% (media_type, len(ids), len(prefetched), len(_hit_cache), len(_net_streaming),
-						len(_net_bluray), dropped, (_t_dub1 - _t_dub0) * 1000, _perf() - _t_dub1))
+						len(_net_saved), len(_net_bluray), dropped, (_t_dub1 - _t_dub0) * 1000, _perf() - _t_dub1))
 	except: pass
 	return keep
 
@@ -494,6 +539,7 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 			# count specifically (more reliable than TMDb) and filter out non-film entries (music videos).
 			meta['imdb_votes'] = imdb_data_result.get('votes')
 			meta['media_subtype'] = imdb_data_result.get('title_type')
+		_store_streaming_verdict('movie', data, meta.get('imdb_year') or meta.get('year'))
 		metacache_set('movie', id_type, meta, movie_expiry(current_date, meta), current_time)
 	except: pass
 	return meta
@@ -712,6 +758,7 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			meta['total_aired_eps'] = sum(s['episode_count'] for s in _skyhook_seasons if s['season_number'] > 0)
 			meta['tvdb_to_tmdb_ep'] = get_tvdb_to_tmdb_map(tvdb_id, season_data)
 			meta['tmdb_to_tvdb_ep'] = {v: k for k, v in meta['tvdb_to_tmdb_ep'].items()}
+		_store_streaming_verdict('tvshow', data, meta.get('imdb_year') or meta.get('year'))
 		metacache_set('tvshow', id_type, _pack_ep_maps(meta), tvshow_expiry(current_date, meta), current_time)
 	except Exception as _e:
 		# Marcatore diagnostico (lotto 53): questo except era `pass`, e ingoiava qualunque errore

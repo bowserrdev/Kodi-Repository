@@ -11,6 +11,22 @@ EXPIRY_4_HOURS, EXPIRY_1_DAY, EXPIRY_1_WEEK = 4, 24, 168
 base_url = 'https://api.themoviedb.org/3'
 movies_append = 'external_ids,videos,credits,release_dates,translations,alternative_titles,images'
 tvshows_append = 'external_ids,videos,credits,content_ratings,translations,alternative_titles,images'
+# 'watch/providers' viaggia dentro la stessa richiesta dei dettagli invece che in una GET a parte
+# (98 delle 140 chiamate di rete misurate il 24/08 erano quelle). Su questa stick il collo di
+# bottiglia e' il NUMERO di handshake TLS -- otto verifiche streaming con 6 worker costavano
+# 10,1 s, ~5 s a ondata -- quindi togliere una connessione vale piu' che accorciarla.
+#
+# Non e' pero' gratis, e va detto: misurato su cinque film e una serie, la risposta cresce di
+# 15-84 KB (+28%/+57%), perche' TMDb restituisce i provider di TUTTI i paesi -- 65-131 -- e a noi
+# ne serve uno. Il conto resta ampiamente a favore (decine di KB su una connessione gia' aperta
+# contro secondi di handshake), ma solo per chi il filtro ce l'ha ACCESO: per tutti gli altri
+# sarebbe peso puro, quindi si appende solo quando serve. Vedi metadata._store_streaming_verdict.
+def _append_for(base):
+	try:
+		from modules.settings import dub_filter_enabled
+		if dub_filter_enabled(): return base + ',watch/providers'
+	except: pass
+	return base
 empty_setting_check = (None, 'empty_setting', '')
 # Session pigra (lotto 51 bis): era `session = make_session(base_url)` a livello di modulo, e make_session()
 # fa `import requests` al suo interno -- quindi ogni modulo che importava questo file
@@ -29,13 +45,13 @@ def no_api_key():
 
 def movie_details(tmdb_id, api_key, language='en'):
 	try:
-		url = '%s/movie/%s?api_key=%s&language=%s&append_to_response=%s&include_image_language=%s,en,null' % (base_url, tmdb_id, api_key, language, movies_append, language)
+		url = '%s/movie/%s?api_key=%s&language=%s&append_to_response=%s&include_image_language=%s,en,null' % (base_url, tmdb_id, api_key, language, _append_for(movies_append), language)
 		return get_tmdb(url).json()
 	except: return None
 
 def tvshow_details(tmdb_id, api_key, language='en'):
 	try:
-		url = '%s/tv/%s?api_key=%s&language=%s&append_to_response=%s&include_image_language=%s,en,null' % (base_url, tmdb_id, api_key, language, tvshows_append, language)
+		url = '%s/tv/%s?api_key=%s&language=%s&append_to_response=%s&include_image_language=%s,en,null' % (base_url, tmdb_id, api_key, language, _append_for(tvshows_append), language)
 		return get_tmdb(url).json()
 	except: return None
 

@@ -173,8 +173,17 @@ def initial_batch():
 	return max(2, value)
 
 def lookahead_pages():
-	try: value = int(get_setting('fenlight.paginate.lookahead', '1'))
-	except: value = 1
+	# Quante PAGINE di margine tenere davanti al fuoco: il watcher fa partire la pagina successiva quando
+	# gli elementi che restano scendono sotto page_limit * questo valore (vedi 'runway' in service.py).
+	# Il margine va misurato in TEMPO, non in elementi: una pagina in piu' non aggiunge build -- il numero
+	# di build per arrivare al tetto e' fissato dal tetto stesso -- decide solo QUANTO PRIMA ciascuna
+	# parte. Con 1 il margine e' di 20 elementi, cioe' 2-4 secondi di scorrimento, mentre sulla stick una
+	# build misura da 0,6 a 13 secondi (log 24/08, widget Trending): il caricamento non fa in tempo a
+	# finire e l'utente arriva in fondo e aspetta. Da qui la sensazione di paginazione "a gradini".
+	# Il default e' quindi 2 (40 elementi di margine); l'unico costo e' qualche pagina caricata in liste
+	# che l'utente abbandona a poca distanza dalla fine.
+	try: value = int(get_setting('fenlight.paginate.lookahead', '2'))
+	except: value = 2
 	return max(1, value)
 
 def max_items():

@@ -51,7 +51,7 @@ class _Done:
 
 _DONE = (_Done(),)
 
-def _run_pool(_target, _list, _style):
+def _run_pool(_target, _list, _style, _max_workers=None):
 	# Rimpiazzo di ThreadPoolExecutor con i soli `threading.Thread` (lotto 54). Semantica da
 	# preservare, verificata sull'originale:
 	#  - concorrenza limitata a WORKER_COUNT, distribuzione DINAMICA (un contatore condiviso, non una
@@ -77,13 +77,20 @@ def _run_pool(_target, _list, _style):
 				elif _style == 1: _target(*item)
 				else: _target(index, item)
 			except: pass
-	workers = [Thread(target=_worker) for _ in range(min(WORKER_COUNT, total))]
+	# _max_workers: tetto piu' basso per fasi che aprono connessioni invece di macinare dati (vedi
+	# metadata.DUB_NET_WORKERS). Omesso, resta il comportamento di sempre.
+	_cap = WORKER_COUNT if not _max_workers else min(WORKER_COUNT, _max_workers)
+	workers = [Thread(target=_worker) for _ in range(min(_cap, total))]
 	for worker in workers: worker.start()
 	for worker in workers: worker.join()
 	return _DONE
 
 def make_thread_list(_target, _list):
 	return _run_pool(_target, _list, 0)
+
+def make_thread_list_capped(_target, _list, max_workers):
+	# Come make_thread_list ma con un tetto proprio di worker.
+	return _run_pool(_target, _list, 0, max_workers)
 
 def make_thread_list_multi_arg(_target, _list):
 	return _run_pool(_target, _list, 1)

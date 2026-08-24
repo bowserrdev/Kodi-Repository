@@ -3,6 +3,6 @@
         "skinstring_lastbuildtime": "Skin.String(Shortcuts.RebuildDateTime)"
     },
     "actions": [
-        "route=action=buildtemplate&background=false&lastbuildtime={skinstring_lastbuildtime}"
+        "route=action=buildtemplate&background=true&lastbuildtime={skinstring_lastbuildtime}"
     ]
 }
