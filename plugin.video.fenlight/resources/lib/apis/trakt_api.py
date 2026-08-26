@@ -2,7 +2,6 @@
 import json
 import time
 from threading import Lock
-from urllib.parse import unquote
 from caches import trakt_cache
 from caches.settings_cache import get_setting, set_setting
 from caches.main_cache import cache_object
@@ -650,7 +649,7 @@ def get_trakt_list_selection(list_choice=None):
 def make_new_trakt_list(params):
 	list_title = kodi_dialog().input('')
 	if not list_title: return
-	list_name = unquote(list_title)
+	list_name = kodi_utils.unquote(list_title)
 	data = {'name': list_name, 'privacy': 'private', 'allow_comments': False}
 	call_trakt('users/me/lists', data=data)
 	trakt_sync_activities()
@@ -854,7 +853,14 @@ def trakt_indicators_movies():
 		# cache dei visti e farebbe sparire TUTTI i badge fino alla sincronizzazione successiva. Un errore
 		# di rete arriva qui come None; una risposta 200 con lista vuota e' indistinguibile da "non ho
 		# visto nulla", ma su un account gia' popolato e' quasi sempre un guasto: meglio non toccare nulla.
-		logger('FenLight Trakt', 'watched movies: nessun dato da Trakt, cache lasciata intatta')
+		# Non basta lasciare intatta la cache: va anche RIMANDATO il segnalibro delle attivita'.
+		# Senza questa riga (lotto 88) reset_activity ha gia' fatto avanzare il segnalibro all'inizio
+		# di trakt_sync_activities, quindi il giro dopo il confronto dice 'nessuna modifica' e il
+		# cambiamento non viene piu' richiesto MAI PIU'. Misurato il 25/08: cache dei film visti ferma
+		# all'8 agosto mentre Trakt dichiarava un'attivita' del 25, e 17 'No Changes Needed' di fila.
+		# Un guasto momentaneo di rete diventava una perdita permanente.
+		_SYNC_DEFERRED[0] = True
+		logger('FenLight Trakt', 'watched movies: nessun dato da Trakt, cache intatta e segnalibro NON avanzato')
 		return
 	make_thread_list(_process, result)
 	logger('FenLight Trakt', 'watched movies: %s da Trakt, %s in cache, %s scartati%s'
@@ -892,7 +898,12 @@ def trakt_indicators_tv():
 		except: logger('FenLight Trakt', 'watched history page %s FAILED' % page_no)
 	try: first_page = call_trakt('sync/history/episodes', params={'limit': history_page_limit}, with_auth=True, pagination=True, page_no=1)
 	except: first_page = None
-	if not first_page: return logger('FenLight Trakt', 'watched history request FAILED - watched episodes left untouched')
+	if not first_page:
+		# Vedi la nota gemella in trakt_indicators_movies (lotto 88): senza rimandare il segnalibro,
+		# questo guasto momentaneo diventa una perdita permanente. Nel log zb questa riga compare due
+		# volte, ed e' li' che gli episodi visti hanno smesso di aggiornarsi.
+		_SYNC_DEFERRED[0] = True
+		return logger('FenLight Trakt', 'watched history request FAILED - episodi intatti, segnalibro NON avanzato')
 	history = list(first_page[0] or [])
 	history_extend = history.extend
 	try: page_count = int(first_page[1])

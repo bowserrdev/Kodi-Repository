@@ -50,7 +50,11 @@ def _ram_capped_memorysize_mb(desired_mb, total_ram_mb):
 # Test di rete
 # -------------------------------------------------------------------------- #
 def _speed_test_mbps():
-	import requests
+	# UNICO punto che vuole ancora requests: iter_content, cioe' la lettura a blocchi senza tenere in
+	# memoria l'intero file. Il nostro client legge la risposta tutta in una volta e qui non va bene --
+	# il test di velocita' scarica decine di MB. E' un'azione manuale, si paga solo se la si chiede.
+	from modules.kodi_utils import import_requests_real
+	requests = import_requests_real('_speed_test_mbps')
 	for url in SPEEDTEST_URLS:
 		try:
 			start = time.time()

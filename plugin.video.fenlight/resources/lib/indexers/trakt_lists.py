@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import sys
 import json
-import random
 from threading import Thread
 from apis import trakt_api
 from indexers.movies import Movies
@@ -106,7 +105,9 @@ def get_trakt_lists(params):
 				try: lists = json.loads(get_property('fenlight.trakt.lists.order'))
 				except: pass
 			else:
-				random.shuffle(lists)
+				# random tira dentro anche warnings: pigro, come in modules/utils.py (lotto 74).
+				from random import shuffle as _shuffle
+				_shuffle(lists)
 				set_property('fenlight.trakt.lists.order', json.dumps(lists))
 			sort_method = 'none'
 		else:
@@ -254,6 +255,7 @@ def _dub_paginate(result, pages_to_load, is_external):
 	if not _dub_active(is_external):
 		process = result[:target]
 		return process, pages_to_load, len(result) > len(process)
+	from modules.paginator import deferred_count
 	country, api_key, mpaa, cdate, ctime = _dub_context()
 	kept, consumed, total = [], 0, len(result)
 	page_cap = pages_to_load + _DUB_FILL_PAGE_CAP
@@ -263,7 +265,10 @@ def _dub_paginate(result, pages_to_load, is_external):
 		chunk = result[consumed:consumed + limit]
 		consumed += len(chunk)
 		kept.extend(_dub_keep_chunk(chunk, country, api_key, mpaa, cdate, ctime))
-		if pages_consumed >= pages_to_load and len(kept) >= target: break
+		# Gli elementi RIMANDATI (lotto 95) contano verso il bersaglio: sono nascosti adesso ma
+		# ricompariranno appena il servizio li risolve. Senza, su cache fredda questo ciclo andrebbe
+		# sempre al suo tetto -- vedi paginator.deferred_count.
+		if pages_consumed >= pages_to_load and len(kept) + deferred_count() >= target: break
 	return kept, pages_consumed, consumed < total
 
 def _dub_filter_items(items, media_type, is_external):
@@ -316,12 +321,12 @@ def build_trakt_list(params):
 		paginator.log('trakt build list_type=%s name=%s is_home=%s use_result=%s setting=%s paginate_enabled=%s result=%s -> interactive=%s' %
 					(params.get('list_type'), list_name, is_home, use_result, paginator.interactive_enabled(), paginate_enabled, len(result), interactive))
 		if interactive:
-			pg_key = paginator.make_key(params)
+			pg_key = paginator.widget_key(params)
 			# Il ?pages= del path del widget: e' il segnale durevole che questa ricostruzione
 			# appartiene a un widget gia' espanso. Senza, si ricade sui flag transitori e QUALUNQUE
 			# ricostruzione non innescata dal watcher -- l'avvio di una riproduzione, per esempio --
 			# fa collassare il widget al lotto iniziale.
-			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch(), params.get('pages', 0))
+			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch(), params=params)
 			# Fill past the requested window when the dub filter thins the list, so the widget lands full
 			# (see _dub_paginate). process_list is already dub-filtered here -> no second _dub_filter_items.
 			process_list, pages_consumed, has_more = _dub_paginate(result, pages_to_load, is_external)

@@ -242,6 +242,9 @@ default_settings = [
 {'setting_id': 'paginate.limit_addon', 'setting_type': 'action', 'setting_default': '20'},
 {'setting_id': 'paginate.limit_widgets', 'setting_type': 'action', 'setting_default': '20'},
 {'setting_id': 'paginate.interactive', 'setting_type': 'boolean', 'setting_default': 'true'},
+# Interruttore unico della strumentazione (lotto 83). Vedi modules/perf.py. Default acceso finche'
+# l'indagine sulla navigazione e' aperta: le misure servono adesso, e spegnerlo e' una spunta.
+{'setting_id': 'perf.instrumentation', 'setting_type': 'boolean', 'setting_default': 'true'},
 {'setting_id': 'paginate.initial_batch', 'setting_type': 'action', 'setting_default': '2', 'min_value': '2', 'max_value': '10'},
 {'setting_id': 'paginate.lookahead', 'setting_type': 'action', 'setting_default': '1', 'min_value': '1', 'max_value': '5'},
 {'setting_id': 'paginate.max_items', 'setting_type': 'action', 'setting_default': '75', 'min_value': '20', 'max_value': '500'},

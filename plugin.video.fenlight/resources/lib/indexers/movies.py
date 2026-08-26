@@ -86,19 +86,27 @@ class Movies:
 			if page_no == 1 and not self.is_external: set_property('fenlight.exit_params', folder_path())
 			if self.action in personal: var_module, import_function = personal[self.action]
 			else: var_module, import_function = 'apis.%s_api' % self.action.split('_')[0], self.action
+			# `function` va inizializzata PRIMA del try (lotto 85). Non tutte le action hanno una
+			# funzione omonima nel modulo API: 'tmdb_movies_sets' si risolve con movieset_meta piu'
+			# sotto, quindi qui l'import fallisce ed e' corretto che fallisca. Ma con il solo
+			# `except: pass` il nome restava NON ASSEGNATO, e la riga dopo sollevava UnboundLocalError.
+			# Conseguenza osservata sulla stick (log 03:10 e 03:11): la build muore, la directory si
+			# chiude VUOTA, e il contenitore riparte da zero -- e' il meccanismo per cui "le pagine
+			# dinamiche crashano e si ricaricano da 0".
+			function = None
 			try: function = manual_function_import(var_module, import_function)
 			except: pass
-			fetch_page = self.build_fetch_page(function) if (paginator.interactive_enabled() and self.is_external) else None
+			fetch_page = self.build_fetch_page(function) if (function and paginator.interactive_enabled() and self.is_external) else None
 			if fetch_page and settings.dub_filter_enabled() and self.action not in dub_filter_excluded:
 				fetch_page = self._apply_dub_filter(fetch_page)
 			paginator.log('movies fetch_list action=%s is_home=%s is_external=%s setting=%s -> interactive=%s' %
 						(self.action, self.is_home, self.is_external, paginator.interactive_enabled(), bool(fetch_page)))
 			if fetch_page:
 				self.interactive = True
-				self.pg_key = paginator.make_key(self.params)
+				self.pg_key = paginator.widget_key(self.params)
 				paginator.log('movies BUILD action=%s key=%s params=%s' % (self.action, paginator.short(self.pg_key),
 						{k: self.params.get(k) for k in ('mode', 'action', 'category_name', 'key_id', 'url', 'query') if self.params.get(k)}))
-				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch(), self.params_get('pages', 0))
+				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch(), params=self.params)
 				# Fill every build to a full screen: server- or post-build filtering (text search, advanced
 				# search) can thin a TMDB page down to a few items, so keep loading until a page's worth is
 				# gathered. Neutral for unfiltered widgets (a single page already meets the target).

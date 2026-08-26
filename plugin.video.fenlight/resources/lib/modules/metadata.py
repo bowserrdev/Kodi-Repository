@@ -42,6 +42,55 @@ def _dub_log(msg):
 DUB_RECENT_DAYS = 120
 # Worker massimi per la fase di rete del filtro. Vedi il commento in dub_keep_mask.
 DUB_NET_WORKERS = 3
+# LOTTO 96 -- worker per il SOLO scaricamento delle schede metadati mancanti (fase 2b).
+# E' un numero diverso da DUB_NET_WORKERS di proposito, perche' il lavoro e' diverso: li' si aprono
+# handshake verso DUE host, qui si parla con il solo TMDb in keep-alive, ed e' esattamente cio' che il
+# costruttore fa gia' a ogni build con 6 worker. Non ha niente a che vedere nemmeno con il tetto del
+# lotto 81, che riguardava lavoro CPU in coda sul GIL: qui si aspetta un socket, e il GIL e' libero.
+# Si parte da 6 per allinearsi al costruttore. Per decidere se alzarlo NON serve indovinare: la riga
+# PERF DUB stampa "resa Nx su M worker" = somma dei tempi dei thread / tempo di parete. Vicino a M i
+# worker scalano e si puo' salire; molto sotto, la strozzatura e' altrove e alzarli non serve.
+DUB_META_WORKERS = 6
+# LOTTO 95 -- rete del filtro FUORI dalla costruzione. Con questo attivo un elemento senza verdetto
+# non blocca piu' il widget: viene NASCOSTO e messo in coda (modules/dub_queue), e il servizio lo
+# risolve a stick ferma. Vedi il commento in cima a dub_queue.py per il perche' del fail closed --
+# e' una richiesta esplicita dell'utente, ed e' l'unica scelta reversibile delle due.
+# Metterlo a False riporta il comportamento di prima: rete dentro la costruzione, elemento mostrato
+# finche' non si sa. E' l'interruttore da girare se il differimento dovesse dare noia; il resto del
+# codice non cambia.
+DUB_DEFER = True
+
+def dub_resolve(country, media_type, tmdb_id, title, year, verify, api_key, stats=None):
+	"""Il verdetto completo per UN titolo: True / False / None (inconcludente).
+
+	Unico posto in cui vive la regola 'streaming OPPURE home video', e ha due chiamanti: la
+	costruzione (quando DUB_DEFER e' spento) e il servizio che svuota la coda. Tenerla in una sola
+	funzione e' cio' che impedisce alle due strade di divergere.
+
+	Scrive in dub_cache ogni verdetto CONCLUSIVO -- compreso il verdetto parziale sullo streaming, che
+	e' meta' del lavoro gia' pagato. Un esito inconcludente non si scrive mai: dev'essere richiesto di
+	nuovo, non ricordato.
+	"""
+	from caches.dub_cache import dub_cache
+	from apis.bluray_api import has_home_video_release
+	streaming = dub_cache.get_streaming(country, media_type, tmdb_id)
+	if streaming is None:
+		if stats is not None: stats.append('streaming')
+		streaming = tmdb_api.streaming_available(media_type, tmdb_id, country, api_key)
+		if streaming is not None: dub_cache.set_streaming(country, media_type, tmdb_id, streaming, year)
+	elif stats is not None: stats.append('saved')
+	if streaming is True:
+		dub_cache.set_availability(country, media_type, tmdb_id, True, year)
+		return True
+	if streaming is None: return None
+	# Non e' su streaming -> ripiego home video. blu-ray.com indicizza i titoli internazionali, quindi
+	# si passa il titolo inglese/originale e l'anno IMDb.
+	if stats is not None: stats.append('bluray')
+	home_video = has_home_video_release(title, year, country, verify_released=verify)
+	if home_video is None: return None
+	available = bool(home_video)
+	dub_cache.set_availability(country, media_type, tmdb_id, available, year)
+	return available
 def _store_streaming_verdict(media_type, data, year):
 	# Chiamata SOLO su dati appena scaricati da TMDb, mai su quelli letti dalla cache: e' proprio la
 	# freschezza a rendere il dato utilizzabile. I metadati restano in cache per mesi, i provider
@@ -207,9 +256,14 @@ def dub_filter(media_type, id_type, ids, country, api_key, mpaa_region, current_
 	#
 	# Per item: dub_cache hit -> instant, 0 network. Miss -> cheap streaming check first; ONLY if not on
 	# streaming do we fall back to the slower blu-ray.com home-video check (the short-circuit that keeps
-	# blu-ray calls rare). The combined verdict is cached with asymmetric TTL (see dub_cache). INCONCLUSIVE
-	# lookups (network errors from either source) FAIL OPEN -- the item is kept and NOT cached, so it is
-	# retried on the next build rather than wrongly hidden.
+	# blu-ray calls rare). The combined verdict is cached with asymmetric TTL (see dub_cache).
+	#
+	# LOTTO 95 -- due esiti da non confondere:
+	#  - INCONCLUSIVO (la rete e' stata interrogata e non ha saputo rispondere): FAIL OPEN, l'elemento
+	#    resta visibile e il verdetto NON si scrive in cache, cosi' viene richiesto di nuovo.
+	#  - ANCORA IGNOTO (la rete non e' stata interrogata perche' DUB_DEFER la rimanda al servizio):
+	#    FAIL CLOSED, l'elemento e' nascosto e messo in coda. Nascondere e' reversibile -- il servizio
+	#    risolve e ordina una ricarica mirata; mostrare un titolo mai doppiato non lo e'.
 	if not country or not ids: return ids
 	keep = dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, current_date, current_time)
 	return [ids[i] for i in range(len(ids)) if keep[i]]
@@ -220,92 +274,175 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 	# {'media_ids':...} dicts to worker) so they can drop the matching items. See dub_filter for the logic.
 	if not country or not ids: return [True] * len(ids)
 	from caches.dub_cache import dub_cache
-	from apis.bluray_api import has_home_video_release
 	meta_func = movie_meta if media_type == 'movie' else tvshow_meta
 	# Default True == keep, so any unevaluated/errored/inconclusive item survives (fail open).
 	keep = [True] * len(ids)
-	# Stessa mossa fatta negli indexer: i metadati gia' in cache si leggono in UNA query, in sequenza,
-	# prima di aprire il pool. Senza, questo filtro ripagava per intero il costo convoglio sul GIL --
-	# ed e' il primo a girare, quindi lo pagava su TUTTA la lista, non solo sui nuovi.
-	_t_dub0 = _perf()
-	prefetched = meta_prefetch(media_type, id_type, ids, current_time)
-	_t_dub1 = _perf()
 	# Conteggi per il log: le liste sono append-only, quindi sicure fra i thread senza lock.
-	_hit_cache, _net_streaming, _net_bluray, _net_saved = [], [], [], []
+	_hit_cache, _net_stats, _deferred = [], [], []
+	# FASE 0 -- il verdetto SENZA leggere i metadati (lotto 77).
+	# La chiave di dub_cache e' (paese, tipo, tmdb_id), e il tmdb_id di solito e' gia' nel parametro:
+	# Trakt e MDbList consegnano {'tmdb':.., 'imdb':.., 'tvdb':..} e _resolve_meta_id lo estrae senza
+	# aprire nessuna cache. Prima si leggeva comunque la scheda metadati di OGNI elemento per ricavare
+	# quel numero: mediana 5,5 KB di JSON da deserializzare, cento elementi per build di widget.
+	# Misura del 24/08 sulla stessa build (mdblist 91378): il filtro leggeva 100 elementi in 5 chiamate
+	# per 1845 ms, mentre l'indexer ne leggeva 48 in una per 229 ms -- e di quei 100 il widget ne
+	# mostrava 48, cioe' 52 schede deserializzate per essere buttate. Verificato prima di scrivere:
+	# tutte le 2077 chiavi in dub.db hanno il tmdb come intero canonico, quindi '%s' produce la stessa
+	# chiave sia che l'id arrivi come int sia come stringa.
+	# Differenza di comportamento, unica e voluta: un elemento con verdetto in cache ora e' deciso dal
+	# verdetto anche se la sua scheda metadati manca o e' un segnaposto. Prima in quel caso sopravviveva
+	# comunque. Il verdetto riguarda il titolo, non lo stato della NOSTRA cache; e un elemento senza
+	# metadati l'indexer lo salta lo stesso in costruzione.
+	need_meta, already_missed = [], {}
+	for index in range(len(ids)):
+		try:
+			resolved_type, resolved_id = _resolve_meta_id(id_type, ids[index], media_type)
+			if resolved_type == 'tmdb_id' and resolved_id:
+				cached = dub_cache.get_availability(country, media_type, resolved_id)
+				if cached is not None:
+					keep[index] = cached
+					_hit_cache.append(1)
+					_dub_log('item tmdb=%s CACHE (senza metadati) -> %s' % (resolved_id, 'KEEP' if cached else 'DROP'))
+					continue
+				# Verdetto assente per QUESTO tmdb: annotato, cosi' la fase 2 non ripete la stessa
+				# interrogazione. Vale solo se il tmdb dei metadati coincide con quello dell'id.
+				already_missed[index] = resolved_id
+		except Exception as e:
+			_dub_log('item idx=%s fase0 EXCEPTION %s -> passa ai metadati' % (index, e))
+		need_meta.append(index)
+	# FASE 1 -- i metadati SOLO per chi resta: id senza tmdb, e verdetti mancanti. Si leggono in UNA
+	# query, in sequenza, prima di aprire il pool (senza, il filtro ripagava per intero il costo
+	# convoglio sul GIL, ed e' il primo a girare).
+	_t_dub0 = _perf()
+	prefetched = meta_prefetch(media_type, id_type, [ids[i] for i in need_meta], current_time) if need_meta else {}
+	_t_dub1 = _perf()
+	def _entry_query(meta):
+		# I tre dati con cui si interroga la rete, ricavati dai metadati che abbiamo gia' in mano.
+		# blu-ray.com indicizza i titoli internazionali, quindi si usa quello inglese/originale con
+		# l'anno IMDb. `verify` dipende da current_date e va deciso QUI anche quando la risposta
+		# arrivera' dopo: e' la domanda "questo titolo e' appena uscito di sala?", e la risposta e'
+		# quella di adesso.
+		return (meta.get('english_title') or meta.get('original_title') or meta.get('title'),
+				meta.get('imdb_year') or meta.get('year'),
+				_is_recent_release(meta.get('premiered'), current_date))
 	def _evaluate_net(entry):
 		index, meta, tmdb_id, title_dbg = entry
 		try:
-			year = meta.get('imdb_year') or meta.get('year')
-			# Il verdetto streaming puo' essere gia' noto: lo scrive _store_streaming_verdict quando i
-			# metadati vengono scaricati, leggendo il watch/providers che ora viaggia nella stessa
-			# richiesta. Se c'e', qui non si apre nessuna connessione.
-			streaming = dub_cache.get_streaming(country, media_type, tmdb_id)
-			if streaming is None:
-				_net_streaming.append(1)
-				streaming = tmdb_api.streaming_available(media_type, tmdb_id, country, api_key)
-				if streaming is not None: dub_cache.set_streaming(country, media_type, tmdb_id, streaming, year)
-			else:
-				_net_saved.append(1)
-			if streaming is True:
-				dub_cache.set_availability(country, media_type, tmdb_id, True, year)
-				_dub_log('item "%s" tmdb=%s STREAMING -> KEEP' % (title_dbg, tmdb_id)); return
-			if streaming is None:
-				_dub_log('item "%s" tmdb=%s streaming INCONCLUSIVE -> KEEP (fail open)' % (title_dbg, tmdb_id)); return
-			# Not on streaming -> home-video fallback. blu-ray.com wants the IMDb title/year; we use the
-			# IMDb release year (already merged into meta) and the English/original title as the closest
-			# proxy for the IMDb title (blu-ray.com indexes international/original titles).
-			title = meta.get('english_title') or meta.get('original_title') or meta.get('title')
-			# Recently-released titles: verify the blu-ray.com listing is actually on sale, not just an
-			# announced/pre-order edition (which doesn't mean a dubbed copy is available yet).
-			verify = _is_recent_release(meta.get('premiered'), current_date)
-			_net_bluray.append(1)
-			home_video = has_home_video_release(title, year, country, verify_released=verify)
-			if home_video is None:
-				_dub_log('item "%s" tmdb=%s bluray("%s" %s verify=%s) INCONCLUSIVE -> KEEP (fail open)' % (title_dbg, tmdb_id, title, year, verify)); return
-			available = bool(home_video)
-			dub_cache.set_availability(country, media_type, tmdb_id, available, year)
-			keep[index] = available
-			_dub_log('item "%s" tmdb=%s no-streaming, bluray("%s" %s verify=%s)=%s -> %s' % (title_dbg, tmdb_id, title, year, verify, available, 'KEEP' if available else 'DROP'))
+			title, year, verify = _entry_query(meta)
+			verdict = dub_resolve(country, media_type, tmdb_id, title, year, verify, api_key, _net_stats)
+			if verdict is None:
+				_dub_log('item "%s" tmdb=%s INCONCLUSIVE -> KEEP (fail open)' % (title_dbg, tmdb_id)); return
+			keep[index] = verdict
+			_dub_log('item "%s" tmdb=%s verdetto=%s -> %s' % (title_dbg, tmdb_id, verdict, 'KEEP' if verdict else 'DROP'))
 		except Exception as e:
 			_dub_log('item idx=%s EXCEPTION %s -> KEEP (fail open)' % (index, e))
-	_dub_log('dub_filter START media=%s id_type=%s country=%s items=%s' % (media_type, id_type, country, len(ids)))
-	# Fase 1, in sequenza: risolve i verdetti gia' in cache -- zero rete, solo SQLite/dict, lo stesso
-	# lavoro per cui il lotto 14 aveva gia' dimostrato che il pool costa piu' del farlo direttamente
-	# (il GIL serializza comunque, il pool aggiunge solo l'overhead di crearlo). Qui non era mai stato
-	# applicato: il log mostra decine di pagine con "rete: streaming 0, bluray 0" -- cioe' un pool di
-	# thread aperto e chiuso per lavoro che non tocca mai la rete. Solo chi resta senza verdetto va
-	# nella fase 2, nel pool: e' li' che il parallelismo serve davvero (attesa di rete, GIL rilasciato).
-	pending = []
-	for index in range(len(ids)):
+	_dub_log('dub_filter START media=%s id_type=%s country=%s items=%s (senza verdetto immediato: %s)'
+			% (media_type, id_type, country, len(ids), len(need_meta)))
+	# FASE 2 -- il verdetto con i metadati in mano, per chi e' arrivato fin qui: o perche' l'id non
+	# portava un tmdb, o perche' in fase 0 il verdetto non c'era.
+	#
+	# LOTTO 96. Era un ciclo solo, in sequenza, e la motivazione scritta qui diceva "e' lavoro di sola
+	# cache, il pool costa piu' del farlo direttamente (il GIL serializza comunque)". Vera finche' le
+	# schede sono in cache; FALSA quando non ci sono, perche' allora quel ciclo non legge: SCARICA.
+	# Misurato sulla stick il 26/08 (log zh): su 144 passaggi del filtro, 11 -- quelli in cui il
+	# prefetch non ha servito tutto -- fanno 83,8 s su 84,3 s totali, cioe' il 100% del tempo. 84
+	# schede mancanti a ~1 s l'una, una alla volta. La build peggiore: 22,9 s dei suoi 25,9 s.
+	#
+	# E non era lavoro in piu': quelle schede servono comunque al costruttore per disegnare la riga, e
+	# il costruttore le scarica con 6 worker. Il filtro, girando per primo, le tirava giu' lui -- in
+	# fila indiana. Non aggiungeva download: li DE-PARALLELIZZAVA.
+	#
+	# Ora sono tre passaggi. Il pool tocca SOLO lo scaricamento (2b); la decisione (2c) resta a thread
+	# singolo, quindi keep[] continua a essere scritto da uno solo e l'ordine della lista non si tocca.
+	# I worker qui non sono quelli del lotto 81: li' erano lavoro CPU che si faceva la coda sul GIL,
+	# qui si aspetta un socket e il GIL viene rilasciato. Vedi DUB_META_WORKERS.
+	#
+	# FASE 2a -- chi la scheda ce l'ha gia' dal prefetch, e chi deve scaricarla.
+	resolved_meta, to_download = {}, []
+	for index in need_meta:
 		try:
 			_pk = meta_prefetch_key(id_type, ids[index], media_type)
 			meta = prefetched.get(_pk) if _pk else None
-			if meta is None:
+			if meta is None: to_download.append(index)
+			else: resolved_meta[index] = meta
+		except Exception as e:
+			_dub_log('item idx=%s fase2a EXCEPTION %s -> si prova a scaricare' % (index, e))
+			to_download.append(index)
+	# FASE 2b -- lo scaricamento, in parallelo. _dl_tempi e' append-only, quindi sicuro fra i thread
+	# senza lock; l'assegnazione a resolved_meta[index] tocca una chiave diversa per ogni thread.
+	_dl_tempi, _dl_muro = [], 0.0
+	if to_download:
+		def _scarica(index):
+			_t = _perf()
+			try:
 				meta = meta_func(id_type, ids[index], api_key, mpaa_region, current_date, current_time)
+				if meta is not None: resolved_meta[index] = meta
+			except Exception as e:
+				_dub_log('item idx=%s scaricamento EXCEPTION %s -> KEEP (fail open)' % (index, e))
+			_dl_tempi.append(_perf() - _t)
+		_t_dl = _perf()
+		make_thread_list_capped(_scarica, to_download, DUB_META_WORKERS)
+		_dl_muro = _perf() - _t_dl
+	# FASE 2c -- la decisione, in sequenza, identica a prima.
+	pending = []
+	for index in need_meta:
+		try:
+			meta = resolved_meta.get(index)
 			if not meta or meta.get('blank_entry'):
 				_dub_log('item idx=%s no-meta -> KEEP (fail open)' % index); continue
 			tmdb_id = meta.get('tmdb_id')
 			title_dbg = meta.get('english_title') or meta.get('original_title') or meta.get('title')
 			if not tmdb_id:
 				_dub_log('item "%s" no-tmdb_id -> KEEP (fail open)' % title_dbg); continue
-			cached = dub_cache.get_availability(country, media_type, tmdb_id)
-			if cached is not None:
-				keep[index] = cached
-				_hit_cache.append(1)
-				_dub_log('item "%s" tmdb=%s CACHE -> %s' % (title_dbg, tmdb_id, 'KEEP' if cached else 'DROP')); continue
+			if str(already_missed.get(index)) != str(tmdb_id):
+				cached = dub_cache.get_availability(country, media_type, tmdb_id)
+				if cached is not None:
+					keep[index] = cached
+					_hit_cache.append(1)
+					_dub_log('item "%s" tmdb=%s CACHE -> %s' % (title_dbg, tmdb_id, 'KEEP' if cached else 'DROP')); continue
 			pending.append((index, meta, tmdb_id, title_dbg))
 		except Exception as e:
 			_dub_log('item idx=%s EXCEPTION %s -> KEEP (fail open)' % (index, e))
-	# Tetto alla concorrenza SOLO qui. Il pool generale (WORKER_COUNT, 6 sulla stick) e' tarato su
-	# lavoro che rilascia il GIL a costo basso; questa fase apre invece handshake TLS verso due host
-	# diversi, ed e' la terza causa di riavvio elencata nelle note sui crash. Misurato il 24/08: otto
-	# verifiche streaming con 6 worker = 10,1 s, cioe' ~5 s a ondata -- il tempo se ne va negli
-	# handshake concorrenti, non nella latenza. Abbassare il tetto allunga un poco le pagine fredde
-	# (che sono l'1% del totale misurato) e abbassa la raffica: e' un compromesso scelto, non un
-	# miglioramento di velocita'.
-	if pending: make_thread_list_capped(_evaluate_net, pending, DUB_NET_WORKERS)
+	# FASE 3 -- gli elementi per cui il verdetto richiede la RETE.
+	if pending and DUB_DEFER:
+		# LOTTO 95. La rete non si tocca qui: si nasconde e si accoda. Prima pero' una lettura di sola
+		# cache che puo' chiudere il caso a costo zero -- il verdetto sullo streaming lo scrive
+		# _store_streaming_verdict quando i metadati vengono scaricati, leggendo il watch/providers che
+		# viaggia nella stessa richiesta. Se dice "e' su streaming", il verdetto complessivo e' gia'
+		# deciso e l'elemento resta visibile senza aprire nulla. Perdere questa scorciatoia nasconderebbe
+		# per qualche secondo elementi che sappiamo gia' essere buoni.
+		for index, meta, tmdb_id, title_dbg in pending:
+			try:
+				title, year, verify = _entry_query(meta)
+				if dub_cache.get_streaming(country, media_type, tmdb_id) is True:
+					dub_cache.set_availability(country, media_type, tmdb_id, True, year)
+					_hit_cache.append(1)
+					_dub_log('item "%s" tmdb=%s STREAMING (cache) -> KEEP' % (title_dbg, tmdb_id)); continue
+				keep[index] = False   # fail closed: nascosto finche' il servizio non decide
+				_deferred.append((media_type, tmdb_id, title, year, verify))
+			except Exception as e:
+				_dub_log('item idx=%s fase3 EXCEPTION %s -> KEEP (fail open)' % (index, e))
+		if _deferred:
+			from modules import dub_queue
+			dub_queue.enqueue(_deferred)
+			# Gli id NASCOSTI vanno pubblicati insieme a quelli mostrati, o la ricarica mirata del
+			# servizio non riuscirebbe a raggiungere proprio i contenitori che li hanno nascosti:
+			# refresh_containers_for_ids salta un contenitore quando dimostra che il suo elenco di id
+			# non contiene nessuno di quelli cambiati, e un elemento nascosto in quell'elenco non c'e'.
+			paginator.defer_ids([e[1] for e in _deferred])
+	elif pending:
+		# Comportamento pre-lotto 95, con DUB_DEFER spento: rete DENTRO la costruzione.
+		# Tetto alla concorrenza SOLO qui. Il pool generale (WORKER_COUNT, 6 sulla stick) e' tarato su
+		# lavoro che rilascia il GIL a costo basso; questa fase apre invece handshake TLS verso due host
+		# diversi, ed e' la terza causa di riavvio elencata nelle note sui crash. Misurato il 24/08: otto
+		# verifiche streaming con 6 worker = 10,1 s, cioe' ~5 s a ondata -- il tempo se ne va negli
+		# handshake concorrenti, non nella latenza. Abbassare il tetto allunga un poco le pagine fredde
+		# (che sono l'1% del totale misurato) e abbassa la raffica: e' un compromesso scelto, non un
+		# miglioramento di velocita'.
+		make_thread_list_capped(_evaluate_net, pending, DUB_NET_WORKERS)
 	dropped = sum(1 for k in keep if not k)
-	_dub_log('dub_filter END media=%s in=%s out=%s (dropped %s)' % (media_type, len(ids), len(ids) - dropped, dropped))
+	_dub_log('dub_filter END media=%s in=%s out=%s (dropped %s, di cui rimandati %s)'
+			% (media_type, len(ids), len(ids) - dropped, dropped, len(_deferred)))
 	# Riga sempre attiva (non gated da DUB_DEBUG): e' l'unico punto che dice quanto della lentezza
 	# percepita e' rete inevitabile e quanto e' lavoro nostro. Il filtro gira PRIMA della costruzione,
 	# quindi finora il suo costo compariva mascherato dentro "costruzione" nella riga PERF.
@@ -313,10 +450,19 @@ def dub_keep_mask(media_type, id_type, ids, country, api_key, mpaa_region, curre
 		from modules import paginator as _pg
 		if _pg.PERF:
 			from modules.kodi_utils import logger
-			logger('FenLight PERF DUB', '%s | %s elementi | meta anticipati %s | verdetto in cache %s | '
-					'rete: streaming %s (risparmiate %s), bluray %s | scartati %s | prefetch %.1f ms + valutazione %.2f s'
-					% (media_type, len(ids), len(prefetched), len(_hit_cache), len(_net_streaming),
-						len(_net_saved), len(_net_bluray), dropped, (_t_dub1 - _t_dub0) * 1000, _perf() - _t_dub1))
+			# Lotto 96: "schede scaricate" e' la voce che prima spariva dentro "valutazione". La resa e' la
+			# somma dei tempi dei thread divisa per il tempo di parete: e' l'unico numero che dice se
+			# alzare DUB_META_WORKERS servirebbe a qualcosa, invece di provare a naso.
+			_dl_n, _dl_somma = len(_dl_tempi), sum(_dl_tempi)
+			_scar = ('nessuna' if not _dl_n else '%s in %.2f s (somma thread %.2f s, resa %.1fx su %s worker)'
+				% (_dl_n, _dl_muro, _dl_somma, (_dl_somma / _dl_muro) if _dl_muro > 0 else 0, DUB_META_WORKERS))
+			logger('FenLight PERF DUB', '%s | %s elementi | verdetto senza metadati %s | metadati letti %s (di %s richiesti) | '
+					'schede scaricate %s | verdetto in cache %s | rete: streaming %s (risparmiate %s), bluray %s | '
+					'scartati %s (rimandati al servizio %s) | prefetch %.1f ms + valutazione %.2f s'
+					% (media_type, len(ids), len(ids) - len(need_meta), len(prefetched), len(need_meta),
+						_scar, len(_hit_cache), _net_stats.count('streaming'), _net_stats.count('saved'),
+						_net_stats.count('bluray'), dropped, len(_deferred),
+						(_t_dub1 - _t_dub0) * 1000, _perf() - _t_dub1))
 	except: pass
 	return keep
 
@@ -374,7 +520,9 @@ def tvshow_meta_prefetch(id_type, media_ids, current_time=None):
 	return meta_prefetch('tvshow', id_type, media_ids, current_time)
 
 def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_time=None):
-	from apis.imdb_api import imdb_data
+	# imdb_api NON si importa qui (lotto 82): l'import era pigro solo di nome, in cima alla funzione,
+	# quindi si pagava a OGNI chiamata -- comprese le uscite da cache poche righe sotto, che sono la
+	# stragrande maggioranza. Ora sta appena prima del ramo di rete, l'unico che lo usa (riga ~447).
 	if id_type == 'trakt_dict':
 		if media_id.get('tmdb', None): id_type, media_id = 'tmdb_id', media_id['tmdb']
 		elif media_id.get('imdb', None): id_type, media_id = 'imdb_id', media_id['imdb']
@@ -392,6 +540,7 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 	if meta:
 		paginator.phase_record_meta(_m1 - _m0, _perf() - _m1)
 		return meta
+	from apis.imdb_api import imdb_data
 	try:
 		if id_type in ('tmdb_id', 'imdb_id'): data = movie_details(media_id, api_key, lang)
 		else:
@@ -583,8 +732,9 @@ def _unpack_ep_maps(meta):
 	return meta
 
 def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_time=None):
-	from apis.imdb_api import imdb_data
-	from apis.skyhook_api import get_skyhook_season_data, get_tvdb_to_tmdb_map
+	# Vedi movie_meta: i due import stavano qui, cioe' si pagavano anche quando la funzione esce da
+	# cache dodici righe sotto. Su 'continua a guardare' erano 144 ms di apis.imdb_api per una build
+	# che non ne chiama una riga. Spostati appena prima del ramo di rete.
 	if id_type == 'trakt_dict':
 		if media_id.get('tmdb', None): id_type, media_id = 'tmdb_id', media_id['tmdb']
 		elif media_id.get('imdb', None): id_type, media_id = 'imdb_id', media_id['imdb']
@@ -595,6 +745,8 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 	meta = metacache_get('tvshow', id_type, media_id, current_time)
 	if meta and not _is_blank(meta) and meta.get('meta_language', 'en') != lang: meta = None
 	if meta: return _unpack_ep_maps(meta)
+	from apis.imdb_api import imdb_data
+	from apis.skyhook_api import get_skyhook_season_data, get_tvdb_to_tmdb_map
 	try:
 		if id_type == 'tmdb_id': data = tvshow_details(media_id, api_key, lang)
 		else:

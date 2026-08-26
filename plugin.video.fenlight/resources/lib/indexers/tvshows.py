@@ -87,19 +87,23 @@ class TVShows:
 				if not any([x in folderpath for x in internal_nav_check]): set_property('fenlight.exit_params', folderpath)
 			if self.action in personal: var_module, import_function = personal[self.action]
 			else: var_module, import_function = 'apis.%s_api' % self.action.split('_')[0], self.action
+			# Vedi la nota gemella in movies.py (lotto 85): senza questa inizializzazione un import
+			# fallito lascia il nome non assegnato e la riga dopo solleva UnboundLocalError, chiudendo
+			# la directory vuota. Qui non e' ancora stato osservato in un log, ma il codice e' identico.
+			function = None
 			try: function = manual_function_import(var_module, import_function)
 			except: pass
-			fetch_page = self.build_fetch_page(function) if (paginator.interactive_enabled() and self.is_external and not is_random) else None
+			fetch_page = self.build_fetch_page(function) if (function and paginator.interactive_enabled() and self.is_external and not is_random) else None
 			if fetch_page and settings.dub_filter_enabled() and self.action not in dub_filter_excluded:
 				fetch_page = self._apply_dub_filter(fetch_page)
 			paginator.log('tvshows fetch_list action=%s is_home=%s is_external=%s random=%s setting=%s -> interactive=%s' %
 						(self.action, self.is_home, self.is_external, is_random, paginator.interactive_enabled(), bool(fetch_page)))
 			if fetch_page:
 				self.interactive = True
-				self.pg_key = paginator.make_key(self.params)
+				self.pg_key = paginator.widget_key(self.params)
 				paginator.log('tvshows BUILD action=%s key=%s params=%s' % (self.action, paginator.short(self.pg_key),
 						{k: self.params.get(k) for k in ('mode', 'action', 'category_name', 'key_id', 'url', 'query') if self.params.get(k)}))
-				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch(), self.params_get('pages', 0))
+				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch(), params=self.params)
 				# Fill every build to a full screen: server- or post-build filtering (text search, advanced
 				# search) can thin a TMDB page down to a few items, so keep loading until a page's worth is
 				# gathered. Neutral for unfiltered widgets (a single page already meets the target).

@@ -754,6 +754,14 @@
                       </item>
                       <item>
                           <visible>Container(2000).HasFocus(30)</visible>
+                          <property name="setting_label">Misure di prestazione (log)</property>
+                          <property name="setting_type">boolean</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.perf.instrumentation)]</property>
+                          <property name="setting_description">Interruttore unico di tutta la strumentazione: tempi per fase di ogni costruzione, profilo degli import, memoria libera nel tempo e mappa della navigazione. Serve solo a diagnosticare, e scrive parecchie righe nel log di Kodi: tienilo spento nell'uso normale e accendilo prima di riprodurre un rallentamento.</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_boolean&amp;setting_id=perf.instrumentation)</onclick>
+                      </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(30)</visible>
                           <visible>String.IsEqual(Window(10000).Property(fenlight.paginate.interactive),true)</visible>
                           <property name="setting_label">    - Initial Pages Loaded</property>
                           <property name="setting_type">numeric</property>

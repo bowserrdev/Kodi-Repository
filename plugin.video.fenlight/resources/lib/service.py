@@ -261,6 +261,15 @@ class WidgetPaginator:
 		# ricostruiti insieme dall'UpdateLibrary globale): era questa la ragione per cui in home la
 		# paginazione non avanzava mai e in cerca si fermava dopo qualche pagina.
 		stuck_timeout = 90
+		# Secondo timeout, molto piu' corto, per una domanda DIVERSA: non "la build e' lenta?" ma "la
+		# build e' mai partita?". Scritto il token, la skin rilegge il <content> e Kodi lancia il plugin
+		# entro un attimo -- get_pages timbra LASTBUILD prima di qualunque lavoro, quindi il timbro
+		# arriva anche se poi la costruzione dura mezzo minuto. Se dopo questo tempo non e' arrivato
+		# NIENTE, il widget non sta leggendo il token: e' un disallineamento fra addon e skin, non
+		# lentezza. Vedi LASTBUILD_PROP in paginator.py per il caso reale che lo ha reso necessario.
+		no_build_timeout = 20
+		token_written = {}   # key -> (istante del TRIGGER, scope, id contenitore, nome proprieta')
+		token_reported = set()  # una diagnosi per chiave per sessione: e' un guasto di configurazione, non un evento
 		last_current = {}  # key -> last observed focus index, so we load ahead on real downward movement only
 		last_log = None  # dedup: only log when the observed state actually changes
 		last_scope, census_tick = None, 0  # finestra censita e da quanti giri: vedi CENSUS_TICKS
@@ -311,15 +320,14 @@ class WidgetPaginator:
 					census_tick += 1
 				if census_tick in CENSUS_TICKS:
 					for cid in paginator.WIDGET_CONTAINER_IDS:
-						curl = get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % cid)
-						if not curl or 'plugin.video.fenlight' not in curl: continue
-						ckey = paginator.head_lookup(curl)
+						ckey, curl = paginator.container_head(cid, scope)
 						if not ckey: continue
-						# Stessa regola del contenitore a fuoco: se l'inquilino e' cambiato, il numero di
-						# pagine del precedente non vale piu' per questo.
-						if window.getProperty(paginator.CTL_KEY_PROP % (scope, cid)) != ckey:
-							window.setProperty(paginator.CTL_KEY_PROP % (scope, cid), ckey)
-							window.clearProperty(paginator.CTL_PAGES_PROP % (scope, cid))
+						# LOTTO 92: qui stava il controllo di cambio inquilino, che azzerava il token quando
+						# la chiave dedotta dal contenuto non corrispondeva a quella registrata. Adesso lo fa
+						# la BUILD (paginator.reconcile_position), che il contenuto lo conosce invece di
+						# dedurlo. Era questo il punto da cui partiva il danno dei lotti 90-91: bastava
+						# un'identificazione sbagliata perche' il watcher cancellasse il token del widget
+						# giusto. Il censimento ora si limita a censire.
 						paginator.registry_add(scope, cid)
 				prop_id = window.getProperty('fenlight.active_widget')
 				widget_id = None
@@ -331,8 +339,7 @@ class WidgetPaginator:
 				if widget_id is None:
 					log_change('idle cur_ctrl=%s prop=%s' % (cur_ctrl, prop_id))
 					wait_for_abort(0.3); continue
-				first_url = get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % widget_id)
-				key = paginator.head_lookup(first_url)
+				key, first_url = paginator.container_head(widget_id, scope)
 				if not key:
 					# Contenitore VUOTO con un token residuo: e' la ricerca a casella vuota, dove il path di
 					# base sparisce e resterebbe il solo '&pages=N', che Kodi non sa risolvere. Si azzera solo a
@@ -340,14 +347,11 @@ class WidgetPaginator:
 					# quindi non si rischia di svuotare un widget vivo.
 					if int(get_infolabel('Container(%s).NumItems' % widget_id) or 0) == 0:
 						window.clearProperty(paginator.CTL_PAGES_PROP % (scope, widget_id))
-					log_change('idle id=%s no-head first=%s' % (widget_id, (first_url[:50] or '-')))
+					log_change('idle id=%s no-head first=%s' % (widget_id, (first_url[:50] if first_url else '-')))
 					wait_for_abort(0.3); continue
-				# Il token vive sul CONTENITORE, la paginazione sulla CHIAVE del widget: quando il contenitore
-				# cambia inquilino il token del precedente va azzerato, o il widget nuovo si aprirebbe
-				# direttamente alle pagine accumulate da quello vecchio.
-				if window.getProperty(paginator.CTL_KEY_PROP % (scope, widget_id)) != key:
-					window.setProperty(paginator.CTL_KEY_PROP % (scope, widget_id), key)
-					window.clearProperty(paginator.CTL_PAGES_PROP % (scope, widget_id))
+				# LOTTO 92: qui stava la seconda copia del controllo di cambio inquilino, tolta per la
+				# stessa ragione dell'altra -- la riconciliazione appartiene alla build, che SA quale lista
+				# sta costruendo, non al watcher, che poteva solo dedurlo dal contenuto a schermo.
 				numitems = int(get_infolabel('Container(%s).NumItems' % widget_id) or 0)
 				current = int(get_infolabel('Container(%s).CurrentItem' % widget_id) or 0)
 				if numitems and current:
@@ -362,6 +366,19 @@ class WidgetPaginator:
 						# Il momento di partenza sta nella proprieta' stessa e non solo in `pending`, cosi'
 						# il conteggio resta valido anche se il servizio riparte a meta' build.
 						started = paginator.loading_started(key) or pending.get(key, 0)
+						# Prima del timeout lungo, una domanda diversa: e' partita almeno una build da
+						# quando ho scritto il token? Se no, non e' lentezza -- e' che il <content> di quel
+						# widget non legge questa proprieta'. Si stampa il nome esatto scritto, cosi' la
+						# verifica e' un grep dentro il file della skin e non un'indagine.
+						written = token_written.get(key)
+						if written and key not in token_reported and time() - written[0] > no_build_timeout \
+								and paginator.last_build(key) < written[0]:
+							token_reported.add(key)
+							logger('Fen Light', 'WidgetPaginator: ricarica IGNORATA. Ho scritto Window(Home).Property(%s)=%s '
+									'e in %ss non e\' partita nessuna build. Il <content> di quel widget non legge questa '
+									'proprieta\': il file generato della skin e\' vecchio rispetto ai suoi .xmltemplate. '
+									'Rigenerarlo -- alzare "buildv" in shortcuts/skinvariables-generator.json, oppure '
+									'toccare i widget dalla schermata di modifica.' % (written[1], written[2], no_build_timeout))
 						if started and time() - started > stuck_timeout:
 							window.clearProperty(paginator.LOADING_PROP % key); pending.pop(key, None)
 							logger('Fen Light', 'WidgetPaginator: build ferma da oltre %ss (key=%s), flag sbloccato. '
@@ -398,7 +415,9 @@ class WidgetPaginator:
 							# ricostruivano tutti quelli della schermata, ognuno con il suo interprete
 							# Python nuovo. Era la causa principale della lentezza in home, e la coda di
 							# invocazioni che ne usciva e' quella che faceva scadere il flag LOADING.
-							window.setProperty(paginator.CTL_PAGES_PROP % (scope, widget_id), str(pages + 1))
+							ctl_prop = paginator.CTL_PAGES_PROP % (scope, widget_id)
+							window.setProperty(ctl_prop, str(pages + 1))
+							token_written[key] = (now, ctl_prop, pages + 1)
 							wait_for_abort(0.5); continue
 			except Exception as e:
 				paginator.log('watcher EXC %s' % e)
@@ -408,6 +427,208 @@ class WidgetPaginator:
 		try: del player
 		except: pass
 		return logger('Fen Light', 'WidgetPaginator Service Finished')
+
+class DubResolver:
+	# LOTTO 95, punto 3 del piano concordato: *"coda dei verdetti doppiaggio, risolta dal servizio"*.
+	#
+	# La costruzione di un widget non fa piu' rete per il filtro doppiaggio: nasconde l'elemento e lo
+	# accoda (modules/dub_queue). Qui la coda si svuota, a stick ferma, e i verdetti finiscono in
+	# dub_cache. Se qualcuno risulta disponibile si ordina UNA ricarica mirata dei soli contenitori
+	# interessati -- alla ricostruzione quegli elementi hanno il verdetto in cache e compaiono senza
+	# toccare la rete.
+	#
+	# Le tre condizioni per lavorare, e la ragione di ognuna:
+	#  1. NON si riproduce. Richiesta esplicita dell'utente: *"durante la riproduzione non si fa nulla,
+	#     si usa tutto per la riproduzione"*. E' il punto 4 applicato a questo servizio.
+	#  2. La coda e' FERMA da QUIET_SECONDS. Finche' i widget si costruiscono continuano ad accodare;
+	#     mettersi a fare rete in mezzo all'ondata e' la raffica che le note sui crash dicono di evitare.
+	#  3. Per la RICARICA soltanto, non per le interrogazioni: l'utente non sta toccando il telecomando
+	#     da IDLE_BEFORE_REFRESH secondi. Gli elementi rientrano al loro posto in lista (l'ordine e'
+	#     preservato, invariante del paginatore), quindi cio' che sta sotto il cursore si sposta:
+	#     farlo mentre il dito si muove sarebbe esattamente il focus instabile che l'utente ha chiesto
+	#     di evitare. Le interrogazioni invece si fanno comunque -- non si vedono.
+	POLL = 2.0
+	QUIET_SECONDS = 4.0
+	IDLE_BEFORE_REFRESH = 3
+	# Titoli per giro. Piccolo di proposito: fra un lotto e l'altro si ricontrolla la riproduzione e
+	# l'abort, cosi' un film che parte ferma il lavoro entro pochi secondi invece che a coda finita.
+	BATCH = 8
+	# Oltre questo, la ricarica si fa comunque anche se l'utente non e' mai fermo: meglio uno spostamento
+	# di lista che elementi nascosti per sempre in una sessione di navigazione continua.
+	MAX_REFRESH_HOLD = 120
+
+	def run(self):
+		logger('Fen Light', 'DubResolver Service Starting')
+		from time import time
+		from modules.settings import dub_filter_enabled, dub_filter_country, tmdb_api_key
+		from modules import dub_queue, paginator
+		monitor, player = xbmc.Monitor(), xbmc.Player()
+		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
+		window = xbmcgui.Window(10000)
+		# Id risolti come DISPONIBILI e non ancora portati a schermo, con l'istante del primo.
+		to_show, held_since = [], 0
+		breaker_reported = False
+		while not wait_for_abort(self.POLL):
+			try:
+				if is_playing() or window.getProperty(pause_services_prop) == 'true': continue
+				now = time()
+				# --- la ricarica in sospeso viene prima: e' cio' che l'utente aspetta di vedere -------
+				# Si aspetta che la coda sia VUOTA, non che il lotto sia finito. Un lotto e' 8 titoli:
+				# ricaricare a ogni lotto significherebbe, su cache fredda, una decina di ricostruzioni
+				# degli stessi contenitori a pochi secondi l'una dall'altra -- la raffica che tutto il
+				# resto del lavoro esiste per evitare. Peggio: ogni ricostruzione rimetterebbe in coda i
+				# titoli ancora ignoti, alimentando il proprio ciclo. Una sola ricarica a svuotamento.
+				if to_show and (dub_queue.pending_count() == 0 or now - held_since > self.MAX_REFRESH_HOLD) \
+						and (xbmc.getGlobalIdleTime() >= self.IDLE_BEFORE_REFRESH
+								or now - held_since > self.MAX_REFRESH_HOLD):
+					ids, to_show, held_since = to_show, [], 0
+					hit = paginator.refresh_containers_for_ids(ids)
+					logger('Fen Light', 'DubResolver: %s titoli tornati disponibili, contenitori ricaricati %s '
+							'(altre finestre %s)' % (len(ids), hit, paginator.LAST_OTHER_HITS[0]))
+					continue
+				if not dub_queue.pending_count(): continue
+				if now - dub_queue.last_enqueue() < self.QUIET_SECONDS: continue
+				# Il filtro puo' essere stato spento mentre la coda era piena: in quel caso non c'e'
+				# niente da risolvere e la coda va buttata, non lavorata.
+				if not dub_filter_enabled():
+					dub_queue.clear(); continue
+				country = dub_filter_country()
+				if not country:
+					dub_queue.clear(); continue
+				api_key = tmdb_api_key()
+				batch = dub_queue.drain(self.BATCH)
+				if not batch: continue
+				from modules.metadata import dub_resolve
+				t0, resolved, inconclusive = time(), 0, 0
+				for pos, entry in enumerate(batch):
+					if monitor.abortRequested() or is_playing():
+						# Si restituisce il NON lavorato, compreso quello in corso: e' la sola cosa che
+						# rende sicuro il drain distruttivo.
+						dub_queue.requeue(batch[pos:]); break
+					media_type, tmdb_id, title, year, verify = entry
+					try:
+						verdict = dub_resolve(country, media_type, tmdb_id, title, year, verify, api_key)
+					except Exception as e:
+						logger('Fen Light', 'DubResolver: errore su tmdb=%s (%s)' % (tmdb_id, e)); verdict = None
+					if verdict is None:
+						inconclusive += 1
+						continue
+					resolved += 1
+					# Solo i DISPONIBILI muovono qualcosa a schermo: un negativo conferma cio' che si
+					# vede gia' (l'elemento e' nascosto) e non vale una ricostruzione.
+					if verdict:
+						if not to_show: held_since = time()
+						to_show.append(tmdb_id)
+				logger('Fen Light', 'DubResolver: lotto di %s in %.1f s | risolti %s (da mostrare %s) | '
+						'inconcludenti %s | in coda %s'
+						% (len(batch), time() - t0, resolved, len(to_show), inconclusive, dub_queue.pending_count()))
+				# La rete muta: se l'interruttore di blu-ray.com e' aperto, il filtro sta nascondendo
+				# elementi per una ragione che non e' un verdetto. Va detto, UNA volta per apertura --
+				# era la richiesta dell'utente: *"magari una notifica che avvisa l'utente che la rete
+				# non ha risposto per il filtro doppiaggio"*.
+				breaker_reported = self._report_breaker(inconclusive, breaker_reported)
+			except Exception as e:
+				logger('Fen Light', 'DubResolver EXC %s' % e)
+		try: del monitor
+		except: pass
+		try: del player
+		except: pass
+		return logger('Fen Light', 'DubResolver Service Finished')
+
+	def _report_breaker(self, inconclusive, already):
+		try:
+			from modules.http_client import breaker_state
+			is_open, remaining = breaker_state('www.blu-ray.com')
+			if not is_open:
+				return False   # richiuso: la prossima apertura torna a essere una notizia
+			if already or not inconclusive: return already
+			from modules.kodi_utils import notification
+			notification('Filtro doppiaggio: blu-ray.com non risponde, riprovo fra %s min. '
+						'Alcuni titoli restano nascosti.' % max(1, remaining // 60), 6000)
+			return True
+		except Exception:
+			return already
+
+class PerfSampler:
+	# Lotto 83. Il pezzo che mancava: finora ogni misura veniva da DENTRO un'invocazione del plugin,
+	# quindi il tempo fra un'invocazione e l'altra -- cioe' la NAVIGAZIONE -- era cieco. Il servizio
+	# invece e' sempre vivo, e puo' campionare.
+	#
+	# Tre serie, tutte in una riga sola per evento:
+	#  1. MEMORIA LIBERA nel tempo. La domanda a cui deve rispondere e' se il degrado osservato dopo
+	#     ~6 minuti di uso (import identici da 5,4 s a 17,4 s, con un onLowMemory di Android in mezzo)
+	#     e' pressione di memoria o solo invocazioni sovrapposte. Il valore assoluto dice poco --
+	#     Android tiene la libera bassa di proposito -- la DERIVATA dice tutto.
+	#  2. CAMBI DI FINESTRA con il tempo passato nella precedente: la mappa della navigazione, che
+	#     incrociata con le righe PERF INVOCAZIONE dice quanto di un gesto e' plugin e quanto e' skin.
+	#  3. Il PICCO di memoria persa fra un campione e il precedente, per vedere QUALE gesto la mangia.
+	#
+	# Costo per giro: una getInfoLabel e una getCurrentWindowId. Deliberatamente a 2 secondi e non a
+	# 0,3 come faceva BlurService: quel ciclo e' l'unico elemento presente in ogni crash da avvio
+	# catturato (vedi BLUR_START_DELAY), e non si ripete quell'errore per una misura.
+	INTERVAL = 2
+	# Si stampa una riga di memoria solo se e' cambiata di almeno questo, o se sono passati
+	# HEARTBEAT secondi. Senza soglia il log diventa esso stesso il carico -- e' l'errore gia' fatto
+	# con DIAG in paginator.
+	DELTA_MB = 8
+	HEARTBEAT = 30
+	# Soglia oltre la quale il ritardo del ciclo e' un segnale e non rumore di scheduling.
+	LAG_ALERT = 1.5
+
+	def run(self):
+		from modules.perf import enabled, free_memory_mb
+		if not enabled():
+			return logger('Fen Light', 'PerfSampler non avviato (strumentazione spenta)')
+		logger('Fen Light', 'PerfSampler Service Starting')
+		from time import time
+		monitor = xbmc.Monitor()
+		wait_for_abort = monitor.waitForAbort
+		window = xbmcgui.Window(10000)
+		get_current_window = xbmcgui.getCurrentWindowId
+		get_current_dialog = xbmcgui.getCurrentWindowDialogId
+		last_mem, last_beat = free_memory_mb(), time()
+		last_win, last_dialog, win_since = None, None, time()
+		worst_drop = [0, '']
+		# SONDA DI SATURAZIONE (lotto 87). Su questo Android non rootato /proc/loadavg e le zone
+		# termiche sono negate all'app, quindi carico e temperatura non si possono leggere. Ma un
+		# effetto della saturazione si misura senza permessi: quanto RITARDA questo ciclo. waitForAbort
+		# chiede 2,0 s; se ne restituisce 6 vuol dire che il thread non e' stato rischedulato in tempo,
+		# cioe' che la macchina non ce la fa. E' un termometro del carico, non della temperatura -- ma
+		# e' l'unico che possiamo leggere, e il crash del 25/08 e' avvenuto nel momento di carico
+		# massimo della sessione.
+		worst_lag, tick_at = 0.0, time()
+		logger('FenLight PERF MEM', 'inizio campionamento | memoria libera %s MB' % last_mem)
+		while not wait_for_abort(self.INTERVAL):
+			try:
+				now = time()
+				# Il ritardo si misura SEMPRE, anche a servizi in pausa: e' il campione piu' prezioso
+				# proprio quando la macchina e' occupata a fare altro.
+				lag = (now - tick_at) - self.INTERVAL
+				tick_at = now
+				if lag > self.LAG_ALERT:
+					if lag > worst_lag: worst_lag = lag
+					logger('FenLight PERF CARICO', 'ciclo in ritardo di %.1f s (chiesti %s s) | finestra %s | memoria libera %s MB | ritardo peggiore finora %.1f s'
+							% (lag, self.INTERVAL, get_current_window(), free_memory_mb(), worst_lag))
+				if window.getProperty(pause_services_prop) == 'true': continue
+				mem = free_memory_mb()
+				win, dialog = get_current_window(), get_current_dialog()
+				# 2. cambio di finestra o di dialogo
+				if win != last_win or dialog != last_dialog:
+					if last_win is not None:
+						logger('FenLight PERF NAV', 'finestra %s (dialogo %s) -> %s (dialogo %s) | %.1f s nella precedente | memoria libera %s MB'
+								% (last_win, last_dialog, win, dialog, now - win_since, mem))
+					last_win, last_dialog, win_since = win, dialog, now
+				# 3. il calo peggiore e dove e' avvenuto
+				if last_mem >= 0 and mem >= 0:
+					drop = last_mem - mem
+					if drop > worst_drop[0]:
+						worst_drop = [drop, 'finestra %s' % win]
+				# 1. memoria: solo su variazione sensibile o a battito
+				if mem >= 0 and (abs(mem - last_mem) >= self.DELTA_MB or now - last_beat >= self.HEARTBEAT):
+					logger('FenLight PERF MEM', 'memoria libera %s MB (%+d dal campione precedente) | finestra %s | calo peggiore finora %s MB (%s)'
+							% (mem, mem - last_mem, win, worst_drop[0], worst_drop[1]))
+					last_mem, last_beat = mem, now
+			except: pass
 
 class AutoStart:
 	def run(self):
@@ -441,6 +662,8 @@ class FenLightMonitor(xbmc.Monitor):
 		Thread(target=TraktMonitor().run).start()
 		Thread(target=WidgetRefresher().run).start()
 		Thread(target=WidgetPaginator().run).start()
+		Thread(target=DubResolver().run).start()
+		Thread(target=PerfSampler().run).start()
 		AutoStart().run()
 
 	def _delayed_blur_start(self):
@@ -451,6 +674,15 @@ class FenLightMonitor(xbmc.Monitor):
 		BlurService().run()
 
 	def onNotification(self, sender, method, data):
+		# Marcatori di memoria attorno alla riproduzione (lotto 83). Sono il gruppo di controllo della
+		# domanda posta dall'utente: il player E' capace di liberare risorse, quindi se la memoria
+		# risale a OnPlay e riscende a OnStop, allora la memoria si puo' liberare e il problema e' che
+		# navigando non la libera nessuno. Se invece non risale mai, non e' recuperabile per quella via.
+		if method in ('Player.OnPlay', 'Player.OnAVStart', 'Player.OnStop'):
+			try:
+				from modules.perf import log as perf_log, free_memory_mb
+				perf_log('FenLight PERF MEM', '%s | memoria libera %s MB' % (method, free_memory_mb()))
+			except: pass
 		if method in ('GUI.OnScreensaverActivated', 'System.OnSleep'):
 			xbmcgui.Window(10000).setProperty(pause_services_prop, 'true')
 			logger('OnNotificationActions', 'PAUSING Fen Light Services Due to Device Sleep')

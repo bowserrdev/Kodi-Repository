@@ -8834,3 +8834,1983 @@ fissato dal tetto stesso, il margine decide solo *quanto prima* ciascuna parte. 
 Il valore memorizzato su questa stick e' pero' `1` in modo esplicito, quindi **il cambio di default non
 la tocca**: va alzato a mano in Impostazioni > Liste > "Scroll Lookahead (pages)". Con 2 il margine
 diventa 40 elementi (~4-8 s), con 3 sessanta.
+
+---
+
+## Lotto 74 — l'import e' il costo, e il costo si paga a FILE
+
+**Come si e' arrivati qui.** Ipotesi precedente: l'ordine di `sys.path` mette sei cartelle su FUSE
+prima della libreria standard, quindi ogni import stdlib le frugherebbe tutte. **Respinta dai dati.**
+Stesso import di 71 moduli, stessa sessione:
+
+| totale | Fen Light | stdlib | contesto |
+|---|---|---|---|
+| 4833 ms | 1857 | 2975 | avvio |
+| **556 ms** | **262** | **293** | invocazione isolata, a caldo |
+| 3720 ms | 1383 | 2337 | tre build in parallelo |
+
+I moduli di Fen Light stanno sulla PRIMA voce del path e quelli della stdlib sull'ultima, eppure si
+gonfiano dello stesso fattore (7x e 10x). Se il costo fosse la scansione del path, i primi sarebbero
+rimasti piatti. Il discriminante e' cache di sistema fredda/calda e contesa, non l'ordine.
+
+**Il modello giusto.** Dal profilo di una build a freddo: `keyword` 97 ms (50 righe), `reprlib` 100 ms,
+`_locale` 168 ms, `urllib` 162 ms. Il costo non dipende da quanto un modulo contiene:
+
+> costo di import ≈ (numero di FILE aperti) x 80-250 ms a cache fredda
+
+71 moduli x ~80 ms = 5,7 s. Torna. Quindi l'unica leva e' **ridurre il numero di file**.
+
+### Perche' pesa anche fuori dall'avvio
+
+`reuselanguageinvoker=false` (obbligatorio, previene il segfault) da' un interprete NUOVO a ogni
+invocazione: nulla resta importato fra una e l'altra. Aprire una stagione, a caldo:
+
+```
+build_season_list | totale 710 ms | import 210 + import pigri 305 + indexer 77 + coda 116
+```
+
+515 ms di import per 77 ms di lavoro: il 73%.
+
+### Interventi
+
+**urllib.parse.** Ne servivano tre funzioni: `urlencode` (kodi_utils.build_url), `parse_qsl` (router,
+paginator, su ogni invocazione), `unquote` (apis.trakt_api). Riportate in `kodi_utils.py` come port
+fedele di CPython: stessa tabella di caratteri sicuri, stesso maiuscolo esadecimale, stessa gestione
+delle sequenze percent non valide, stessa divisione ASCII / non-ASCII di `unquote`.
+
+Verificato con test differenziale contro `urllib`: **19.200 stringhe, 0 divergenze** — le 62 query
+reali estratte dai log, piu' casi limite (`%`, `%zz`, `%2`, `%E2%82`, accenti, CJK, emoji, `+`, `=`,
+`&`, spazi in testa/coda) piu' 20.000 stringhe casuali; e 3.000 dizionari per `urlencode`, con
+round-trip `build_url` -> `parse_qsl`.
+
+**_strptime.** `modules/utils.py` aveva `import _strptime` in testa, che tira `locale` + `_locale` +
+`calendar`: quattro file, ~400 ms a freddo. Fen Light analizza date in TRE formati soltanto, tutti a
+campi fissi e numerici, quindi si leggono a fette di stringa. Il ramo veloce e' deliberatamente piu'
+severo di strptime (campi ristretti a cifre ASCII: `int()` accetta `+026` e `2_26`, strptime no), cosi'
+qualunque caso fuori formato ricade sul ripiego invece di essere interpretato a caso. Il vecchio import
+esisteva per la corsa nota di CPython quando strptime parte da piu' thread insieme: quella garanzia ora
+la da' un lock sul solo ramo di ripiego.
+
+Verificato: **540.084 casi, 0 divergenze** (ramo veloce 132.830, ripiego 407.254).
+
+**random.** Reso pigro: tirava `_sha512` (~160 ms) per il solo ordinamento casuale delle liste.
+
+### Cosa aspettarsi e come si misura
+
+Il profilo di import gia' esistente stampa `N moduli | totale X ms`: e' l'A/B. Riferimento PRIMA, preso
+dall'avvio del 24/08 (u1, T:25687) e dal minimo a caldo:
+
+```
+avvio, build mdblist : 71 moduli | 5699 ms   (Fen Light 2324 + stdlib 3375)
+a caldo, isolata     : 71 moduli |  556 ms
+```
+
+Quanti file spariscano davvero non era deducibile a tavolino: la stdlib 3.11 del dispositivo non e'
+leggibile senza root e in locale c'e' solo la 3.9, dove il grafo e' diverso. Lo dira' il prossimo log.
+
+### Esito misurato (24/08, log v1) — il modello sovrastimava
+
+**Correttezza: piena.** Nessun errore, tutte le build hanno prodotto i loro elementi, e gli URL nel log
+sono codificati esattamente come prima (`Top+250+Movies+%28iMDB%29`, `https%3A%2F%2F...`).
+
+**File tolti: da 6 a 12 per invocazione**, deterministico:
+
+| invocazione | prima | dopo |
+|---|---|---|
+| continue_watching | 69 moduli | 57 |
+| mdblist | 71 | 65 |
+| season_list / episode_list | 66 | 54 |
+| movie_list | 64-66 | 53-55 |
+
+**Tempo: sostanzialmente invariato a caldo.** `episode_list`: 66 moduli / 568 ms -> 54 moduli /
+567 ms. La colonna stdlib scende (363 -> 292) e quella di Fen Light sale (205 -> 274).
+
+**La previsione "12 file = ~1 secondo" era sbagliata, ed e' istruttivo capire perche'.** I 80-250 ms
+per file venivano letti dal profilo di AVVIO, dove il tempo attribuito a un modulo e' dominato da I/O a
+cache fredda che pero' scalda strutture CONDIVISE (voci di directory, lo zip della stdlib). Togliere
+quel modulo non toglie quell'I/O: lo paga il successivo. Il profilatore lo attribuisce a chi capita di
+arrivare per primo, e `keyword` a 97 ms era questo, non il costo di `keyword`.
+
+La conferma sta nella ripartizione dei segmenti di `build_season_list`:
+
+```
+prima:  import 210 + import pigri 305   (somma 515)
+dopo:   import  77 + import pigri 447   (somma 524)
+```
+
+Il costo si e' **spostato**, non ridotto: `re` e il suo albero non erano un'esclusiva di urllib.parse,
+li importano comunque `modules/utils.py` e `modules/paginator.py`, solo piu' tardi. Il risparmio reale
+riguarda i soli file davvero spariti (`urllib`, `urllib.parse`, `ipaddress`, `locale`, `_locale`,
+`calendar`, `random`, `_sha512` e pochi altri), a ~6-8 ms l'uno a caldo.
+
+**La misura d'avvio di questo log NON e' utilizzabile**, ed e' colpa mia: nel deploy ho cancellato
+l'intera `__pycache__/*.pyc` invece dei soli cinque file sostituiti, quindi questo avvio ha
+RICOMPILATO ogni modulo. Gli `.pyc` sul dispositivo portano l'ora 22:39, la stessa dell'avvio nel log.
+Si vede nel dato: la colonna Fen Light sale (1857 -> 2635) mentre la stdlib scende (2975 -> 2591).
+
+Unico confronto d'avvio ancora indicativo, il tempo a home popolata: **11,75 s -> 10,79 s**, e il
+secondo dei due pagava la ricompilazione. Va rifatto con i `.pyc` gia' compilati.
+
+**Conclusione provvisoria.** L'intervento e' corretto, verificato e si tiene — non costa nulla
+mantenerlo — ma vale decine di millisecondi per invocazione, non secondi. La strada "ridurre i file di
+import" e' molto piu' stretta di come l'avevo presentata.
+
+### Misura pulita (24/08 22:45, log w1) — il modello regge a FREDDO, non a caldo
+
+`.pyc` datati 22:39, avvio alle 22:45: nessuna ricompilazione, confronto valido.
+
+**Avvio — tre build concorrenti piu' la quarta in coda:**
+
+| | prima | dopo | delta |
+|---|---|---|---|
+| continue_watching | 69 mod / 4730 ms | 57 mod / 3709 ms | −1021 ms (−22%) |
+| mdblist | 71 mod / 4833 ms | 65 mod / 3990 ms | −843 ms (−17%) |
+| mdblist | 71 mod / 4712 ms | 65 mod / 4467 ms | −245 ms (−5%) |
+| mdblist (in coda) | 71 mod / 2410 ms | 65 mod / 1778 ms | −632 ms (−26%) |
+| **somma import** | **16685 ms** | **13944 ms** | **−2741 ms (−16%)** |
+| di cui stdlib | 10136 | 8008 | −2128 |
+| di cui Fen Light | 6548 | 5936 | −612 |
+
+**Tempo a home popolata: 11,75 s -> 9,56 s (−2,19 s, −19%).**
+
+**Navigazione a caldo:** `season_list` 710 -> 650 ms, 754 -> 710 ms; `episode_list` 1079 -> 1037 ms.
+Fra −4% e −8%, cioe' 40-60 ms.
+
+**Il quadro che ne esce, e che concilia le due letture precedenti.** Il costo per file NON e' una
+costante: e' ~80-250 ms a cache fredda e ~6-8 ms a caldo. Quindi togliere dodici file vale due secondi
+all'avvio e cinquanta millisecondi dopo. La misura contaminata del log precedente mostrava solo il
+secondo caso e mi aveva portato a dichiarare l'intervento quasi inutile: era la misura a essere rotta,
+non il modello. Il modello e' incompleto in un altro senso — dice "a freddo", e va detto.
+
+**Coda finale.** `random` risultava ancora importato da `indexers.trakt_lists` (piu' `warnings` al
+seguito): ~90 ms per build all'avvio. Reso pigro li' e in `modules/episode_tools.py`; in
+`indexers/random_lists.py` resta di primo livello, e' il modulo che esiste per quello e non sta sul
+percorso d'avvio.
+
+**Cosa resta sul percorso, e perche' e' quasi tutto incomprimibile.** Sommando le tre build d'avvio:
+`json` (decoder+encoder+scanner, ~1130 ms), `sqlite3`+`datetime` (~840), `collections`+`operator`+
+`reprlib`+`keyword`+`itertools` tirati da `functools` che tira `threading` (~1400), `re`+`enum`
+(~900). Sono cache su SQLite, serializzazione JSON, thread ed espressioni regolari: le fondamenta
+dell'addon, non decorazioni. Lato Fen Light il piu' pesante e' `indexers.movies` (874 ms su tre build),
+che e' il costruttore di elementi.
+
+**Verdetto sulla strada.** Ha dato −19% sull'avvio ed e' sostanzialmente esaurita: quel che restava
+erano i ~300 ms di `random`, presi. La navigazione a caldo non si muovera' comprimendo import, perche'
+li' un file costa 6 ms.
+
+---
+
+## Lotto 75 — il tetto di 3 script, e i pool rimasti a costruire listitem
+
+### Perche' all'avvio partono solo tre widget
+
+Misurato: in ogni avvio i quattro provider della home vengono sottomessi nello stesso istante, tre
+partono e il quarto aspetta che il primo finisca. Verificato su quattro avvii distinti (u1, v1, w1, p1);
+in w1 il quarto widget parte 6,1 s dopo gli altri, su 9,56 s di avvio totale.
+
+La causa e' nella sorgente di Kodi, non nostra, e la catena e' verificata riga per riga (branch Nexus):
+
+- `DirectoryProvider.cpp`: `AddJob(new CDirectoryJob(...), this)` — **senza** argomento di priorita';
+- `JobManager.h`: `unsigned int AddJob(CJob*, IJobCallback*, CJob::PRIORITY priority = CJob::PRIORITY_LOW);`
+- `Job.h`: `PRIORITY_LOW_PAUSABLE = 0, PRIORITY_LOW, PRIORITY_NORMAL, PRIORITY_HIGH, PRIORITY_DEDICATED`
+  quindi `PRIORITY_LOW = 1` e `PRIORITY_HIGH = 3`;
+- `JobManager.cpp`:
+  ```cpp
+  unsigned int CJobManager::GetMaxWorkers(CJob::PRIORITY priority)
+  {
+    static const unsigned int max_workers = 5;
+    if (priority == CJob::PRIORITY_DEDICATED) return 10000;
+    return max_workers - (CJob::PRIORITY_HIGH - priority);
+  }
+  ```
+  `5 - (3 - 1)` = **3**.
+
+E' una costante di compilazione, non esposta in `advancedsettings.xml` ne' altrove: **non si alza senza
+ricompilare Kodi**. Le uniche leve restano indirette — meno widget nella home, oppure build piu' brevi
+perche' la coda si smaltisca prima.
+
+Nota sulle misure grezze: contando *tutte* le invocazioni Fen Light si vedono picchi di 4-5, ma sono
+`RunPlugin` (handle -1, es. `fen_blur`) e navigazioni di finestra Video, che non passano dal pool dei
+job. Contando i soli job di `CDirectoryProvider` il tetto e' 3.
+
+### I pool che costruiscono ancora listitem
+
+Il lotto 14 aveva serializzato la costruzione in `indexers/movies.py` e `indexers/tvshows.py` — misura
+dell'epoca: la stessa `addContextMenuItems` costa 0,2 ms nel thread principale e 14,9 ms dentro il pool
+a 6 worker, 74 volte tanto, perche' li' non c'e' I/O e il GIL serializza comunque. L'impostazione utente
+per fissare i worker fu tolta nella stessa occasione; `WORKER_COUNT` (cpu_count + 2 = 6 sulla stick)
+e' rimasta e serve alla sola fase di RETE.
+
+Tre punti pero' non erano stati convertiti, e **fondono ancora lettura metadati e costruzione dentro lo
+stesso pool**:
+
+| dove | cosa | sul percorso d'avvio? |
+|---|---|---|
+| `indexers/episodes.py: build_single_episode` | `tvshow_meta` + `episodes_meta` + listitem, in pool | **SI** |
+| `indexers/seasons.py: single_seasons` | `build_season_list` in pool | no |
+| `windows/extras.py: make_more_like_this` | `movie_meta` + listitem, in pool | no |
+
+Il primo conta: `build_single_episode` e' chiamato da `indexers/continue_watching.py`, cioe' dal widget
+"Continua a guardare" della home. Nell'avvio pulito del 24/08 quel widget passava **22 episodi + 1 film**
+per il pool, con `indexer 1853 ms`.
+
+`modules/watched_status.py: active_tvshows_information` usa un pool ma **non** costruisce listitem: sono
+letture di metadati, dove i thread servono davvero. Va lasciato com'e'.
+
+La correzione non e' una riga: e' lo stesso rimodellamento di `movies.py` — lettura in blocco dei
+metadati, thread per i soli mancanti, costruzione in sequenza. `build_continue_watching` inoltre non ha
+il rapporto `PERF FASI`, quindi oggi i 1853 ms non sono divisibili fra metadati e costruzione: la prima
+cosa da fare e' strumentarlo.
+
+---
+
+## Lotto 76 — bilancio dell'avvio, e dove e' rimasto il grasso
+
+Log del 24/08 23:08, avvio pulito (unica contaminazione: `trakt_lists.pyc` ricompilato, un file).
+
+### Esito di `random` reso pigro (lotto 75)
+
+Moduli per build mdblist: 65 -> **59**. Colonna stdlib sulle quattro build d'avvio:
+8008 ms -> **7559 ms, −449 ms**. La colonna Fen Light sale (+992) ma include la ricompilazione.
+Il segmento `indexer` peggiora di 2 s fra le due sessioni senza che noi c'entriamo: e' varianza locale,
+in questo avvio **non c'e' stata una sola chiamata di rete**.
+
+### Come si spendono i 18,31 s dall'avvio del processo alla home popolata
+
+| fase | quando | durata | quota |
+|---|---|---|---|
+| Kodi: database, inventario add-on, servizi | 0 → 4,87 s | 4,87 s | 27% |
+| caricamento skin fino allo splash | 4,87 → 5,26 s | 0,39 s | 2% |
+| costruzione di `Home.xml` (skin) | 5,26 → 6,99 s | 1,73 s | 9% |
+| richiesta dei provider | 6,99 → 7,39 s | 0,40 s | 2% |
+| **build dei quattro widget** | 7,39 → 18,31 s | **10,92 s** | **60%** |
+
+Dentro i 10,92 s: tre slot al massimo (vedi lotto 75), il quarto widget parte a +14,2 s. Una singola
+build, quella da 8521 ms:
+
+```
+import              4276 ms  (50%)   interprete nuovo, 59 moduli
+filtro doppiaggio   2685 ms  (32%)   ZERO rete
+costruzione         1331 ms  (16%)   48 listitem, 27,7 ms ciascuno
+consegna a Kodi       60 ms  (0,7%)
+```
+
+### Il grasso rimasto: il prefetch del filtro doppiaggio
+
+Le cinque pagine di quella build:
+
+```
+prefetch 279,7 ms + valutazione 0,42 s     verdetto in cache 20/20, rete 0
+prefetch 112,9 ms + valutazione 0,19 s     verdetto in cache 20/20, rete 0
+prefetch  92,9 ms + valutazione 0,11 s     verdetto in cache 20/20, rete 0
+prefetch 1141,4 ms + valutazione 0,07 s    verdetto in cache 20/20, rete 0
+prefetch 218,5 ms + valutazione 0,05 s     verdetto in cache 20/20, rete 0
+--------------------------------------------------------------
+prefetch  1845 ms   valutazione 840 ms  =  2685 ms
+```
+
+`dub_keep_mask` legge in blocco i metadati di **tutti** gli elementi (100, cinque pagine da venti) per
+ricavarne il `tmdb_id` e interrogare `dub_cache`. Ma quando l'id arriva gia' come dizionario Trakt/MDbList,
+`_resolve_meta_id` restituisce il tmdb **senza toccare nessuna cache**, e se il verdetto e' gia' noto —
+come lo era per 100 elementi su 100 — dei metadati non serve nient'altro. Sono 1845 ms spesi per
+ottenere qualcosa che era gia' a disposizione, e per 52 elementi su 100 sono spesi per costruire una
+listitem che poi viene scartata.
+
+Ristrutturazione: risolvere `(tipo, id)` senza I/O, interrogare `dub_cache` per chi risolve a tmdb, e
+fare il prefetch dei metadati **solo** per il resto (id senza tmdb, piu' i verdetti mancanti). Chi
+sopravvive lo legge poi l'indexer, una volta sola invece di due.
+
+### Cosa resta oltre a questo
+
+- `build_continue_watching` usa ancora il pattern vecchio (metadati + costruzione nello stesso pool,
+  vedi lotto 75): segmento `indexer` 1946 ms, ma **manca `PERF FASI`**, quindi non e' divisibile.
+- I 4,87 s di avvio di Kodi sono di Kodi.
+- 1,73 s per costruire `Home.xml` sono della skin: e' la direzione 1, l'alleggerimento.
+- Import: 4276 ms per build restano, e sono json, sqlite3, re, threading e l'albero di Fen Light.
+  Dopo i lotti 74-75 li' non c'e' piu' niente da togliere che non sia struttura portante.
+
+---
+
+## Lotto 77 — il filtro doppiaggio smette di aprire la scheda per leggere la targa
+
+**Il costo, e dove stava davvero.** Il verdetto NON e' lento da leggere: sta in `dub.db`, 143 KB, chiave
+indicizzata. Lento era ARRIVARCI. La chiave e' `(paese, tipo, tmdb_id)` e `dub_keep_mask` ricavava il
+`tmdb_id` leggendo la scheda metadati completa di ogni elemento — mediana misurata su `metacache.db`
+del dispositivo: **5,5 KB di JSON per elemento**, cento elementi per build di widget.
+
+E il `tmdb_id` era gia' nel parametro: Trakt e MDbList consegnano `{'tmdb':.., 'imdb':.., 'tvdb':..}` e
+`_resolve_meta_id` lo estrae senza aprire nessuna cache.
+
+Confronto dalla stessa build (24/08, mdblist 91378):
+
+```
+filtro doppiaggio : 100 elementi, 5 chiamate  -> 1845 ms  = 18,5 ms/elemento
+indexer           :  48 elementi, 1 chiamata  ->  229 ms  =  4,8 ms/elemento
+```
+
+Tre sprechi sovrapposti: la lettura per ricavare un dato gia' noto; 52 schede su 100 deserializzate per
+elementi poi scartati; e per i 48 sopravvissuti la stessa scheda letta DUE volte, dal filtro e
+dall'indexer. La differenza per elemento (18,5 contro 4,8 ms) non e' la quantita' di dati: e' che il
+filtro paga la lettura cinque volte, una per pagina, ognuna con il suo giro di SQLite e i suoi passaggi
+di consegne del GIL mentre altri due widget stanno costruendo. Nella stessa build la pagina piu' veloce
+ha misurato 93 ms e la piu' lenta 1141.
+
+**Perche' NON si e' messo il booleano dentro la riga dei metadati** (era l'ipotesi alternativa): per
+leggere un campo dentro quella riga bisogna comunque leggere e deserializzare i 5,5 KB, cioe' proprio il
+costo da togliere. Si sarebbe risparmiata la lookup su `dub.db`, che e' la parte gia' economica. In piu'
+avrebbe accoppiato due scadenze appena separate: i metadati scadono, il verdetto positivo e' permanente
+dal lotto 71 ter, e un refresh dei metadati (o "Clear Meta Cache") si sarebbe portato via 1122 verdetti.
+
+**La modifica.** Tre fasi invece di due:
+
+- **fase 0**, senza I/O: `_resolve_meta_id` sull'id cosi' com'e' arrivato; se risolve a tmdb, si
+  interroga `dub_cache` e per chi ha gia' un verdetto e' finita. Zero metadati letti.
+- **fase 1**: `meta_prefetch` **solo** per chi resta (id senza tmdb, verdetti mancanti).
+- **fase 2/3**: identiche a prima. Chi ha avuto un verdetto assente in fase 0 non viene re-interrogato
+  in fase 2 (`already_missed`), per non raddoppiare le lookup.
+
+**Verifiche fatte prima di scrivere e prima di consegnare.**
+
+1. *Le chiavi combaciano*: 2077 voci su 2077 in `dub.db` hanno il tmdb come intero canonico (niente zeri
+   iniziali, niente `.0`), quindi `'%s'` produce la stessa chiave sia da int sia da stringa. Senza questo
+   controllo l'ottimizzazione sarebbe fallita in silenzio, mandando tutto in rete.
+2. *Equivalenza*: vecchia e nuova funzione eseguite sugli stessi 600 elementi sintetici (tmdb int e
+   stringa, solo-imdb, id inutilizzabili, metadati assenti, `blank_entry`, verdetti misti), in due
+   scenari — realistico e ostile (15% senza metadati, fetch che fallisce).
+
+   ```
+   realistico : maschera diversa  8/600 | ELEMENTI MOSTRATI diversi 0 | metadati letti 600 -> 173
+   duro       : maschera diversa 27/600 | ELEMENTI MOSTRATI diversi 0 | metadati letti 600 -> 176
+   ```
+
+   La maschera differisce solo per elementi che l'indexer **non riesce comunque a costruire** (metadati
+   assenti o `blank_entry`): prima sopravvivevano alla maschera e venivano scartati dopo, in silenzio;
+   ora li decide il verdetto. A schermo non cambia nulla, in nessuno dei due scenari. Cambia in meglio un
+   caso: un titolo con verdetto negativo e metadati scaduti prima faceva una richiesta di rete per essere
+   poi scartato lo stesso.
+
+**Riferimento per l'A/B.** Le cinque pagine di mdblist 91378 il 24/08: `verdetto in cache 20/20` su
+ognuna, `scartati` 17, 4, 11, 12, 8, prefetch totale 1845 ms. Se la maschera e' identica quei cinque
+`scartati` devono ripetersi uguali, e la riga PERF DUB ora riporta anche `verdetto senza metadati N`,
+che in quel caso deve valere 20 su 20.
+
+### Esito misurato (25/08 00:55, log z2)
+
+**La fase 0 aggancia sempre.** Undici pagine, tutte cosi':
+
+```
+20 elementi | verdetto senza metadati 20 | metadati letti 0 (di 0 richiesti) | verdetto in cache 20
+```
+
+Il filtro non legge piu' una sola scheda metadati. Zero errori nel log.
+
+**Coerenza della maschera**, verificata su tutte e tre le build:
+
+```
+mdblist  91378  pagine 5 | valutati 100 | senza metadati 100/100 | scartati 54 | costruiti 46  OK
+mdblist 101881  pagine 3 | valutati  60 | senza metadati  60/60  | scartati  6 | costruiti 54  OK
+mdblist   2194  pagine 3 | valutati  60 | senza metadati  60/60  | scartati 18 | costruiti 42  OK
+```
+
+`valutati − scartati == costruiti` esatto ovunque. (Su 91378 gli scartati sono 54 contro i 52 del 24/08:
+e' una lista viva, "Latest releases", il cui contenuto e' cambiato fra le due sessioni.)
+
+**Effetto sul tempo, segmento `indexer`:**
+
+| | prima (y2) | dopo (z2) | delta |
+|---|---|---|---|
+| continue_watching | 1946 ms | 1489 ms | −457 |
+| mdblist 91378 | 3843 ms | 2349 ms | −1494 |
+| mdblist 101881 | 4185 ms | 2433 ms | −1752 |
+| mdblist 2194 | 766 ms | 790 ms | +24 |
+| **somma** | **10740 ms** | **7061 ms** | **−3679 (−34%)** |
+
+E dentro le build, il segmento `risoluzione` dove il filtro viveva: 2,85 → 1,27 s; 2,72 → 1,04 s;
+0,48 → 0,17 s.
+
+**La misura d'avvio e' di nuovo parziale**: `metadata.pyc` e' stato ricompilato in questo avvio (mtime
+00:55, come l'avvio), ed e' un file da 80 KB che entra nel segmento `import pigri` — che infatti sale di
+~1350 ms per build. E' inevitabile al primo avvio dopo un deploy, non un difetto della modifica. Il
+tempo a home popolata scende comunque: **11,33 → 10,81 s**, con la ricompilazione a carico.
+
+Va rifatto un avvio con i `.pyc` gia' compilati. Nota di metodo, la stessa gia' annotata in memoria: il
+primo avvio dopo un deploy non e' mai confrontabile.
+
+**Attenzione a non sovrastimare.** I 3,68 s risparmiati sono lavoro di CPU tolto, ma i tre widget girano
+sovrapposti: il tempo a schermo e' fissato dalla catena piu' lunga, non dalla somma. Il guadagno pieno si
+vede altrove — meno contesa fra le build, il quarto widget che parte prima, e ogni ricostruzione
+successiva (paginazione, rientro dal player) che paga il filtro a zero letture.
+
+### Esito misurato su avvio pulito (25/08 01:14, log z3)
+
+`.pyc` verificati **prima** di leggere i tempi: `metadata.cpython-311.opt-1.pyc` ha mtime 00:55, cioe'
+l'avvio precedente. In questo avvio (01:14) nessun modulo e' stato ricompilato. La misura e' valida.
+
+**Tempo a home popolata** — ancora fra la fine di `script.skinvariables` (il momento in cui la home e'
+libera e i widget possono partire) e la consegna del quarto widget:
+
+| | y2 (pre-77) | z2 (contaminato) | z3 (pulito) |
+|---|---|---|---|
+| skinvariables → 4° widget | 11,33 s | 10,81 s | **8,84 s** |
+| "Starting Kodi" → 4° widget | 18,32 s | 17,18 s | **15,36 s** |
+
+**−2,49 s sul tempo utile (−22%)**, −2,95 s sull'avvio completo.
+
+**Totali per build:**
+
+| build | y2 | z3 | delta |
+|---|---|---|---|
+| continue_watching | 5820 ms | 4809 ms | −1011 |
+| mdblist 91378 | 8050 ms | 6261 ms | −1789 |
+| mdblist 101881 | 8521 ms | 6351 ms | −2170 |
+| mdblist 2194 | 2759 ms | 2583 ms | −176 |
+| **somma** | **25150 ms** | **20004 ms** | **−5146 (−20%)** |
+
+Segmento `indexer`: 10740 → 7863 ms (−27%). E' 800 ms sopra z2 (7061) perche' con gli import piu'
+veloci le tre build si sovrappongono di piu' e la contesa si sposta sull'indexer: e' l'effetto atteso
+quando si toglie lavoro da una catena parallela, non una regressione.
+
+**Il prefetch legge ora solo i sopravvissuti**, non piu' tutti i valutati:
+
+```
+movies None | 54 richiesti, 54 gia' in cache (100%) | lettura unica 337.4 ms
+movies None | 46 richiesti, 46 gia' in cache (100%) | lettura unica 251.0 ms
+tvshows None| 42 richiesti, 42 gia' in cache (100%) | lettura unica 123.7 ms
+```
+
+54/46/42 invece di 100/60/60. E' la meta' esatta del guadagno: il filtro non legge piu' i metadati, e
+quello che legge la costruzione e' solo cio' che finisce davvero a schermo.
+
+13 righe PERF DUB, tutte `metadati letti 0 (di 0 richiesti)`. Zero errori. Maschera coerente
+(`valutati − scartati == costruiti`) su tutte le build.
+
+**Resta il primo capitolo aperto:** `import pigri` e' ora 2919/3226/3195/1557 ms (somma 10897), cioe' da
+solo meta' del tempo di ogni build. E in un thread di servizio `requests` si importa in 7370 ms sotto
+contesa (era 8889 in y2).
+
+## Lotto 78 — strumentazione di `build_continue_watching`
+
+Era l'unico dei quattro widget d'avvio il cui segmento `indexer` non fosse scomponibile. Due cause,
+entrambe da correggere prima di poter misurare:
+
+1. `build_single_episode` ha due uscite. Quella normale, in fondo, chiama `log_build` e `phase_report`.
+   La strada di 'continua a guardare' passa da `return_results` ed esce PRIMA di entrambe. Il ramo non
+   era privo di strumentazione: era strumentato in un punto che non attraversa mai.
+2. `phase_reset`/`phase_record` lavorano su liste GLOBALI di modulo, ma `build_continue_watching`
+   avvia fino a tre costruttori in parallelo nello stesso interprete (`Movies().worker()` e due
+   `build_single_episode`). Ognuno chiamava `phase_reset()`, cancellando le misure degli altri.
+   Spostare soltanto la `phase_report` prima del `return` avrebbe prodotto numeri sbagliati.
+
+Correzioni: `paginator.phase_report_rows(kind, labels, rows, extra)` formatta righe passate invece di
+leggerle dai globali; in `build_single_episode` le fasi si accumulano in una lista LOCALE
+all'invocazione. Effetto collaterale utile: anche `Movies` smette di essere disturbato dentro CW.
+
+Aggiunte: riga `PERF CW` (sorgenti / ordinamento / tempo di parete per costruttore); le 8 fasi
+diventano 12, spezzando il blocco opaco `prep+cm` in `watched+next`, `ep_meta`, `prep`, `bookmarks`,
+`cm`; conteggio separato di SCARTI ed ERRORI (l'`except: pass` finale di `_build` e' diventato
+`except: raise`, cosi' `_process` puo' distinguerli); misura a se' del blocco `unwatched_info`, l'unica
+lettura il cui costo dipende dalla dimensione del database e non dall'elemento.
+
+### Esito misurato (25/08 01:28, log z4 — avvio pulito, `.pyc` compilati alle 01:27-01:28:02)
+
+```
+PERF CW: sorgenti 157 ms (film 28 / pausa 2 / prossimi+nascosti 127) | ordinamento 1 ms
+         | costruttori 1303 ms di parete [prossimi 22 el in 1301 ms] | 6 elementi finali
+
+PERF FASI: episodi singoli episode.next_continue | 6 elementi | somma thread 3685 ms
+         | esaminati 22, scartati 16 (3240 ms), errori 0
+         | meta 2527ms (69%) + watched+next 844ms (23%) + ep_meta 155ms (4%) + prep 11ms
+         + bookmarks 19ms + cm 3ms + infotag 29ms + cast+resume 1ms + setLabel 1ms
+         + ctxmenu 53ms + setArt 16ms + props 28ms
+```
+
+Il quadro e' netto:
+
+- delle tre sorgenti, due sono vuote: 0 film in pausa, 0 episodi in pausa, 22 prossimi episodi.
+  **Tutto il widget e' una sola chiamata `build_single_episode`.** Le letture delle sorgenti costano
+  157 ms, l'ordinamento 1 ms: il 89% dei 1463 ms di `indexer` e' il costruttore.
+- **6925 ms di tempo-thread** (3685 sui costruiti + 3240 sugli scartati) compressi in 1301 ms di parete
+  da 6 worker (WORKER_COUNT).
+- **88% del lavoro e' buttato**: 16 elementi su 22 vengono scartati DOPO aver pagato i metadati.
+  Lo scarto e' voluto (`exclude_unaired=True`: il prossimo episodio della maggior parte delle serie non
+  e' ancora andato in onda), ma il prezzo si paga lo stesso.
+- **`meta` e' 2527 ms, il 69%.** E' `tvshow_meta`, una lettura completa PER ELEMENTO: 421 ms per
+  elemento costruito. Confronto nello stesso log: `movies None | 54 elementi | meta 4ms`, cioe' 0,07 ms
+  per elemento, perche' li' il prefetch fa UNA lettura sola (409,9 ms per tutti e 54).
+- le dodici fasi restanti, comprese le sei che attraversano l'API C++ di Kodi, valgono insieme 314 ms
+  (8%). Qui non c'e' niente da guadagnare.
+- `unwatched_info` non ha mai stampato: quel blocco non e' stato eseguito. Non e' un sospetto.
+
+**Conclusione:** e' lo stesso schema fuso gia' smontato in `movies.py` e nel lotto 77. La macchina per
+ripararlo esiste gia': `tvshow_meta_prefetch` e' in `metadata.py:408` ed e' usata da `tvshows.py:317`,
+e `_resolve_meta_id` gestisce gia' `trakt_dict`, cioe' proprio il formato che arriva qui.
+
+Nota sull'avvio: 9,43 s (skinvariables → 4° widget) contro gli 8,84 di z3. La somma dei segmenti
+`indexer` e' pero' migliore (7084 contro 7863) e quella di `import pigri` peggiore (12059 contro
+10897): i due avvii si scavalcano, e la strumentazione aggiunta ha un costo suo. Nessuna conclusione
+sull'avvio da questo confronto.
+
+## Lotto 79 — `build_single_episode`: una lettura per lista invece di una per elemento
+
+Applicato quanto misurato nel lotto 78. Stessa correzione gia' fatta in `movies.py`, `tvshows.py` e
+nel lotto 77: la lettura dei metadati esce dal pool di thread e diventa una `get_many` sola.
+
+`modules/metadata.py` non e' stato toccato: `tvshow_meta_prefetch` esisteva gia' e `_resolve_meta_id`
+gestisce gia' `trakt_dict`, cioe' esattamente il formato che arriva qui (`ep_data['media_ids']`).
+
+In `indexers/episodes.py`, dentro `build_single_episode`:
+
+- prima del pool, `tvshow_meta_prefetch('trakt_dict', [i.get('media_ids') for i in data], current_time)`
+  con la sua riga `PERF PREFETCH`;
+- dentro `_build`, `tvshow_meta(...)` diventa un RIPIEGO: si consulta il lotto per chiave
+  (`meta_prefetch_key`), e solo su assenza si cade sulla chiamata di prima, immutata. Chi manca resta
+  risolto dentro il pool, dove il tempo e' attesa di rete e i thread servono davvero;
+- **una voce `blank_entry` vale come assenza**, non come risposta: prima di questo strato `tvshow_meta`
+  sarebbe andato in rete a rifarla, e deve continuare a farlo. Costa una rilettura in piu' su quelle
+  voci (rare) in cambio della parita' esatta di comportamento;
+- `current_time` calcolato una volta per lista (`get_current_timestamp()`) e passato sia al prefetch sia
+  al ripiego: prima ogni elemento si prendeva il suo, quindi il confine di scadenza poteva cadere in
+  mezzo alla stessa lista.
+
+La logica di lettura e' identica a quella che sostituisce -- `meta_prefetch` applica lo stesso filtro
+di lingua di `tvshow_meta` (`metadata.py:400` contro `metadata.py:631`) e lo stesso `_unpack_ep_maps`,
+e su cache piena `tvshow_meta` non fa altro che quello.
+
+**Non toccata la costruzione**, che resta nel pool. Nelle liste di film era stata serializzata perche'
+li' le chiamate all'API C++ erano il grosso del tempo; qui il lotto 78 le misura a 314 ms su 3685 (8%),
+mentre `watched+next` (844 ms) e' lettura da SQLite, che il GIL lo rilascia. Serializzare qui andrebbe
+misurato prima, non dedotto per analogia.
+
+Atteso: la fase `meta` da 2527 ms a una lettura sola. Riferimento nello stesso log z4:
+`tvshows None | 42 richiesti | lettura unica 139.0 ms`.
+
+### Esito misurato (25/08 01:44, log z5 — avvio pulito, `.pyc` compilato alle 01:44:22)
+
+```
+PERF PREFETCH: episodi singoli episode.next_continue | 22 richiesti, 22 gia' in cache (100%)
+               | lettura unica 254.5 ms
+PERF CW: sorgenti 243 ms | ordinamento 2 ms | costruttori 1205 ms di parete
+         [prossimi 22 el in 1190 ms] | 6 elementi finali
+PERF FASI: 6 elementi | somma thread 2222 ms | esaminati 22, scartati 16 (2200 ms), errori 0
+         | meta 0ms (0%) + watched+next 1113ms (50%) + ep_meta 832ms (37%) + prep 4ms
+         + bookmarks 33ms (1%) + cm 3ms + infotag 32ms (1%) + cast+resume 1ms + setLabel 1ms
+         + ctxmenu 184ms (8%) + setArt 3ms + props 16ms (1%)
+```
+
+**Equivalenza:** 22 esaminati, 16 scartati, 6 elementi finali, 0 errori. Identico a z4, elemento per
+elemento. 22 richiesti su 22 gia' in cache: nessun ripiego, nessuna lettura di rete.
+
+| | z4 (prima) | z5 (dopo) |
+|---|---|---|
+| `meta` | 2527 ms (69%) | **0 ms** |
+| `watched+next` | 844 ms (23%) | 1113 ms (50%) |
+| `ep_meta` | 155 ms (4%) | 832 ms (37%) |
+| `ctxmenu` | 53 ms | 184 ms |
+| somma thread (costruiti) | 3685 ms | 2222 ms |
+| scartati | 3240 ms | 2200 ms |
+| **tempo-thread totale** | **6925 ms** | **4422 ms (−36%)** |
+| costruttore, tempo di PARETE | 1301 ms | 1190 ms |
+| `indexer` di CW | 1463 ms | 1450 ms |
+
+Sulla metrica presa di mira il risultato e' esatto: la fase `meta` sparisce, 2527 ms → 0, sostituita da
+una lettura sola da 254,5 ms. Ma **il tempo di parete si muove di 111 ms**, e va detto perche':
+
+1. i 254,5 ms del prefetch sono SEQUENZIALI e stanno dentro il tempo di parete del costruttore. Il pool
+   scende da 1301 a ~936 ms, ma 254 tornano indietro come costo fisso. Netto −111.
+2. **il lavoro tolto e' stato subito rimangiato dalla contesa.** `ep_meta` passa da 155 a 832 ms
+   (+437%) e `ctxmenu` da 53 a 184 ms, a parita' di elementi e di codice. Nessuno dei due e' cambiato:
+   e' `episodes_meta`, Python puro, e una chiamata all'API C++. Prima i sei worker passavano il 69% del
+   tempo dentro SQLite, che il GIL lo rilascia, e si intrecciavano bene; tolta quella attesa restano
+   solo a contendersi il GIL. E' l'effetto convoglio gia' misurato su `movies.py` (0,2 ms nel thread
+   principale contro 14,9 ms nel pool a 6 worker), qui smascherato dalla correzione stessa.
+
+Questo e' anche il motivo per cui il tempo d'avvio non si muove: 9,19 s contro 9,43 (z4) e 8,84 (z3),
+cioe' dentro il rumore. `build_continue_watching` chiude a 5000 ms mentre le due mdblist chiudono a
+6500: **CW non e' la catena critica**, e accorciarlo non accorcia l'avvio. Quello che si guadagna e'
+CPU sottratta alla contesa con gli altri tre widget, che e' reale ma non si legge su questo cronometro.
+
+**Prossimo passo indicato dalla misura:** serializzare la costruzione, come gia' fatto in `movies.py` e
+`tvshows.py`. Ora nel pool non resta quasi piu' I/O -- solo `watched_info_episode` e
+`get_bookmarks_episode` -- e le due fasi dominanti sono entrambe GIL-bound. Se `ep_meta` torna ai 155 ms
+misurati quando la contesa era diluita, la sola serializzazione vale piu' di quanto sia valso il
+prefetch. Da misurare, non da dedurre: `watched+next` e' lettura da SQLite e in sequenza perde il
+parallelismo che oggi ha.
+
+## Lotto 80 — `build_single_episode`: costruzione in sequenza
+
+Conseguenza diretta della misura del lotto 79, non un'analogia: tolta la lettura dei metadati dal pool,
+`ep_meta` e' passata da 155 a 832 ms e `ctxmenu` da 53 a 184, a parita' di codice e di elementi. Con
+l'attesa di SQLite sparita, i sei worker (`WORKER_COUNT`) non parallelizzavano piu' niente: si
+passavano il GIL a vicenda. Stesso effetto convoglio gia' misurato in `Movies.worker` (0,2 ms nel
+thread principale contro 14,9 ms nel pool a 6 worker).
+
+CORREZIONE a quanto scritto nei lotti 78-79: i worker erano **sei**, non ventidue. Il tetto e'
+`WORKER_COUNT` in `utils._run_pool`, e la riga di log lo stampava (`worker 6`). I 22 erano gli
+elementi, non i thread. La conclusione non cambia -- l'effetto convoglio a 6 worker e' esattamente
+quello gia' misurato -- ma il numero era sbagliato.
+
+In `indexers/episodes.py`, dentro `build_single_episode`:
+
+- `_resolve_missing` sul modello di `Movies`/`Tvshows`: chi non era nel lotto (o era una voce vuota)
+  viene risolto in un pool PRIMA della costruzione, con la sua riga `PERF RETE`. Senza, la costruzione
+  in sequenza pagherebbe una dopo l'altra le chiamate a TMDb dei mancanti. Nel log z5 i mancanti erano
+  zero, ma non e' garantito: cache appena pulita, voci scadute, cambio di lingua;
+- `make_thread_list_enumerate(_process, data)` diventa
+  `for _position, ep_data in enumerate(data): _process(_position, ep_data)`;
+- la riga `PERF FASI` dichiara `costruzione in sequenza`, perche' il `worker N` che stampa viene da
+  `WORKER_COUNT` e da qui in poi descrive solo la risoluzione dei mancanti, non la costruzione.
+
+Con la costruzione in sequenza, `somma thread` coincide con il tempo di parete: le due colonne del log
+tornano confrontabili fra loro.
+
+Atteso: `ep_meta` verso i 155 ms, `ctxmenu` verso i 53. Rischio dichiarato prima della misura:
+`watched+next` (1113 ms) e' lettura da SQLite e in sequenza perde il parallelismo che oggi ha; se e'
+lavoro vero e non gonfiato dalla contesa, il conto puo' non tornare.
+
+### Esito misurato (25/08 01:51, log z6 — avvio pulito, `.pyc` compilato alle 01:51:10)
+
+```
+PERF PREFETCH: 22 richiesti, 22 gia' in cache (100%) | lettura unica 208.9 ms   (nessun PERF RETE)
+PERF FASI: 6 elementi | somma thread 554 ms | costruzione in sequenza
+         | esaminati 22, scartati 16 (502 ms), errori 0
+         | meta 0ms + watched+next 143ms (26%) + ep_meta 314ms (57%) + prep 8ms + bookmarks 16ms
+         + cm 4ms + infotag 27ms (5%) + cast+resume 1ms + setLabel 3ms + ctxmenu 23ms (4%)
+         + setArt 4ms + props 11ms
+PERF: episodi singoli | totale 1.42s = risoluzione 0.36s + costruzione 1060 ms
+```
+
+Equivalenza di nuovo esatta: 22 esaminati, 16 scartati, 6 finali, 0 errori.
+
+| | z5 (pool a 6) | z6 (sequenza) |
+|---|---|---|
+| `watched+next` | 1113 ms | **143 ms** |
+| `ep_meta` | 832 ms | **314 ms** |
+| `ctxmenu` | 184 ms | 23 ms |
+| somma thread (costruiti) | 2222 ms | 554 ms |
+| scartati | 2200 ms | 502 ms |
+| **CPU totale** | **4422 ms** | **1056 ms (−76%)** |
+| **costruzione, tempo di PARETE** | **802 ms** | **1060 ms (+258)** |
+
+Il conto interno torna esatto: 554 (costruiti) + 502 (scartati) = 1056 ms, contro i 1060 ms misurati
+come `costruzione`. In sequenza CPU e parete coincidono, come previsto.
+
+**Il rischio dichiarato non si e' materializzato, e in modo netto:** `watched+next` passa da 1113 a
+143 ms. Quelle letture SQLite non erano lavoro, erano contesa.
+
+**Ma la previsione sul tempo di parete era sbagliata.** Il pool NON stava solo litigando sul GIL:
+comprimeva 4422 ms di tempo-thread in 802 ms di parete, cioe' un fattore 5,5 su 6 worker. SQLite il GIL
+lo rilascia davvero, e i thread si sovrapponevano. Tolto il pool, la stessa costruzione costa 1060 ms.
+
+Quindi le due misure dicono cose opposte e sono entrambe vere: **la sequenza consuma un quarto della
+CPU e impiega un quarto in piu' di tempo.** Quale delle due conti dipende dal fatto che
+`build_continue_watching` gira insieme ad altri tre widget e all'avvio di Kodi su una macchina debole:
+la CPU che brucia la toglie alla catena critica, che e' mdblist, non lui. Indizio in questa direzione,
+non prova: in z6 i segmenti `indexer` delle due mdblist grosse scendono (2556→2162 e 2633→2559) mentre
+quello di CW sale, e la somma dei quattro cala da 7329 a 7049 ms.
+
+**L'avvio non puo' arbitrare:** 10,09 s contro 9,19 (z5), ma `import pigri` da solo cresce di ~900 ms
+per build (3162→4093, 3375→4314, 3389→4245). E' varianza di I/O a freddo su un segmento che questa
+modifica non tocca. Nessuna conclusione.
+
+**Prossimo passo: pool con tetto basso** (`make_thread_list_capped`, gia' in `utils.py:92`), 2 o 3
+worker invece di 6. I due estremi sono misurati -- 6 worker: 4422 ms di CPU per 802 di parete; 1
+worker: 1056 per 1056 -- e la curva fra i due non e' lineare: la contesa cresce piu' che
+proporzionalmente ai worker, la sovrapposizione dell'I/O no. Un tetto a 2-3 dovrebbe stare sotto
+entrambi gli estremi su tutte e due le grandezze. Da misurare.
+
+## Lotto 81 — il tetto a 3 worker: provato e scartato
+
+Ipotesi: fra i due estremi misurati esiste un minimo, perche' la contesa cresce piu' che
+proporzionalmente ai worker mentre la sovrapposizione dell'I/O no. **Smentita dalla misura** (log z7,
+25/08 02:03, avvio pulito, `.pyc` delle 02:03:26-29).
+
+| worker | CPU (costruiti + scartati) | costruzione, tempo di PARETE |
+|---|---|---|
+| 6 (z5) | 4422 ms | **802 ms** |
+| **3 (z7)** | **3106 ms** | **1169 ms** |
+| 1 (z6) | **1056 ms** | 1060 ms |
+
+**Il tetto a 3 e' dominato: peggiore di 1 su ENTRAMBE le grandezze.** Non c'e' nessun punto intermedio
+da trovare -- il minimo di CPU sta a 1, il minimo di parete a 6, e in mezzo si perde su tutt'e due.
+
+La ragione si legge nelle fasi: gia' a 3 worker `ep_meta` passa da 314 a 837 ms e `watched+next` da 143
+a 495. `episodes_meta` e' Python puro e la contesa lo triplica appena si aprono due thread; il
+guadagno di sovrapposizione arriva invece solo quando i worker sono abbastanza da coprire le attese
+di SQLite, cioe' verso i 6. Le due curve non si incrociano in un punto comodo.
+
+Ripristinata la **costruzione in sequenza** (`_BUILD_WORKERS = 1`). Si perdono 258 ms di parete su un
+widget che chiude tre secondi prima che la home sia pronta, e si risparmia un fattore 4,2 di CPU che
+va agli mdblist, cioe' alla catena critica.
+
+`make_thread_list_enumerate_capped` resta in `utils.py`: e' simmetrica a `make_thread_list_capped`, e
+il commento porta la misura che spiega perche' qui non serviva.
+
+Nota: z7 era un avvio piu' rapido sull'I/O (prefetch 121,6 ms contro 208,9; risoluzione 0,15 s contro
+0,36), quindi il confronto non e' penalizzato dalla varianza -- semmai il contrario.
+
+## Lotto 82 — import pigri: tre interventi sulla strada dei widget
+
+RETTIFICA a quanto scritto prima di misurare: avevo indicato `apis.trakt_api` come il bersaglio piu'
+grosso perche' "si porta dietro modules.metadata, tre cache e la strada verso requests". **Falso.** Il
+grafo statico dice che quel sottoalbero e' gia' raggiungibile da altri rami, e `trakt_api` non importa
+`requests` a livello di modulo (lo carica dentro le sue funzioni). Togliendolo sparisce **un solo file**.
+La stima era una deduzione, non una misura, ed era sbagliata.
+
+Grafo degli import a LIVELLO DI MODULO da `indexers.continue_watching`, prima e dopo:
+**20 -> 18 moduli Fen Light.**
+
+**a) `indexers/episodes.py`: `apis.trakt_api` diventa pigro.** Era importato in testa per due funzioni
+usate in due soli rami -- `trakt_watchlist` ('episode.next' con watchlist attiva) e
+`trakt_get_my_calendar` ('episode.trakt'). 'Continua a guardare' non ne tocca nessuna. Valore reale:
+un modulo, sotto i 75 ms (non compariva nemmeno fra i primi otto del log).
+
+**b) `indexers/continue_watching.py`: `indexers.movies` diventa pigro**, dentro `_do_movies` -- che
+parte solo se la lista dei film in pausa non e' vuota. Nel log del 25/08 e' **368 ms, il modulo Fen
+Light piu' caro di quella build**, per una classe che negli ultimi cinque avvii non e' mai stata usata
+(0 film in pausa). Anche qui e' un solo file nel grafo, ma un file grosso: il conteggio dei moduli e il
+tempo non sono la stessa cosa.
+
+**c) `modules/metadata.py`: gli import di `movie_meta` e `tvshow_meta` scendono sotto l'uscita da
+cache.** Erano pigri solo di nome: stavano in cima alla funzione, quindi si pagavano a OGNI chiamata,
+comprese le uscite da cache poche righe sotto, che sono la stragrande maggioranza. Verificato con
+l'AST che i nomi importati si usino solo nel ramo di rete:
+
+```
+movie_meta   imdb_data               primo uso riga 447   (import spostato a riga 432)
+tvshow_meta  imdb_data               primo uso riga 651   (import spostato a riga 637)
+tvshow_meta  get_skyhook_season_data primo uso riga 788
+tvshow_meta  get_tvdb_to_tmdb_map    primo uso riga 794
+```
+
+E' questo che spiegava i **144 ms di `apis.imdb_api`** in una build che non chiama una riga di IMDb:
+il grafo statico dice che nessuno lo importa a livello di modulo su quella strada.
+
+L'attribuzione non richiede tre avvii separati: la riga `PERF IMPORT` elenca i moduli **uno per uno**,
+quindi `indexers.movies` e `apis.imdb_api` o spariscono da quella lista o non spariscono.
+
+**Prossimi candidati, gia' tracciati** (restano 18 moduli, e questi arrivano tutti per catena):
+```
+apis.tmdb_api      <- modules.metadata <- modules.watched_status <- indexers.episodes
+modules.meta_lists <- apis.tmdb_api
+caches.lists_cache <- apis.tmdb_api
+caches.trakt_cache <- modules.watched_status
+caches.main_cache  <- modules.watched_status
+```
+Il nodo e' `modules.watched_status`, che tira dentro `modules.metadata` e da li' mezzo albero.
+
+### Esito misurato (25/08 02:13, log z8 — avvio pulito, `.pyc` delle 02:12:34-36)
+
+Nello stesso avvio l'utente ha spostato il quarto widget della home nel secondo hub: home a 3 widget,
+hub a 3. Le due modifiche restano attribuibili -- gli import per modulo, i widget dalla cronologia.
+
+**1. Home a 3 widget: il gradino c'era davvero.**
+
+```
+z5 (4 widget)                          z8 (3 widget)
+CW       start + 7.34  end +12.34      CW       start + 7.61  end +12.49
+mdblist  start + 7.25  end +13.77      mdblist  start + 7.88  end +14.14
+mdblist  start + 7.39  end +13.86      mdblist  start + 7.84  end +14.53
+mdblist  start +12.79  end +15.51  <-- spostato nell'hub (ricompare a +20.42)
+```
+
+Il quarto non aspetta piu' uno slot libero. **Home popolata: +15.51 -> +14.53.** Sulla finestra utile
+(fine skinvariables -> ultimo widget): **9,19 -> 7,70 s, −1,49 s (−16%)**. Previsto ~1,7: consegnato
+1,49, la differenza sta nei 0,5 s in piu' che skinvariables ha impiegato in questo avvio.
+
+**2. Import: i due moduli previsti sono spariti dalla lista, uno per uno.**
+
+```
+z5, primi moduli Fen Light          z8, primi moduli Fen Light
+  368 ms  indexers.movies    <-- via  356 ms  indexers.episodes
+  185 ms  modules.kodi_utils          127 ms  apis
+  144 ms  apis.imdb_api      <-- via  112 ms  modules.kodi_utils
+  113 ms  indexers.continue_watching  111 ms  modules.router
+```
+
+`build_continue_watching`: **57 -> 55 moduli, import totale 3562 -> 3021 ms (−541)**, `import pigri`
+3162 -> 2464 ms.
+
+Ma il risparmio non e' i 368+144 = 512 ms dei due moduli: **`indexers.episodes` sale a 356 ms** e prima
+non era nemmeno fra i primi otto. Tolto `indexers.movies`, il sottoalbero che condividevano viene
+addebitato a chi resta. Il costo si e' spostato piu' che sparire -- il netto vero e' quello dei 541 ms,
+non quello dei singoli moduli.
+
+**3. Un effetto collaterale da registrare: il prefetch di CW passa da 208,9 a 741,3 ms.**
+
+Non e' una regressione del codice: e' che CW, avendo 698 ms di import in meno, arriva alla cache
+PRIMA -- proprio mentre le due mdblist stanno facendo la loro. Prima gli import piu' lenti lo tenevano
+sfalsato. E' la collisione che si sposta quando si toglie lavoro a una fase. Senza conseguenze qui:
+CW chiude a +12,49, due secondi prima delle mdblist.
+
+Dentro la costruzione va invece meglio ancora: somma thread 554 -> 475 ms, `ep_meta` 314 -> 273,
+`watched+next` 143 -> 107. 22 esaminati, 16 scartati, 6 finali, 0 errori.
+
+**4. Le mdblist:** import peggiore (3891/3771 -> 4737/4891), `indexer` molto migliore (2775/2802 ->
+1726/1784), totale praticamente fermo (6514->6260, 6467->6696). Su questi due il segnale e' dentro il
+rumore e non si attribuisce niente.
+
+## Lotto 83 — interruttore unico e strumentazione della navigazione
+
+### L'interruttore
+
+`modules/perf.py`, modulo nuovo e FOGLIA: a livello di modulo importa solo `xbmc`. Serve cosi' perche'
+`paginator` importa `kodi_utils` in testa, quindi `kodi_utils` non puo' importare `paginator` senza un
+ciclo -- e tre delle righe di misura (INVOCAZIONE, IMPORT, CONSEGNA) stanno proprio in `kodi_utils`.
+Costa un file per invocazione (~6-8 ms a cache calda): e' il prezzo di poter spegnere il resto.
+
+L'impostazione si legge UNA volta per interprete e resta in memoria; con `reuselanguageinvoker=false`
+"una volta per interprete" e "una volta per invocazione" coincidono. Se le impostazioni non sono
+leggibili (avvio precoce, database in creazione) resta ACCESO: una riga in piu' non fa danno, una
+misura persa si.
+
+Collegati all'interruttore i cinque siti che loggavano diretto e non passavano da `paginator.PERF`:
+`PERF CONSEGNA`, `PERF INVOCAZIONE`, `PERF IMPORT` (4 righe), `PERF REQUESTS` in `kodi_utils`;
+`FenLight CW` e `PERF CW` in `continue_watching`. `paginator.PERF` ora vale `perf.enabled()`, quindi
+le ~40 letture interne e tutte le `phase_*`/`log_*` seguono da sole. `PERF DUB` era gia' dietro
+`paginator.PERF`. `DUB_DEBUG` resta un flag suo: e' spam per elemento, va acceso a parte.
+
+NON si spengono le chiamate `perf_counter()` dentro i costruttori: sono letture di orologio, ordini di
+grandezza sotto cio' che misurano, e toglierle vorrebbe dire smontare la struttura a fasi per
+rimetterla la volta dopo.
+
+Impostazione `perf.instrumentation` in `settings_cache.py` (default `true` finche' l'indagine e'
+aperta) e voce nel menu Impostazioni -> Liste, "Misure di prestazione (log)".
+
+### La strumentazione nuova: `PerfSampler`
+
+Fino ad ora OGNI misura veniva da dentro un'invocazione del plugin, quindi il tempo fra un'invocazione
+e l'altra -- cioe' la navigazione -- era cieco. Il servizio invece e' sempre vivo.
+
+Ciclo a **2 secondi** (non 0,3 come faceva BlurService: quel ciclo e' l'unico elemento presente in ogni
+crash da avvio catturato, e non si ripete quell'errore per una misura). Per giro: una `getInfoLabel` e
+una `getCurrentWindowId`. Si ferma quando i servizi sono in pausa.
+
+- `PERF MEM` — memoria libera, stampata solo su variazione >= 8 MB o ogni 30 s (senza soglia il log
+  diventa il carico: e' l'errore gia' fatto con DIAG in paginator). Porta il delta dal campione
+  precedente e il calo peggiore visto finora, con la finestra in cui e' avvenuto.
+- `PERF NAV` — ogni cambio di finestra o dialogo, con quanto si e' rimasti nella precedente e la
+  memoria in quel momento. Risoluzione 2 s: serve a mappare DOVE si va e per quanto, non a cronometrare
+  il singolo gesto -- per quello ci sono gia' le righe `PERF INVOCAZIONE`, esatte.
+- `PERF MEM` su `Player.OnPlay` / `OnAVStart` / `OnStop` (da `onNotification`, esatto). E' il gruppo di
+  controllo della domanda posta dall'utente: il player E' capace di liberare risorse, quindi se la
+  memoria risale a OnPlay e riscende a OnStop, allora liberarla si puo' e il problema e' che navigando
+  non lo fa nessuno. Se non risale mai, per quella via non e' recuperabile.
+
+### Cosa dovra' dire la prossima sessione lunga
+
+La domanda aperta dal log delle 02:19-02:31: import identici passati da 5366 a 17407 ms, con un
+`CXBMCApp::onLowMemory()` di Android a +379 s. Correlazione forte ma non prova, perche' i campioni
+tardivi erano anche ammassati (quattro invocazioni pesanti in 50 s): pressione di memoria e contesa si
+sovrappongono. `PERF MEM` le separa -- se il tempo cresce mentre la memoria libera scende
+monotonicamente, e' memoria; se cresce a memoria stabile, e' contesa.
+
+### Prima sessione strumentata (25/08 02:42-02:52, log za) — l'ipotesi memoria e' SMENTITA
+
+10 minuti, 89 invocazioni, 138 campioni di memoria, 53 cambi di finestra.
+
+**1. Nessuna perdita di memoria.** La libera oscilla fra **203 e 386 MB** e non si avvicina mai allo
+zero. Parte da 291, chiude a 203, ma con picchi a 386 nel mezzo: scende e risale, scende e risale.
+Non c'e' andamento monotono. L'ipotesi che avevo dato per probabile non regge.
+
+**2. `onLowMemory` di Android e' un falso indizio.** Nella sessione precedente lo avevo indicato come
+il colpevole. Qui scatta a +258 s **mentre Kodi ha ~330 MB liberi**: e' il richiamo di sistema per la
+pressione complessiva del dispositivo (altre app), non Kodi che soffoca. La correlazione che avevo
+letto nel log precedente era spuria.
+
+**3. Il player libera davvero.** OnPlay 320 MB -> OnAVStart 241 (alloca per decodificare) -> OnStop
+283. Il meccanismo funziona: la memoria si muove e torna.
+
+**4. Le build leggere NON degradano.** mdblist a 60 moduli: 4166 ms a +13,7 s e 4179 ms a +425,2 s,
+con campioni da 629 ms in mezzo. Nessuna tendenza, solo varianza.
+
+**5. Le build pesanti degradano, e non e' ne' memoria ne' contesa.**
+
+```
++283.9s   3084 ms   memoria 309 MB   1 invocazione sovrapposta
++305.5s   5676 ms   memoria 244 MB   1
++330.4s   6244 ms   memoria 256 MB   1
++462.2s  10691 ms   memoria 215 MB   3
++464.8s  10963 ms   memoria 234 MB   1   <-- sola, e 3,5 volte la prima
++506.2s  14227 ms   memoria 231 MB   3
++521.2s   8651 ms   memoria 242 MB   1
+```
+
+A +464,8 s c'e' UNA sola invocazione in corso e costa 10963 ms; a +283,9 s c'e' pure una sola e ne
+costa 3084. Stessa concorrenza, 3,5 volte. E la memoria cala del 25%, non abbastanza per un fattore 4.
+
+**6. LA CAUSA: `requests` viene importato 26 volte in 10 minuti, a 4,7-10,3 s l'una.**
+
+```
++193.0s  7193 ms | 7158 ms | 6673 ms   (tre insieme)
++445.8s  8473 ms | 8842 ms
++535.4s  4788 | 4723 | 4722 | 4796 | 4726 ms   (CINQUE interpreti insieme)
+```
+
+Sono ~150 secondi di una sessione da 590 spesi a ricaricare gli stessi ~200 file. Il `resto` di una
+build a 255 moduli e' tutto li':
+
+```
+1158 ms  email                <- urllib3.exceptions
+ 776 ms  charset_normalizer   <- requests
+ 387 ms  urllib3              <- requests
+ 382 ms  compat               <- requests.exceptions
+ 250 ms  langrussianmodel     <- chardet.sbcsgroupprober
+ 198 ms  ssl / 191 http / 135 socket / 324 typing
+```
+
+`email` e `chardet` per fare una GET su HTTPS.
+
+**Conclusione: la stick non degrada, cambia lavoro.** All'inizio si sfogliano widget gia' in cache
+(54-60 moduli); andando avanti si aprono schede, persone, stagioni -- e ognuna di quelle e' una strada
+che tocca la rete, quindi paga 5-10 s di soli import. Sembra un degrado progressivo perche' il MISTO
+delle azioni cambia, non perche' peggiori la macchina.
+
+## Lotto 84 — `requests` sostituito da `http.client`. Esito (25/08 03:10-03:19, log zb)
+
+`modules/http_client.py`: Session su `http.client` con pool per host (keep-alive), gzip, redirect e
+riprova su connessione riciclata. `make_session()`/`import_requests()` tornano questo. Unico uso
+residuo di requests vero: `_speed_test_mbps` (serve `iter_content`), via `import_requests_real()`,
+che logga.
+
+Misurato prima di deployare, in locale: GET+gzip, params, 404+raise_for_status, redirect, POST
+form/json, DELETE, e **12 thread sulla stessa Session -> 12 ok, 0 errori** (le build risolvono i
+metadati mancanti in parallelo: un client non thread-safe sarebbe esploso li').
+Keep-alive, misurato: 5 GET sulla stessa Session **0,22 s**, contro **0,94 s** aprendo una connessione
+ogni volta. E' il motivo per cui il pool c'e': senza, si toglievano 5 s di import e se ne restituivano
+altrettanti in handshake TLS.
+
+**Moduli per build di rete: 255-260 -> 99-105.**
+
+| | za (requests) | zb (http.client) |
+|---|---|---|
+| import dello strato HTTP | 26 volte, **141594 ms** totali, media 5445 | 37 volte, **43846 ms**, media **1185** |
+| `build_movie_list` di rete | media 8814 ms, max 14227 | media **2664**, max **4580** |
+| `build_person_credits_list` | media 8360 ms | media **2363** |
+| `mdblist` di rete | media 7697 ms | media **4355** |
+| `build_continue_watching` di rete | 10317 ms | media **4836** |
+| build da sola cache (controllo) | 1642 / 2614 ms | 1604 / 2063 -- invariate, come atteso |
+
+Con il 42% di import IN PIU' (37 contro 26) il costo totale scende di **97,7 secondi** su una sessione
+di 9 minuti.
+
+Latenza percepita, tutte le invocazioni:
+
+| | za | zb |
+|---|---|---|
+| mediana | 3836 ms | **3129 ms** |
+| 90mo percentile | 24027 ms | **10866 ms** |
+| massimo | 92247 ms | **60364 ms** |
+| oltre 10 s | 18 su 89 | **11 su 96** |
+
+**Da tenere d'occhio:** la memoria libera in zb scende piu' in basso (min 126 MB contro 203) e
+`onLowMemory` scatta due volte invece di una. Il pool tiene aperti fino a 8 socket TLS per host, che
+sono kilobyte, non megabyte -- quindi non torna come spiegazione, e il misto delle azioni era diverso.
+Non e' attribuito: va solo riguardato alla prossima sessione lunga.
+
+## Lotto 85 — `UnboundLocalError` su `function`: la vera causa dei "widget che ripartono da zero"
+
+Trovato nel log zb, due volte (03:10:42 e 03:11:25):
+
+```
+BUILD FALLITA: movies action=tmdb_movies_sets:
+  fetch_page = self.build_fetch_page(function) if (paginator.interactive_enabled() and ...)
+UnboundLocalError: cannot access local variable 'function' where it is not associated with a value
+```
+
+`movies.py` risolve la funzione API cosi': `try: function = manual_function_import(...) except: pass`.
+Ma non tutte le action hanno una funzione omonima nel modulo API -- `tmdb_movies_sets` si risolve piu'
+sotto con `movieset_meta` -- quindi l'import fallisce ed **e' corretto che fallisca**. Con il solo
+`except: pass` pero' il nome resta NON ASSEGNATO, e la riga successiva solleva. La build muore, la
+directory si chiude VUOTA, e il contenitore riparte da zero.
+
+E' il meccanismo gia' descritto nel commento del lotto 46 ("una build che esplode chiude la directory
+vuota, ed e' il motivo per cui spariscono le pagine dopo la prima"), ma la causa non era mai stata
+trovata. **Non c'entra con `http.client`: e' preesistente, e si vede solo ora perche' il log e'
+strumentato.**
+
+Corretto in `movies.py` e nello stesso identico punto di `tvshows.py` (li' non ancora osservato in un
+log, ma il codice e' uguale): `function = None` prima del try, e la condizione diventa
+`if (function and paginator.interactive_enabled() and ...)`.
+
+### Paginazione di trending: DUE sintomi distinti, non uno
+
+```
++ 18.9s  26 elementi | 2 pagine | path_pages=-
++274.4s  26 elementi | 2 pagine | path_pages=5   <-- il path ne chiede 5, la build ne produce 2
++432.2s  26 elementi | 2 pagine | path_pages=-
++464.7s  43 elementi | 3 pagine | path_pages=3   <-- da qui funziona
++469.6s  61 elementi | 4 pagine
++475.3s  80 elementi | 5 pagine
++481.6s  93 elementi | 6 pagine
++485.8s 113 elementi | 7 pagine
++498.2s  26 elementi | 2 pagine | path_pages=-   <-- azzerato
+```
+
+1. **Collassi**: a +274,4 s il path chiede 5 pagine e la build ne consegna 2. Il token non e' perso --
+   arriva -- ma non viene onorato.
+2. **Azzeramenti su rientro nella finestra**: l'azzeramento di +498,2 s segue di 0,4 s un rientro in
+   finestra 11101 (`PERF NAV`: 11101 -> 10000 a +489,7 s, 10000 -> 11101 a +497,8 s). Stesso schema a
+   +269/+274. Uscire da un hub e rientrarci ricostruisce il widget dal path base, e le pagine
+   accumulate spariscono.
+
+Da +464,7 a +485,8 s, senza uscire dalla finestra, la paginazione e' perfetta: 3->7 pagine, ogni
+ricostruzione sotto 1,05 s. Il meccanismo funziona; e' la sua PERSISTENZA che si rompe.
+
+Non attribuito a una causa: `paginator.log` e' dietro un flag diagnostico spento, quindi in questo log
+non c'e' la riga che direbbe se `interactive` fosse attivo in quelle build. E' il primo dato da
+raccogliere.
+
+## Lotto 88 — i badge "visto" spariti: due difetti, uno mio
+
+### Causa scatenante: `Response.headers` non insensibile alle maiuscole (REGRESSIONE del lotto 84)
+
+`requests.Response.headers` e' un `CaseInsensitiveDict`, e il progetto ci conta:
+
+```
+apis/trakt_api.py:127   if pagination: return (result, resp_headers['X-Pagination-Page-Count'])
+apis/trakt_api.py:125   sort_list(resp_headers['X-Sort-By'], resp_headers['X-Sort-How'], result)
+modules/downloader.py   self.resp.headers['Content-Length'] / ['Accept-Ranges']
+```
+
+Il mio client restituiva un `dict` normale con chiavi minuscole. `resp_headers['X-Pagination-Page-Count']`
+sollevava `KeyError`, la sincronizzazione concludeva che c'era UNA pagina sola e scaricava **100 film
+invece di 598**. Poi `set_bulk_movie_watched` fa DELETE + INSERT: i badge sparivano in massa.
+
+La prova sta nei log, ed e' netta:
+
+```
+za (con requests):      sync/watched/movies: 598 elementi su 6 pagine
+                        watched movies: 598 da Trakt, 598 in cache, 0 scartati
+zb (con http.client):   watched movies: 100 da Trakt, 100 in cache, 0 scartati
+                        watched history request FAILED - watched episodes left untouched  (x2)
+```
+
+Corretto con `CaseInsensitiveDict` in `http_client.py`. Verificato: accesso maiuscolo, minuscolo,
+misto, `in`, e `get` con default.
+
+**Lezione di metodo.** Avevo elencato quattro cose da preservare di requests (keep-alive, gzip,
+redirect, riprova) e le avevo misurate tutte. Ma la superficie che avevo verificato sul sorgente era
+quella dei METODI e degli attributi della risposta -- non il COMPORTAMENTO di `headers`. Un `dict` e un
+`CaseInsensitiveDict` passano gli stessi test finche' non si prova una chiave con le maiuscole, e nei
+miei sei test non ce n'era una.
+
+### Secondo difetto, preesistente: un guasto momentaneo diventava permanente
+
+`trakt_sync_activities` chiama `reset_activity(latest)` all'INIZIO, cioe' fa avanzare il segnalibro
+"visto fino a qui" prima che il lavoro sia fatto. Il lotto 58 aveva aggiunto `_SYNC_DEFERRED` per
+rimandarlo, ma copriva SOLO il caso `self_mark_recent`. Le due uscite per guasto di rete non lo
+impostavano:
+
+```python
+result = _get_all_sync_pages('sync/watched/movies')
+if not result:
+    logger(...'cache lasciata intatta')
+    return                      # <- segnalibro gia' avanzato, e nessuno lo riporta indietro
+```
+
+Effetto: al giro dopo il confronto dice "nessuna modifica", **per sempre**. Misurato: cache dei film
+ferma all'8 agosto mentre `trakt_get_activity` dichiarava `movies.watched_at = 2026-08-25T01:14:24`, e
+17 `No Changes Needed` di fila.
+
+Corretto: `_SYNC_DEFERRED[0] = True` su entrambe le uscite per guasto (`trakt_indicators_movies` e
+`trakt_indicators_tv`), cosi' `restore_activity(cached)` riporta indietro il segnalibro e il giro
+successivo riprova.
+
+I due difetti insieme spiegano il sintomo per intero: il primo ha rotto la lettura una volta, il
+secondo ha reso la rottura definitiva.
+
+## Lotto 89 — paginazione, guasto B: il `min()` che impediva il recupero
+
+In `get_pages` c'era:
+
+```python
+if path_pages > default:
+    result = min(path_pages, raw_pages(key, default))
+```
+
+Il ragionamento originale era difensivo: "gli id dei contenitori si ripetono fra categorie, quindi il
+token nel path potrebbe appartenere a un altro widget, e il conteggio autorevole e' quello per chiave".
+
+**Ma quella difesa esiste gia', e sta dove deve stare** -- nel servizio, `service.py:348`:
+
+```python
+if window.getProperty(CTL_KEY_PROP % (scope, widget_id)) != key:
+    window.setProperty(CTL_KEY_PROP % (scope, widget_id), key)
+    window.clearProperty(CTL_PAGES_PROP % (scope, widget_id))
+```
+
+quando il contenitore cambia inquilino il token viene azzerato. Il `min()` era una SECONDA guardia per
+lo stesso rischio, e in cambio faceva un danno vero: dopo un azzeramento (guasto A -- il widget
+ricostruito dal path base riparte da 2 e `set_state` scrive 2 sulla chiave), il conteggio per chiave
+vale 2 mentre il path dice ancora 4, e il `min()` blocca a 2 **proprio il segnale che avrebbe permesso
+di recuperare**. Misurato nel log zc: `get_pages path_pages=4 -> pages_to_load=2`, e tre azzeramenti in
+dieci minuti.
+
+Ora `max(path_pages, stored)`: il path puo' solo ALZARE, mai abbassare. Non serve riscrivere nulla:
+la build carica N pagine e chiama `set_state(key, N)`, quindi il conteggio per chiave si ripara da
+solo al primo giro.
+
+| path | stored | default | prima | dopo |
+|---|---|---|---|---|
+| 4 | 2 | 2 | **2** | **4** |
+| 6 | 2 | 2 | **2** | **6** |
+| 3 | 5 | 2 | 3 | 5 |
+| 4 | 4 | 2 | 4 | 4 |
+| 999 | 2 | 2 | 2 | 100 (tetto) |
+
+**Aggiunto un tetto di assurdita'.** Finche' il `min()` c'era, il conteggio per chiave faceva anche da
+limite implicito; togliendolo, un token corrotto diventerebbe un numero di pagine qualunque, e
+`load_cumulative` cicla esattamente `pages_to_load` volte -- `max_items` spegne `has_more` DOPO la
+build, non limita quante pagine si chiedono. Il tetto e' `max_items()` pagine: nel caso peggiore una
+pagina per elemento, quindi non stringe mai su un widget vero.
+
+Resta aperto il guasto A (punto 3): al rientro in una finestra Kodi ricostruisce dal path base, senza
+`pages=`, e `get_pages` non ha da dove ripescare il conteggio.
+
+---
+
+## Lotto 90 -- la paginazione non era rotta nel paginatore: era rotta nella skin
+
+**Sintomo.** Kodi aperto sul Mac (non sulla stick): la paginazione non funziona per niente. Non "a
+volte", non "riparte da zero": mai.
+
+**Misura, log del Mac del 25/08 18:21.** Il watcher fa il suo lavoro alla perfezione:
+
+```
+18:21:10.617  watcher TRIGGER key=a14a8652 pages 2->3 current=50/50 built=50 -> token ctl502
+18:21:11.145  watcher id=502 key=a14a8652 current=50/50 ... loading=True
+18:21:21.900  watcher id=502 key=a14a8652 current=50/50 ... loading=True
+```
+
+e poi piu' niente: **nessuna ricostruzione**, `loading=True` appeso fino alla chiusura. Lo stesso per
+il secondo widget alle 18:21:19. In tutte le righe `PERF` di quella sessione, senza eccezioni:
+`path_pages=-`.
+
+**Causa.** Il servizio scriveva `fenlight.pg.whome.ctl502.pages`. Il widget leggeva
+`fenlight.pg.ctl502.pages`:
+
+```
+1080i/script-skinvariables-generator-includes-.xml   (14 ago 02:25)
+  ...list_id=91378...$INFO[Window(Home).Property(fenlight.pg.ctl502.pages),&pages=,]
+```
+
+Il nome ha preso il prefisso della finestra il **24/08** (commit `012439e`), perche' gli id dei
+contenitori ripartono da 501 in ogni finestra e `ctl502` era contemporaneamente un widget della Home,
+uno dell'hub 1101 e uno della ricerca. Il `.xmltemplate` e' stato aggiornato. Il file **generato** no.
+
+**Perche' non si e' rigenerato.** In `script.skinvariables`
+(`resources/lib/shortcuts/template.py`, `update_xml`) l'impronta che decide se rifare il file e':
+
+```python
+hashinput = '_'.join([kwargs, genxml, self.contents, System.ProfileName])
+hashvalue = make_hash(f'{hashinput}--{load_filecontent(self.filepath)}')
+```
+
+dove `self.contents` e' **solo** `shortcuts/skinvariables-generator.json`. **I `.xmltemplate` non
+entrano nell'impronta.** Modificarli non invalida niente: il generatore non riparte, mai.
+
+Sul Mi Stick il file era aggiornato per un caso: il 24/08 avevamo spostato il 4o widget della home nel
+secondo hub (la prova 4->3 widget), quindi `lastbuildtime` era cambiato e la rigenerazione era stata
+forzata. Sul Mac non si era toccato nulla dal 14 agosto.
+
+Quindi: **dal 24/08 la paginazione dei widget di home e di ricerca era morta su ogni installazione che
+non avesse modificato i collegamenti.** Gli hub continuavano a funzionare perche' `Includes_Hubs.xml`
+e' un file statico della skin, non generato. Nessun errore, nessun avviso: solo `path_pages=-`, che
+sembrava innocuo. Aveva ragione chi diceva "stiamo rattoppando i buchi": il lotto 89 e il punto 3
+riguardano guasti veri, ma su questa macchina non arrivavano nemmeno a essere il problema.
+
+### Correzione 1 -- rigenerare, e renderlo ripetibile
+
+`buildv` in `shortcuts/skinvariables-generator.json` non e' letto da nessuno (verificato: nessuna
+occorrenza in `script.skinvariables/resources/`). Esiste solo per stare dentro l'impronta. Alzato a
+`0.1.6-fenlight-pg-scope`: alla prossima apertura della home ogni installazione rigenera da sola.
+
+La regola e' scritta dove serve, in `shortcuts/generator/data/LEGGIMI-rigenerazione.md`: **chi tocca un
+`.xmltemplate` alza `buildv`**. `script.skinvariables` e' di jurialmunkey e non e' forkato, quindi
+l'impronta non si puo' correggere alla radice.
+
+### Correzione 2 -- che non possa piu' essere silenzioso
+
+Una regola che dipende dalla memoria di chi modifica non e' una difesa. Fen Light ora se ne accorge
+da solo, e distingue le due cose che finora si confondevano:
+
+- `paginator.LASTBUILD_PROP` -- `get_pages` timbra l'istante di **inizio** di ogni build paginata.
+  Prima di qualunque lavoro, quindi il timbro arriva anche se la costruzione poi dura mezzo minuto.
+- nel watcher, `no_build_timeout = 20`: se il token e' stato scritto e da allora non e' partita
+  **nessuna** build, non e' lentezza -- e' che quel `<content>` non legge quella proprieta'.
+
+```
+WidgetPaginator: ricarica IGNORATA. Ho scritto Window(Home).Property(fenlight.pg.whome.ctl502.pages)=3
+e in 20s non e' partita nessuna build. Il <content> di quel widget non legge questa proprieta': il file
+generato della skin e' vecchio rispetto ai suoi .xmltemplate. Rigenerarlo -- alzare "buildv" in
+shortcuts/skinvariables-generator.json, oppure toccare i widget dalla schermata di modifica.
+```
+
+Una diagnosi per chiave per sessione: e' un guasto di configurazione, non un evento da ripetere.
+
+Il timeout lungo che c'era gia' (`stuck_timeout = 90`) resta e serve a un'altra domanda -- "la build e'
+morta a meta'?" -- e il suo messaggio ("le build sono troppo lente") qui sarebbe stato una diagnosi
+sbagliata: la build non era lenta, non esisteva.
+
+**Costo:** una `setProperty` per build.
+
+---
+
+## Lotto 91 -- il crollo della paginazione: due widget, un solo nome
+
+Con il lotto 90 la paginazione sulla stick funziona (`path_pages=3,4,5,6,7` nel log zd, contro
+`path_pages=-` ovunque prima). Ma continua a **crollare**: si allunga fino a 114 elementi e poi
+riparte da 27.
+
+**Misura, log zd del 25/08, hub 11101 e Home.** Il crollo capita sempre al passaggio fra le due
+finestre, in tutte e due le direzioni:
+
+```
+18:40:21.748  set_head key=dd289980 built=114                     <- Trending, 7 pagine
+18:40:24.636  PERF NAV: finestra 11101 -> 10000                   <- si torna in Home
+18:40:24.918  watcher id=502 key=dd289980 current=79/100 built=114
+18:40:25.792  get_pages key=a14a8652 loading=False -> pages_to_load=2   <- la HOME crolla, 100 -> 48
+
+18:40:32.877  PERF NAV: finestra 10000 -> 11101                   <- si torna nell'hub
+18:40:33.091  watcher id=502 key=a14a8652 current=75/114 built=48
+18:40:33.212  get_pages key=dd289980 loading=False -> pages_to_load=2   <- TRENDING crolla, 114 -> 27
+```
+
+La riga 18:40:33.091 e' la confessione: `current=75/114` (il contenitore ha i 114 elementi di
+Trending) ma `key=a14a8652 built=48` (la chiave risolta e' quella del widget della Home). Il watcher
+sta leggendo un contenitore e credendolo un altro.
+
+**Causa.** `set_head` pubblicava la corrispondenza `md5(path del PRIMO elemento) -> chiave`. Nel log:
+
+```
+key=a14a8652  first_url=...&tmdb_id=1084244     <- 'Latest releases' (MDBList), Home
+key=dd289980  first_url=...&tmdb_id=1084244     <- Trakt Trending, hub
+```
+
+**Identici byte per byte.** Due liste diverse, in due finestre diverse, con lo stesso film in cima --
+che fra "ultime uscite" e "di tendenza" e' la norma, non la sfortuna. Stesso URL, stesso md5, **una
+sola voce** in `HEAD_PROP`: la vince chi ha costruito per ultimo.
+
+Da li' il danno lo fa il controllo di cambio inquilino (`service.py`), che e' corretto in se':
+
+```python
+if window.getProperty(CTL_KEY_PROP % (scope, widget_id)) != key:
+    window.setProperty(CTL_KEY_PROP % (scope, widget_id), key)
+    window.clearProperty(CTL_PAGES_PROP % (scope, widget_id))   # <- azzera il token
+```
+
+Entrando in Home, il contenitore 502 conteneva il widget della Home ma veniva identificato come
+Trending: inquilino "cambiato", token della Home azzerato, ricostruzione a 2 pagine. Entrando
+nell'hub, l'esatto contrario.
+
+**Verifica.** Nella sessione otto widget hanno costruito. Sette hanno primo elemento distinto
+(`278`, `755898`, `799766`, `11542`, `14299`, `95350`) e **non crollano mai**. I due che crollano sono
+esattamente i due che condividono `1084244`. Non c'e' un terzo caso.
+
+Era questo il "guasto A" che avevamo attribuito alla ricostruzione dal path base. Non era Kodi a
+perdere il token: **lo cancellavamo noi**, con le nostre mani, su un'identificazione sbagliata.
+
+### La correzione: la firma passa da un elemento a tre
+
+`head_signature(urls)` = `md5` dei path dei primi `HEAD_ITEMS = 3` elementi. La calcolano i due lati
+dalla stessa funzione: la build dagli elementi appena consegnati, il watcher da
+`Container(id).ListItemAbsolute(0|1|2).FolderPath` (nuova `container_head(cid)`, che sostituisce
+`head_lookup` in tutti e tre i punti che identificavano un contenitore).
+
+Tre e non due perche' la lista e' **append-only**: i primi tre elementi non cambiano mai mentre il
+widget si allunga, quindi la firma resta stabile fra una pagina e l'altra -- che e' la condizione per
+cui questo meccanismo esiste. Due liste che condividono i primi tre titoli **nello stesso ordine**
+sono la stessa lista.
+
+Verificato sui dati veri del log:
+
+| | firma a 1 elemento | firma a 3 elementi |
+|---|---|---|
+| Home 'Latest releases' | `6e5064c3` | `a222ac85` |
+| Hub 'Trakt Trending' | `6e5064c3` | `876f532e` |
+| **collidono?** | **si'** | **no** |
+
+e la firma a tre non cambia allungando Trending da 3 a 114 elementi.
+
+### Rete di sicurezza
+
+`set_head` pubblica **entrambe** le firme e `container_head` prova la buona per prima, ricadendo su
+quella a un elemento solo se la prima non risolve. Motivo: il watcher ora dipende da
+`ListItemAbsolute(1)` e `(2)`, che non erano mai state usate qui. Se in qualche stato tornassero
+vuote, senza la seconda firma il contenitore diventerebbe **non identificabile** e la paginazione si
+fermerebbe del tutto. Cosi' il caso peggiore e' tornare a com'era, non peggio. Nel caso che conta la
+firma a tre risolve sempre, quindi la ricaduta non riapre la collisione.
+
+Il censimento del registro pulisce ora tutte le firme di una chiave (`chiave:firma3|firma1`), non solo
+la prima.
+
+**Costo:** due infolabel in piu' per giro del watcher (chiamate GUI in processo, non I/O).
+`set_head` logga anche `firma=` per poter verificare l'identita' direttamente dal log.
+
+---
+
+## Lotto 92 -- l'identita' di un widget e' la sua posizione, non il suo contenuto
+
+**L'obiezione, dall'utente:** *"non capisco perche' la firma di un widget che dovrebbe essere univoca
+e' calcolata sui primi 3 oggetti. 2 widget diversi che hanno i primi 3 oggetti uguali avranno firma
+uguale. la firma deve essere calcolata sul nome del widget, o sulla sua posizione."*
+
+Ha ragione, e il lotto 91 era una toppa: passare da uno a tre elementi ha reso la collisione rara,
+non impossibile. Un'identita' dedotta dal contenuto e' collidibile **per costruzione**.
+
+### Perche' era finita cosi'
+
+I due lati parlano lingue diverse:
+
+- la **build** riceve un path e un handle; non sa di essere "il secondo widget della Home";
+- il **watcher** vede un contenitore dentro una finestra; non sa quale lista ci sia dentro.
+
+La firma sul contenuto era il ponte fra le due, progettato per funzionare con qualunque skin. Ma
+Arctic Fuse e' un nostro fork, **e la skin gia' scriveva la posizione dentro il path** -- gliel'avevamo
+messa noi il 24/08 per il token delle pagine:
+
+```xml
+$INFO[Window(Home).Property(fenlight.pg.w{window_id}.ctl{widget_id}.pages),&amp;pages=,]
+```
+
+`{window_id}` e `{widget_id}` sono esattamente "Home, secondo widget". Erano li' e non li usavamo per
+identificare il widget: un ponte costruito per attraversare un fiume su cui c'era gia' un ponte.
+
+### La correzione
+
+Nelle stesse quattro righe che gia' iniettano il token, si aggiunge un parametro statico:
+
+```
+&pgctl=home.502      &pgctl=$PARAM[pgscope].$PARAM[id]      &pgctl=1105.{widget_id}
+```
+
+Da li':
+
+- `position_of(params)` legge e **convalida** la posizione dal path (scope alfanumerico, id numerico:
+  un path storpiato non deve poter produrre un nome di proprieta' arbitrario);
+- `widget_key(params)` = la posizione se c'e', altrimenti l'impronta del contenuto (ricaduta);
+- `make_key(params)` cambia mestiere: non e' piu' l'identita', e' l'**impronta del contenuto** --
+  "quale lista e' questa" -- e `pgctl` entra in `_VOLATILE_PARAMS` perche' la posizione non deve
+  entrarci.
+
+Due segnali distinti per due domande distinte, invece di uno che provava a rispondere a entrambe.
+
+**Verificato sui casi veri del log ze:**
+
+| | prima (firma a 3 elementi) | dopo (posizione) |
+|---|---|---|
+| Home "Latest releases" | `061b37ad` | `home.502` |
+| Hub "Trakt Trending" | `30e26843` | `1101.502` |
+| stessa lista in due posizioni | **una chiave sola** | `home.503` / `1101.502`, distinte |
+| ricerca, query diversa | chiave diversa | stessa posizione, contenuto diverso -> reset |
+| `pgctl=../../etc.5` | -- | ricaduta su md5, nessun nome arbitrario |
+
+Le chiavi diventano anche **leggibili nel log**: `fenlight.pg.home.502.pages` invece di un md5.
+
+### La riconciliazione cambia padrone
+
+Una posizione e' fissa, ma la lista dentro no: un hub cambia categoria, la ricerca cambia query a ogni
+tasto. Quando cambia, il conteggio pagine va azzerato.
+
+Prima lo faceva il **watcher**, confrontando la chiave dedotta dal contenuto con quella registrata --
+ed era da li' che partiva il danno dei lotti 90-91: bastava un'identificazione sbagliata perche'
+cancellasse il token del widget giusto. Ora lo fa la **build** (`reconcile_position`, chiamata da
+`get_pages`), che il contenuto lo conosce invece di dedurlo, in un processo solo e in ordine.
+
+Azzera due cose, non una: il conteggio per chiave **e** il token nel path. Il token e' una proprieta'
+del contenitore, non della lista, quindi porterebbe ancora il `&pages=N` del widget precedente -- e
+con il `max()` del lotto 89 quello vincerebbe da solo.
+
+Nel watcher spariscono entrambe le copie del controllo di cambio inquilino.
+
+### Cosa si alleggerisce
+
+- `container_head` legge **una** infolabel invece di tre: la posizione la sa gia', e la lettura serve
+  solo a rispondere "questo contenitore e' nostro?".
+- `refresh_containers_for_ids` compone la chiave dei contenitori nelle altre finestre invece di
+  cercarla in una proprieta' scritta dal censimento.
+
+### La ricaduta, e perche' non e' un ripiego
+
+Se un widget paginabile arriva senza `pgctl` -- file generato della skin non aggiornato, `<content>`
+scritto a mano -- la paginazione continua a funzionare come nel lotto 91, con la firma sul contenuto.
+E lo **dice**: una riga di diagnostica per modo, non per build, con il nome del modo e l'istruzione
+per rigenerare. Dopo il lotto 90 nessun guasto di questo sottosistema deve piu' poter essere muto.
+
+`buildv` alzato a `0.1.7-fenlight-pgctl` (vedi `shortcuts/generator/data/LEGGIMI-rigenerazione.md`).
+
+**Nota sui limiti:** nella finestra Video (10025) una categoria aperta a schermo intero non ha
+`pgctl` -- il path non lo genera la skin -- e li' vale la navigazione normale a pagine. Non e' una
+regressione: era gia' cosi'.
+
+---
+
+## Lotto 93 -- una politica sola per la rete, e un guasto muto vecchio di nove lotti
+
+**La richiesta, dall'utente:** *"non scriverei una funzione di rete con gestione degli errori
+esclusiva per questa richiesta a bluray.com. ne vorrei una ben scritta, veloce, che usano tutte le
+chiamate di rete che fa la stick."*
+
+**Censimento di partenza.** Il livello condiviso c'era gia' (`modules/http_client`, lotto 84: pool per
+host, keep-alive, gzip, redirect). Quello che non c'era era la POLITICA:
+
+- `tmdb_api`: `except: return None` in nove punti -- un timeout e un 404 indistinguibili;
+- `skyhook_api`: `if status != 200: return None`;
+- `trakt_api`: `except Exception as e: return logger(...)`;
+- `bluray_api`: `except RequestException` e poi `except Exception`;
+- `downloader`: usa `urlopen` diretto, fuori dal livello.
+
+Nessuno riprova, nessuno rinuncia, e la salute della rete non si legge da nessuna parte.
+
+### Cosa e' entrato nel livello
+
+1. **Classificazione**: `TemporaryError` (timeout, connessione, 5xx), `Throttled` (429/403),
+   `PermanentError` (4xx), `CircuitOpen`. Tutte derivano da **OSError**, cosi' ogni `except` gia'
+   scritto nei chiamanti continua a catturarle esattamente come prima.
+2. **Riprova asimmetrica**: si riprova una volta cio' che fallisce SUBITO (connessione rifiutata,
+   DNS). **Un timeout non si riprova mai**: ha gia' consumato i 20 s del budget e riprovarlo
+   raddoppierebbe il caso peggiore, che su questa stick e' il sintomo da evitare.
+3. **Interruttore per host**: dopo 3 guasti CONSECUTIVI le chiamate a quell'host falliscono subito.
+   Misurato: **0,17 ms invece di 20 s di timeout**. Riapertura a scalare: 30 s, 5 min, 15 min, 30 min.
+   Lo stato sta in una proprieta' di `Window(10000)` e non in memoria di modulo -- con
+   `reuselanguageinvoker=false` ogni build e' un processo nuovo, quindi un contatore in memoria non
+   arriverebbe mai a 3.
+4. **Gancio `validate=`**: il chiamante puo' dichiarare che un 200 e' in realta' uno sbarramento
+   (blu-ray.com non manda 429, manda una pagina di attesa). Il sapere di dominio resta nel modulo,
+   il verdetto alimenta l'interruttore condiviso.
+
+### Due tarature corrette DAL TEST, non dal ragionamento
+
+La prima stesura **sollevava** su 429 e 5xx. Il banco di prova contro un server locale ha mostrato che
+avrebbe rotto tre chiamanti funzionanti: `trakt_api` legge il 429 per dormire su `Retry-After`,
+`real_debrid` controlla `status_code in (401, 403, 404)`, `imdb_api` fa `!= 200`. **Nessun codice di
+stato solleva piu'**: la risposta torna al chiamante come prima, e l'interruttore si limita a contare.
+
+La seconda: il **403 non conta** per l'interruttore. Sembra un bando, ma e' la risposta normale di
+real_debrid e il "non autorizzato" di mezzo mondo.
+
+### Il guasto muto: blu-ray.com era spento dal lotto 84
+
+Cercando dove agganciare la politica:
+
+```python
+s.mount('https://', _requests().adapters.HTTPAdapter(pool_maxsize=8))
+```
+
+Dal lotto 84 `_requests()` non torna piu' `requests` ma `modules.http_client`, che **non ha
+`adapters`**. Quella riga sollevava `AttributeError`, e siccome `has_home_video_release` racchiude
+tutto in un `try` che finisce in `return None`, l'errore spariva: **ogni interrogazione a
+blu-ray.com tornava "non lo so"**, cioe' fail open, cioe' elemento mostrato.
+
+Il ripiego home-video del filtro doppiaggio e' stato spento per nove lotti senza che nulla lo dicesse,
+perche' il risultato di un fallimento e' identico a quello di un titolo tenuto di proposito.
+**Verificato eseguendo il percorso vero**, non leggendolo.
+
+Corretto in due modi: la riga sparisce da `bluray_api` (non serviva -- `POOL_PER_HOST=8` fa gia'
+esattamente quello), e `http_client` espone un `adapters` inerte, perche' *una superficie di
+compatibilita' incompleta non da' errore, da' comportamento sbagliato*.
+
+### Correzione a una misura del lotto precedente
+
+Avevo scritto che il filtro doppiaggio spendeva *"57,6 s di sola attesa di blu-ray.com"*. **Falso**:
+blu-ray.com non veniva mai contattato. Quei 57,6 s erano l'import della pila HTTP (~0,88 s x 32
+valutazioni = ~28 s, pagato per una chiamata che poi falliva all'istante) piu' le letture di metadati
+da TMDb nelle due righe lente (`metadati letti 0 (di 15 richiesti)`, con una raffica di `TMDB CALL` e
+un'invocazione da 32 s accanto). 28 + 29 = 57.
+
+**Conseguenza da tenere presente:** ora che il ripiego funziona davvero, il filtro comincera' a fare
+un lavoro di rete che prima non faceva. Il filtro filtrera' -- che e' il suo mestiere -- ma ogni
+titolo sconosciuto costera' un giro vero. E' esattamente il caso per cui esiste il punto 3 (coda dei
+verdetti risolta dal servizio), che diventa piu' urgente, non meno.
+
+### Seguito del lotto 93 -- cosa ha rivelato la prima chiamata vera
+
+Riacceso il ripiego, il log zg del 25/08 mostra **59 interrogazioni a blu-ray.com davvero partite**,
+a 2,3-7,2 s l'una (mediana 4,85 s) contro i ~0,02 s di quando falliva all'istante. La correzione
+dell'AttributeError funziona.
+
+Ma l'interruttore si e' aperto **4 volte**, sempre con `risposta rifiutata dal chiamante`. Seguendo
+quella traccia sono venute fuori altre tre cose, tutte misurate:
+
+**1. blu-ray.com pretende `Accept-Language`.** Provate le intestazioni una per una sulla home:
+
+```
+solo User-Agent ................... 200,      7 byte: 'error42'
++ Accept: */* ..................... 200,      7 byte: 'error42'
++ Accept: text/html ............... 200,      7 byte: 'error42'
++ Accept-Language: it-IT .......... 200, 543059 byte, con Set-Cookie
+```
+
+Rifiuta con un **200**, quindi nessun codice di stato lo rivelava. Nemmeno `requests` mandava
+Accept-Language: non e' una regressione del lotto 84, e' un giro di vite del sito. Aggiunto a
+`_HEADERS`.
+
+**2. La nostra Session non conservava i cookie.** `requests.Session` ha un barattolo, la nostra no.
+Misurato: pagina prodotto senza cookie -> `error42`; home page -> `Set-Cookie: pw_bottom_filter,
+firstview`; stessa pagina con quei cookie -> 524 KB con `oswaldcollection` dentro. Aggiunto
+`_CookieJar` (nome/valore, ambito per dominio, durata di processo). I `Set-Cookie` si raccolgono
+dalla LISTA delle intestazioni e non dal dict: sono spesso piu' d'uno e il dict ne terrebbe l'ultimo.
+
+**3. L'endpoint `menu_ajax.php?action=showreleases` e' morto.** Risponde 200 con **zero byte** per
+qualunque titolo, anche con Accept-Language e cookie a posto. Il blocco delle edizioni si e' spostato
+dentro la pagina prodotto, che pesa **524 KB**. Questo il livello di rete non lo puo' aggiustare: e'
+una scelta di progetto.
+
+**Stato risultante:** il ripiego home-video continua a non produrre verdetti, ma ora per una ragione
+nota e con un costo limitato -- il corpo vuoto conta come guasto, quindi dopo tre titoli
+l'interruttore si apre e la navigazione smette di pagare un endpoint morto. Il comportamento per
+l'utente non cambia rispetto agli ultimi nove lotti: verdetto inconcludente, elemento mostrato.
+
+**Decisione rimandata:** riscrivere l'interrogazione sulla pagina prodotto da 524 KB, oppure lasciarla
+spenta finche' il punto 3 non sposta il lavoro nel servizio. Scaricare mezzo mega per titolo sul
+percorso interattivo e' esattamente cio' che il punto 3 esiste per evitare.
+
+---
+
+## Lotto 94 -- blu-ray.com non era rotto: eravamo noi, e la strada giusta era un'altra
+
+**La richiesta, dall'utente:** *"attualmente l'api usava l'ajax per ottenere i dati che ci
+interessano: se un titolo è mai uscito in versione italiana o meno. [...] io andando su bluray.com in
+realtà mi sembra che il sito non sia stato toccato, quindi vorrei che in questa sessione analizzassimo
+a fondo se veramente non esiste una strada rapida."*
+
+Aveva ragione. Il sito non è stato toccato.
+
+### La diagnosi del lotto 93 era falsa
+
+Il lotto 93 aveva concluso che `menu_ajax.php?action=showreleases` fosse morto -- *"risponde 200 con
+zero byte per qualunque titolo"* -- e che il blocco delle edizioni si fosse spostato dentro la pagina
+prodotto da 524 KB. Da lì la "decisione rimandata": riscrivere l'interrogazione su mezzo mega per
+titolo, oppure lasciare il ripiego spento.
+
+Misurato il 26/08: l'endpoint risponde benissimo. **8.302 byte in 0,46 s** per Oppenheimer, con i tre
+header `oswaldcollection` e il flag IT, esattamente come il pattern originale si aspetta. Il corpo
+vuoto lo causavamo noi:
+
+| Cookie inviati a `menu_ajax` | Risposta |
+|---|---|
+| `country=it` **da solo** | **0 byte** |
+| `country=it; firstview=1` | 8.302 B, 3× flag IT |
+| `country=it; pw_bottom_filter=blur` | 8.302 B, 3× flag IT |
+| `country=it; xyzzy=1` (secondo cookie **inventato**) | 8.302 B, 3× flag IT |
+| nessun cookie | 17.084 B, ma flag US -- paese sbagliato |
+
+Riprodotto tre volte, identico. **Non conta il valore del secondo cookie, conta che ce ne sia uno**:
+un'euristica anti-bot banale, "un browser vero non manda mai un cookie solo".
+
+E noi ne mandavamo uno solo. La catena: `has_home_video_release` passava `cookies={'country': ...}`;
+il `_CookieJar` del lotto 93 unisce correttamente i cookie espliciti a quelli del barattolo
+(`http_client.py:392-394`) -- **ma il barattolo era vuoto**, perché questo percorso non visita mai la
+home page, e `quicksearch.php` -- l'unica richiesta che facevamo prima -- **non manda alcun
+`Set-Cookie`** (verificato). Il primo passo funzionava lo stesso, perché quicksearch con un cookie
+solo risponde; il secondo no. Ecco perché il guasto sembrava specifico dell'ajax.
+
+**Corollario:** la pagina prodotto da 524 KB non è mai servita. La "decisione rimandata" del lotto 93
+non aveva oggetto.
+
+### La strada migliore però non è l'ajax
+
+Cercando la conferma ne è saltata fuori una più corta. `quicksearch.php` con `section` **diverso da
+`theatrical`** (`bluray`, `dvd`, `all`, o la stringa vuota: equivalenti, verificato) non cerca fra i
+film -- cerca nel **catalogo prodotti home-video già filtrato per paese**, e accanto a ogni voce mette
+la data d'uscita e il codice paese:
+
+```
+keyword='Oppenheimer 2023', cookie country=it   ->  3.286 B in 0,42 s
+    cc=IT   Dec 21, 2023 | Oppenheimer (2023)
+    cc=IT   Dec 21, 2023 | Oppenheimer 4K (2023)
+keyword='Hundreds of Beavers 2022'              ->  0 B
+    ...la stessa con country=us                 ->  2.879 B, cc=US
+```
+
+| | strada A (adottata) | strada B (ajax corretto) |
+|---|---|---|
+| richieste | **1** | 2 (quicksearch → menu_ajax) |
+| tempo, connessione fredda | ~0,42 s | ~0,87 s |
+| tempo, keep-alive (misurato) | **0,13-0,18 s** | -- |
+| byte | 0-3 KB | 3-11 KB |
+| pre-order | **incluso** | fino a 4 pagine da 402 KB |
+
+### Perché si può buttare via ciò che A non vede
+
+A vede solo i **dischi**, non le edizioni digitali. Su 18 titoli le due strade divergono su tre --
+Aftersun, EO, Sound of Metal -- tutti con la sola voce `iTunes[IT]`.
+
+**È l'utente ad aver chiuso la questione:** quei tre a blu-ray.com non ci arrivano mai. Il controllo a
+monte accetta i secchi `('flatrate', 'free', 'ads', 'rent', 'buy')` -- `metadata.py:67` e
+`tmdb_api.py:726` -- e iTunes vive dentro `rent`/`buy`. Se stiamo interrogando blu-ray.com è perché
+TMDb/JustWatch ha già detto che in digitale non c'è. Le tre divergenze le avevo misurate su titoli
+scelti a tavolino, fuori dal percorso vero; dentro il percorso vero non esistono. Sui titoli che
+raggiungono davvero il modulo le due strade danno lo stesso verdetto, e A lo dà con metà delle
+richieste.
+
+### Il pre-order costava 402 KB a pagina. Ora è gratis
+
+`_any_released` esisteva per distinguere *"esce in Italia"* da *"è già uscito in Italia"*: apriva le
+pagine prodotto delle singole edizioni cercandoci `Available for pre-order`. Misurate: **402 KB e
+1,65 s l'una**, fino a quattro per titolo. Era il pezzo più costoso dell'intera interrogazione.
+
+La data è già nella risposta da 1-3 KB. E la regola non è quella che avevo scritto per primo -- il
+pre-order **non** si riconosce dalla sola assenza di data. Verificato con data di sistema Aug 26, 2026:
+
+```
+Oct 07, 2026 | Toy Story 5 (2026)        annunciato, data FUTURA
+Sep 16, 2026 | Backrooms 4K (2026)       annunciato, data futura
+-            | Disclosure Day (2026)     annunciato, data ignota
+Dec 21, 2023 | Oppenheimer (2023)        uscito
+```
+
+**`uscito = data presente AND data <= oggi`.** `_any_released` e le sue pagine pesanti spariscono.
+
+Le voci **senza** data restano ambigue: annuncio senza data, oppure buco nei dati del sito per
+un'edizione vecchia. Si sciolgono con il parametro che il chiamante già passava: per un titolo appena
+uscito di sala (`verify_released=True`) l'annuncio è l'ipotesi molto più probabile e non conta; per un
+titolo vecchio conta. Le date **future** non contano mai, per nessuno: quel controllo ora è gratuito.
+
+### La sentinella, perché il negativo è un corpo vuoto
+
+Il verdetto negativo di questa strada è l'assenza di risposta. È netto ed economico, ma un guasto
+sistemico (indice cambiato, ip bandito) svuoterebbe *ogni* risposta, e il filtro nasconderebbe in
+blocco tutto ciò che non è in streaming: widget vuoti, senza una riga di log. **Dopo il lotto 93
+nessun guasto di questo sottosistema deve poter essere muto.**
+
+Prima di fidarsi di un negativo si chiede quindi un titolo che nel catalogo c'è di sicuro. Costa
+**una richiesta ogni mezz'ora**, e solo se un negativo capita davvero (verificato: 4 titoli negativi
+di fila = 5 richieste). Lo stato vive in una proprietà di `Window(10000)` e non in memoria di modulo,
+perché con `reuselanguageinvoker=false` ogni build è un processo nuovo.
+
+`'The Matrix 1999'` è scelto per misura, non a naso: provato su 13 paesi (IT US UK FR DE ES JP NL SE
+PL BR AU CA) risponde in tutti. `'Oppenheimer 2023'` no -- in Brasile è vuoto.
+
+Di conseguenza `_looks_genuine` cambia: **il corpo vuoto non è più un guasto**. Nel lotto 93 lo era, e
+allora era giusto, perché il vuoto veniva dall'ajax rotto dal cookie singolo. Ora è il verdetto
+negativo -- il caso che il filtro esiste per trovare. Contarlo come guasto aprirebbe l'interruttore
+dopo tre titoli stranieri di fila.
+
+### La trappola da non ripercorrere
+
+`quicksearch` accetta un IMDb id e risponde, il che sembra la soluzione elegante al problema dei
+titoli localizzati. **Non esiste un indice IMDb**: fa un match fuzzy sul numero e restituisce
+risultati plausibili ma sbagliati.
+
+```
+tt15398776 -> Oppenheimer               giusto
+tt14209916 -> Cocaine Bear              era Hundreds of Beavers
+tt13405778 -> Insidious: The Red Door   era Skinamarink
+tt28607951 -> Anora                     era The Brutalist
+```
+
+Passerebbe qualunque prova superficiale. È annotato in cima al modulo perché nessuno ci ricaschi.
+
+### Il limite noto: due parole
+
+La ricerca a catalogo **ignora le query di una parola sola**. Misurato: `'Oppenheimer'` → 0 byte,
+`'Oppenheimer 2023'` → 3.286 byte; idem per `Anora`, `Flow`, `Up`. Con l'anno in mano siamo sempre a
+due parole -- e l'anno c'è sempre, arriva da IMDb -- ma se mancasse, il vuoto che ne uscirebbe sarebbe
+un **falso negativo**, cioè un elemento nascosto per sbaglio. Il modulo in quel caso si dichiara
+inconcludente e lo scrive nel log, invece di rispondere "no".
+
+Secondo limite, minore: l'indice della ricerca prodotti non copre tutto il catalogo -- `Project Hail
+Mary` e `Hokum 4K` compaiono nell'elenco uscite future ma non nella ricerca. Nel nostro caso l'effetto
+è innocuo (sono titoli non ancora usciti, e "no" è la risposta giusta comunque), ma è la ragione per
+cui **un verdetto negativo non andrebbe messo in cache con scadenza lunga**.
+
+### Verificato eseguendo il percorso vero
+
+Non leggendolo. 13 casi contro il sito vivo, attraverso `has_home_video_release` con un finto
+`kodi_utils`:
+
+| esito | casi |
+|---|---|
+| positivi | Oppenheimer, Anora, Mad God, Terrifier 3, The Zone of Interest, Heat, The Godfather |
+| negativi | Skinamarink, Hundreds of Beavers, The Brutalist, Showing Up |
+| annunciati (data futura) → negativi | Toy Story 5, Backrooms |
+
+**13 ok, 0 errori, 0,18 s a titolo** (la prima richiesta 0,53 s: è l'handshake, poi il keep-alive del
+lotto 84 fa il suo mestiere). Heat e The Godfather sono nel lotto apposta: hanno titolo italiano
+diverso (`Heat - La sfida`, `Il Padrino`) e il catalogo li indicizza sotto entrambi.
+
+Provati anche i percorsi di guasto, che sono la parte che conta:
+
+| scenario | esito | atteso |
+|---|---|---|
+| indice morto (ogni risposta vuota) | `None` + riga di log | fail open, mai `False` |
+| rete che solleva | `None` | fail open |
+| keyword di una parola | `None` + riga di log | non interrogabile |
+| stesso titolo, paesi diversi | IT `False`, US `True`, FR `True`, BR `False` | il filtro paese è reale |
+
+Nessun rate limiting osservato: 25 richieste sequenziali in 10,8 s senza un rifiuto, e 16 titoli con
+8 thread paralleli in 0,8 s totali.
+
+### Cosa resta aperto
+
+Il punto 3 (coda dei verdetti risolta dal servizio) **non è più urgente come lo era nel lotto 93**: il
+costo per titolo sconosciuto passa da "mediana 4,85 s più fino a 4 pagine da 402 KB" a 0,18 s e 3 KB.
+Resta desiderabile -- 0,18 s × decine di titoli è comunque lavoro sul percorso interattivo -- ma non è
+più il tappo che era.
+
+Il modulo non usa più `menu_ajax`. La correzione del cookie resta comunque acquisita e documentata in
+cima al file: se un domani servisse tornare all'ajax per le edizioni digitali, si sa perché rispondeva
+vuoto e non si ricomincia da capo.
+
+## Lotto 95 -- il filtro doppiaggio esce dal percorso interattivo
+
+**Punto 3 del piano concordato** (*"coda dei verdetti doppiaggio, risolta dal servizio"*), nella forma
+che l'utente aveva scelto: *"intanto NON farlo comparire ed eventualmente aggiornare il widget e
+metterlo solo se esiste la versione italiana"*.
+
+### La regola
+
+Durante la costruzione il filtro non tocca piu' la rete. Un elemento senza verdetto viene **nascosto**
+e messo in coda; il servizio la svuota a stick ferma, scrive i verdetti in `dub_cache` e ordina **una**
+ricarica mirata. Alla ricostruzione quegli elementi hanno il verdetto in cache e compaiono a costo zero.
+
+Due esiti che prima erano lo stesso esito, e che ora vanno tenuti distinti:
+
+| | | |
+|---|---|---|
+| **inconcludente** | la rete e' stata interrogata e non ha saputo rispondere | **fail open**, non si mette in cache |
+| **ancora ignoto** | la rete non e' stata interrogata | **fail closed**, nascosto e accodato |
+
+Il fail closed e' l'unica delle due scelte reversibile: il servizio risolve e l'elemento ricompare,
+mentre un titolo mai doppiato mostrato per sbaglio resta mostrato.
+
+### La coda
+
+`modules/dub_queue.py`. Vive in una proprieta' di `Window(10000)`, non in memoria di modulo (con
+`reuselanguageinvoker=false` chi accoda e chi risolve sono processi **diversi**) e non su disco (sarebbe
+I/O sulla eMMC proprio nel punto che si sta alleggerendo). Testo piatto con separatori US/RS, non JSON:
+accodare e' una concatenazione, senza analisi sintattica, a costo indipendente dalla lunghezza.
+
+La corsa fra due costruzioni che finiscono insieme puo' far perdere dei record. Non fa danno e non vale
+un lock: quegli elementi restano nascosti fino alla prossima costruzione di quel widget, che li
+riaccoda perche' il verdetto in cache continua a mancare. Si ripara da solo.
+
+### Il trabocchetto che avrebbe reso muto tutto il lotto
+
+`refresh_containers_for_ids` salta un contenitore quando **dimostra** che non c'entra: il suo elenco di
+id pubblicati non contiene nessuno di quelli cambiati. Ma un elemento nascosto non e' fra gli item, e
+quindi non era in quell'elenco -- il contenitore che lo aveva nascosto sarebbe stato **esattamente
+quello saltato**, e il verdetto risolto dal servizio non sarebbe mai arrivato a schermo. Silenziosamente:
+nessun errore, nessuna riga di log, solo elementi che non tornano mai.
+
+`_publish_ids` pubblica ora anche gli id nascosti (`paginator.defer_ids`). La controprova e' nella
+batteria di test: con l'elenco vecchio `refresh_containers_for_ids(['11'])` torna `hit=0`.
+
+### Il secondo trabocchetto: i cicli di riempimento
+
+Due cicli tirano altre pagine grezze finche' non hanno abbastanza **sopravvissuti** --
+`load_cumulative(min_items=...)` e `_dub_paginate` in `trakt_lists`. Un elemento rimandato per loro
+contava come scartato, quindi su cache fredda ogni riempimento sarebbe andato al suo tetto di 12 pagine
+in piu', con tutti i metadati che comporta -- inseguendo elementi che stanno per ricomparire da soli, e
+trascinando per giunta altri titoli ignoti dentro la coda.
+
+Misurato sul codice vero (20 grezzi per pagina, 18 rimandati, 2 sopravvissuti):
+
+```
+con il conteggio dei rimandati ....  1 pagina
+senza ............................. 10 pagine
+cache calda (nessun rimando) ......  1 pagina, come prima
+scarti VERI (verdetti negativi) ...  7 pagine, riempie ancora
+```
+
+`paginator.deferred_count()` e' volutamente **non** azzerato da `_publish_ids`, che svuota invece la
+lista degli id: la lista serve alla pubblicazione, il contatore al riempimento, e i due finiscono in
+momenti diversi.
+
+### Il servizio
+
+`DubResolver` in `service.py`. Tre condizioni per lavorare, ognuna con la sua ragione:
+
+1. **non si riproduce.** *"Durante la riproduzione non si fa nulla, si usa tutto per la riproduzione"*.
+   Il controllo si ripete fra un titolo e l'altro, e cio' che resta torna in coda (`requeue`).
+2. **la coda e' ferma da 4 s.** Finche' i widget si costruiscono continuano ad accodare; fare rete in
+   mezzo all'ondata e' la raffica che le note sui crash dicono di evitare.
+3. **per la sola ricarica**: coda vuota, e utente fermo da 3 s (`getGlobalIdleTime`). Gli elementi
+   rientrano al loro posto in lista, quindi cio' che sta sotto il cursore si sposta: farlo mentre il
+   dito si muove sarebbe il focus instabile che l'utente ha chiesto di evitare. Le interrogazioni
+   invece si fanno comunque, non si vedono.
+
+Aspettare la coda **vuota** e non la fine del lotto non e' un dettaglio: su cache fredda una ricarica
+per lotto da 8 titoli sarebbe una decina di ricostruzioni degli stessi contenitori a pochi secondi
+l'una dall'altra, e ogni ricostruzione rimetterebbe in coda i titoli ancora ignoti alimentando il
+proprio ciclo. `MAX_REFRESH_HOLD` (120 s) e' la valvola per chi non si ferma mai.
+
+Solo i verdetti **disponibili** scatenano la ricarica: un negativo conferma cio' che si vede gia'.
+
+### La notifica sulla rete muta
+
+Richiesta dell'utente: *"se la rete non risponde affatto l'elemento non viene mai mostrato, ma magari
+una notifica che avvisa l'utente che la rete non ha risposto per il filtro doppiaggio"*. Si legge
+`http_client.breaker_state('www.blu-ray.com')` e si avvisa **una volta per apertura**
+dell'interruttore, non per titolo; alla richiusura il contatore si riarma.
+
+### `dub_resolve`, una regola sola
+
+La regola *"streaming OPPURE home video"* vive ora in una funzione unica con due chiamanti: la
+costruzione (con `DUB_DEFER` spento) e il servizio. E' cio' che impedisce alle due strade di divergere.
+`DUB_DEFER = False` in `modules/metadata.py` riporta per intero il comportamento precedente.
+
+### Verificato eseguendo il codice, non leggendolo
+
+96 controlli su cinque batterie, con `xbmc` finto e le dipendenze di dominio sostituite:
+
+| batteria | cosa prova |
+|---|---|
+| coda (17) | deduplica, tetto, `requeue` in testa, titoli con virgolette/due punti, campi vuoti |
+| filtro (35) | nascondi+accoda a zero rete, scorciatoia streaming da cache, record completo, `DUB_DEFER` spento, id nascosti pubblicati |
+| riempimento (9) | 1 pagina invece di 10 su cache fredda, invariato su cache calda e su scarti veri |
+| ricarica (11) | il contenitore che ha nascosto ricarica, **la controprova che senza gli id nascosti veniva saltato**, finestre non a schermo, nonce |
+| servizio (28) | svuotamento completo, una sola ricarica, stop e requeue a film avviato, coda fresca non toccata, errore su un titolo non ferma il lotto, notifica una per apertura |
+
+E una prova viva contro il sito, attraverso `dub_resolve` con il ripiego home video forzato:
+
+```
+Oppenheimer ............ True  in 0,69 s
+Hundreds of Beavers .... False in 0,37 s
+```
+
+### Cosa resta
+
+Il punto 4 -- abbandono anticipato della costruzione all'avvio della riproduzione. Il `DubResolver` lo
+applica gia' a se stesso; manca al percorso delle build.
+
+## Lotto 96 -- il filtro non aggiungeva download: li de-parallelizzava
+
+Trovato analizzando il log del lotto 95, cercando dove fosse finito il tempo ora che blu-ray.com non
+costa piu' niente.
+
+### La misura
+
+Nel log `zh` (26/08, 01:19-01:28): **144 passaggi del filtro, 2.673 elementi, 84,3 s di valutazione
+totale**. Di quei 144 passaggi, **11 fanno 83,8 s -- il 100%**. Tutti e 11 sono passaggi in cui
+`meta_prefetch` non ha servito i metadati richiesti:
+
+```
+01:27:00   il prefetch ha servito  0 di 14   ->  15,41 s
+01:20:46   il prefetch ha servito  0 di 13   ->  12,45 s
+01:20:33   il prefetch ha servito  0 di 13   ->  10,41 s
+01:27:30   il prefetch ha servito  0 di 11   ->  10,18 s
+01:26:39   il prefetch ha servito  0 di  8   ->   8,76 s
+```
+
+Sull'intera sessione: 145 schede richieste, 61 servite (42%). Le **84 mancanti scaricate una alla
+volta**, a ~1 s l'una. La build peggiore, quella da 26,3 s delle 01:20:46: **22,9 s dei suoi 25,9 s di
+"routing->lista" erano queste due valutazioni. L'88%.**
+
+Conferma indipendente dal database, non dal log: in `dub.db` le scritture `dubs_` -- che
+`_store_streaming_verdict` produce **solo su dati TMDb appena scaricati** -- arrivano a raffiche di 6-8
+al secondo mentre costruisce l'indexer (6 worker) e poi a **una al secondo** dalle 01:20:27 alle
+01:20:46. Le due valutazioni lente, viste da un'altra angolazione.
+
+### Perche' era scritto cosi', e perche' ha smesso di valere
+
+Il commento nel codice diceva: *"Resta in sequenza: e' lavoro di sola cache, e il lotto 14 aveva gia'
+dimostrato che il pool costa piu' del farlo direttamente (il GIL serializza comunque)."*
+
+Vero finche' le schede sono in cache. **Falso quando non ci sono**, perche' allora quel ciclo non
+legge: scarica. Una premessa che ha smesso di valere, non una svista.
+
+### Il punto che rende la correzione ovvia
+
+Non era lavoro in piu'. Quelle schede servono **comunque** al costruttore per disegnare la riga, e il
+costruttore le scarica con 6 worker -- si vede nella riga subito dopo, `PERF PREFETCH: 39 richiesti,
+39 gia' in cache (100%) | lettura unica 73,5 ms`: sono in cache perche' le ha appena scaricate il
+filtro. Il filtro, girando per primo, se le tirava giu' lui, in fila indiana.
+
+**Non aggiungeva download: li de-parallelizzava.**
+
+Dettaglio che lo conferma dall'altro lato: la riga da 10,41 s ha `rimandati al servizio 0`. Dopo aver
+scaricato quelle 13 schede nessuno e' finito in coda -- tutti decisi subito, perche' la risposta di
+TMDb porta `watch/providers` nella stessa richiesta. Scaricare la scheda **regala il verdetto sullo
+streaming**. Quei 13 titoli non hanno mai avuto bisogno di una connessione in piu'.
+
+### La correzione
+
+La fase 2 diventa tre passaggi:
+
+| | |
+|---|---|
+| 2a | chi la scheda ce l'ha dal prefetch, e chi deve scaricarla -- sequenziale, gratis |
+| 2b | **lo scaricamento delle mancanti, in parallelo** |
+| 2c | la decisione, identica a prima |
+
+Il pool tocca **solo** lo scaricamento. La decisione resta a thread singolo, quindi `keep[]` continua a
+essere scritto da un solo thread e l'ordine della lista non si tocca -- nessuna nuova concorrenza da
+ragionare. `_dl_tempi` e' append-only; `resolved_meta[index]` tocca una chiave diversa per thread.
+
+### `DUB_META_WORKERS = 6`, e perche' non e' il tetto del lotto 81
+
+Osservazione dell'utente, ed e' quella che decide il numero: *"i worker nel pool di rete non sono i
+worker nella cpu in locale"*. Il lotto 81 aveva scartato l'aumento dei worker su lavoro **CPU**, che si
+fa la coda sul GIL. Qui si aspetta un socket e il GIL viene rilasciato: e' il vincolo opposto.
+
+Non e' nemmeno `DUB_NET_WORKERS = 3`, che vale per la fase 3: li' si aprono handshake verso **due**
+host, qui si parla col solo TMDb in keep-alive -- ed e' esattamente cio' che il costruttore fa gia' a
+ogni build, con 6.
+
+### La riga che dice se alzarlo
+
+`PERF DUB` stampa ora `schede scaricate N in W s (somma thread S s, resa S/W x su M worker)`.
+
+La resa e' la somma dei tempi dei thread divisa per il tempo di parete. Vicino a M i worker scalano e
+si puo' salire; molto sotto, la strozzatura e' altrove e alzarli non serve. E' il numero che rende la
+decisione una misura invece che un tentativo -- ed e' la ragione per cui la voce "schede scaricate"
+esiste come voce separata, invece di restare nascosta dentro "valutazione" come finora.
+
+### Verificato eseguendo il codice
+
+18 controlli, con la latenza di rete simulata e la concorrenza contata dal vivo:
+
+| | |
+|---|---|
+| 12 schede mancanti | picco di concorrenza **6**, resa **5,9x**, 0,61 s invece di 3,60 s |
+| prefetch parziale | si scaricano **solo** le mancanti |
+| prefetch completo | zero scaricamenti, zero pool, 0,000 s |
+| decisione | verdetti all'indice giusto, ordine identico a n=3, 7, 20 |
+| scheda assente da TMDb | l'elemento resta **visibile** (fail open), non accodato |
+| uno scaricamento che solleva | gli altri 5 decisi lo stesso, quello rotto resta visibile |
+
+Piu' le cinque batterie del lotto 95 rieseguite: 100 controlli, nessuna regressione.
+
+### Esito misurato sulla stick (log zi, 26/08 02:32-02:38)
+
+Sei passaggi con scaricamenti veri, 65 schede in tutto:
+
+| schede | parete | somma thread | resa |
+|---|---|---|---|
+| 6 | 1,61 s | 9,08 s | 5,6x |
+| 12 | 1,96 s | 10,71 s | 5,5x |
+| 10 | 3,01 s | 15,70 s | 5,2x |
+| 13 | 3,30 s | 17,82 s | 5,4x |
+| 10 | 2,87 s | 14,60 s | 5,1x |
+| 14 | 4,43 s | 21,89 s | 4,9x |
+
+**Resa media 5,23x su 6 worker: l'87% del teorico.** Scalano.
+
+```
+costo per scheda mancante ....  1,003 s  ->  0,276 s     (3,6x)
+la valutazione peggiore ......  15,4 s   ->  4,5 s       (a parita' di 14 schede, 3,4x)
+la build peggiore ............  26,3 s   ->  10,5 s
+mediana delle build ..........   6,0 s   ->   4,3 s
+build oltre 8 s ..............   8 su 32 ->   4 su 27
+```
+
+Zero eccezioni, zero crash, zero aperture dell'interruttore, zero collassi di paginazione.
+
+### Alzarli oltre 6 non e' possibile su questo dispositivo, e servirebbe a poco
+
+`_run_pool` calcola `_cap = min(WORKER_COUNT, _max_workers)`, e
+`WORKER_COUNT = max(4, min(cpu_count + 2, 10))`. Il Mi Stick ha **4 core** (verificato in
+`/proc/cpuinfo`), quindi WORKER_COUNT = 6: **portare `DUB_META_WORKERS` a 8 o 10 verrebbe troncato a 6
+in silenzio.** Per salire davvero bisognerebbe alzare `WORKER_COUNT`, che governa *ogni* pool
+dell'addon -- una decisione molto piu' larga di questa fase.
+
+E il margine sarebbe sottile. Il tempo di thread per scheda passa da **1,00 s in sequenza a 1,38 s con
+6 in parallelo: +38%**. Non e' latenza inutilizzata che aspetta di essere riempita, e' contesa gia' in
+atto (banda, JSON, scritture su metacache). Con l'87% di efficienza il guadagno teorico massimo da
+qui all'infinito e' il 15%: sulla build peggiore, mezzo secondo. In cambio si allargherebbe la raffica
+di connessioni simultanee, che e' fra le cause elencate nei riavvii da watchdog.
+
+Sei e' il numero giusto, e non per prudenza: perche' e' il tetto del dispositivo e perche' la misura
+dice che oltre non c'e' quasi niente da prendere.

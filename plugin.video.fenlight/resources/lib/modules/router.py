@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-from modules.kodi_utils import external, mark_phase
-from urllib.parse import parse_qsl
+from modules.kodi_utils import external, mark_phase, parse_qsl
 # from modules.kodi_utils import logger
 
 def sys_exit_check(): return external()
@@ -46,7 +45,7 @@ def _search_debounce_abort(sys, params, action_filtered):
 	# A watcher-driven pagination step or a global soft refresh rebuilds the SAME query in place; never
 	# debounce those -- it would lag infinite-scroll and (via the Settled gate) hide the row mid-scroll.
 	# Only a genuine query change is debounced.
-	key = paginator.make_key(params)
+	key = paginator.widget_key(params)
 	if paginator.is_loading(key) or get_property(paginator.PG_REFRESH_PROP) == 'true':
 		return False
 	if not paginator.search_should_abort(params.get('query', '')): return False
