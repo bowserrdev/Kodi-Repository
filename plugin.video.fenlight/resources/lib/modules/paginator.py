@@ -6,8 +6,11 @@
 # refresh, so the already-loaded items keep their position and the focus is preserved.
 from hashlib import md5
 from re import compile as re_compile
-from urllib.parse import parse_qsl
+from modules.kodi_utils import parse_qsl
 from caches.settings_cache import get_setting
+# Interruttore unico della strumentazione: qui in testa perche' lo usano sia PG_DEBUG sia PERF,
+# e il primo dei due sta molto piu' su del secondo.
+from modules.perf import enabled as _perf_enabled
 
 # Window(10000) properties bridging the plugin build and the service watcher. Keyed per widget.
 PAGES_PROP = 'fenlight.pg.%s.pages'
@@ -26,6 +29,15 @@ HEAD_PROP = 'fenlight.pg.head.%s'
 # Distinguishes an in-place refresh of a live, expanded widget from a genuine fresh open (which has no
 # flag and starts from the initial batch). The watcher's own pagination refresh uses LOADING instead.
 PG_REFRESH_PROP = 'fenlight.pg.refresh'
+# Istante dell'ultima build INIZIATA per questa chiave (lo timbra get_pages, che e' il primo punto di
+# ogni costruzione paginata). Serve a una sola domanda, ma decisiva: quando il watcher scrive il token
+# e non succede niente, la build e' partita ed e' lenta, o non e' MAI partita?
+# Non e' teoria: dal 24/08 al 25/08, sul Mac, il file generato della skin era fermo al 14/08 e leggeva
+# ancora 'fenlight.pg.ctl502.pages' (senza finestra), mentre il servizio scriveva gia'
+# 'fenlight.pg.whome.ctl502.pages'. Il token finiva in una proprieta' che nessuno leggeva: TRIGGER
+# regolare nel log, nessuna ricostruzione, LOADING appeso, paginazione morta in silenzio per due
+# giorni. Con questo timbro il caso si distingue dal primo e si dice a voce alta.
+LASTBUILD_PROP = 'fenlight.pg.%s.lastbuild'
 # Token di ricarica MIRATA, indicizzato per id del contenitore. Compare dentro il <content> del widget
 # come $INFO[...], quindi cambiarlo fa ricaricare SOLO quel contenitore invece di sparare
 # UpdateLibrary, che e' un evento globale e ricostruisce tutti i widget della schermata (#1).
@@ -43,9 +55,14 @@ PG_REFRESH_PROP = 'fenlight.pg.refresh'
 # ('...Gary&pages=5' -> '...Gary' e Trending da 80 elementi a 26). Lo spazio dei nomi deve essere
 # (finestra, contenitore), non il solo contenitore. Vedi ctl_scope().
 CTL_PAGES_PROP = 'fenlight.pg.w%s.ctl%s.pages'
-# Chiave del widget che possiede attualmente quel contenitore. Gli id dei contenitori si ripetono fra
-# categorie diverse e una ricerca cambia chiave a ogni query: quando l'identita' cambia il token va
-# azzerato, altrimenti il widget nuovo erediterebbe le pagine di quello vecchio.
+# IMPRONTA DEL CONTENUTO attualmente in quella posizione (lotto 92: prima ci stava la chiave del
+# widget, quando chiave e contenuto erano la stessa cosa). Una posizione e' fissa, ma la lista che ci
+# sta dentro no: un hub cambia categoria, la ricerca cambia query a ogni tasto. Quando l'impronta
+# cambia, il conteggio pagine di prima non vale piu' e va azzerato -- altrimenti la lista nuova si
+# aprirebbe direttamente alle pagine accumulate da quella vecchia.
+# Adesso a confrontarla e' la BUILD, non il watcher: e' l'unico momento in cui il contenuto e' noto
+# con certezza, e toglie di mezzo tutta la classe di guasti in cui il watcher azzerava il token
+# basandosi su cio' che credeva di vedere a schermo (lotti 90-91).
 CTL_KEY_PROP = 'fenlight.pg.w%s.ctl%s.key'
 # Home e' 10000 per Kodi ma 'home' per il generatore della skin (data/base/home_widgets.xml), che e'
 # chi scrive il nome dentro il <content>. I due lati devono chiamarlo allo stesso modo o la skin
@@ -124,8 +141,28 @@ WIDGET_CONTAINER_IDS = tuple(range(500, 521))
 # _VOLATILE_PARAMS, quindi non entra nella chiave del widget e la paginazione non se ne accorge.
 RELOAD_PARAM = 'reload'
 
+# LOTTO 92 -- L'IDENTITA' DI UN WIDGET E' LA SUA POSIZIONE, NON IL SUO CONTENUTO.
+#
+# La skin scrive questo parametro dentro il <content> di ogni widget paginabile, con la finestra e
+# l'id del contenitore che gia' conosce al momento della generazione: 'pgctl=home.502',
+# 'pgctl=1101.503', 'pgctl=1105.502'. Sono gli stessi due valori con cui compone il token delle
+# pagine, e li avevamo davanti dal 24/08 senza usarli per identificare il widget.
+#
+# PERCHE' SERVE. I due lati parlano lingue diverse: la build riceve un PATH e non sa di essere "il
+# secondo widget della Home"; il watcher vede un CONTENITORE dentro una FINESTRA e non sa quale lista
+# ci sia dentro. Il ponte era una firma calcolata sul CONTENUTO -- prima il primo elemento, poi i
+# primi tre (lotto 91). Ma un'identita' dedotta dal contenuto e' collidibile per costruzione: nel log
+# zd del 25/08 il widget 'Latest releases' della Home e Trakt Trending nell'hub avevano lo stesso
+# primo elemento byte per byte, e il watcher scambiava un contenitore per l'altro azzerando il token
+# del widget sbagliato. Passare a tre elementi ha reso la collisione rara, non impossibile.
+# Con la posizione nel path non c'e' niente da dedurre: la build legge da se' dove si trova, il
+# watcher lo sa gia', e i due nomi coincidono per costruzione.
+CTL_PARAM = 'pgctl'
+
 # Params that change between cumulative reloads of the SAME widget and must not affect its key.
-_VOLATILE_PARAMS = ('new_page', 'paginate_start', 'refreshed', 'pages', 'reload', 'reload_property')
+# 'pgctl' e' qui perche' make_key ora calcola l'impronta del CONTENUTO, che e' un'altra domanda:
+# "in questa posizione e' cambiata la lista?". La posizione non deve entrarci.
+_VOLATILE_PARAMS = ('new_page', 'paginate_start', 'refreshed', 'pages', 'reload', 'reload_property', CTL_PARAM)
 
 # Text-search hub debounce + anti-stale. The skin rebuilds the search widgets on EVERY keystroke, so a
 # burst of typing (or deleting) launches many overlapping builds for the same container; because each
@@ -152,7 +189,11 @@ def _search_live_query():
 
 # Verbose diagnostic logging for the interactive pagination flow. Grep the Kodi log for FENLIGHT_PG.
 # Flip to True to re-enable tracing when debugging pagination.
-PG_DEBUG = False
+# Acceso per l'indagine sulla paginazione (lotto 86): serve la riga che dice, per OGNI build, se
+# 'interactive' era attivo e quante pagine ha chiesto il path. Senza, i due sintomi visti nel log zb
+# -- il collasso (path chiede 5, build ne fa 2) e l'azzeramento al rientro nella finestra -- non si
+# distinguono. Segue comunque l'interruttore unico: con la strumentazione spenta non stampa nulla.
+PG_DEBUG = _perf_enabled()
 
 def log(msg):
 	if not PG_DEBUG: return
@@ -263,8 +304,11 @@ def search_is_stale(query):
 # dice l'unica cosa che finora abbiamo stimato invece di misurare: dove finisce il tempo. La riga
 # separa il tempo di RISOLUZIONE (pagine TMDb + filtri, quasi tutto da cache dopo il primo giro)
 # da quello di COSTRUZIONE (una listitem per elemento: menu contestuale, info tag, artwork), che e'
-# la parte incomprimibile per ricostruzione. Da togliere quando le ottimizzazioni sono chiuse.
-PERF = True
+# la parte incomprimibile per ricostruzione.
+# NON si toglie a mano: dal lotto 83 tutto passa dall'interruttore unico di modules/perf.py, che
+# legge l'impostazione 'perf.instrumentation'. Qui resta il nome PERF perche' e' letto da una
+# quarantina di punti in questo file.
+PERF = _perf_enabled()
 
 # Contatore di invocazioni VIVE IN QUESTO INTERPRETE. Con reuselanguageinvoker=false ogni build apre un
 # processo Python nuovo, quindi vale sempre 1. Con reuse=true l'interprete sopravvive e il numero
@@ -343,7 +387,7 @@ def _diag_note(t_built):
 		query = _current_query()
 		causa = _build_cause(query)
 		bits = ['causa=%s' % causa]
-		key = make_key(query) if query else ''
+		key = widget_key(query) if query else ''
 		if key:
 			raw = get_property(DIAG_BUILDS_PROP) or ''
 			rows, prev = [], None
@@ -391,11 +435,15 @@ def phase_record(*durations):
 def phase_record_meta(*durations):
 	if PERF: _META_PHASES.append(durations)
 
-def phase_report(kind, labels):
+# Variante di phase_report che riceve le righe INVECE di leggerle dalle liste globali.
+# Serve dove piu' costruzioni girano nello STESSO interprete e nello STESSO momento: 'continua a
+# guardare' ne avvia fino a tre in parallelo (film in pausa, episodi in pausa, prossimi episodi) e
+# ognuna chiamerebbe phase_reset(), cancellando le misure delle altre. Con le righe accumulate in una
+# lista locale alla singola invocazione il conflitto non esiste, e le tre misure restano separate.
+def phase_report_rows(kind, labels, rows, extra=''):
 	if not PERF: return
 	try:
 		from modules.kodi_utils import logger
-		rows = list(_ITEM_PHASES)
 		if not rows: return
 		n = len(rows)
 		totals = [sum(r[i] for r in rows) for i in range(len(labels))]
@@ -407,10 +455,17 @@ def phase_report(kind, labels):
 		try:
 			from modules.utils import WORKER_COUNT as workers
 		except: workers = '?'
-		logger('FenLight PERF FASI', '%s | %s elementi | worker %s | somma thread %.0f ms | %s'
-				% (kind, n, workers, grand * 1000,
+		logger('FenLight PERF FASI', '%s | %s elementi | worker %s | somma thread %.0f ms%s | %s'
+				% (kind, n, workers, grand * 1000, extra,
 					' + '.join('%s %.0fms (%.0f%%)' % (labels[i], totals[i] * 1000, 100.0 * totals[i] / grand)
 								for i in range(len(labels)))))
+	except: pass
+
+def phase_report(kind, labels):
+	if not PERF: return
+	try:
+		from modules.kodi_utils import logger
+		phase_report_rows(kind, labels, list(_ITEM_PHASES))
 		mrows = list(_META_PHASES)
 		if mrows:
 			m_lang = sum(r[0] for r in mrows)
@@ -538,13 +593,63 @@ def log_build(kind, action, t_start, t_resolved, t_built, count, pages=None, pat
 	except: pass
 
 def make_key(params):
-	# Builds a stable per-widget key from the identifying params, ignoring volatile ones, so that
-	# the indexer (from its own params) and the watcher (from Container.FolderPath) compute the same key.
+	# IMPRONTA DEL CONTENUTO: quale lista e' questa. Ignora i parametri volatili e la posizione.
+	# Non e' piu' l'identita' del widget (vedi widget_key): serve a rispondere a "in questa posizione
+	# e' cambiata la lista?", che e' l'unica ragione per cui un conteggio pagine va azzerato.
 	if not isinstance(params, dict):
 		params = dict(parse_qsl(params, keep_blank_values=True))
 	items = sorted((k, v) for k, v in params.items() if k not in _VOLATILE_PARAMS)
 	canonical = '&'.join('%s=%s' % (k, v) for k, v in items)
 	return md5(canonical.encode('utf-8')).hexdigest()
+
+def position_of(params):
+	"""(scope, id contenitore) letti dal path, o (None, None) se la skin non li ha messi.
+
+	Il valore si convalida: deve essere 'scope.id' con scope alfanumerico e id numerico. Un path
+	storpiato non deve poter produrre un nome di proprieta' arbitrario.
+	"""
+	if not isinstance(params, dict):
+		params = dict(parse_qsl(params, keep_blank_values=True))
+	raw = (params.get(CTL_PARAM) or '').strip()
+	if not raw or '.' not in raw: return None, None
+	scope, _, cid = raw.rpartition('.')
+	if not scope or not cid: return None, None
+	if not cid.isdigit(): return None, None
+	if not scope.replace('_', '').isalnum(): return None, None
+	return scope, cid
+
+def widget_key(params):
+	"""IDENTITA' del widget. La posizione quando la skin la fornisce, altrimenti il contenuto.
+
+	La chiave finisce dentro i nomi delle proprieta' (PAGES_PROP e compagnia), quindi con la posizione
+	diventano leggibili nel log: 'fenlight.pg.home.502.pages' invece di un md5.
+
+	La RICADUTA sull'impronta del contenuto non e' un ripiego elegante: e' cio' che tiene in piedi i
+	contenitori che la skin non genera. Se un widget paginabile arriva senza 'pgctl' la paginazione
+	continua a funzionare come prima -- collisioni comprese -- e lo si dice a voce alta in
+	diagnostica, invece di spegnersi in silenzio (vedi il lotto 90: un guasto muto e' costato due
+	giorni).
+	"""
+	scope, cid = position_of(params)
+	if scope: return '%s.%s' % (scope, cid)
+	return make_key(params)
+
+_WARNED_NO_POSITION = set()
+
+def _warn_no_position(params):
+	# Una riga per modo, non una per build: e' un guasto di configurazione (file generato della skin
+	# non aggiornato, o un <content> scritto a mano), non un evento. Il modo basta a dire QUALE widget
+	# guardare.
+	try:
+		mode = (params.get('mode') if isinstance(params, dict) else None) or '?'
+		if mode in _WARNED_NO_POSITION: return
+		_WARNED_NO_POSITION.add(mode)
+		from modules.kodi_utils import logger
+		logger('Fen Light', 'paginazione: il widget "%s" arriva senza "%s" nel path, quindi si identifica '
+				'ancora dal contenuto (identificazione collidibile, vedi lotto 91). Il file generato della '
+				'skin e\' vecchio rispetto ai suoi .xmltemplate: rigenerarlo alzando "buildv" in '
+				'shortcuts/skinvariables-generator.json.' % (mode, CTL_PARAM))
+	except: pass
 
 def query_from_path(folderpath):
 	# Extracts the query dict from a plugin:// folder path (the part after '?').
@@ -567,12 +672,70 @@ def _first_item_url(items):
 	if not items: return None
 	return _item_url(items[0])
 
+# Quanti elementi di testa entrano nella firma del contenitore. UNO NON BASTA, ed e' misurato: nel log
+# zd del 25/08 il widget della Home 'Latest releases' (chiave a14a8652) e Trakt Trending nell'hub
+# (dd289980) avevano lo stesso primo elemento, byte per byte:
+#     plugin://plugin.video.fenlight/?mode=playback.media&media_type=movie&tmdb_id=1084244
+# Due liste diverse di due finestre diverse, stesso film in cima -- che per 'ultime uscite' e
+# 'di tendenza' e' la norma, non la sfortuna. Stesso URL -> stesso md5 -> UNA sola voce in HEAD_PROP,
+# vinta da chi ha costruito per ultimo. Da li' il watcher identificava il contenitore sbagliato e il
+# controllo di cambio inquilino azzerava il token del widget SBAGLIATO: Trending crollava da 114
+# elementi a 27 e la Home da 100 a 48, a ogni passaggio fra le due finestre. Vedi lotto 91.
+# Tre elementi perche' la lista e' append-only: i primi tre non cambiano mai mentre il widget si
+# allunga, quindi la firma resta stabile fra una pagina e l'altra -- che e' la condizione per cui
+# questo meccanismo esiste. Due liste che condividono i primi TRE titoli nello stesso ordine sono
+# la stessa lista.
+HEAD_ITEMS = 3
+
+def head_signature(urls):
+	# Firma di un contenitore a partire dai path dei suoi primi elementi. La calcolano i due lati:
+	# la build dagli elementi appena consegnati, il watcher dalle infolabel. Devono coincidere, quindi
+	# la regola sta scritta in un posto solo.
+	# Degrada da sola su liste corte (meno di HEAD_ITEMS elementi): con un elemento torna esattamente
+	# la firma di prima. Un widget cosi' corto non pagina, quindi non ha niente da perdere.
+	urls = [u for u in (urls or []) if u]
+	if not urls: return None
+	return md5('\n'.join(urls[:HEAD_ITEMS]).encode('utf-8')).hexdigest()
+
+def _head_signature_from_items(items):
+	if not items: return None
+	return head_signature([_item_url(i) for i in items[:HEAD_ITEMS]])
+
 # Ogni URL di elemento porta 'tmdb_id=' (URL_PLAY, URL_OPTIONS, URL_MARK... in tutti gli indexer),
 # quindi gli id si estraggono senza dover conoscere la forma dei dati di ciascuno.
 _TMDB_IN_URL = re_compile(r'[?&]tmdb_id=(\d+)')
 
+# LOTTO 95 -- gli id NASCOSTI dal filtro doppiaggio in attesa di verdetto (vedi modules/dub_queue).
+# Vivono in una lista di modulo e non in una proprieta' perche' non devono attraversare i processi:
+# chi li mette (dub_keep_mask) e chi li legge (_publish_ids, poche righe di codice piu' tardi) stanno
+# nella STESSA invocazione. La filtratura gira sempre prima della costruzione, quindi quando set_head
+# passa la lista e' gia' completa.
+_DEFERRED_IDS = []
+# Contatore separato dalla lista, e VOLUTAMENTE mai azzerato dentro l'invocazione: _DEFERRED_IDS lo
+# svuota _publish_ids alla fine, mentre questo deve restare valido per tutta la costruzione. Lo legge
+# il riempimento delle pagine -- vedi deferred_count.
+_DEFERRED_COUNT = [0]
+
+def defer_ids(ids):
+	for i in ids or []:
+		if i:
+			_DEFERRED_IDS.append(str(i))
+			_DEFERRED_COUNT[0] += 1
+
+def deferred_count():
+	"""Quanti elementi questa costruzione ha nascosto in attesa del verdetto (lotto 95).
+
+	Serve ai cicli di RIEMPIMENTO -- load_cumulative(min_items) qui, _dub_paginate in trakt_lists --
+	che tirano altre pagine grezze finche' non hanno abbastanza SOPRAVVISSUTI. Senza questo conteggio
+	un elemento rimandato conta come scartato, e su cache fredda ogni riempimento andrebbe dritto al
+	suo tetto (12 pagine in piu', con tutti i metadati che comporta) inseguendo elementi che stanno
+	per ricomparire da soli -- trascinando per giunta altri titoli ignoti dentro la coda. Un elemento
+	rimandato e' un elemento che sara' li' fra pochi secondi: per il riempimento vale come presente.
+	"""
+	return _DEFERRED_COUNT[0]
+
 def _publish_ids(key, items):
-	# Pubblica gli id contenuti da questo widget, per la ricarica mirata. Best-effort: se fallisce,
+	# Pubblica gli id di cui questo widget si occupa, per la ricarica mirata. Best-effort: se fallisce,
 	# refresh_containers_for_ids non riesce a escludere il widget e lo ricostruisce -- prudente, non rotto.
 	try:
 		from modules.kodi_utils import set_property
@@ -585,6 +748,14 @@ def _publish_ids(key, items):
 			tid = m.group(1)
 			if tid in seen: continue
 			seen.add(tid); ids.append(tid)
+		# "Si occupa" comprende cio' che ha NASCOSTO. Un elemento tolto dal filtro doppiaggio non
+		# compare fra gli item, quindi senza questa aggiunta il contenitore che lo ha nascosto sarebbe
+		# proprio quello che refresh_containers_for_ids salta -- e il verdetto risolto dal servizio non
+		# arriverebbe mai a schermo. E' l'unico punto che tiene insieme il punto 3 e la ricarica mirata.
+		for tid in _DEFERRED_IDS:
+			if tid in seen: continue
+			seen.add(tid); ids.append(tid)
+		del _DEFERRED_IDS[:]
 		set_property(IDS_PROP % key, ','.join(ids))
 	except: pass
 
@@ -594,7 +765,10 @@ def _register(key, headhash):
 	# the read-modify-write isn't locked, but a lost/duplicate entry only ever leaves a stale prop
 	# behind -- it can never break a live widget's pagination.
 	from modules.kodi_utils import get_property, set_property, clear_property
-	entry = '%s:%s' % (key, headhash or '')
+	# headhash puo' essere piu' di una firma (a tre elementi e a uno solo, vedi set_head): si conservano
+	# tutte separate da '|', o la pulizia lascerebbe indietro le voci non citate.
+	if not isinstance(headhash, (list, tuple)): headhash = [headhash] if headhash else []
+	entry = '%s:%s' % (key, '|'.join(h for h in headhash if h))
 	raw = get_property(REGISTRY_PROP)
 	entries = [e for e in raw.split(',') if e] if raw else []
 	if entry in entries: entries.remove(entry)
@@ -605,9 +779,11 @@ def _register(key, headhash):
 		clear_property(HASMORE_PROP % old_key)
 		clear_property(BUILT_PROP % old_key)
 		clear_property(LOADING_PROP % old_key)
+		clear_property(LASTBUILD_PROP % old_key)
 		clear_property(IDS_PROP % old_key)
 		clear_property(ACTION_PROP % old_key)
-		if old_head: clear_property(HEAD_PROP % old_head)
+		for h in old_head.split('|'):
+			if h: clear_property(HEAD_PROP % h)
 	set_property(REGISTRY_PROP, ','.join(entries))
 
 def set_head(key, items, action=None):
@@ -630,14 +806,22 @@ def set_head(key, items, action=None):
 		from modules.kodi_utils import logger
 		logger('Fen Light', 'DIAG paginazione: tetto di %s elementi raggiunto (%s costruiti), il widget non si allunga oltre' % (cap, count))
 	url = _first_item_url(items)
-	headhash = md5(url.encode('utf-8')).hexdigest() if url else None
-	if headhash:
-		set_property(HEAD_PROP % headhash, key)
+	# Due firme, e la seconda e' una rete di sicurezza, non un ripensamento. Quella a tre elementi e'
+	# la buona ed e' quella che il watcher prova per prima. Quella a un elemento -- il comportamento di
+	# prima, collisioni comprese -- resta pubblicata perche' il watcher legge i suoi tre path da
+	# Container(id).ListItemAbsolute(1|2).FolderPath: se in qualche stato quelle infolabel tornassero
+	# vuote, senza la seconda firma il contenitore diventerebbe NON identificabile e la paginazione si
+	# fermerebbe del tutto. Cosi' il caso peggiore e' tornare a com'era, non peggio.
+	headhash = _head_signature_from_items(items)
+	headhash_one = head_signature([url]) if url else None
+	for h in (headhash, headhash_one):
+		if h: set_property(HEAD_PROP % h, key)
 	clear_property(LOADING_PROP % key)
 	_publish_ids(key, items)
 	if action: set_property(ACTION_PROP % key, str(action))
-	_register(key, headhash)
-	log('set_head key=%s built=%s first_url=%s' % (short(key), count, (url[:90] if url else '-')))
+	_register(key, (headhash, headhash_one))
+	log('set_head key=%s built=%s firma=%s first_url=%s' %
+		(short(key), count, (headhash[:8] if headhash else '-'), (url[:90] if url else '-')))
 
 def refresh_containers_for_ids(ids, actions=()):
 	"""Ricostruisce SOLO i contenitori toccati da questi tmdb_id. Torna quanti ne ha ricaricati.
@@ -651,7 +835,7 @@ def refresh_containers_for_ids(ids, actions=()):
 	Torna 0 se non identifica nessun contenitore Fen Light: il chiamante ricade sul refresh globale,
 	quindi il comportamento non puo' essere peggiore di quello di oggi.
 	"""
-	from modules.kodi_utils import get_property, set_property, get_infolabel, getCurrentWindowId
+	from modules.kodi_utils import get_property, set_property, getCurrentWindowId
 	# Dentro la finestra Video (10025) i controlli 500-528 NON sono widget: sono le viste della
 	# finestra stessa (Includes_Views.xml: <views>500,501,...,521,...,528</views>). Il token delle
 	# pagine non le governa, quindi impostarlo non ricarica nulla -- ma conterebbe come successo e
@@ -672,10 +856,9 @@ def refresh_containers_for_ids(ids, actions=()):
 	scope = ctl_scope()
 	seen_any, hit, hit_other, skipped = False, 0, 0, 0
 	for cid in WIDGET_CONTAINER_IDS:
-		first_url = get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % cid)
+		key, first_url = container_head(cid, scope)
 		if not first_url or 'plugin.video.fenlight' not in first_url: continue
 		seen_any = True
-		key = head_lookup(first_url)
 		if key and get_property(ACTION_PROP % key) not in wanted_actions:
 			stored = get_property(IDS_PROP % key)
 			# stored vuota = elenco mai pubblicato: non si puo' dimostrare niente, quindi si ricarica.
@@ -703,8 +886,14 @@ def refresh_containers_for_ids(ids, actions=()):
 	for pair in registry_pairs():
 		other_scope, _, cid = pair.partition(':')
 		if other_scope == scope: continue
-		key = get_property(CTL_KEY_PROP % (other_scope, cid))
-		if not key: continue
+		# LOTTO 92: la chiave di un contenitore in un'ALTRA finestra ora si compone, non si cerca --
+		# prima si leggeva CTL_KEY_PROP, che era la chiave scritta dal censimento del watcher e valeva
+		# solo per le finestre gia' visitate. Adesso la posizione basta da se'. Si procede solo se
+		# quella posizione ha davvero costruito qualcosa: un widget senza 'pgctl' (path non generato
+		# dalla skin) non pubblica stato sotto la chiave di posizione e qui non e' raggiungibile --
+		# resta comunque raggiunto dal giro sulla finestra a schermo, qui sopra.
+		key = '%s.%s' % (other_scope, cid)
+		if not get_property(BUILT_PROP % key): continue
 		if get_property(ACTION_PROP % key) not in wanted_actions:
 			stored = get_property(IDS_PROP % key)
 			if stored and not wanted.intersection(stored.split(',')): continue
@@ -721,11 +910,39 @@ def refresh_containers_for_ids(ids, actions=()):
 	# un'altra finestra sarebbe esattamente il contrario di quello che si vuole.
 	return hit
 
-def head_lookup(first_url):
-	# Watcher side: resolve the focused container's first-item path back to its widget key.
-	if not first_url: return None
-	from modules.kodi_utils import get_property
-	return get_property(HEAD_PROP % md5(first_url.encode('utf-8')).hexdigest()) or None
+def container_head(cid, scope=None):
+	"""Lato watcher: dal contenitore alla chiave del widget che ci sta dentro.
+
+	Torna (chiave, path del primo elemento). La chiave e' None se il contenitore non e' di Fen Light
+	o e' vuoto.
+
+	LOTTO 92: la chiave non si DEDUCE piu' dal contenuto, si COMPONE dalla posizione -- che il watcher
+	conosce gia' e la build legge dal proprio path. Resta una sola infolabel, e serve solo a rispondere
+	'questo contenitore e' nostro?'; non identifica piu' niente. Due letture in meno per giro rispetto
+	alla firma a tre elementi, e soprattutto zero possibilita' di scambiare un widget per un altro.
+
+	La ricaduta sulla firma del contenuto copre i contenitori che la skin non genera (o un file
+	generato non ancora aggiornato): li' la paginazione continua a funzionare come nel lotto 91.
+	"""
+	from modules.kodi_utils import get_infolabel, get_property
+	first = get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % cid)
+	if not first or 'plugin.video.fenlight' not in first: return None, first
+	if scope is None: scope = ctl_scope()
+	# Il path del PRIMO ELEMENTO non porta pgctl -- e' l'URL di riproduzione di un film, non quello
+	# della cartella. La posizione la sa il watcher, ed e' quella che conta.
+	key = '%s.%s' % (scope, cid)
+	if get_property(BUILT_PROP % key): return key, first
+	# Nessuno stato sotto la chiave di posizione: o il widget non ha ancora costruito, o il suo path
+	# non porta pgctl. Si prova la vecchia strada prima di rinunciare.
+	urls = [first]
+	for n in range(1, HEAD_ITEMS):
+		url = get_infolabel('Container(%s).ListItemAbsolute(%s).FolderPath' % (cid, n))
+		if not url: break
+		urls.append(url)
+	legacy = get_property(HEAD_PROP % head_signature(urls)) or None
+	if not legacy and len(urls) > 1:
+		legacy = get_property(HEAD_PROP % head_signature(urls[:1])) or None
+	return legacy, first
 
 def is_loading(key):
 	# Il flag LOADING contiene il timestamp in cui il watcher ha lanciato la ricostruzione (prima era
@@ -742,6 +959,20 @@ def loading_started(key):
 	try: return float(get_property(LOADING_PROP % key))
 	except: return 0
 
+def _stamp_build(key):
+	# Timbra l'inizio di questa build. Chiamata da get_pages, cioe' una volta per costruzione: il costo
+	# e' una setProperty, ed e' l'unico modo di sapere DALL'ESTERNO che una build e' davvero partita.
+	from modules.kodi_utils import set_property
+	from time import time
+	try: set_property(LASTBUILD_PROP % key, str(time()))
+	except: pass
+
+def last_build(key):
+	# Istante dell'ultima build iniziata per questa chiave. 0 = mai vista (o proprieta' ripulita).
+	from modules.kodi_utils import get_property
+	try: return float(get_property(LASTBUILD_PROP % key))
+	except: return 0
+
 def raw_pages(key, default):
 	# The accumulated page count for this widget, regardless of state. Used by the watcher to know
 	# what to increment from.
@@ -750,20 +981,81 @@ def raw_pages(key, default):
 	except: value = 0
 	return value if value >= default else default
 
-def get_pages(key, default, path_pages=0):
+def reconcile_position(key, params):
+	"""Azzera il conteggio se in questa posizione e' cambiata la lista. Torna il path_pages da usare.
+
+	La chiama get_pages, quindi ogni build passa di qui una volta sola, prima di decidere quante
+	pagine caricare. E' il rimpiazzo del controllo di cambio inquilino che stava nel watcher: qui il
+	contenuto e' noto per certo, li' era dedotto da cio' che si credeva di vedere a schermo.
+
+	Torna 0 quando resetta -- e non basta azzerare il conteggio per chiave: il path con cui Kodi ci ha
+	chiamati porta ancora il '&pages=N' del widget PRECEDENTE (il token e' una proprieta' del
+	contenitore, non della lista), e con max() quello vincerebbe da solo. Si azzerano tutti e due.
+	"""
+	scope, cid = position_of(params)
+	path_pages = params.get('pages', 0) if isinstance(params, dict) else 0
+	# L'avviso sta QUI e non in widget_key: si arriva a reconcile_position solo dalle quattro build
+	# paginate, che sono le uniche per cui la posizione mancante e' davvero un guasto. widget_key la
+	# chiamano anche il debounce della ricerca e la diagnostica, su path che non sono widget.
+	if not scope:
+		_warn_no_position(params)
+		return path_pages
+	from modules.kodi_utils import get_property, set_property, clear_property
+	content = make_key(params)
+	prop = CTL_KEY_PROP % (scope, cid)
+	if get_property(prop) == content: return path_pages
+	# Prima volta o lista cambiata. Non si distingue fra i due casi ed e' voluto: in entrambi il
+	# conteggio precedente non descrive quello che stiamo per costruire.
+	was = get_property(prop)
+	set_property(prop, content)
+	clear_property(PAGES_PROP % key)
+	clear_property(CTL_PAGES_PROP % (scope, cid))
+	log('reconcile %s: contenuto %s -> %s, conteggio azzerato' % (key, short(was) if was else '(nuovo)', short(content)))
+	return 0
+
+def get_pages(key, default, path_pages=0, params=None):
+	# params: quando c'e', get_pages riconcilia da se' la posizione e IGNORA il path_pages passato --
+	# lo rilegge da params, perche' un reset deve poterlo annullare. Vedi reconcile_position.
+	if params is not None: path_pages = reconcile_position(key, params)
 	# path_pages e' il ?pages=N letto dal path del widget: dice che questa ricostruzione appartiene a
 	# un widget GIA' espanso. E' il segnale preferito perche' sta nel path -- non puo' essere tolto
 	# sotto i piedi da un timeout mentre la build lavora, e sopravvive al ritorno dalla riproduzione.
 	#
-	# Non ci si fida ciecamente: gli id dei contenitori si ripetono fra categorie diverse, quindi un
-	# altro widget con lo stesso id potrebbe aver lasciato lI' il suo token. Il conteggio autorevole
-	# resta quello indicizzato per chiave del widget, e si prende il minore dei due: se questa chiave
-	# non ha pagine accumulate, raw_pages torna il default e il token altrui viene ignorato.
+	# LOTTO 89 -- qui c'era `min(path_pages, raw_pages(key, default))`, ed era la seconda meta' del
+	# guasto della paginazione. Il ragionamento originale era difensivo e sensato solo a meta': "gli id
+	# dei contenitori si ripetono fra categorie, quindi il token potrebbe essere di un altro widget".
+	# Ma quella difesa ESISTE GIA', e sta dove deve stare -- nel servizio, service.py:348:
+	#     if window.getProperty(CTL_KEY_PROP % (scope, widget_id)) != key:
+	#         window.setProperty(CTL_KEY_PROP % (scope, widget_id), key)
+	#         window.clearProperty(CTL_PAGES_PROP % (scope, widget_id))
+	# cioe' quando il contenitore cambia inquilino il token viene azzerato. Il `min()` era una seconda
+	# guardia per lo stesso rischio, e in cambio faceva un danno vero: dopo un azzeramento (il widget
+	# ricostruito dal path base riparte da 2 e set_state scrive 2 sulla chiave), il conteggio per
+	# chiave vale 2 mentre il path dice ancora 4 -- e il `min()` blocca a 2 PROPRIO IL SEGNALE che
+	# avrebbe permesso di recuperare. Un anello che si chiude su se' stesso: misurato nel log zc del
+	# 25/08, `get_pages path_pages=4 -> pages_to_load=2`, e tre azzeramenti in dieci minuti.
+	#
+	# Ora il path puo' solo ALZARE, mai abbassare. Non serve riscrivere niente qui: la build carica N
+	# pagine e chiama set_state(key, N), quindi il conteggio per chiave si ripara da solo al primo giro.
+	# Il rischio residuo di un token sbagliato e' di caricare qualche pagina di troppo, non di perdere
+	# elementi -- ed e' comunque limitato da has_more e dal tetto di max_items.
+	_stamp_build(key)
 	try: path_pages = int(path_pages or 0)
 	except: path_pages = 0
 	if path_pages > default:
-		result = min(path_pages, raw_pages(key, default))
-		log('get_pages key=%s path_pages=%s -> pages_to_load=%s (default=%s)' % (short(key), path_pages, result, default))
+		stored = raw_pages(key, default)
+		result = max(path_pages, stored)
+		# Limite di ASSURDITA', non di politica. Finche' il `min()` c'era, il conteggio per chiave
+		# faceva anche da tetto implicito; togliendolo, un token corrotto nel path diventerebbe un
+		# numero di pagine qualunque, e load_cumulative cicla esattamente pages_to_load volte
+		# (max_items spegne has_more DOPO la build, non limita quante pagine si chiedono).
+		# Il tetto e' max_items pagine: nel caso peggiore una pagina per elemento, quindi non stringe
+		# mai su un widget vero -- serve solo a rendere impossibile un ciclo lunghissimo.
+		cap = max_items()
+		if result > cap:
+			log('get_pages key=%s path_pages=%s ASSURDO, limitato a %s' % (short(key), path_pages, cap))
+			result = cap
+		log('get_pages key=%s path_pages=%s stored=%s -> pages_to_load=%s (default=%s)' % (short(key), path_pages, stored, result, default))
 		return result
 	return _get_pages_legacy(key, default)
 
@@ -824,9 +1116,11 @@ def load_cumulative(fetch_page, pages_to_load, min_items=0):
 				seen.add(sig)
 				all_ids.append(item)
 				added += 1
-		log('load_cumulative page=%s items=%s new=%s has_more=%s (total so far=%s, min_items=%s)' % (page_no, len(ids) if ids else 0, added, has_more, len(all_ids), min_items))
+		log('load_cumulative page=%s items=%s new=%s has_more=%s (total so far=%s, rimandati=%s, min_items=%s)'
+			% (page_no, len(ids) if ids else 0, added, has_more, len(all_ids), deferred_count(), min_items))
 		if not has_more: break
 		# Past the requested pages, stop as soon as the fill target is met (min_items=0 -> stop exactly at
-		# pages_to_load, the legacy behavior for every non-search widget).
-		if page_no >= pages_to_load and len(all_ids) >= min_items: break
+		# pages_to_load, the legacy behavior for every non-search widget). Gli elementi rimandati dal
+		# filtro doppiaggio contano come presenti: vedi deferred_count.
+		if page_no >= pages_to_load and len(all_ids) + deferred_count() >= min_items: break
 	return all_ids, has_more, last_page

@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import sys
 import json
-import random
 from datetime import date
 from modules import kodi_utils, settings
 from modules.sources import Sources
@@ -68,7 +67,8 @@ class EpisodeTools:
 				if not episodes_data:
 					set_property(window_prop, '')
 					return self.get_random_episode(continual=True)
-			chosen_episode = random.choice(episodes_data)
+			from random import choice as _choice
+			chosen_episode = _choice(episodes_data)
 			if continual:
 				episode_list.append(chosen_episode)
 				episode_history = {tmdb_key: episode_list}

@@ -2,8 +2,11 @@
 # TRUMP WON
 import xbmc, xbmcgui, xbmcplugin, xbmcvfs, xbmcaddon
 from os import path as osPath
-from urllib.parse import urlencode
 from modules import icons
+# Interruttore unico della strumentazione (lotto 83). perf e' una foglia: non importa nulla di
+# Fen Light a livello di modulo, quindi si puo' prendere da qui senza il ciclo che paginator
+# creerebbe (paginator importa questo file in testa).
+from modules.perf import log as perf_log, memory_suffix as perf_memory
 try: xbmc_actor = xbmc.Actor
 except: xbmc_actor = None
 xbmc_player, numeric_input, xbmc_monitor, translatePath = xbmc.Player, 1, xbmc.Monitor, xbmcvfs.translatePath
@@ -78,6 +81,84 @@ def get_icon(image_name):
 
 def get_addon_fanart():
 	return get_property('fenlight.default_addon_fanart') or addon_fanart()
+
+# --- codifica URL: rimpiazza urllib.parse (lotto 74) -------------------------------------------
+# Di urllib.parse servivano TRE funzioni: urlencode (qui, in build_url), parse_qsl (router e
+# paginator, su ogni invocazione) e unquote (apis.trakt_api). Il modulo si portava pero' dietro un
+# albero di dipendenze e, misurato sulla stick a cache fredda, ogni FILE aperto costa 80-250 ms
+# indipendentemente da quanto contiene (`keyword`, 50 righe, misurava 97 ms). Il costo di import non
+# e' lavoro, e' latenza di apertura file, quindi si paga a file e non a byte.
+#
+# Le tre funzioni sono riportate qui come port fedele di CPython, non come riscrittura "che dovrebbe
+# andare bene": stessa tabella di caratteri sicuri (lettere, cifre, _.-~), stesso maiuscolo negli
+# esadecimali, stessa gestione delle sequenze percent NON valide (urllib le lascia com'erano) e
+# stessa divisione in tratti ASCII / non-ASCII di unquote. La corrispondenza e' verificata da un test
+# differenziale contro urllib su corpus reale piu' casi limite (vedi OTTIMIZZAZIONI.md, lotto 74).
+_URL_SAFE = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-~')
+# Tabella byte -> pezzo di stringa gia' codificato. Lo spazio diventa '+' come in quote_plus.
+_QUOTED_PLUS = [(chr(_i) if chr(_i) in _URL_SAFE else '%%%02X' % _i) for _i in range(256)]
+_QUOTED_PLUS[32] = '+'
+_HEXTOBYTE = None
+
+def quote_plus(string):
+	if not isinstance(string, bytes): string = str(string).encode('utf-8')
+	return ''.join([_QUOTED_PLUS[c] for c in string])
+
+def urlencode(query):
+	if hasattr(query, 'items'): query = query.items()
+	return '&'.join(['%s=%s' % (quote_plus(k), quote_plus(v)) for k, v in query])
+
+def _hextobyte():
+	# Costruita alla prima decodifica e non all'import: una build di widget percent-DECODIFICA solo
+	# la query dell'invocazione, mentre il dizionario e' 484 voci.
+	global _HEXTOBYTE
+	if _HEXTOBYTE is None:
+		_hexdig = '0123456789ABCDEFabcdef'
+		_HEXTOBYTE = {(a + b).encode(): bytes([int(a + b, 16)]) for a in _hexdig for b in _hexdig}
+	return _HEXTOBYTE
+
+def _unquote_to_bytes(string):
+	bits = string.encode('utf-8').split(b'%')
+	if len(bits) == 1: return bits[0]
+	table, res = _hextobyte(), [bits[0]]
+	for item in bits[1:]:
+		try:
+			res.append(table[item[:2]])
+			res.append(item[2:])
+		except KeyError:
+			# Sequenza percent non valida ('%zz', '%2', '%' finale): urllib la lascia letterale.
+			res.append(b'%')
+			res.append(item)
+	return b''.join(res)
+
+def unquote(string, encoding='utf-8', errors='replace'):
+	if isinstance(string, bytes): return string.decode(encoding, errors)
+	if '%' not in string: return string
+	# urllib divide su tratti ASCII / non-ASCII e percent-decodifica SOLO i primi: un carattere gia'
+	# in chiaro fuori da ASCII non deve finire dentro una sequenza di byte da decodificare.
+	out, i, n = [], 0, len(string)
+	while i < n:
+		is_ascii = ord(string[i]) < 128
+		j = i
+		while j < n and (ord(string[j]) < 128) == is_ascii: j += 1
+		chunk = string[i:j]
+		out.append(_unquote_to_bytes(chunk).decode(encoding, errors) if is_ascii else chunk)
+		i = j
+	return ''.join(out)
+
+def parse_qsl(qs, keep_blank_values=False, encoding='utf-8', errors='replace'):
+	if not qs: return []
+	r = []
+	for name_value in qs.split('&'):
+		if not name_value: continue
+		nv = name_value.split('=', 1)
+		if len(nv) != 2:
+			if keep_blank_values: nv.append('')
+			else: continue
+		if len(nv[1]) or keep_blank_values:
+			r.append((unquote(nv[0].replace('+', ' '), encoding, errors),
+					unquote(nv[1].replace('+', ' '), encoding, errors)))
+	return r
 
 def build_url(url_params):
 	return 'plugin://plugin.video.fenlight/?%s' % urlencode(url_params)
@@ -182,7 +263,7 @@ def end_directory(handle, cacheToDisc=True):
 		try:
 			_n, _add = _DELIVERY[1], _DELIVERY[0]
 			_DELIVERY[0], _DELIVERY[1] = 0.0, 0
-			logger('FenLight PERF CONSEGNA', '%s elementi | add_items %.0f ms (%.2f ms/elemento) + endOfDirectory %.0f ms (%.2f ms/elemento) | consegna totale %.0f ms'
+			perf_log('FenLight PERF CONSEGNA', '%s elementi | add_items %.0f ms (%.2f ms/elemento) + endOfDirectory %.0f ms (%.2f ms/elemento) | consegna totale %.0f ms'
 					% (_n, _add, _add / _n, _eod, _eod / _n, _add + _eod))
 		except: pass
 
@@ -218,8 +299,10 @@ def log_invocation(argv, t_start, t_import, t_end):
 		if eod_end: parts.append('coda %.0f' % _ms(eod_end, t_end))
 		if not add_start: parts.append('nessuna cartella costruita, solo azione %.0f' % _ms(t_import, t_end))
 		if 'view_ms' in _PHASE: parts.append('(set_view %.0f)' % _PHASE['view_ms'])
-		logger('FenLight PERF INVOCAZIONE', '%s | totale %.0f ms | %s ms'
-				% (mode or '?', _ms(t_start, t_end), ' + '.join(parts)))
+		# La memoria libera in coda a OGNI invocazione: e' la serie storica che mancava. Il valore
+		# assoluto dice poco (Android tiene la libera bassa di proposito), la derivata dice tutto.
+		perf_log('FenLight PERF INVOCAZIONE', '%s | totale %.0f ms | %s ms%s'
+				% (mode or '?', _ms(t_start, t_end), ' + '.join(parts), perf_memory()))
 	except: pass
 
 _FENLIGHT_PKGS = ('modules', 'indexers', 'apis', 'caches', 'windows')
@@ -239,7 +322,7 @@ def log_import_profile(argv, times, order, parents=None, top=18, floor_ms=25.0):
 		parents = parents or {}
 		total_ms = sum(times.values()) * 1000
 		fenlight = sum(t for n, t in times.items() if n.split('.')[0] in _FENLIGHT_PKGS) * 1000
-		logger('FenLight PERF IMPORT', '%s | %d moduli | totale %.0f ms | di cui Fen Light %.0f ms | resto %.0f ms'
+		perf_log('FenLight PERF IMPORT', '%s | %d moduli | totale %.0f ms | di cui Fen Light %.0f ms | resto %.0f ms'
 				% (mode or '?', len(times), total_ms, fenlight, total_ms - fenlight))
 		# Raggruppa per pacchetto di primo livello: e' li' che si vede dove sta davvero la massa,
 		# perche' il costo e' spalmato su oltre 100 moduli e nessuno singolo domina.
@@ -248,7 +331,7 @@ def log_import_profile(argv, times, order, parents=None, top=18, floor_ms=25.0):
 			root = name.split('.')[0] or '(relativo)'
 			groups[root] = groups.get(root, 0.0) + t
 		ext = sorted(((r, t * 1000) for r, t in groups.items() if r not in _FENLIGHT_PKGS), key=lambda kv: kv[1], reverse=True)
-		logger('FenLight PERF IMPORT', '  -- esterni per pacchetto --')
+		perf_log('FenLight PERF IMPORT', '  -- esterni per pacchetto --')
 		for root, ms in ext[:top]:
 			if ms < floor_ms: break
 			# Il richiedente del pacchetto: il primo modulo ESTERNO al pacchetto che lo ha tirato
@@ -257,12 +340,12 @@ def log_import_profile(argv, times, order, parents=None, top=18, floor_ms=25.0):
 			who = next((parents[n] for n in order
 						if n.split('.')[0] == root and parents.get(n) and parents[n].split('.')[0] != root), None)
 			if not who: who = parents.get(root) or '?'
-			logger('FenLight PERF IMPORT', '  %7.0f ms  %-22s <- %s' % (ms, root, who))
+			perf_log('FenLight PERF IMPORT', '  %7.0f ms  %-22s <- %s' % (ms, root, who))
 		fen = sorted(((n, t * 1000) for n, t in times.items() if n.split('.')[0] in _FENLIGHT_PKGS), key=lambda kv: kv[1], reverse=True)
-		logger('FenLight PERF IMPORT', '  -- Fen Light, primi moduli --')
+		perf_log('FenLight PERF IMPORT', '  -- Fen Light, primi moduli --')
 		for name, ms in fen[:8]:
 			if ms < floor_ms: break
-			logger('FenLight PERF IMPORT', '  %7.0f ms  %s' % (ms, name))
+			perf_log('FenLight PERF IMPORT', '  %7.0f ms  %s' % (ms, name))
 	except: pass
 
 def directory_built_since(since_ts):
@@ -395,20 +478,31 @@ def set_sort_method(handle, method):
 _REQUESTS = [None]
 
 def import_requests(who=''):
+	# Dal lotto 84 NON importa piu' requests: torna modules.http_client, che espone Session con la
+	# stessa superficie usata nel progetto. Il nome resta perche' trakt_api chiama
+	# import_requests('trakt_api').Session(). Misurato: requests = 337 moduli, http.client = 66.
 	if _REQUESTS[0] is None:
 		from time import perf_counter as _pc
 		_t = _pc()
-		import requests
-		_REQUESTS[0] = requests
-		try: logger('FenLight PERF REQUESTS', 'importato in %.0f ms | primo richiedente: %s' % ((_pc() - _t) * 1000, who or '?'))
+		from modules import http_client
+		_REQUESTS[0] = http_client
+		try: perf_log('FenLight PERF HTTP', 'client http importato in %.0f ms | primo richiedente: %s' % ((_pc() - _t) * 1000, who or '?'))
 		except: pass
 	return _REQUESTS[0]
 
+def import_requests_real(who=''):
+	# La libreria vera, per i pochi usi che il nostro client non copre: al momento solo il download
+	# in streaming di advanced_settings (iter_content). Tenuta separata cosi' che si veda subito, in
+	# un log, se qualcuno la risveglia senza accorgersene.
+	from time import perf_counter as _pc
+	_t = _pc()
+	import requests
+	try: perf_log('FenLight PERF REQUESTS', 'requests VERO importato in %.0f ms | richiedente: %s' % ((_pc() - _t) * 1000, who or '?'))
+	except: pass
+	return requests
+
 def make_session(url='https://'):
-	requests = import_requests('make_session(%s)' % url)
-	session = requests.Session()
-	session.mount(url, requests.adapters.HTTPAdapter(pool_maxsize=8))
-	return session
+	return import_requests('make_session(%s)' % url).Session()
 
 def make_playlist(playlist_type='video'):
 	return PlayList(playlist_type_dict[playlist_type])
@@ -931,7 +1025,8 @@ def toggle_language_invoker():
 
 def upload_logfile(params):
 	import json
-	import requests
+	# Azione manuale e rara, ma il nostro client la copre (post + .json()): niente requests.
+	requests = import_requests('upload_logfile')
 	log_files = [('Current Kodi Log', 'kodi.log'), ('Previous Kodi Log', 'kodi.old.log')]
 	list_items = [{'line1': i[0]} for i in log_files]
 	kwargs = {'items': json.dumps(list_items), 'heading': 'Choose Which Log File to Upload', 'narrow_window': 'true'}

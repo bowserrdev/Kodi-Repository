@@ -3,8 +3,6 @@ import re
 import sys
 import time
 import hashlib
-import random
-import _strptime
 import unicodedata
 import os
 from threading import Thread, Lock
@@ -16,6 +14,9 @@ from threading import Thread, Lock
 #   html (unescape)  -> html + html.entities, ~230 ms, per un solo uso in replace_html_codes
 #   zipfile          -> tirava dentro importlib, ~100-200 ms, per un solo uso in extract_zip
 #   importlib        -> usato solo dai tre helper manual_*_import
+#   random           -> tirava dentro _sha512, ~160 ms, per il solo ordinamento casuale
+#   _strptime        -> tirava dentro locale + _locale + calendar, ~400 ms: vedi
+#     _parse_fixed_datetime, che analizza i tre formati fissi senza strptime
 from datetime import datetime, timedelta, date
 from modules.kodi_utils import translate_path, sleep, show_busy_dialog, hide_busy_dialog, path_exists
 
@@ -98,6 +99,15 @@ def make_thread_list_multi_arg(_target, _list):
 def make_thread_list_enumerate(_target, _list):
 	return _run_pool(_target, _list, 2)
 
+def make_thread_list_enumerate_capped(_target, _list, max_workers):
+	# Come make_thread_list_enumerate ma con un tetto proprio di worker. Serve dove il lavoro e' misto:
+	# un po' di attesa su SQLite, che i thread sovrappongono davvero, e molto Python e API C++, che
+	# invece si fanno la coda sul GIL e peggiorano al crescere dei worker. Misurato su
+	# build_single_episode il 25/08 (lotti 79-80): a 6 worker 4422 ms di CPU per 802 ms di parete, a 1
+	# worker 1056 per 1056. I due costi si muovono in direzioni opposte, quindi il numero giusto non
+	# sta a nessuno dei due estremi.
+	return _run_pool(_target, _list, 2, max_workers)
+
 def chunks(item_list, limit):
 	"""
 	Yield successive limit-sized chunks from item_list.
@@ -162,9 +172,61 @@ def subtract_dates(date1, date2):
 	return (date1 - date2).days
 	return day
 
+# Fen Light analizza date in TRE soli formati, tutti a campi fissi e interamente numerici:
+# '%Y-%m-%d', '%Y-%m-%d %H:%M:%S' e '%Y-%m-%dT%H:%M:%S.%fZ'. Interpretarli a fette di stringa evita
+# strptime, e con strptime l'import di _strptime -> locale -> _locale -> calendar: quattro file che a
+# cache fredda misuravano ~400 ms complessivi, per leggere 'YYYY-MM-DD'.
+# Il ramo veloce e' DELIBERATAMENTE severo: al minimo scostamento (lunghezza, separatori, cifre) torna
+# None e si passa a strptime, cosi' un formato inatteso non viene interpretato a caso ma solo piu'
+# lentamente. Il vecchio `import _strptime` in testa al modulo esisteva per la nota corsa di CPython
+# quando strptime viene invocata per la prima volta da piu' thread insieme: quella garanzia serve
+# ancora al ramo di ripiego, e ora e' data dal lock invece che da un import pagato sempre.
+_STRPTIME_LOCK = Lock()
+
+def _ascii_digits(*fields):
+	# int() e' piu' permissivo del formato: accetta segno, spazi e trattini bassi ('+026', '2_26'),
+	# che strptime rifiuta. Restringere a sole cifre ASCII rende il ramo veloce piu' severo di
+	# strptime, mai piu' permissivo: qualunque caso esotico ricade sul ripiego.
+	for field in fields:
+		if not field.isascii() or not field.isdigit(): return False
+	return True
+
+def _parse_fixed_datetime(data, str_format):
+	try:
+		if str_format == '%Y-%m-%d':
+			if len(data) != 10 or data[4] != '-' or data[7] != '-': return None
+			y, mo, d = data[0:4], data[5:7], data[8:10]
+			if not _ascii_digits(y, mo, d): return None
+			return datetime(int(y), int(mo), int(d))
+		if str_format == '%Y-%m-%d %H:%M:%S':
+			if len(data) != 19 or data[4] != '-' or data[7] != '-' or data[10] != ' ' \
+					or data[13] != ':' or data[16] != ':': return None
+			y, mo, d = data[0:4], data[5:7], data[8:10]
+			h, mi, se = data[11:13], data[14:16], data[17:19]
+			if not _ascii_digits(y, mo, d, h, mi, se): return None
+			return datetime(int(y), int(mo), int(d), int(h), int(mi), int(se))
+		if str_format == '%Y-%m-%dT%H:%M:%S.%fZ':
+			if len(data) < 22 or data[4] != '-' or data[7] != '-' or data[10] != 'T' \
+					or data[13] != ':' or data[16] != ':' or data[19] != '.' or data[-1] != 'Z':
+				return None
+			y, mo, d = data[0:4], data[5:7], data[8:10]
+			h, mi, se = data[11:13], data[14:16], data[17:19]
+			fraction = data[20:-1]
+			# %f accetta da 1 a 6 cifre e pareggia a destra con zeri; oltre le sei strptime fallisce,
+			# quindi qui si rinuncia invece di troncare e divergere.
+			if not 1 <= len(fraction) <= 6: return None
+			if not _ascii_digits(y, mo, d, h, mi, se, fraction): return None
+			return datetime(int(y), int(mo), int(d), int(h), int(mi), int(se),
+							int((fraction + '000000')[:6]))
+	except ValueError: return None
+	return None
+
 def datetime_workaround(data, str_format):
-	try: datetime_object = datetime.strptime(data, str_format)
-	except: datetime_object = datetime(*(time.strptime(data, str_format)[0:6]))
+	datetime_object = _parse_fixed_datetime(data, str_format)
+	if datetime_object is not None: return datetime_object
+	with _STRPTIME_LOCK:
+		try: datetime_object = datetime.strptime(data, str_format)
+		except: datetime_object = datetime(*(time.strptime(data, str_format)[0:6]))
 	return datetime_object
 
 def date_difference(current_date, compare_date, difference_tolerance, allow_postive_difference=False):
@@ -312,7 +374,11 @@ def sort_list(sort_key, sort_direction, list_data):
 		if sort_key == 'popularity': return sorted(list_data, key=lambda x: x[x['type']].get('votes', 0), reverse=reverse)
 		if sort_key == 'percentage': return sorted(list_data, key=lambda x: x[x['type']].get('rating', 0), reverse=reverse)
 		if sort_key == 'votes': return sorted(list_data, key=lambda x: x[x['type']].get('votes', 0), reverse=reverse)
-		if sort_key == 'random': return sorted(list_data, key=lambda k: random.random())
+		if sort_key == 'random':
+			# Pigro: random tira dentro anche _sha512 (~160 ms a freddo) per un ordinamento che
+			# quasi nessuna lista chiede. Vedi la nota sugli import pigri in testa al modulo.
+			from random import random as _random
+			return sorted(list_data, key=lambda k: _random())
 		return list_data
 	except: return list_data
 

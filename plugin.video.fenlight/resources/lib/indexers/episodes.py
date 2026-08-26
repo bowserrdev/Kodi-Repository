@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
 import sys
 from time import perf_counter as _perf
-from apis.trakt_api import trakt_watchlist, trakt_get_my_calendar
+# trakt_api NON si importa piu' qui (lotto 82): era un import a livello di modulo per due sole
+# funzioni -- trakt_watchlist, usata solo nel ramo 'episode.next' con la watchlist attiva, e
+# trakt_get_my_calendar, usata solo nel ramo 'episode.trakt'. Lo pagava anche 'continua a guardare',
+# che non ne tocca nessuna delle due. trakt_api si porta dietro modules.metadata, tre cache e la
+# strada verso 'requests', che nei log del 25/08 si importa in 7,2-8,0 s sotto contesa. Ora stanno
+# nei due rami che le usano davvero.
 from caches.favorites_cache import favorites_cache
 from modules import kodi_utils, settings, watched_status as ws, paginator
-from modules.metadata import tvshow_meta, episodes_meta, all_episodes_meta
-from modules.utils import jsondate_to_datetime, adjust_premiered_date, make_day, get_datetime, title_key, date_difference, make_thread_list_enumerate
+from modules.metadata import tvshow_meta, episodes_meta, all_episodes_meta, tvshow_meta_prefetch, meta_prefetch_key
+from modules.utils import jsondate_to_datetime, adjust_premiered_date, make_day, get_datetime, title_key, date_difference, make_thread_list, get_current_timestamp
 # logger = kodi_utils.logger
 
 set_view_mode, external, home = kodi_utils.set_view_mode, kodi_utils.external, kodi_utils.home
@@ -192,11 +197,31 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			if isinstance(cat_name, dict): cat_name = cat_name[params.get('recently_aired')]
 		except: cat_name = 'Episodes'
 		return cat_name
+	# Involucro di misura. _build restituisce True solo se l'elemento e' finito nella lista: ogni altra
+	# uscita e' uno SCARTO (metadati mancanti, prossimo episodio gia' in pausa, episodio non ancora
+	# andato in onda) e costa comunque tempo -- su 'continua a guardare' gli scarti sono la meta' degli
+	# elementi esaminati, e senza contarli il conto non torna mai.
 	def _process(_position, ep_data):
+		_t_in = _perf()
+		try:
+			if _build(_position, ep_data): return
+			_dropped.append(_perf() - _t_in)
+		except:
+			_errors.append(_perf() - _t_in)
+	def _build(_position, ep_data):
 		try:
 			_ph0 = _perf()
 			ep_data_get = ep_data.get
-			meta = tvshow_meta('trakt_dict', ep_data_get('media_ids'), api_key, mpaa_region_value, current_date)
+			# Il lotto e' gia' stato letto in UNA volta sola, fuori dal pool (vedi sotto). Qui resta solo
+			# il ripiego per chi non c'era: identico alla chiamata di prima, quindi il comportamento non
+			# cambia, cambia solo quante volte si arriva al database.
+			_pk = meta_prefetch_key('trakt_dict', ep_data_get('media_ids'), 'tvshow')
+			meta = _prefetch.get(_pk) if _pk else None
+			# Una voce vuota vale come assenza, non come risposta: prima di questo strato tvshow_meta
+			# sarebbe andato in rete a rifarla, e deve continuare a farlo.
+			if meta is not None and 'blank_entry' in meta: meta = None
+			if meta is None:
+				meta = tvshow_meta('trakt_dict', ep_data_get('media_ids'), api_key, mpaa_region_value, current_date, current_time)
 			if not meta: return
 			_ph1 = _perf()
 			meta_get = meta.get
@@ -215,10 +240,12 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 				if not orig_season or not orig_episode: return
 				if exclude_keys and (int(tmdb_id), int(orig_season), int(orig_episode)) in exclude_keys: return
 				playcount = 0
+			_pa = _perf()
 			episodes_data = episodes_meta(orig_season, meta)
 			if not episodes_data: return
 			item = next((i for i in episodes_data if i['episode'] == orig_episode), None)
 			if not item: return
+			_pb = _perf()
 			item_get = item.get
 			season, episode, ep_name = item_get('season'), item_get('episode'), item_get('title')
 			episode_date, premiered = adjust_premiered_date(item_get('premiered'), adjust_hours)
@@ -249,9 +276,11 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			else: title_string = ''
 			if display_format in (0, 1): seas_ep = '%sx%s - ' % (str_season_zfill2, str_episode_zfill2)
 			else: seas_ep = ''
+			_pc = _perf()
 			bookmarks = get_bookmarks_episode(tmdb_id, season, watched_db)
 			progress = get_progress_status_episode(bookmarks, episode)
 			if not list_type_starts_with('next_'): playcount = get_watched_status_episode(watched_info, (season, episode))
+			_pd = _perf()
 			if list_type_starts_with('next_'):
 				if include_airdate:
 					if episode_date: display_premiered = '[%s] ' % make_day(current_date, episode_date)
@@ -283,9 +312,14 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 				if progress:
 					cm_append(('[B]Azzera avanzamento[/B]', run_plugin % (URL_ERASE_BOOKMARK % (tmdb_id, season, episode))))
 				if unwatched_info:
+					# watched_info_tvshow legge l'INTERA tabella delle serie viste, e lo fa una volta per
+					# OGNI elemento della lista. Misurata a parte perche' e' l'unica lettura qui dentro il
+					# cui costo non dipende dall'elemento ma dalla dimensione del database.
+					_puw = _perf()
 					total_aired_eps = meta_get('total_aired_eps')
 					total_unwatched = get_watched_status_tvshow(watched_info_tvshow(watched_db).get(string(tmdb_id), None), total_aired_eps)[2]
 					if total_aired_eps != total_unwatched: set_properties({'watchedepisodes': '1', 'unwatchedepisodes': string(total_unwatched)})
+					_unwatched_cost.append(_perf() - _puw)
 			if all_episodes == 1 and meta_get('total_seasons') > 1: browse_params = URL_SEASON_LIST % tmdb_id
 			elif all_episodes: browse_params = URL_ALL_EPISODES % tmdb_id
 			else: browse_params = URL_SEASON_LIST % tmdb_id
@@ -319,13 +353,22 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			_p = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'episode_type': episode_type}
 			if _cast_names: _p['fenlight.cast'] = _cast_names
 			set_properties(_p)
-			paginator.phase_record(_ph1 - _ph0, _ph2 - _ph1, _ph3 - _ph2, _ph4 - _ph3, _ph5 - _ph4, _ph6 - _ph5, _ph7 - _ph6, _perf() - _ph7)
+			_phase_append((_ph1 - _ph0, _pa - _ph1, _pb - _pa, _pc - _pb, _pd - _pc, _ph2 - _pd,
+						_ph3 - _ph2, _ph4 - _ph3, _ph5 - _ph4, _ph6 - _ph5, _ph7 - _ph6, _perf() - _ph7))
 			item_list_append({'list_items': (url_params, listitem, False), 'first_aired': premiered, 'name': '%s - %sx%s' % (title, str_season_zfill2, str_episode_zfill2),
 							'unaired': unaired, 'last_played': ep_data_get('last_played', resinsert), 'sort_order': _position, 'unwatched': ep_data_get('unwatched')})
-		except: pass
+			return True
+		# Rilanciata di proposito: la cattura sta in _process, che cosi' puo' distinguere un ERRORE da
+		# uno scarto voluto. Prima erano indistinguibili, entrambi 'pass'.
+		except: raise
 	handle, is_external, is_home, category_name = int(sys.argv[1]), external(), home(), 'Episodes'
 	_t0 = paginator.now()
-	paginator.phase_reset()
+	# Accumulatori LOCALI all'invocazione, non le liste globali di paginator: 'continua a guardare'
+	# chiama questa funzione due volte in parallelo nello stesso interprete (episodi in pausa e
+	# prossimi episodi), e una phase_reset() globale cancellerebbe le misure dell'altra -- e anche
+	# quelle di Movies(), che gira come terzo thread.
+	_phase_rows, _dropped, _errors, _unwatched_cost = [], [], [], []
+	_phase_append = _phase_rows.append
 	item_list, airing_today, unwatched, return_results = [], [], [], False
 	resinsert = ''
 	item_list_append = item_list.append
@@ -333,7 +376,8 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 	window_command = 'ActivateWindow(Videos,%s,return)' if is_external else 'Container.Update(%s)'
 	all_episodes, watched_indicators, display_format = default_all_episodes(), watched_indicators_info(), ep_display_format(is_external)
 	current_date, adjust_hours, unwatched_info, hide_watched = get_datetime(), date_offset_info(), single_ep_unwatched_episodes(), is_home and widget_hide_watched()
-	api_key, mpaa_region_value = tmdb_api_key(), mpaa_region()
+	api_key, mpaa_region_value, current_time = tmdb_api_key(), mpaa_region(), get_current_timestamp()
+	_prefetch = {}
 	watched_db = get_database(watched_indicators)
 	watched_title = 'Trakt' if watched_indicators == 1 else 'Fen Light'
 	category_name = _get_category_name()
@@ -351,6 +395,8 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 		else: resformat, resinsert, list_type = '%Y-%m-%d %H:%M:%S', '2000-01-01 00:00:00', 'episode.next_fenlight'
 		if include_unwatched != 0:
 			if include_unwatched in (1, 3):
+				# Import pigro: vedi la nota in testa al file. Fuori da questo ramo trakt_api non serve.
+				from apis.trakt_api import trakt_watchlist
 				try:
 					original_list = trakt_watchlist('watchlist', 'tvshow')
 					unwatched.extend([{'media_ids': i['media_ids'], 'season': 1, 'episode': 0, 'unwatched': True, 'title': i['title']} for i in original_list])
@@ -363,6 +409,8 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 	elif list_type == 'episode.progress': data = get_in_progress_episodes()
 	elif list_type == 'episode.recently_watched': data = get_recently_watched('episode')
 	elif list_type == 'episode.trakt':
+		# Import pigro: vedi la nota in testa al file.
+		from apis.trakt_api import trakt_get_my_calendar
 		recently_aired = params.get('recently_aired', None)
 		data = trakt_get_my_calendar(recently_aired, get_datetime())
 		list_type = 'episode.trakt_recently_aired' if recently_aired else 'episode.trakt_calendar'
@@ -378,10 +426,76 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 	else: data, return_results = sorted(params, key=lambda i: i['custom_order']), True
 	list_type_compare = list_type.split('episode.')[1]
 	list_type_starts_with = list_type_compare.startswith
+	def _report():
+		# Vale anche per la strada di 'continua a guardare', che esce PRIMA della coda: fino a oggi quel
+		# ramo non ha mai stampato una riga di misura, ed e' il motivo per cui il suo segmento 'indexer'
+		# non era scomponibile.
+		try:
+			# 'worker N' nella riga viene da WORKER_COUNT e qui NON descrive piu' la costruzione, che e'
+			# in sequenza: vale solo per la risoluzione dei mancanti. Detto qui per non rileggere male
+			# i log vecchi accanto ai nuovi.
+			_extra = ' | costruzione a %s worker | esaminati %s, scartati %s (%.0f ms), errori %s' % (
+					_BUILD_WORKERS, len(data), len(_dropped), sum(_dropped) * 1000, len(_errors))
+			if _unwatched_cost: _extra += ' | unwatched_info %s letture (%.0f ms)' % (len(_unwatched_cost), sum(_unwatched_cost) * 1000)
+			paginator.phase_report_rows('episodi singoli %s' % list_type,
+					('meta', 'watched+next', 'ep_meta', 'prep', 'bookmarks', 'cm',
+					'infotag', 'cast+resume', 'setLabel', 'ctxmenu', 'setArt', 'props'),
+					_phase_rows, _extra)
+		except: pass
+	# UNA lettura per l'intera lista, in sequenza, prima che parta il pool. Misurato il 25/08 sul Mi
+	# Stick (lotto 78): con una tvshow_meta per elemento la fase 'meta' valeva 2527 ms, il 69% di tutto
+	# il widget 'continua a guardare', cioe' 421 ms per elemento costruito. Sulle liste di film, dove
+	# questo strato c'e' gia', la stessa fase vale 4 ms per 54 elementi. Vedi meta_cache.get_many.
+	# Chi non e' in cache (o e' una voce vuota) cade sul percorso normale dentro il pool, dove il tempo
+	# e' attesa di rete e i thread servono davvero.
+	_pf0 = _perf()
+	try: _prefetch = tvshow_meta_prefetch('trakt_dict', [i.get('media_ids') for i in data], current_time)
+	except: _prefetch = {}
+	paginator.log_prefetch('episodi singoli %s' % list_type, len(data), len(_prefetch), _perf() - _pf0)
+	# I thread restano SOLO dove il tempo e' attesa di rete: chi non era nel lotto si risolve qui, in
+	# parallelo, PRIMA della costruzione. Senza questo passaggio la costruzione in sequenza pagherebbe
+	# una dopo l'altra le chiamate a TMDb dei mancanti. Vedi Movies._resolve_missing.
+	_missing = []
+	for _item in data:
+		try: _key = meta_prefetch_key('trakt_dict', _item.get('media_ids'), 'tvshow')
+		except: _key = None
+		if not _key: continue
+		_have = _prefetch.get(_key)
+		if _have is None or 'blank_entry' in _have: _missing.append((_key, _item.get('media_ids')))
+	if _missing:
+		def _fetch(entry):
+			_key, _media_ids = entry
+			try:
+				_meta = tvshow_meta('trakt_dict', _media_ids, api_key, mpaa_region_value, current_date, current_time)
+				if _meta: _prefetch[_key] = _meta
+			except: pass
+		_nt0 = _perf()
+		_nthreads = list(make_thread_list(_fetch, _missing))
+		[i.join() for i in _nthreads]
+		paginator.log_network('episodi singoli %s' % list_type, len(_missing), _perf() - _nt0)
 	_t1 = paginator.now()
-	threads = list(make_thread_list_enumerate(_process, data))
-	[i.join() for i in threads]
+	# Costruzione con un TETTO BASSO di worker, non a WORKER_COUNT e non in sequenza. I due estremi sono
+	# stati misurati sul Mi Stick il 25/08, stessa lista di 22 elementi, stesso codice:
+	#   6 worker (log z5): 4422 ms di CPU compressi in 802 ms di parete
+	#   1 worker (log z6): 1056 ms di CPU per 1056 ms di parete
+	# Cioe' il pool comprime davvero -- SQLite il GIL lo rilascia -- ma per farlo brucia quattro volte
+	# il lavoro, perche' la parte in Python puro si gonfia con la contesa (episodes_meta 314 -> 832 ms,
+	# addContextMenuItems 23 -> 184). Le due grandezze si muovono in direzioni opposte e il minimo non
+	# sta a nessuno dei due estremi. Qui la CPU non e' gratis: questo widget gira insieme ad altri tre e
+	# all'avvio di Kodi, e la catena critica dell'avvio e' mdblist, non lui.
+	# Il tetto a 3 e' stato PROVATO e scartato (log z7, 25/08). Non esiste un punto intermedio buono:
+	#   6 worker (z5): 4422 ms di CPU,  802 ms di parete
+	#   3 worker (z7): 3106 ms di CPU, 1169 ms di parete   <- peggio di 1 su ENTRAMBE
+	#   1 worker (z6): 1056 ms di CPU, 1060 ms di parete
+	# La contesa non cresce dolcemente: gia' a 3 worker episodes_meta passa da 314 a 837 ms e
+	# watched+next da 143 a 495. Il minimo di CPU sta a 1, il minimo di parete a 6, e 3 e' dominato.
+	# Scelto 1: la parete perde 258 ms su un widget che chiude tre secondi prima che la home sia
+	# pronta, mentre la CPU risparmiata (4,2x) va agli mdblist, che sono la catena critica.
+	_BUILD_WORKERS = 1
+	for _position, ep_data in enumerate(data): _process(_position, ep_data)
 	if return_results:
+		paginator.log_build('episodi singoli', list_type, _t0, _t1, paginator.now(), len(item_list))
+		_report()
 		return [(i['list_items'], i['sort_order']) for i in item_list]
 	if list_type_starts_with('next_'):
 		def func(function):
@@ -413,8 +527,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 				item_list = [i for i in item_list if not i in airing_today]
 				item_list = airing_today + item_list
 	paginator.log_build('episodi singoli', list_type, _t0, _t1, paginator.now(), len(item_list))
-	paginator.phase_report('episodi singoli %s' % list_type,
-						('meta', 'prep+cm', 'infotag', 'cast+resume', 'setLabel', 'ctxmenu', 'setArt', 'props'))
+	_report()
 	add_items(handle, [i['list_items'] for i in item_list])
 	set_content(handle, content_type)
 	set_category(handle, category_name)

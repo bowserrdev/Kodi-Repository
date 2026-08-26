@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 import sys
 from threading import Thread
-from indexers.movies import Movies
+from time import perf_counter as _perf
+# indexers.movies NON si importa piu' qui (lotto 82): era il modulo Fen Light piu' caro di questa
+# build -- 368 ms nel log del 25/08 -- e Movies serve solo se ci sono film in pausa, che negli ultimi
+# cinque avvii sono sempre stati zero. Ora si carica dentro _do_movies, che parte solo se la lista non
+# e' vuota.
 from indexers.episodes import build_single_episode
 from modules import kodi_utils, settings
 from modules.watched_status import get_in_progress_movies, get_in_progress_episodes, get_next_episodes, get_hidden_progress_items
@@ -16,25 +20,33 @@ nextep_method, watched_indicators = settings.nextep_method, settings.watched_ind
 # resta solo la voce in pausa (quella con il punto di ripresa).
 def build_continue_watching(params):
 	handle, is_external = int(sys.argv[1]), external()
+	# Misura (lotto 78). Questo widget e' l'unico dei quattro dell'avvio il cui segmento 'indexer' non
+	# era scomponibile: fonde tre sorgenti e due costruttori diversi, e la strada che usa
+	# (build_single_episode con return_results) usciva prima di qualunque riga di log. I marcatori qui
+	# separano le LETTURE dalle COSTRUZIONI, e ogni costruzione dalle altre due che le girano accanto.
+	_c0 = _perf()
 	indicators = watched_indicators()
 	nextep_content = nextep_method()
 	try:
 		movies = get_in_progress_movies('movie', 1)
 	except: movies = []
+	_c1 = _perf()
 	try:
 		prog_eps = get_in_progress_episodes()
 	except: prog_eps = []
+	_c2 = _perf()
 	try:
 		hidden = get_hidden_progress_items(indicators)
 		next_eps = [i for i in get_next_episodes(nextep_content) if not i['media_ids']['tmdb'] in hidden]
 	except: next_eps = []
+	_c3 = _perf()
 	# Marcatore diagnostico (lotto 59): 'continua a guardare' fonde TRE sorgenti indipendenti e a
 	# schermo sono indistinguibili. Segnalato il caso di una serie con UN solo episodio visto che,
 	# tolto il visto, continua a mostrare il successivo: senza sapere da quale sorgente esce quella
 	# voce si correggerebbe a caso. Una riga per costruzione, solo id e S/E, nessuna chiamata di rete.
 	try:
 		_fmt = lambda seq: ','.join('%s(S%sE%s)' % (i.get('media_ids', {}).get('tmdb'), i.get('season'), i.get('episode')) for i in seq[:12])
-		kodi_utils.logger('FenLight CW', 'film in pausa %d | episodi in pausa %d [%s] | prossimi %d [%s] | nascosti %d'
+		kodi_utils.perf_log('FenLight CW', 'film in pausa %d | episodi in pausa %d [%s] | prossimi %d [%s] | nascosti %d'
 				% (len(movies), len(prog_eps), _fmt(prog_eps), len(next_eps), _fmt(next_eps), len(hidden or [])))
 	except: pass
 	# chiavi degli episodi in pausa (S/E esatta, già nota dai dati): usate per scartare i prossimi episodi identici
@@ -53,8 +65,19 @@ def build_continue_watching(params):
 		else: next_items.append({**payload, 'custom_order': order})
 	item_list = []
 	item_list_extend = item_list.extend
+	# tempo di PARETE di ciascun costruttore: i tre girano insieme, quindi la somma non e' il tempo
+	# speso ma il massimo lo e' -- ed e' quello che fissa la durata del widget.
+	_wall = {}
+	def _timed(name, fn):
+		def _run():
+			_s = _perf()
+			try: fn()
+			finally: _wall[name] = _perf() - _s
+		return _run
 	def _do_movies():
-		try: item_list_extend(Movies({'list': movie_items, 'custom_order': 'true', 'id_type': 'tmdb_id'}).worker())
+		try:
+			from indexers.movies import Movies
+			item_list_extend(Movies({'list': movie_items, 'custom_order': 'true', 'id_type': 'tmdb_id'}).worker())
 		except: pass
 	def _do_progress():
 		try: item_list_extend(build_single_episode('episode.continue_progress', prog_items))
@@ -62,11 +85,22 @@ def build_continue_watching(params):
 	def _do_next():
 		try: item_list_extend(build_single_episode('episode.next_continue', next_items, exclude_keys=exclude_keys, exclude_unaired=True))
 		except: pass
-	threads = [Thread(target=t) for t, data in ((_do_movies, movie_items), (_do_progress, prog_items), (_do_next, next_items)) if data]
+	threads = [Thread(target=_timed(name, t)) for name, t, data in
+				(('film', _do_movies, movie_items), ('pausa', _do_progress, prog_items), ('prossimi', _do_next, next_items)) if data]
+	_c4 = _perf()
 	[t.start() for t in threads]
 	[t.join() for t in threads]
+	_c5 = _perf()
 	item_list.sort(key=lambda k: k[1])
 	final_items = [i[0] for i in item_list]
+	try:
+		kodi_utils.perf_log('FenLight PERF CW',
+			'sorgenti %.0f ms (film %.0f / pausa %.0f / prossimi+nascosti %.0f) | ordinamento %.0f ms | costruttori %.0f ms di parete [%s] | %s elementi finali'
+			% ((_c3 - _c0) * 1000, (_c1 - _c0) * 1000, (_c2 - _c1) * 1000, (_c3 - _c2) * 1000, (_c4 - _c3) * 1000, (_c5 - _c4) * 1000,
+				', '.join('%s %s el in %.0f ms' % (k, n, _wall.get(k, 0) * 1000)
+					for k, n in (('film', len(movie_items)), ('pausa', len(prog_items)), ('prossimi', len(next_items))) if n),
+				len(final_items)))
+	except: pass
 	content = 'movies' if len(movie_items) > (len(prog_items) + len(next_items)) else 'episodes'
 	add_items(handle, final_items)
 	set_content(handle, content)

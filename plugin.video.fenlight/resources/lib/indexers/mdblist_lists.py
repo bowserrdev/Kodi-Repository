@@ -76,12 +76,12 @@ def build_mdblist_list(params):
 		paginator.log('mdblist build list_id=%s is_home=%s is_external=%s setting=%s result=%s -> interactive=%s' %
 					(list_id, is_home, is_external, paginator.interactive_enabled(), len(result), interactive))
 		if interactive:
-			pg_key = paginator.make_key(params)
+			pg_key = paginator.widget_key(params)
 			# Il ?pages= del path del widget: e' il segnale durevole che questa ricostruzione
 			# appartiene a un widget gia' espanso. Senza, si ricade sui flag transitori e QUALUNQUE
 			# ricostruzione non innescata dal watcher -- l'avvio di una riproduzione, per esempio --
 			# fa collassare il widget al lotto iniziale.
-			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch(), params.get('pages', 0))
+			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch(), params=params)
 			# Fill past the requested window when the dub filter thins the list (see _dub_paginate).
 			# process_list is already dub-filtered here -> no second _dub_filter_items.
 			process_list, pages_consumed, has_more = _dub_paginate(result, pages_to_load, is_external)
