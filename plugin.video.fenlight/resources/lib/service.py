@@ -456,6 +456,10 @@ class DubResolver:
 	# Oltre questo, la ricarica si fa comunque anche se l'utente non e' mai fermo: meglio uno spostamento
 	# di lista che elementi nascosti per sempre in una sessione di navigazione continua.
 	MAX_REFRESH_HOLD = 120
+	# LOTTO 97. Quante volte si riprova una ricarica che non ha raggiunto NESSUN contenitore, e quanto
+	# si aspetta fra un tentativo e l'altro. Vedi il commento al punto in cui si usano.
+	REFRESH_ATTEMPTS = 10
+	REFRESH_RETRY = 6.0
 
 	def run(self):
 		logger('Fen Light', 'DubResolver Service Starting')
@@ -467,6 +471,7 @@ class DubResolver:
 		window = xbmcgui.Window(10000)
 		# Id risolti come DISPONIBILI e non ancora portati a schermo, con l'istante del primo.
 		to_show, held_since = [], 0
+		tentativi, prossimo_tentativo = 0, 0
 		breaker_reported = False
 		while not wait_for_abort(self.POLL):
 			try:
@@ -478,13 +483,43 @@ class DubResolver:
 				# degli stessi contenitori a pochi secondi l'una dall'altra -- la raffica che tutto il
 				# resto del lavoro esiste per evitare. Peggio: ogni ricostruzione rimetterebbe in coda i
 				# titoli ancora ignoti, alimentando il proprio ciclo. Una sola ricarica a svuotamento.
-				if to_show and (dub_queue.pending_count() == 0 or now - held_since > self.MAX_REFRESH_HOLD) \
+				# LOTTO 97 -- il guardiano del dialogo, e perche' mancava proprio qui.
+				# Con un dialogo modale a schermo l'infolabel Container(N) si risolve contro il DIALOGO,
+				# non contro la finestra sotto: refresh_containers_for_ids non trova nessun contenitore
+				# Fen Light, torna 0 e non ricarica niente. Il watcher della paginazione questo controllo
+				# ce l'ha da sempre (vedi 'idle (modal dialog open)' in WidgetPaginator); qui non era
+				# stato riportato, e il difetto e' peggiore di quanto sembri perche' il cancello
+				# dell'inattivita' SELEZIONA il caso rotto: stare fermi a leggere la scheda di un film e'
+				# proprio cio' che fa crescere getGlobalIdleTime. Misurato sul Mac (log zmac, 26/08): due
+				# ricariche alle 02:50:33 e 02:50:59, entrambe dentro il dialogo 13000, entrambe
+				# 'contenitori ricaricati 0', e 5 titoli gia' risolti buttati via.
+				# Si ferma la sola RICARICA: interrogare la rete dentro un dialogo non da' fastidio a
+				# nessuno, non si vede.
+				modale = xbmc.getCondVisibility('System.HasActiveModalDialog')
+				if to_show and not modale and now >= prossimo_tentativo \
+						and (dub_queue.pending_count() == 0 or now - held_since > self.MAX_REFRESH_HOLD) \
 						and (xbmc.getGlobalIdleTime() >= self.IDLE_BEFORE_REFRESH
 								or now - held_since > self.MAX_REFRESH_HOLD):
-					ids, to_show, held_since = to_show, [], 0
-					hit = paginator.refresh_containers_for_ids(ids)
+					hit = paginator.refresh_containers_for_ids(to_show)
+					raggiunti = hit + paginator.LAST_OTHER_HITS[0]
 					logger('Fen Light', 'DubResolver: %s titoli tornati disponibili, contenitori ricaricati %s '
-							'(altre finestre %s)' % (len(ids), hit, paginator.LAST_OTHER_HITS[0]))
+							'(altre finestre %s)' % (len(to_show), hit, paginator.LAST_OTHER_HITS[0]))
+					# Gli id si buttano SOLO se qualcosa e' stato davvero raggiunto. Prima si svuotava
+					# to_show prima ancora di sapere l'esito, quindi una ricarica a vuoto perdeva per
+					# sempre verdetti gia' pagati -- ed era muta. Restano i casi legittimi in cui non
+					# c'e' niente da ricaricare (finestra Video, nessun widget nostro a schermo): per
+					# quelli si riprova qualche volta e poi si lascia perdere, dicendolo.
+					if raggiunti:
+						to_show, held_since, tentativi, prossimo_tentativo = [], 0, 0, 0
+					else:
+						tentativi += 1
+						prossimo_tentativo = now + self.REFRESH_RETRY
+						if tentativi >= self.REFRESH_ATTEMPTS:
+							logger('Fen Light', 'DubResolver: %s titoli risolti ma nessun contenitore raggiungibile '
+									'dopo %s tentativi. Restano nascosti fino alla prossima ricostruzione del loro '
+									'widget, che li mostrera\' leggendo il verdetto dalla cache.'
+									% (len(to_show), tentativi))
+							to_show, held_since, tentativi, prossimo_tentativo = [], 0, 0, 0
 					continue
 				if not dub_queue.pending_count(): continue
 				if now - dub_queue.last_enqueue() < self.QUIET_SECONDS: continue

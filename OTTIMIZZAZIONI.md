@@ -10814,3 +10814,112 @@ di connessioni simultanee, che e' fra le cause elencate nei riavvii da watchdog.
 
 Sei e' il numero giusto, e non per prudenza: perche' e' il tetto del dispositivo e perche' la misura
 dice che oltre non c'e' quasi niente da prendere.
+
+## Lotto 97 -- la ricarica che non ricaricava: il guardiano del dialogo
+
+Trovato sul **Mac** (log `zmac`, 26/08 02:49-02:55), dove la cache metadati e' molto piu' fredda che
+sulla stick. Il lotto 96 li' ha dato il suo risultato migliore -- prefetch al 16%, 246 schede
+scaricate, resa 5,31x, 136 s risparmiati -- ma proprio quella sessione ha scoperto un difetto del
+lotto 95 che sulla stick non si era mai visto.
+
+### Il sintomo
+
+```
+02:50:33  DubResolver: 4 titoli tornati disponibili, contenitori ricaricati 0 (altre finestre 0)
+02:50:59  DubResolver: 1 titoli tornati disponibili, contenitori ricaricati 0 (altre finestre 0)
+```
+
+**Zero.** Cinque verdetti gia' pagati, nessun widget ricaricato, e gli id buttati via.
+
+### La causa
+
+Con un dialogo modale a schermo, l'infolabel `Container(N)` si risolve contro il **dialogo**, non
+contro la finestra sotto: `refresh_containers_for_ids` non trova nessun contenitore Fen Light, torna 0
+e non ricarica niente. Il ramo delle "altre finestre" non copre il caso, perche' salta lo scope
+corrente -- e il widget da ricaricare era proprio in Home, cioe' nello scope corrente.
+
+Il watcher della paginazione questo controllo ce l'ha **da sempre**, ed e' persino documentato nel suo
+commento. Al `DubResolver` non era stato riportato.
+
+Le due prove combaciano al secondo:
+
+```
+watcher    02:50:30.103  idle (modal dialog open)
+ricarica   02:50:33.204  contenitori ricaricati 0
+PERF NAV   02:50:31.353  10000 (dialogo 9999) -> 10000 (dialogo 13000)
+
+watcher    02:50:55.208  idle (modal dialog open)
+ricarica   02:50:59.676  contenitori ricaricati 0
+PERF NAV   02:50:55.402  10000 (dialogo 9999) -> 10000 (dialogo 13000)
+```
+
+### Perche' e' peggio di quanto sembri: il cancello sceglieva il caso rotto
+
+`IDLE_BEFORE_REFRESH` esiste per non spostare la lista sotto il dito dell'utente. Ma **stare fermi a
+leggere la scheda di un film e' esattamente cio' che fa crescere `getGlobalIdleTime`**. Il cancello
+dell'inattivita' non evitava il dialogo: lo *selezionava*. Il momento in cui la ricarica ha meno
+probabilita' di funzionare e' proprio quello che il cancello preferisce.
+
+Ecco perche' sulla stick non era mai emerso: li' l'utente scorreva i widget, sul Mac apriva le schede.
+
+### Il secondo difetto, che rendeva il primo muto
+
+```python
+ids, to_show, held_since = to_show, [], 0     # <- svuotato PRIMA di sapere l'esito
+hit = paginator.refresh_containers_for_ids(ids)
+```
+
+`to_show` si svuotava prima ancora di conoscere il risultato. Una ricarica a vuoto perdeva per sempre
+verdetti gia' pagati, e lo faceva **senza dire niente**: la riga di log stampava `0` e proseguiva.
+Dopo il lotto 93 nessun guasto di questo sottosistema dovrebbe poter essere muto -- e questo lo era.
+
+### La correzione
+
+1. **Il guardiano del dialogo**, sulla sola RICARICA. Interrogare la rete dentro un dialogo non da'
+   fastidio a nessuno: non si vede. Spostare una lista che non e' nemmeno a schermo, invece, non
+   funziona proprio.
+2. **Gli id si buttano solo se qualcosa e' stato davvero raggiunto** (`hit + LAST_OTHER_HITS`).
+   Altrimenti si riprova, con una pausa fra i tentativi (`REFRESH_RETRY = 6 s`).
+3. **Un tetto ai tentativi** (`REFRESH_ATTEMPTS = 10`), perche' esistono casi legittimi in cui non c'e'
+   niente da ricaricare -- la finestra Video, dove `refresh_containers_for_ids` torna 0 per scelta
+   (lotto 69), o semplicemente nessun widget nostro a schermo. Raggiunto il tetto si lascia perdere
+   **dicendolo**, e i titoli compariranno comunque alla prossima ricostruzione del loro widget,
+   leggendo il verdetto dalla cache.
+
+### Verificato
+
+Cinque controlli nuovi, con il caso del Mac riprodotto:
+
+| | |
+|---|---|
+| dialogo modale aperto | i titoli si risolvono, **nessuna ricarica**, id conservati |
+| ricarica a vuoto | gli id **non si perdono**, si riprova con gli stessi |
+| tetto | smette esattamente a `REFRESH_ATTEMPTS` |
+| raggiunta solo un'altra finestra | vale come successo, non si riprova |
+| dialogo che si chiude | la ricarica parte, **con entrambi i titoli salvi** |
+
+Piu' le sei batterie complete: **126 controlli, nessuna regressione**.
+
+### Il lotto 96 sul Mac, per la cronaca
+
+| | Mac (cache fredda) | stick (cache calda) |
+|---|---|---|
+| prefetch serve | 16% | 38% |
+| schede scaricate | 246 | 65 |
+| resa media | **5,31x** | 5,23x |
+| in sequenza sarebbero | 167 s | 90 s |
+| tempo reale | **31 s** | 17 s |
+| valutazione peggiore | **2,56 s** (19 schede) | 4,51 s (14 schede) |
+
+La resa e' la stessa su due macchine molto diverse, con carichi molto diversi: **5,2-5,3x su 6
+worker**. Non era un caso della stick.
+
+### Non correlato: due Traceback da TorBox
+
+Nel log del Mac, alle 02:52:02 e 02:52:52, due `TimeoutError` verso TorBox durante lo scraping delle
+fonti, che escono dal thread e finiscono nel log. Niente a che vedere con il filtro doppiaggio:
+`scrapers/external.py:193 _process_cache_check` non ha `try/except`, e nemmeno
+`torbox_api.check_cache`. E' un buco preesistente -- prima del lotto 93 sarebbe uscito un
+`requests.exceptions.Timeout` allo stesso modo, dallo stesso punto scoperto. Effetto: le fonti TorBox
+mancano per quello scraping, gli altri debrid non sono toccati, Kodi non ne risente. **Da chiudere,
+ma e' un lotto suo.**
