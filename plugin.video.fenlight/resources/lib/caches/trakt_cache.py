@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import json
-from threading import Thread
 from caches.base_cache import connect_database
 from modules.kodi_utils import sleep, confirm_dialog, close_all_dialog
 
@@ -106,6 +105,29 @@ class TraktWatched:
 		self._executemany(WATCHED_UPSERT, insert_list)
 		# Via incrementale: i titoli toccati sono esattamente quelli inseriti, senza bisogno di diff.
 		try: return set(str(row[1]) for row in insert_list)
+		except: return None
+
+	def add_movie_watched(self, insert_list):
+		# Gemella esatta di add_tvshow_watched, per la via incrementale dei film (lotto 107). Tiene le
+		# righe esistenti e aggiorna last_played su una rivisione; i titoli toccati sono per costruzione
+		# quelli inseriti, quindi il refresh mirato non ha bisogno di alcun confronto.
+		self._executemany(WATCHED_UPSERT, insert_list)
+		try: return set(str(row[1]) for row in insert_list)
+		except: return None
+
+	def watched_movie_count(self):
+		# Quanti film risultano visti in locale. Serve al controllo di completezza della via
+		# incrementale (lotto 108): la cronologia racconta gli AGGIUNTI, mai i RIMOSSI, e questo e'
+		# l'unico modo di accorgersi di una riga sparita senza riscaricare tutto.
+		try:
+			dbcon = connect_database('trakt_db')
+			return dbcon.execute("SELECT COUNT(*) FROM watched WHERE db_type = 'movie'").fetchone()[0]
+		except: return None
+
+	def last_watched_movie_date(self):
+		try:
+			dbcon = connect_database('trakt_db')
+			return dbcon.execute(WATCHED_LAST_PLAYED, ('movie',)).fetchone()[0]
 		except: return None
 
 	def last_watched_episode_date(self):
@@ -246,6 +268,7 @@ def clear_all_trakt_cache_data(silent=False, refresh=True):
 			dbcon.execute(BASE_DELETE % table)
 		dbcon.execute('VACUUM')
 		if refresh:
+			from threading import Thread  # pigro, vedi la nota in caches/base_cache.py
 			from apis.trakt_api import trakt_sync_activities
 			Thread(target=trakt_sync_activities).start()
 		return True

@@ -12,6 +12,8 @@ make_listitem, volume_checker, get_infolabel, xbmc_monitor = ku.make_listitem, k
 close_all_dialog, notification, poster_empty, fanart_empty = ku.close_all_dialog, ku.notification, ku.empty_poster, ku.get_addon_fanart()
 auto_resume, auto_nextep_settings, store_resolved_to_cloud = st.auto_resume, st.auto_nextep_settings, st.store_resolved_to_cloud
 set_bookmark, mark_movie, mark_episode = ws.set_bookmark, ws.mark_movie, ws.mark_episode
+PLAYBACK_ACTIVE_PROP = ku.PLAYBACK_ACTIVE_PROP
+mark_playback_start = ku.mark_playback_start
 total_time_errors = ('0.0', '', 0.0, None)
 set_resume, set_watched = 5, 90
 video_fullscreen_check = 'Window.IsActive(fullscreenvideo)'
@@ -26,7 +28,7 @@ class FenLightPlayer(xbmc_player):
 		# poter sapere se un video e' in corso senza chiamare getCondVisibility dal thread del plugin:
 		# quella chiamata attraversa il lock grafico proprio mentre il thread GUI aspetta la cartella
 		# che stiamo costruendo. Vedi paginator._diag_note e il commento in end_directory.
-		try: set_property('fenlight.playback.active', 'true')
+		try: mark_playback_start()
 		except: pass
 
 	def onPlayBackSeek(self, time, seekOffset):
@@ -51,11 +53,25 @@ class FenLightPlayer(xbmc_player):
 	def play_video(self, url, obj):
 		self.set_constants(url, obj)
 		volume_checker()
+		# La bandiera si alza QUI, non in onAVStarted (lotto 111). onAVStarted arriva quando audio e
+		# video sono davvero partiti: nel log del 29/08 sono le 16:00:07,5, mentre l'ondata di
+		# ricostruzione dei widget che deve fermare parte alle 16:00:02,3 -- cinque secondi prima,
+		# subito dopo Player.OnPlay. Alzarla prima di self.play() e' l'unico istante che non e' una
+		# corsa: qui l'annuncio non e' ancora stato emesso. Dal lotto 113 la bandiera non taglia piu'
+		# nessuna costruzione: resta come stato leggibile senza toccare la GUI, e timbra l'istante da
+		# cui la riga PERF misura quanto lavoro di interfaccia cade sull'avvio del film.
+		try: mark_playback_start()
+		except: pass
 		self.play(self.url, self.make_listing())
 		if not self.is_generic:
 			self.check_playback_start()
 			if self.playback_successful: self.monitor()
 			else:
+				# Fallimento accertato: la bandiera va giu' SUBITO. self.stop() qui sotto non produce
+				# nessun Player.OnStop se non c'era niente in riproduzione, quindi il presidio del
+				# service non scatterebbe. Vedi clear_playback_properties.
+				try: clear_property(PLAYBACK_ACTIVE_PROP)
+				except: pass
 				self.sources_object.playback_successful = self.playback_successful
 				self.sources_object.cancel_all_playback = self.cancel_all_playback
 				if self.cancel_all_playback: self.kill_dialog()
@@ -110,7 +126,19 @@ class FenLightPlayer(xbmc_player):
 				sleep(200)
 				total_check_time += 0.10
 			hide_busy_dialog()
-			sleep(1000)
+			# ATTESA ESPLICITA (lotto 111), al posto di un sleep(1000) scritto a mano.
+			# Quel secondo era la finestra di caricamento che restava sopra il player: misurata nel
+			# log del 29/08, VideoFullScreen si apre alle 16:00:07,426 e sources_playback.xml muore
+			# alle 16:00:08,746 -- 1,3 s in cui l'utente vede la schermata di Fen Light ricomparire
+			# sopra il video gia' partito. Non era un caricamento: era un'attesa a vuoto.
+			# La condizione vera e' onAVStarted, cioe' Kodi che dichiara audio e video avviati
+			# (Player.OnAVStart, alle 16:00:07,561 nello stesso log): 1,2 s prima, e per un motivo
+			# invece che per un numero. Il limite di 3 s non e' il criterio di uscita ma un
+			# rompi-stallo: se l'annuncio non arrivasse, la finestra non deve restare appesa.
+			_atteso = 0.0
+			while not getattr(self, '_av_started', False) and _atteso < 3.0 and self.isPlayingVideo():
+				sleep(50)
+				_atteso += 0.05
 			while self.isPlayingVideo():
 				try:
 					try: self.total_time, self.curr_time = self.getTotalTime(), self.getTime()
@@ -193,7 +221,7 @@ class FenLightPlayer(xbmc_player):
 
 	def media_watched_marker(self, force_watched=False):
 		self.media_marked = True
-		try: clear_property('fenlight.playback.active')
+		try: clear_property(PLAYBACK_ACTIVE_PROP)
 		except: pass
 		# PERF: timbro della chiusura, letto da paginator.log_build. Serve a UNA domanda sola: quanto
 		# ci mette Kodi a rileggere da solo la cartella aperta uscendo dal player? E' l'attesa che il
@@ -255,7 +283,9 @@ class FenLightPlayer(xbmc_player):
 			# fenlight.refresh_widgets, quindi la distinzione che c'era qui non serve piu'. Con il ramo
 			# 'refresh_widgets' ancora globale, nel log del 22/08 00:24:16 usciva uno scan globale a 46 ms
 			# dal refresh mirato di run_media_progress: due ricostruzioni per lo stesso evento.
-			if tmdb_id: return ku.kodi_refresh_ids([tmdb_id])
+			# L'azione accompagna sempre l'id (lotto 114): finito un film, 'continua a guardare' cambia
+			# composizione -- il titolo entra se e' rimasto a meta', esce se e' arrivato in fondo.
+			if tmdb_id: return ku.kodi_refresh_ids([tmdb_id], (ku.CONTINUE_WATCHING_ACTION,))
 			ku.run_plugin({'mode': 'refresh_widgets' if kind == 'refresh_widgets' else 'kodi_refresh'})
 		except: pass
 
@@ -321,7 +351,7 @@ class FenLightPlayer(xbmc_player):
 				# dei contenitori non identifica nulla, kodi_refresh_ids ricade da sola sul globale.
 				# Ci si arriva solo se Kodi NON ha ricostruito da sola: vedi kodi_rebuilt_by_itself.
 				tmdb_id = str(getattr(self, 'tmdb_id', '') or '')
-				if tmdb_id: return ku.kodi_refresh_ids([tmdb_id])
+				if tmdb_id: return ku.kodi_refresh_ids([tmdb_id], (ku.CONTINUE_WATCHING_ACTION,))
 				ku.run_plugin({'mode': 'refresh_widgets'})
 		except: pass
 
@@ -388,6 +418,14 @@ class FenLightPlayer(xbmc_player):
 		except: pass
 
 	def clear_playback_properties(self):
+		# La bandiera del lotto 111 si abbassa QUI oltre che su Player.OnStop, e il motivo e' un buco
+		# vero: play_video la alza PRIMA di self.play(), quindi se la riproduzione non parte mai --
+		# link morto, sorgenti esaurite, utente che annulla -- nessun player e' mai esistito e OnStop
+		# non arriva. La bandiera resterebbe alzata per sempre e ogni riga PERF successiva direbbe
+		# 'riproduzione in corso' con lo schermo sulla home: una diagnostica che mente.
+		# Questo metodo e' chiamato all'inizio di run(), a fine riproduzione e in run_error: copre
+		# l'ingresso, l'uscita pulita e l'errore.
+		clear_property(PLAYBACK_ACTIVE_PROP)
 		clear_property('fenlight.window_stack')
 		clear_property('script.trakt.ids')
 		clear_property('subs.player_filename')

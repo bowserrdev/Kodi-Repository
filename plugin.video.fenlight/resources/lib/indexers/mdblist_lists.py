@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 import sys
-from threading import Thread
 from apis.mdblist_api import mdblist_get_my_lists, mdblist_get_liked_lists, mdblist_get_list_contents
 from indexers.movies import Movies
 from indexers.tvshows import TVShows
-from indexers.trakt_lists import _dub_filter_items, _dub_paginate
+from modules.dub_filter import _dub_filter_items, _dub_paginate
 from modules import kodi_utils
 from modules import paginator
 from modules.utils import paginate_list
@@ -115,6 +114,7 @@ def build_mdblist_list(params):
 		movie_list = {'list': [(i['order'], i['media_ids']) for i in all_movies], 'id_type': 'trakt_dict', 'custom_order': 'true'}
 		tvshow_list = {'list': [(i['order'], i['media_ids']) for i in all_tvshows], 'id_type': 'trakt_dict', 'custom_order': 'true'}
 		content = max([('movies', len(all_movies)), ('tvshows', len(all_tvshows))], key=lambda k: k[1])[0]
+		from threading import Thread  # pigro, vedi la nota in caches/base_cache.py
 		for function, _list in ((Movies, movie_list), (TVShows, tvshow_list)):
 			t = Thread(target=_process, args=(function, _list))
 			t.start()

@@ -1,7 +1,16 @@
 # -*- coding: utf-8 -*-
 import json
 import time
-import threading
+# _thread invece di threading (lotto 101): threading.local E' _thread._local -- lo stesso oggetto,
+# threading.py lo importa da li'. _thread e' un modulo BUILTIN (compilato nell'interprete), quindi
+# costa zero; threading e' un file .py che sul Mi Stick si legge in 27-129 ms e si trascina dietro
+# _weakrefset (27-131 ms) e, primo ad arrivarci, functools/collections. base_cache lo importava per
+# QUESTA SOLA RIGA, ed e' importato da ogni cache, quindi da ogni invocazione: nel log di
+# riferimento le quattro build_movie_list pagavano 98/72/133/27 ms per un thread-local.
+# _local e' il nome privato che threading stesso importa; il ripiego esiste solo per non legare
+# il modulo a un dettaglio interno di CPython.
+try: from _thread import _local as _ThreadLocal
+except ImportError: from threading import local as _ThreadLocal
 import sqlite3 as database
 from modules import kodi_utils
 
@@ -102,7 +111,7 @@ BASE_DELETE = 'DELETE FROM %s WHERE id = ?'
 # Thread-local storage for per-thread connection pooling.
 # Each thread maintains its own open connections, avoiding the overhead of
 # opening/closing a connection on every cache read or write.
-_local = threading.local()
+_local = _ThreadLocal()
 
 def connect_database(database_name):
 	if not hasattr(_local, 'connections'):

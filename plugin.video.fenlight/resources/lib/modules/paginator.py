@@ -37,7 +37,24 @@ PG_REFRESH_PROP = 'fenlight.pg.refresh'
 # 'fenlight.pg.whome.ctl502.pages'. Il token finiva in una proprieta' che nessuno leggeva: TRIGGER
 # regolare nel log, nessuna ricostruzione, LOADING appeso, paginazione morta in silenzio per due
 # giorni. Con questo timbro il caso si distingue dal primo e si dice a voce alta.
-LASTBUILD_PROP = 'fenlight.pg.%s.lastbuild'
+# Definita in kodi_utils perche' la usa anche il cancello riproduzione (lotto 112), che non puo'
+# importare questo modulo: una definizione sola, letta da entrambi.
+from modules.kodi_utils import PG_LASTBUILD_PROP as LASTBUILD_PROP
+# "STO COSTRUENDO QUESTO WIDGET" (lotto 106). Dichiarazione esplicita, scritta all'inizio della
+# costruzione e cancellata quando il widget pubblica la propria testa. Serve al canale dei rinvii:
+# finche' anche una sola di queste e' alzata, sparare una ricostruzione significa aggiungere carico
+# sopra la tempesta d'avvio.
+# UNO SCRITTORE PER CHIAVE, mai un contatore condiviso: incrementare e decrementare un numero in una
+# proprieta' di finestra e' una lettura-modifica-scrittura fra processi concorrenti, ed e' esattamente
+# cio' che il lotto 23 ha dovuto spegnere (DIAG) perche' si perdevano aggiornamenti. Qui ogni build
+# scrive e cancella SOLO la propria chiave: due build concorrenti non si toccano.
+INFLIGHT_PROP = 'fenlight.pg.%s.inflight'
+# Rete di sicurezza contro il blocco, NON il criterio di scatto. Se un'invocazione muore prima di
+# pubblicare la testa (su questo dispositivo succede: vedi l'indagine sui riavvii) la sua marca
+# resterebbe alzata per sempre e il rinvio non partirebbe mai piu' -- che e' il guasto peggiore, gia'
+# visto nel lotto 100. Il valore non e' scelto a occhio: la costruzione piu' lunga misurata nei log
+# vale 16,3 s (un mdblist a cache fredda), questo e' quasi quattro volte tanto.
+INFLIGHT_MAX_SECONDS = 60
 # Token di ricarica MIRATA, indicizzato per id del contenitore. Compare dentro il <content> del widget
 # come $INFO[...], quindi cambiarlo fa ricaricare SOLO quel contenitore invece di sparare
 # UpdateLibrary, che e' un evento globale e ricostruisce tutti i widget della schermata (#1).
@@ -578,12 +595,24 @@ def log_build(kind, action, t_start, t_resolved, t_built, count, pages=None, pat
 		# una chiusura e' la rilettura che fa Kodi per conto suo: e' il numero contro cui tarare il
 		# sleep(2000) di run_media_progress, oggi scelto a occhio.
 		since_close = ''
+		# LOTTO 113: le stesse distanze anche dal Select e da Player.OnPlay. Sono i due estremi della
+		# finestra di transizione -- l'unica in cui i widget si ricostruiscono davvero, ora che il
+		# cancello e' stato tolto -- e servono a rispondere con dei numeri alla domanda "quanto lavoro
+		# di interfaccia cade addosso all'avvio del film?". Tre letture di proprieta', nessuna
+		# scrittura: al contrario di _diag_note non c'e' contesa fra i processi che si costruiscono
+		# in parallelo, per questo si puo' tenere accesa sempre.
 		try:
-			from modules.kodi_utils import get_property
-			_c = float(get_property('fenlight.perf.closefile') or 0)
-			if _c:
+			from modules.kodi_utils import get_property, SELECT_PROP, PLAYBACK_START_PROP, playback_running
+			for _prop, _etichetta, _tetto in ((SELECT_PROP, 'Select', 60), (PLAYBACK_START_PROP, 'OnPlay', 60),
+												('fenlight.perf.closefile', 'CloseFile', 30)):
+				# il float si protegge da solo: un timbro storpiato non deve far sparire le altre
+				# due distanze dalla riga, che e' cio' che succedeva con un try unico attorno al giro.
+				try: _c = float(get_property(_prop) or 0)
+				except: continue
+				if not _c: continue
 				_d = t_built - _c
-				if 0 < _d < 30: since_close = ' | +%.0f ms da CloseFile' % (_d * 1000)
+				if 0 < _d < _tetto: since_close += ' | +%.0f ms da %s' % (_d * 1000, _etichetta)
+			if playback_running(): since_close += ' | riproduzione in corso'
 		except: pass
 		logger('FenLight PERF', '%s %s | %s elementi%s%s | worker %s | totale %.2fs = risoluzione %.2fs + costruzione %.0f ms (%.3f ms/elemento) | %.1f ms/elemento totale | inv=%s'
 				% (kind, action, count, (' | %s pagine' % pages) if pages else '',
@@ -817,9 +846,28 @@ def set_head(key, items, action=None):
 	for h in (headhash, headhash_one):
 		if h: set_property(HEAD_PROP % h, key)
 	clear_property(LOADING_PROP % key)
+	# Fine dichiarata della costruzione (lotto 106): set_head e' l'ultimo passo di una build, chiamato
+	# subito dopo add_items. Da qui in poi questo widget non e' piu' in volo.
+	mark_build_end(key)
 	_publish_ids(key, items)
 	if action: set_property(ACTION_PROP % key, str(action))
 	_register(key, (headhash, headhash_one))
+	# Il censimento (registry_add) passa solo sui contenitori A SCHERMO, e all'avvio i widget spesso
+	# finiscono di costruirsi dopo che l'utente ha gia' cambiato finestra: il 28/08 alle 20:18 la Home
+	# e' stata lasciata 2 s prima che i suoi widget pubblicassero la testa, quindi 'home:502' non e'
+	# mai entrato nel registro. Da li' una ricarica mirata lanciata da un hub trovava 'altre finestre 0',
+	# non poteva invalidare i token della Home -- che restava vecchia -- e faceva scattare la rete di
+	# sicurezza di kodi_refresh_ids, che riarmava il rinvio: consumato ogni 10 s nella stessa finestra,
+	# all'infinito (tre giri nel log delle 20:18-20:19 prima che la sessione finisse).
+	# Chi pubblica la propria testa E' per definizione una coppia (finestra, contenitore) nota: non ha
+	# senso aspettare che il censimento a schermo se ne accorga. registry_add e' idempotente, quindi il
+	# passaggio del censimento resta la rete di recupero se questa scrittura si perde per contesa --
+	# read-modify-write su proprieta' condivisa, lo stesso schema del lotto 3, ma qui una volta per
+	# costruzione di widget e non per elemento.
+	try:
+		_scope, _, _cid = key.partition('.')
+		if _scope and _cid: registry_add(_scope, _cid)
+	except: pass
 	log('set_head key=%s built=%s firma=%s first_url=%s' %
 		(short(key), count, (headhash[:8] if headhash else '-'), (url[:90] if url else '-')))
 
@@ -964,8 +1012,54 @@ def _stamp_build(key):
 	# e' una setProperty, ed e' l'unico modo di sapere DALL'ESTERNO che una build e' davvero partita.
 	from modules.kodi_utils import set_property
 	from time import time
-	try: set_property(LASTBUILD_PROP % key, str(time()))
+	now = str(time())
+	try: set_property(LASTBUILD_PROP % key, now)
 	except: pass
+	# Dichiarazione esplicita di "sto costruendo" (lotto 106), piu' l'iscrizione al censimento fatta
+	# QUI e non solo in set_head. Il motivo e' preciso: builds_in_flight() enumera le coppie censite,
+	# quindi un contenitore che si iscrive solo alla FINE della propria costruzione sarebbe invisibile
+	# proprio mentre sta costruendo -- cioe' l'unico momento in cui la marca conta.
+	try:
+		set_property(INFLIGHT_PROP % key, now)
+		_scope, _, _cid = key.partition('.')
+		if _scope and _cid: registry_add(_scope, _cid)
+	except: pass
+
+def mark_build_start(key):
+	# Inizio dichiarato di una costruzione, per i widget che NON passano da get_pages -- oggi
+	# 'continua a guardare', che non e' paginato e quindi non chiama get_pages: senza questa
+	# dichiarazione sarebbe l'unico dei tre widget della Home invisibile a builds_in_flight(), ed e'
+	# anche il piu' lento.
+	_stamp_build(key)
+
+def mark_build_end(key):
+	# Fine dichiarata. Una sola definizione di "fine", usata sia qui sia da set_head.
+	from modules.kodi_utils import clear_property
+	try: clear_property(INFLIGHT_PROP % key)
+	except: pass
+
+def builds_in_flight():
+	# Chi sta costruendo in questo momento, per nome. Torna una lista di chiavi, vuota quando non c'e'
+	# niente in volo -- che e' la condizione che il canale dei rinvii aspetta.
+	# Le chiavi si ricavano dal censimento: registry_add riceve 'scope' e 'cid' ottenuti spezzando la
+	# chiave sul primo punto, quindi la coppia 'scope:cid' si ritrasforma nella chiave sostituendo il
+	# separatore. Nessun elenco parallelo da tenere allineato.
+	from modules.kodi_utils import get_property, clear_property
+	from time import time
+	vive, adesso = [], time()
+	for pair in registry_pairs():
+		key = pair.replace(':', '.', 1)
+		raw = get_property(INFLIGHT_PROP % key)
+		if not raw: continue
+		try: started = float(raw)
+		except: started = 0
+		# Marca orfana: l'invocazione e' morta senza pubblicare la testa. Si cancella qui, cosi' il
+		# guasto si ripara da solo invece di bloccare il canale per il resto della sessione.
+		if not started or adesso - started > INFLIGHT_MAX_SECONDS:
+			clear_property(INFLIGHT_PROP % key)
+			continue
+		vive.append(key)
+	return vive
 
 def last_build(key):
 	# Istante dell'ultima build iniziata per questa chiave. 0 = mai vista (o proprieta' ripulita).

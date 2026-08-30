@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import sys
 from time import perf_counter as _perf
-from modules import meta_lists
 from modules import kodi_utils, settings
 from modules import paginator
 from modules.metadata import movie_meta, movieset_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url, dub_filter
@@ -47,8 +46,10 @@ personal = {'favorites_movies': ('modules.favorites', 'get_favorites'), 'in_prog
 'watched_movies': ('modules.watched_status', 'get_watched_items'), 'recent_watched_movies': ('modules.watched_status', 'get_recently_watched')}
 trakt_main = ('trakt_movies_trending', 'trakt_movies_trending_recent', 'trakt_movies_most_watched', 'trakt_movies_most_favorited', 'trakt_movies_top10_boxoffice')
 trakt_personal = ('trakt_collection', 'trakt_watchlist', 'trakt_collection_lists', 'trakt_watchlist_lists', 'trakt_favorites')
-meta_list_dict = {'tmdb_movies_languages': meta_lists.languages, 'tmdb_movies_providers': meta_lists.watch_providers_movies, 'tmdb_movies_year': meta_lists.years_movies,
-			'tmdb_movies_decade': meta_lists.decades_movies, 'tmdb_movies_certifications': meta_lists.movie_certifications, 'tmdb_movies_genres': meta_lists.movie_genres}
+# meta_list_dict e' stato rimosso (lotto 110): era costruito qui a ogni import e non lo leggeva
+# NESSUNO. Le liste dei menu Discover stanno in indexers/random_lists.py, che ha le proprie copie
+# (movie_meta_list_dict / tvshow_meta_list_dict); da fuori di questo file si importa solo Movies.
+# Era l'unico motivo per cui movies.py caricava modules.meta_lists, 494 righe di sole tabelle.
 view_mode, content_type = 'view.movies', 'movies'
 # Actions the "dubbed content" filter must NEVER touch: the user's own personal lists (in-progress,
 # watched, favorites, Trakt collection/watchlist/favorites). Everything else (tmdb/trakt discovery,

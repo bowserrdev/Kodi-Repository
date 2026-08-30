@@ -9,6 +9,7 @@ season_prop, media_prop = 'fenlight.meta_season_%s', 'fenlight.%s_%s_%s'
 GET_MOVIE_SHOW = 'SELECT meta, expires FROM metadata WHERE db_type = ? AND %s = ?'
 GET_MOVIE_SHOW_MANY = 'SELECT %s, meta, expires FROM metadata WHERE db_type = ? AND %s IN (%s)'
 GET_SEASON = 'SELECT meta, expires FROM season_metadata WHERE tmdb_id = ?'
+GET_SEASON_MANY = 'SELECT tmdb_id, meta, expires FROM season_metadata WHERE tmdb_id IN (%s)'
 GET_FUNCTION = 'SELECT string_id, data, expires FROM function_cache WHERE string_id = ?'
 GET_ALL = 'SELECT db_type, tmdb_id FROM metadata'
 GET_ALL_SEASON = 'SELECT tmdb_id FROM season_metadata'
@@ -89,6 +90,29 @@ class MetaCache:
 					meta = None
 		except: meta = None
 		return meta
+
+	def get_seasons_many(self, prop_strings):
+		# Gemella di get_many, per la tabella season_metadata (lotto 102). Stessa ragione: la
+		# costruzione degli episodi chiedeva una stagione per elemento, una query alla volta, dentro
+		# un ciclo a un worker. Le voci scadute NON vengono restituite e NON vengono cancellate qui:
+		# cadono sul percorso normale (get_season), che le cancella e le riscarica, esattamente come
+		# prima. Questo strato non decide nulla, anticipa soltanto letture che ci sarebbero state.
+		results = {}
+		if not prop_strings: return results
+		try:
+			current_time = get_timestamp()
+			dbcon = connect_database('metacache_db')
+			keys = list(prop_strings)
+			# SQLite limita i parametri per statement: stessa spezzatura di get_many.
+			for start in range(0, len(keys), 500):
+				chunk = keys[start:start + 500]
+				query = GET_SEASON_MANY % ', '.join('?' for _ in chunk)
+				for row in dbcon.execute(query, chunk):
+					if row[2] < current_time: continue
+					try: results[string(row[0])] = json.loads(row[1])
+					except: pass
+		except: pass
+		return results
 
 	def set(self, media_type, id_type, meta, expiration=168, current_time=None):
 		try:
