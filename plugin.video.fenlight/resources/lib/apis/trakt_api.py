@@ -785,7 +785,20 @@ def _get_all_sync_pages(path, with_auth=True):
 		try: response = call_trakt(path, params={'limit': _SYNC_PAGE_LIMIT}, with_auth=with_auth, pagination=True, page_no=page_no)
 		except Exception: response = None
 		if not response:
-			if page_no == 1: return call_trakt(path, with_auth=with_auth, pagination=False) or []
+			# Prima pagina fallita: si ripiega sulla chiamata secca storica. Se fallisce anche quella
+			# non e' un account senza nulla, e' un GUASTO, e va detto a chi chiama: None, non [].
+			# Con `or []` i due casi finivano sullo stesso valore e la guardia del chiamante trattava
+			# un account legittimamente vuoto come una risposta sospetta, senza far mai avanzare il
+			# segnalibro. Misurato il 30/08 sul profilo Maurizio: dopo la riautorizzazione di Trakt
+			# (16:12:24, account senza niente di visto) ogni giro rileggeva 0 elementi, non avanzava,
+			# e ordinava un UpdateLibrary globale -- 12 ricostruzioni complete della home in 7 minuti,
+			# finite solo quando il primo film visto ha dato al segnalibro qualcosa su cui appoggiarsi.
+			if page_no == 1:
+				fallback = call_trakt(path, with_auth=with_auth, pagination=False)
+				if fallback is None:
+					logger('FenLight Trakt', '%s: richiesta FALLITA' % path)
+					return None
+				return fallback
 			break
 		page_items, pages = response
 		if page_items: items.extend(page_items)
@@ -916,7 +929,7 @@ def trakt_indicators_movies():
 	insert_list = []
 	insert_append = insert_list.append
 	result = _get_all_sync_pages('sync/watched/movies')
-	if not result:
+	if result is None:
 		# set_bulk_movie_watched esegue DELETE + INSERT: pubblicare una lista vuota azzererebbe l'intera
 		# cache dei visti e farebbe sparire TUTTI i badge fino alla sincronizzazione successiva. Un errore
 		# di rete arriva qui come None; una risposta 200 con lista vuota e' indistinguibile da "non ho
@@ -928,8 +941,30 @@ def trakt_indicators_movies():
 		# all'8 agosto mentre Trakt dichiarava un'attivita' del 25, e 17 'No Changes Needed' di fila.
 		# Un guasto momentaneo di rete diventava una perdita permanente.
 		_SYNC_DEFERRED[0] = True
-		logger('FenLight Trakt', 'watched movies: nessun dato da Trakt, cache intatta e segnalibro NON avanzato')
+		logger('FenLight Trakt', 'watched movies: richiesta FALLITA, cache intatta e segnalibro NON avanzato')
 		return
+	# Vuoto CERTO (HTTP 200 con zero elementi). Sono due situazioni diverse e la cache locale le separa:
+	#  - anche in locale non c'e' niente -> l'account non ha davvero film visti. Allinearsi non perde
+	#    nulla e soprattutto fa AVANZARE il segnalibro, unico modo perche' la sincronizzazione converga.
+	#    set_bulk su una cache gia' vuota restituisce un insieme vuoto, che il chiamante pubblica come
+	#    '-' -> nessuna ricostruzione. E' il caso che il 30/08 ha prodotto 12 UpdateLibrary globali.
+	#  - in locale ci sono dei visti -> un vuoto da Trakt e' quasi sempre un guasto (vedi la nota sopra):
+	#    non si tocca niente, esattamente come prima. Il confronto e' con 0 e non con la verita' di
+	#    watched_movie_count perche' la funzione restituisce None quando il conteggio NON e' disponibile,
+	#    e in quel caso l'unica scelta prudente e' non toccare la cache.
+	if not result:
+		# Vuoto CERTO: la richiesta e' RIUSCITA e Trakt dichiara zero film visti. Da quando i guasti
+		# tornano come None (vedi _get_all_sync_pages) questo caso non e' piu' ambiguo e va preso per
+		# buono: ci si allinea, e soprattutto il segnalibro AVANZA. Il sospetto di "e' quasi sempre un
+		# guasto" nasceva proprio dal fatto che `or []` faceva arrivare qui anche gli errori: tolta
+		# quella confusione alla radice, tenere anche la diffidenza qui NON proteggerebbe piu' niente e
+		# reintrodurrebbe il ciclo -- un account svuotato non convergerebbe mai, ogni giro tornerebbe
+		# 'rebuild completo' con UpdateLibrary globale (30/08: 12 ricostruzioni della home in 7 minuti).
+		# Azzerare una cache popolata e' la risposta giusta a una cronologia cancellata su Trakt. Se
+		# invece fosse un 200 anomalo il danno e' transitorio e si ripara da solo: la sincronizzazione
+		# successiva riscarica l'elenco vero e i badge tornano. La perdita PERMANENTE che la nota del
+		# lotto 88 temeva era quella del segnalibro, ed e' il ramo None qui sopra a impedirla.
+		logger('FenLight Trakt', 'watched movies: Trakt non ha film visti, cache allineata a vuoto (ne conteneva %s)' % trakt_watched_cache.watched_movie_count())
 	make_thread_list(_process, result)
 	logger('FenLight Trakt', 'watched movies: %s da Trakt, %s in cache, %s scartati%s'
 			% (len(result), len(insert_list), len(dropped), (' -> %s' % dropped[:10]) if dropped else ''))
@@ -1021,7 +1056,18 @@ def trakt_indicators_tv():
 	# Anche qui la chiamata era limitata alla prima pagina: oltre le 100 serie, gli episodi di quelle
 	# escluse venivano scartati dal filtro shows_info, pur essendo presenti nella cronologia.
 	shows = _get_all_sync_pages('sync/watched/shows')
-	if not shows: return trakt_watched_cache.set_bulk_tvshow_watched([])
+	if shows is None:
+		# Prima di questa guardia un guasto su sync/watched/shows cadeva su set_bulk_tvshow_watched([]),
+		# cioe' DELETE di tutti gli episodi visti: un errore di rete cancellava la cronologia delle serie.
+		# E' la stessa distinzione della gemella sui film, che qui mancava del tutto.
+		_SYNC_DEFERRED[0] = True
+		return logger('FenLight Trakt', 'watched shows: richiesta FALLITA, episodi intatti e segnalibro NON avanzato')
+	if not shows:
+		# Come per i film: riuscita con zero elementi e' un dato, non un sospetto. Il guasto e' il ramo
+		# None qui sopra, che prima non esisteva affatto e lasciava che un errore di rete cadesse qui
+		# dentro cancellando l'intera cronologia degli episodi.
+		logger('FenLight Trakt', 'watched shows: Trakt non ha serie viste, episodi allineati a vuoto (ne conteneva %s)' % trakt_watched_cache.watched_episode_count())
+		return trakt_watched_cache.set_bulk_tvshow_watched([])
 	make_thread_list(_process_show, shows)
 	if page_count > 1: make_thread_list(_get_history_page, range(2, page_count + 1))
 	watched_episodes = {}
