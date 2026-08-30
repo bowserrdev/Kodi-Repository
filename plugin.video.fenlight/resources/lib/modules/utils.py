@@ -5,7 +5,11 @@ import time
 import hashlib
 import unicodedata
 import os
-from threading import Thread, Lock
+# Lock dal builtin _thread (lotto 101): e' lo stesso oggetto che espone threading.Lock, ma senza
+# leggere threading.py. Thread invece e' vero threading e si importa dentro _run_pool, DOPO il
+# controllo sulla lista vuota: a cache calda `missing` e' vuoto e nessun thread nasce mai, quindi
+# quell'import non si paga. Vedi la nota in caches/base_cache.py.
+from _thread import allocate_lock as Lock
 # Import resi pigri (lotto 54). Misurato sulla stick, per OGNI interprete widget:
 #   concurrent.futures -> tirava dentro logging -> traceback -> contextlib, textwrap,
 #     linecache, tokenize, token, weakref. Nessuno di questi e' importato altrove in Fen Light:
@@ -65,6 +69,8 @@ def _run_pool(_target, _list, _style, _max_workers=None):
 	if not isinstance(_list, (list, tuple)): _list = list(_list)
 	total = len(_list)
 	if not total: return _DONE
+	# Import pigro: da qui in giu' i thread nascono davvero, quindi threading serve davvero.
+	from threading import Thread
 	next_index, lock = [0], Lock()
 	def _worker():
 		while True:

@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import re
 from time import perf_counter as _perf
-from apis import tmdb_api
 # imdb_api e skyhook_api NON si importano piu' qui (lotto 52): erano import a livello di modulo, e
 # metadata e' importato da quasi tutti gli indexer -- quindi li pagava anche chi non ne aveva
 # bisogno. Entrambi creavano inoltre una Session a livello di modulo, cioe' tiravano dentro
@@ -11,9 +10,25 @@ from modules.settings import meta_language
 from modules import paginator
 from modules.utils import jsondate_to_datetime, subtract_dates, make_thread_list, make_thread_list_capped
 
-movie_details, tvshow_details, season_episodes_details = tmdb_api.movie_details, tmdb_api.tvshow_details, tmdb_api.season_episodes_details
-movie_set_details, movie_external_id, tvshow_external_id = tmdb_api.movie_set_details, tmdb_api.movie_external_id, tmdb_api.tvshow_external_id
-episode_groups_data, episode_group_details, person_details = tmdb_api.episode_groups_data, tmdb_api.episode_group_details, tmdb_api.person_details
+# apis.tmdb_api NON si importa piu' qui (lotto 110). Era un import a livello di modulo per NOVE
+# nomi che si chiamano tutti e soli sul CACHE MISS -- quando i metadati non ci sono e vanno chiesti
+# a TMDb. Un widget su cache calda non ne tocca nessuno, eppure li pagava: tmdb_api sono 726 righe e
+# si tira dietro modules.meta_lists (494 righe di tabelle) e caches.lists_cache. metadata e'
+# importato da quasi tutti gli indexer, quindi il conto arrivava a OGNI invocazione.
+#
+# I nomi restano quelli, cosi' i 14 punti di chiamata non cambiano: cambia solo QUANDO il modulo
+# entra in memoria. Il costo aggiunto e' un lookup in sys.modules per chiamata, su funzioni che
+# subito dopo aprono una connessione di rete.
+def _tmdb(_nome):
+	def _ponte(*args, **kwargs):
+		from apis import tmdb_api
+		return getattr(tmdb_api, _nome)(*args, **kwargs)
+	_ponte.__name__ = _nome
+	return _ponte
+
+movie_details, tvshow_details, season_episodes_details = _tmdb('movie_details'), _tmdb('tvshow_details'), _tmdb('season_episodes_details')
+movie_set_details, movie_external_id, tvshow_external_id = _tmdb('movie_set_details'), _tmdb('movie_external_id'), _tmdb('tvshow_external_id')
+episode_groups_data, episode_group_details, person_details = _tmdb('episode_groups_data'), _tmdb('episode_group_details'), _tmdb('person_details')
 metacache_get, metacache_set, metacache_get_season, metacache_set_season = meta_cache.get, meta_cache.set, meta_cache.get_season, meta_cache.set_season
 writer_credits = ('Author', 'Writer', 'Screenplay', 'Characters')
 alt_titles_check, finished_show_check, empty_value_check = ('US', 'GB', 'UK', ''), ('Ended', 'Canceled'), ('', 'None', None)
@@ -76,7 +91,8 @@ def dub_resolve(country, media_type, tmdb_id, title, year, verify, api_key, stat
 	streaming = dub_cache.get_streaming(country, media_type, tmdb_id)
 	if streaming is None:
 		if stats is not None: stats.append('streaming')
-		streaming = tmdb_api.streaming_available(media_type, tmdb_id, country, api_key)
+		from apis.tmdb_api import streaming_available
+		streaming = streaming_available(media_type, tmdb_id, country, api_key)
 		if streaming is not None: dub_cache.set_streaming(country, media_type, tmdb_id, streaming, year)
 	elif stats is not None: stats.append('saved')
 	if streaming is True:
@@ -948,9 +964,37 @@ def movieset_meta(media_id, api_key, current_time=None):
 	except: pass
 	return meta
 
-def episodes_meta(season, meta):
-	from apis.imdb_api import imdb_episode_ratings
-	from apis.skyhook_api import get_skyhook_episodes
+def season_prop_string(media_id, season, lang=None):
+	# La chiave di season_metadata. Era calcolata in linea dentro episodes_meta; ora sta qui perche'
+	# la usa anche episodes_meta_prefetch, e due copie della stessa formula sono due copie che
+	# possono divergere: basterebbe che una delle due dimenticasse la lingua per far mancare ogni
+	# riscontro del prefetch, in silenzio e senza errori.
+	if lang is None: lang = meta_language()
+	return '%s_%s_%s' % (media_id, season, lang) if lang != 'en' else '%s_%s' % (media_id, season)
+
+def episodes_meta_prefetch(pairs):
+	# UNA lettura per tutte le stagioni che la costruzione andra' a chiedere (lotto 102), sulla stessa
+	# falsariga di meta_prefetch: chi non e' qui dentro (assente, scaduto, o in un'altra lingua) cade
+	# sul percorso normale dentro episodes_meta, rimasto identico. Le coppie arrivano gia' risolte dal
+	# chiamante, che e' l'unico a sapere quale stagione servira' davvero.
+	results = {}
+	try:
+		lang = meta_language()
+		keys = set()
+		for media_id, season in pairs:
+			if media_id is None or season is None: continue
+			keys.add(season_prop_string(media_id, season, lang))
+		if keys: results = meta_cache.get_seasons_many(keys)
+	except: pass
+	return results
+
+def episodes_meta(season, meta, prefetch=None):
+	# imdb_api e skyhook_api NON si importano piu' qui (lotto 102). Erano "pigri" solo di nome: in
+	# cima alla funzione si pagano a OGNI chiamata, compresa l'uscita da cache poche righe sotto, che
+	# e' la stragrande maggioranza. E' esattamente l'errore gia' corretto in movie_meta col lotto 82.
+	# apis.imdb_api da solo valeva 365 ms nel log del 28/08 (si porta dietro dom_parser e le tre
+	# cache), e con reuselanguageinvoker=false quel prezzo si ripaga a ogni costruzione di widget.
+	# Ora stanno sotto il ritorno da cache, cioe' nell'unico ramo che li usa davvero.
 	def _process():
 		midseason_premiere = False
 		for ep_data in details:
@@ -989,11 +1033,28 @@ def episodes_meta(season, meta):
 				except: pass
 			yield {'writer': writer, 'director': director, 'mediatype': 'episode', 'episode_type': episode_type, 'episode_id': episode_id, 'title': title, 'plot': plot,
 					'duration': duration, 'premiered': premiered, 'season': season, 'episode': episode, 'rating': rating, 'votes': votes, 'thumb': thumb, 'guest_stars': guest_stars}
+	# UNA STAGIONE NULLA NON E' UNA STAGIONE (lotto 109). Dal lotto 104 get_next puo' tornare
+	# (None, None) -- "non c'e' un episodio successivo" -- e due dei suoi tre chiamanti lo filtrano
+	# (indexers/episodes.py e windows/extras.py). Il terzo, modules/episode_tools.py, passa il valore
+	# dritto qui. Senza questa riga succedeva questo: prop_string diventava '<id>_None_it', la cache
+	# non lo aveva, e si finiva sul ramo di rete -- import di imdb_api e skyhook_api, poi una chiamata
+	# a IMDb e una a Skyhook con la stagione a None -- fino a `int(season)` che sollevava TypeError.
+	# L'except finale trasformava tutto in `data, expiration = [], EXPIRES_4_DAYS`, quindi l'esito per
+	# l'utente era giusto ('nessun episodio successivo') ma pagato con due richieste di rete inutili e
+	# una riga spazzatura scritta in cache con quattro giorni di scadenza.
+	# Il controllo e' su `is None` e non sulla verita' del valore: la stagione 0 (gli speciali) e' una
+	# stagione legittima.
+	if season is None: return []
 	media_id, data = meta['tmdb_id'], None
 	lang = meta_language()
-	prop_string = '%s_%s_%s' % (media_id, season, lang) if lang != 'en' else '%s_%s' % (media_id, season)
+	prop_string = season_prop_string(media_id, season, lang)
+	if prefetch is not None:
+		data = prefetch.get(prop_string)
+		if data is not None: return data
 	data = metacache_get_season(prop_string)
 	if data is not None: return data
+	from apis.imdb_api import imdb_episode_ratings
+	from apis.skyhook_api import get_skyhook_episodes
 	_imdb_ep_ratings = imdb_episode_ratings(meta.get('imdb_id'), season)
 	def _apply_imdb_ep_ratings(eps):
 		if not _imdb_ep_ratings or not eps: return
@@ -1111,7 +1172,16 @@ def tvshow_expiry(current_date, meta):
 	try:
 		if meta['status'] in finished_show_check: expiration = EXPIRES_182_DAYS
 		else:
-			data = subtract_dates(jsondate_to_datetime(meta['extra_info']['next_episode_to_air']['air_date'], date_format, remove_time=True), current_date) - EXPIRES_1_DAYS
+			# subtract_dates torna GIORNI (`(date1 - date2).days`), mentre EXPIRES_1_DAYS vale 24 perche'
+			# e' un'ora. Sottraendolo qui si toglievano 24 GIORNI invece di uno: qualunque serie ancora
+			# in onda col prossimo episodio a meno di ~26 giorni finiva sotto la soglia e prendeva 24 ore
+			# di cache invece di settimane. Misurato il 28/08 sulla metacache della stick: 21 delle 29
+			# serie in onda scadevano ogni giorno senza motivo (Best Medicine 24h invece di 576h,
+			# I Simpson 144h invece di 696h), e ogni prima accensione della giornata le riscaricava.
+			# L'intento e' 'scadi il giorno prima che esca il prossimo episodio': giorni - 1, poi *24
+			# per passare a ore. Confronto: movie_expiry qui sopra usa lo stesso subtract_dates e lo
+			# paragona a 14/30/180, cioe' giorni, senza conversioni.
+			data = subtract_dates(jsondate_to_datetime(meta['extra_info']['next_episode_to_air']['air_date'], date_format, remove_time=True), current_date) - 1
 			if data <= 1: expiration = EXPIRES_1_DAYS
 			else: expiration = data*24
 	except: expiration = EXPIRES_4_DAYS

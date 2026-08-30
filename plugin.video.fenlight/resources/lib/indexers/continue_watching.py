@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 import sys
-from threading import Thread
 from time import perf_counter as _perf
 # indexers.movies NON si importa piu' qui (lotto 82): era il modulo Fen Light piu' caro di questa
 # build -- 368 ms nel log del 25/08 -- e Movies serve solo se ci sono film in pausa, che negli ultimi
 # cinque avvii sono sempre stati zero. Ora si carica dentro _do_movies, che parte solo se la lista non
 # e' vuota.
 from indexers.episodes import build_single_episode
-from modules import kodi_utils, settings
+from modules import kodi_utils, settings, paginator
 from modules.watched_status import get_in_progress_movies, get_in_progress_episodes, get_next_episodes, get_hidden_progress_items
 
 add_items, set_content, set_category, end_directory = kodi_utils.add_items, kodi_utils.set_content, kodi_utils.set_category, kodi_utils.end_directory
@@ -24,6 +23,15 @@ def build_continue_watching(params):
 	# era scomponibile: fonde tre sorgenti e due costruttori diversi, e la strada che usa
 	# (build_single_episode con return_results) usciva prima di qualunque riga di log. I marcatori qui
 	# separano le LETTURE dalle COSTRUZIONI, e ogni costruzione dalle altre due che le girano accanto.
+	# "Sto costruendo" dichiarato a voce (lotto 106). Questo widget non e' paginato, quindi non passa
+	# da get_pages e non si timbrerebbe da solo: sarebbe l'unico dei tre della Home invisibile al
+	# canale dei rinvii, ed e' quello che ci mette di piu'. La skin gli passa la posizione
+	# (pgctl=home.501), quindi la chiave e' la stessa forma degli altri.
+	_pg_key = None
+	try:
+		_pg_key = paginator.widget_key(params)
+		paginator.mark_build_start(_pg_key)
+	except: pass
 	_c0 = _perf()
 	indicators = watched_indicators()
 	nextep_content = nextep_method()
@@ -85,11 +93,19 @@ def build_continue_watching(params):
 	def _do_next():
 		try: item_list_extend(build_single_episode('episode.next_continue', next_items, exclude_keys=exclude_keys, exclude_unaired=True))
 		except: pass
-	threads = [Thread(target=_timed(name, t)) for name, t, data in
+	# Lotto 101. Con UNA sola sorgente popolata non c'e' niente da parallelizzare: il costruttore gira
+	# in linea. Non e' solo la nascita del thread risparmiata -- e' l'import di threading, che sul Mi
+	# Stick e' 119 ms piu' i 131 di _weakrefset che si trascina (vedi la nota in caches/base_cache.py).
+	# Con due o tre sorgenti i thread servono davvero e threading si importa qui, non in testa al file.
+	runners = [_timed(name, t) for name, t, data in
 				(('film', _do_movies, movie_items), ('pausa', _do_progress, prog_items), ('prossimi', _do_next, next_items)) if data]
 	_c4 = _perf()
-	[t.start() for t in threads]
-	[t.join() for t in threads]
+	if len(runners) == 1: runners[0]()
+	elif runners:
+		from threading import Thread
+		threads = [Thread(target=r) for r in runners]
+		[t.start() for t in threads]
+		[t.join() for t in threads]
 	_c5 = _perf()
 	item_list.sort(key=lambda k: k[1])
 	final_items = [i[0] for i in item_list]
@@ -103,6 +119,24 @@ def build_continue_watching(params):
 	except: pass
 	content = 'movies' if len(movie_items) > (len(prog_items) + len(next_items)) else 'episodes'
 	add_items(handle, final_items)
+	# IDENTITA' PUBBLICATA (lotto 114). Qui c'era la sola mark_build_end: questo widget non e' paginato
+	# e non chiamava set_head, quindi non pubblicava ne' BUILT_PROP ne' l'elenco degli id ne' l'azione.
+	# Conseguenza misurata nel log del 30/08: una ricarica mirata lanciata da un'ALTRA finestra --
+	# 'azzera avanzamento' premuto stando in un hub -- lo saltava sempre, perche' il giro sulle altre
+	# finestre esce con 'if not BUILT_PROP: continue'. Alle 05:01:54 si legge
+	# 'refresh_for_ids ricaricati=1 altre_finestre=1 saltati=4': la Home ha ricevuto il token nuovo per
+	# 'ultime uscite' e NON per 'continua a guardare', che al rientro mostrava ancora il film con la
+	# sua percentuale. Dalla Home invece funzionava (05:01:03/13/35: film in pausa 6 -> 5 -> 4 -> 3),
+	# perche' li' il contenitore e' a schermo e senza chiave viene ricaricato per prudenza.
+	# set_head fa esattamente il lavoro che serve -- BUILT_PROP, elenco id, azione, registro,
+	# mark_build_end -- ed e' lo stesso punto in cui lo chiamano gli altri costruttori: dopo add_items.
+	# L'AZIONE e' indispensabile e non basta l'elenco degli id: quando un film ENTRA in 'continua a
+	# guardare' il suo id non e' ancora nell'elenco pubblicato, quindi la regola per id lo
+	# scarterebbe proprio mentre va ricostruito. E' lo stesso motivo per cui la watchlist di Trakt ha
+	# gia' la sua ('trakt_watchlist', vedi trakt_api._refresh_watchlist).
+	if _pg_key:
+		try: paginator.set_head(_pg_key, final_items, kodi_utils.CONTINUE_WATCHING_ACTION)
+		except: pass
 	set_content(handle, content)
 	set_category(handle, 'Continue Watching')
 	# ESPERIMENTO DEL LOTTO 61, REVOCATO: cacheToDisc=True qui NON cambia niente. Provato il 24/08 con

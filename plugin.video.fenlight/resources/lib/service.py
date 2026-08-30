@@ -5,6 +5,10 @@ from threading import Thread
 from modules.blur_service import BlurService
 
 pause_services_prop = 'fenlight.pause_services'
+# Vedi kodi_utils.PLAYBACK_ACTIVE_PROP. Dal lotto 113 la bandiera non taglia piu' niente: resta
+# come stato leggibile senza toccare la GUI, e la usa la diagnostica delle costruzioni.
+playback_active_prop = 'fenlight.playback.active'
+playback_start_prop = 'fenlight.perf.playstart'
 current_skin_prop = 'fenlight.current_skin'
 trakt_service_string = 'TraktMonitor Service Update %s - %s'
 trakt_success_line_dict = {'success': 'Trakt Update Performed', 'no account': '(Unauthorized) Trakt Update Performed'}
@@ -127,24 +131,25 @@ class TraktMonitor:
 					if status == 'success' and self_mark_recent():
 						logger('Fen Light', "TraktMonitor: refresh saltato, la modifica e' nostra ed e' gia' a schermo")
 					elif status == 'success' and get_setting('fenlight.trakt.refresh_widgets', 'false') == 'true':
+						# Quali titoli sono cambiati lo pubblica trakt_sync_activities dopo la
+						# ricostruzione (lotto 59). Trakt non lo dice mai -- last_activities da solo
+						# marche temporali per categoria -- ma il confronto fra l'insieme prima e
+						# quello dopo lo sa. Tre stati: '' non lo sappiamo -> globale come prima;
+						# '-' nulla e' cambiato davvero -> non si ricostruisce niente; altrimenti
+						# ricarica MIRATA dei soli contenitori che contengono quegli id.
+						# Si legge SEMPRE, anche quando la guardia qui sotto vieta di ricostruire ADESSO:
+						# prima la lettura stava dentro il ramo 'else' e quando la guardia scattava questo
+						# elenco non veniva nemmeno guardato. Vedi _defer_widget_refresh.
+						changed = window.getProperty('fenlight.trakt.changed_ids')
+						window.clearProperty('fenlight.trakt.changed_ids')
 						age = refresh_age()
-						if age < TRAKT_REFRESH_COALESCE:
-							logger('Fen Light', 'TraktMonitor: refresh saltato, interfaccia ricostruita %.1fs fa' % age)
-						else:
-							# Quali titoli sono cambiati lo pubblica trakt_sync_activities dopo la
-							# ricostruzione (lotto 59). Trakt non lo dice mai -- last_activities da solo
-							# marche temporali per categoria -- ma il confronto fra l'insieme prima e
-							# quello dopo lo sa. Tre stati: '' non lo sappiamo -> globale come prima;
-							# '-' nulla e' cambiato davvero -> non si ricostruisce niente; altrimenti
-							# ricarica MIRATA dei soli contenitori che contengono quegli id.
-							changed = window.getProperty('fenlight.trakt.changed_ids')
-							window.clearProperty('fenlight.trakt.changed_ids')
-							if changed == '-':
-								logger('Fen Light', 'TraktMonitor: nessun titolo cambiato davvero, nessuna ricostruzione')
-							elif changed:
-								logger('Fen Light', 'TraktMonitor: refresh MIRATO su %d titoli' % len(changed.split(',')))
-								run_plugin({'mode': 'kodi_refresh_ids', 'ids': changed})
-							else: run_plugin({'mode': 'kodi_refresh'})
+						if changed == '-':
+							logger('Fen Light', 'TraktMonitor: nessun titolo cambiato davvero, nessuna ricostruzione')
+						elif age < TRAKT_REFRESH_COALESCE: self._defer_widget_refresh(window, changed, age)
+						elif changed:
+							logger('Fen Light', 'TraktMonitor: refresh MIRATO su %d titoli' % len(changed.split(',')))
+							run_plugin({'mode': 'kodi_refresh_ids', 'ids': changed})
+						else: run_plugin({'mode': 'kodi_refresh'})
 			except Exception as e: logger('Fen Light', trakt_service_string % ('Failed', 'The following Error Occured: %s' % str(e)))
 			wait_for_abort(wait_time)
 		try: del monitor
@@ -153,12 +158,52 @@ class TraktMonitor:
 		except: pass
 		return logger('Fen Light', 'TraktMonitor Service Finished')
 
+	def _defer_widget_refresh(self, window, changed, age):
+		# La guardia dell'accorpamento vieta di ricostruire ADESSO, e ha ragione: all'avvio scatta
+		# sempre, perche' stamp_startup_rebuild timbra la costruzione iniziale dei widget come
+		# ricostruzione globale, e senza di lei la prima sincronizzazione ordinava UpdateLibrary sopra
+		# la costruzione ancora in corso (due volte gli stessi widget in quindici secondi, ogni avvio).
+		# Aveva pero' torto sul METODO: usciva buttando l'elenco dei titoli cambiati, e quei widget
+		# restavano vecchi finche' l'utente non usciva e rientrava nella Home. Nei log del 28/08 due
+		# sincronizzazioni su due hanno rilevato un cambiamento e due su due l'hanno perso.
+		# E' il caso peggiore possibile, per due motivi che si sommano: il sync dell'avvio copre tutto
+		# l'intervallo da quando Kodi era acceso l'ultima volta -- ore o giorni, contro i 30 s di un
+		# poll -- ed e' quindi quello con piu' probabilita' di trovare qualcosa; e quando trova qualcosa
+		# e' anche il piu' lento (7,0 s contro 4,45 misurati il 28/08, per il token da rinnovare, il
+		# remap TMDb e il sync incrementale), quindi e' anche quello che perde la corsa con i widget.
+		# Ora il cambiamento non si esegue: si RIMANDA, sul canale che WidgetRefresher gia' raccoglie
+		# per gli altri due casi in cui si sa cosa mostrare ma non e' il momento di disegnarlo
+		# (riproduzione in corso, e finestra Video del lotto 60). Lui aspetta di essere sulla Home e
+		# fuori dalla tempesta: 20 s di attesa iniziale piu' 10 di ciclo, cioe' ~37 s dall'apertura
+		# contro i ~12,5 in cui la home si assesta. Margine abbondante, per ora voluto: stringerlo e'
+		# una regolazione da fare dopo aver visto il meccanismo in un log vero.
+		from modules.kodi_utils import PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_SCOPE_PROP
+		# Questo rinvio nasce da un cambiamento vero su Trakt: vale in qualunque finestra mostri widget,
+		# quindi cancella l'eventuale marca lasciata dalla rete di sicurezza di kodi_refresh_ids.
+		window.clearProperty(PENDING_SCOPE_PROP)
+		# Un rinvio SENZA id vuol dire 'ricostruisci tutto' ed e' un superset di qualunque elenco: se ce
+		# n'e' gia' uno in coda, aggiungerci degli id lo RESTRINGEREBBE. E' la stessa ragione per cui
+		# _defer_refresh_if_playing cancella gli id invece di lasciarli: WidgetRefresher ricaricherebbe
+		# i contenitori del titolo sbagliato invece di ricadere sul globale.
+		pending_global = bool(window.getProperty(PENDING_REFRESH_PROP)) and not window.getProperty(PENDING_IDS_PROP)
+		if not changed or pending_global:
+			window.clearProperty(PENDING_IDS_PROP)
+			window.setProperty(PENDING_REFRESH_PROP, 'kodi_refresh')
+			return logger('Fen Light', 'TraktMonitor: refresh GLOBALE rimandato, interfaccia ricostruita %.1fs fa' % age)
+		# Gli id di un rinvio precedente non si perdono, si sommano: sono due cambiamenti distinti che
+		# nessuno ha ancora mostrato, e chi arriva secondo non ha titolo per cancellare il primo.
+		ids = set(i for i in window.getProperty(PENDING_IDS_PROP).split(',') if i)
+		ids.update(i for i in changed.split(',') if i)
+		window.setProperty(PENDING_IDS_PROP, ','.join(sorted(ids)))
+		window.setProperty(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
+		logger('Fen Light', 'TraktMonitor: refresh MIRATO rimandato su %d titoli, interfaccia ricostruita %.1fs fa' % (len(ids), age))
+
 class WidgetRefresher:
 	def run(self):
 		logger('Fen Light', 'WidgetRefresher Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, refresh_flag_expired, getCurrentWindowId
+		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_SCOPE_PROP, refresh_flag_expired
 		self.refresh_flag_expired = refresh_flag_expired
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, self.is_playing = monitor.waitForAbort, player.isPlayingVideo
@@ -167,10 +212,39 @@ class WidgetRefresher:
 		self.home = home
 		self.window.setProperty('fenlight.refresh_widgets', 'true')
 		self.set_next_refresh(time())
-		wait_for_abort(20)
+		self.pending_since = None
+		# NIENTE ATTESA FISSA ALL'AVVIO, e niente cadenza da dieci secondi per il rinvio (lotto 106).
+		# I 20 secondi qui e i 10 del giro servivano a lasciar passare la tempesta d'avvio a occhio: il
+		# rinvio nasceva verso il quindicesimo secondo e si consumava verso il trentasettesimo, cioe'
+		# oltre venti secondi di attesa morta con l'interfaccia disallineata da Trakt.
+		# Ora la tempesta si riconosce da sola: ogni costruzione dichiara "sto costruendo"
+		# (paginator.INFLIGHT_PROP, alzata in get_pages e abbassata in set_head) e il rinvio parte
+		# APPENA l'ultima si spegne. Nessun numero da indovinare.
+		# Il giro e' di un secondo perche' la reazione dev'essere pronta, ma il lavoro periodico resta
+		# a dieci (contatore `tick`): quando non c'e' nessun rinvio in attesa il giro veloce costa una
+		# sola lettura di proprieta' di finestra, che Kodi serve dalla memoria.
+		tick = 0
 		while not monitor.abortRequested():
 			try:
-				wait_for_abort(10)
+				wait_for_abort(1)
+				if self.window.getProperty(PENDING_REFRESH_PROP):
+					if self.pending_since is None: self.pending_since = time()
+					if not self.is_playing() and self._nothing_building() and self._widgets_on_screen():
+						pending_ids = self.window.getProperty(PENDING_IDS_PROP)
+						self.window.clearProperty(PENDING_REFRESH_PROP)
+						self.window.clearProperty(PENDING_IDS_PROP)
+						self.window.clearProperty(PENDING_SCOPE_PROP)
+						logger('Fen Light', 'WidgetRefresher: rinvio consumato dopo %.1fs di attesa, nessuna costruzione in volo'
+								% (time() - self.pending_since))
+						self.pending_since = None
+						# Con gli id si ricaricano i soli contenitori che li contengono; senza, si ricade
+						# sul globale come prima. Vedi lotto 60: gli id c'erano gia' e venivano buttati qui.
+						if pending_ids: run_plugin({'mode': 'kodi_refresh_ids', 'ids': pending_ids})
+						else: run_plugin({'mode': 'refresh_widgets'})
+				elif self.pending_since is not None: self.pending_since = None
+				tick += 1
+				if tick < 10: continue
+				tick = 0
 				# I segnali di "ricostruzione in corso" non li spegne piu' chi li accende: prima li
 				# teneva alzati uno sleep(2000) dentro l'invocazione del plugin, cioe' due secondi di
 				# interprete Python vivo a non fare nulla (vedi hold_refresh_flag). Ora li spegne
@@ -184,22 +258,8 @@ class WidgetRefresher:
 				# passato da FenLightPlayer (video generico, trailer) nessuno lo rilancia alla chiusura,
 				# e il widget resterebbe vecchio. Qui si recupera appena la riproduzione e' finita.
 				playing = self.is_playing()
-				# Il rinvio si applica solo sulla Home, e la condizione era 'diverso da 10025'. Bastava
-				# finche' l'unico posto irraggiungibile era la finestra Video; con una seconda finestra
-				# di widget non basta piu'. 'Container(N).ListItem...' non risolve per una finestra che
-				# non e' a schermo, quindi la ricarica mirata lanciata da un hub raggiunge i widget
-				# dell'hub e nient'altro: se il rinvio partisse li', rifarebbe quegli stessi due e la
-				# Home resterebbe vecchia lo stesso. Si aspetta di essere DOVE i contenitori da
-				# ricostruire esistono davvero. Se l'utente non torna mai in Home non si perde nulla:
-				# quei widget non sono a schermo, e il rinvio e' li' che aspetta.
-				if not playing and self.window.getProperty(PENDING_REFRESH_PROP) and getCurrentWindowId() == 10000:
-					pending_ids = self.window.getProperty(PENDING_IDS_PROP)
-					self.window.clearProperty(PENDING_REFRESH_PROP)
-					self.window.clearProperty(PENDING_IDS_PROP)
-					# Con gli id si ricaricano i soli contenitori che li contengono; senza, si ricade sul
-					# globale come prima. Vedi lotto 60: gli id c'erano gia' e venivano buttati qui.
-					if pending_ids: run_plugin({'mode': 'kodi_refresh_ids', 'ids': pending_ids})
-					else: run_plugin({'mode': 'refresh_widgets'})
+				# Il rinvio non si consuma piu' qui: sta nel giro veloce di un secondo, sopra. La
+				# condizione su quale finestra lo ammette resta la stessa (_widgets_on_screen).
 				# In riproduzione si esce QUI. Sotto c'e' get_setting, che quando la chiave non e' anche
 				# una proprieta' di finestra ricade su una query SQLite: era una lettura da disco ogni
 				# 10s per tutta la durata del film, sulla stessa eMMC su cui il player scrive la cache
@@ -221,6 +281,54 @@ class WidgetRefresher:
 		try: del player
 		except: pass
 		return logger('Fen Light', 'WidgetRefresher Service Finished')
+
+	def _nothing_building(self):
+		# La condizione che ha sostituito l'attesa a tempo. Non e' "sono passati N secondi", e'
+		# "nessuno ha dichiarato di stare costruendo": vedi paginator.INFLIGHT_PROP.
+		# In caso di errore torna True: un rinvio in ritardo e' un fastidio, un rinvio che non parte
+		# piu' e' un guasto -- la lezione del lotto 100.
+		from modules import paginator
+		try: return not paginator.builds_in_flight()
+		except: return True
+
+	def _widgets_on_screen(self):
+		# Dove il rinvio si puo' consumare senza fare danni.
+		# La condizione e' passata per tre stadi. Prima era 'diverso da 10025', cioe' ovunque tranne il
+		# player. Poi fu stretta alla sola Home, con questa motivazione: 'Container(N).ListItem...' non
+		# risolve per una finestra che non e' a schermo, quindi una ricarica mirata lanciata da un hub
+		# raggiungerebbe i widget dell'hub e nient'altro, lasciando la Home vecchia.
+		# QUELLA MOTIVAZIONE E' CADUTA COL CENSIMENTO DEL LOTTO 69. refresh_containers_for_ids fa due
+		# cose nello stesso istante: ricarica i contenitori a schermo, e cambia i token di quelli
+		# censiti nelle ALTRE finestre, che Kodi rilegge quando tornano a schermo -- e' la voce
+		# 'altre finestre N' del DIAG. Nessuna finestra resta indietro, da qualunque si parta.
+		# Restare vincolati alla Home aveva quindi un solo effetto: un hub vecchio restava vecchio
+		# proprio mentre lo si stava guardando, e si allineava solo passando dalla Home. Misurato il
+		# 28/08 alle 19:38 (lotto 99): l'hub era giusto per fortuna di tempistica -- costruito dopo il
+		# sync -- e entrandoci qualche secondo prima sarebbe rimasto sbagliato a tempo indeterminato.
+		# Non basta pero' allargare a 'qualunque finestra tranne il player'. Se qui dentro non c'e'
+		# nessun contenitore Fen Light, refresh_containers_for_ids torna 0 e kodi_refresh_ids RICADE
+		# SUL GLOBALE ('nessun contenitore identificato'): un rinvio mirato su un titolo diventerebbe
+		# un UpdateLibrary su tutto, per il solo fatto di trovarsi nelle impostazioni quando scade il
+		# giro. Percio' non si indovina e non si tiene una lista di id da aggiornare a mano quando la
+		# skin cambia: si chiede al censimento se in QUESTA finestra dei widget ci sono mai stati.
+		from modules.kodi_utils import getCurrentWindowId, PENDING_SCOPE_PROP
+		from modules import paginator
+		try:
+			wid = getCurrentWindowId()
+			if wid == 10025: return False
+			scope = paginator.ctl_scope()
+			# Un riarmo della rete di sicurezza e' lavoro destinato ad ALTRE finestre: riconsumarlo qui
+			# non farebbe nulla di utile e lo rimetterebbe in coda identico, un giro ogni 10 s senza fine.
+			# Osservato il 28/08 alle 20:18-20:19, tre giri in venti secondi, restando nell'hub.
+			# La rete di sicurezza non scatta mai dalla Home, quindi questa marca non puo' valere 'home'.
+			if self.window.getProperty(PENDING_SCOPE_PROP) == scope: return False
+			# La Home e' ammessa SEMPRE: e' la finestra dei widget per definizione ed era la condizione
+			# storica. Il censimento serve a giudicare le ALTRE, che possono benissimo non avere widget.
+			# Senza questa riga un rinvio resterebbe bloccato per sempre tutte le volte che i widget della
+			# Home non hanno fatto in tempo a farsi censire -- che e' esattamente il caso del 28/08.
+			if wid == 10000: return True
+			return any(p.partition(':')[0] == scope for p in paginator.registry_pairs())
+		except: return False
 
 	def condition_check(self):
 		if not self.home(): return True
@@ -713,6 +821,44 @@ class FenLightMonitor(xbmc.Monitor):
 		# domanda posta dall'utente: il player E' capace di liberare risorse, quindi se la memoria
 		# risale a OnPlay e riscende a OnStop, allora la memoria si puo' liberare e il problema e' che
 		# navigando non la libera nessuno. Se invece non risale mai, non e' recuperabile per quella via.
+		# Bandiera della riproduzione (lotto 111). La alza gia' modules/player.py prima di consegnare
+		# l'URL a Kodi, che e' l'istante piu' presto possibile; questo e' il presidio per i due casi
+		# che quello non copre: una riproduzione che NON parte da Fen Light, e -- soprattutto --
+		# l'abbassamento. Se l'oggetto player morisse male senza pulire, i widget resterebbero
+		# tagliati per sempre: qui il monitor e' sempre vivo e OnStop arriva comunque.
+		if method in ('Player.OnPlay', 'Player.OnAVStart'):
+			try:
+				import time as _t
+				xbmcgui.Window(10000).setProperty(playback_active_prop, 'true')
+				xbmcgui.Window(10000).setProperty(playback_start_prop, str(_t.time()))
+			except: pass
+		elif method == 'Player.OnStop':
+			try: xbmcgui.Window(10000).clearProperty(playback_active_prop)
+			except: pass
+			# IL RITORNO DAL PLAYER E' UN REFRESH IN POSTO (lotto 112).
+			#
+			# Uscendo dal player Kodi reinvalida da solo tutti i CDirectoryProvider. Quella
+			# ricostruzione non era marcata in nessun modo, quindi _get_pages_legacy la trattava come
+			# l'apertura di un widget nuovo e tornava 'default' (2 pagine): il contenitore si
+			# accorciava, gli elementi si spostavano e il fuoco tornava al primo. Misurato nel log
+			# del 29/08: prima di riprodurre 'watcher id=504 current=2/27', dopo la chiusura
+			# 'current=1/27', con la firma del contenuto IDENTICA (3c418f7c) -- cioe' non era
+			# cambiato niente, si perdeva la posizione e basta.
+			#
+			# Lo dice gia' il commento di _get_pages_legacy: il conteggio accumulato serve quando
+			# "il contenitore deve mantenere la lunghezza corrente cosi' gli elementi restano fermi e
+			# il fuoco e' preservato". Il ritorno dalla riproduzione e' esattamente quel caso, e non
+			# era nell'elenco. E' anche il problema lasciato aperto a voce in kodi_refresh: "il fuoco
+			# resta un problema aperto, da risolvere conservando la posizione".
+			#
+			# hold_refresh_flag scrive una SCADENZA e torna subito -- nessuna attesa dentro
+			# l'invocazione, e a spegnere la bandiera pensa WidgetRefresher, che gira gia'. La
+			# finestra di 20 s copre abbondantemente il ritardo osservato fra OnStop (17:18:57,078) e
+			# la prima get_pages (17:18:59,031).
+			try:
+				from modules.kodi_utils import hold_refresh_flag
+				hold_refresh_flag('fenlight.pg.refresh')
+			except: pass
 		if method in ('Player.OnPlay', 'Player.OnAVStart', 'Player.OnStop'):
 			try:
 				from modules.perf import log as perf_log, free_memory_mb

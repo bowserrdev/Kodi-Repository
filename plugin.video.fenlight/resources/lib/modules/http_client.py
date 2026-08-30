@@ -29,7 +29,7 @@ import http.client
 import json as _json
 import gzip
 import socket
-from threading import Lock
+from _thread import allocate_lock as Lock  # builtin, vedi la nota in caches/base_cache.py
 
 DEFAULT_TIMEOUT = 20
 MAX_REDIRECTS = 5

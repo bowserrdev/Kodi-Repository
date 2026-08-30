@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
-from threading import Thread
 # apis.trakt_api NON si importa piu' qui (lotto 51). Era un import a livello di modulo, quindi lo
 # pagava CHIUNQUE toccasse watched_status -- compresa la lista stagioni, che di Trakt non chiede
 # niente: legge lo stato visto dal database locale. trakt_api sono 1155 righe e si porta dietro
@@ -8,7 +7,6 @@ from threading import Thread
 # import per 23 ms di lavoro vero. Ora l'import sta nelle sette funzioni che lo usano davvero.
 from caches.base_cache import connect_database, database, get_timestamp
 from caches.main_cache import main_cache, cache_object
-from caches.trakt_cache import clear_trakt_collection_watchlist_data
 from modules import kodi_utils, settings, metadata
 from modules.utils import get_datetime, adjust_premiered_date, sort_for_article, make_thread_list
 # logger = kodi_utils.logger
@@ -20,6 +18,17 @@ kodi_refresh_ids = kodi_utils.kodi_refresh_ids
 tv_progress_location = settings.tv_progress_location
 progress_db_string, indicators_dict = 'fenlight_hidden_progress_items', {0: 'watched_db', 1: 'trakt_db'}
 finished_show_check = ('Ended', 'Canceled')
+
+# Stessa logica del lotto 51 qui sopra, applicata a threading e a caches.trakt_cache (lotto 101).
+# TUTTI i thread di questo modulo stanno sul percorso di SCRITTURA -- marcare visto, spingere un
+# segnalibro su Trakt, ripulire un progresso -- che la costruzione di un widget non tocca mai. Ma
+# watched_status e' importato a livello di modulo da ogni indexer, quindi quel percorso di scrittura
+# faceva pagare threading (e con lui _weakrefset) a ogni lista costruita. Vale lo stesso per
+# trakt_cache, importato per un'unica chiamata dentro il ramo Trakt di mark_watched.
+# Vedi la nota in caches/base_cache.py per il perche' threading costi e _thread no.
+def _spawn(target, args=()):
+	from threading import Thread
+	Thread(target=target, args=args).start()
 
 def get_database(watched_indicators=None):
 	return connect_database(indicators_dict[watched_indicators or watched_indicators_function()])
@@ -59,6 +68,20 @@ def get_last_played_value(watched_indicators):
 	else: return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
 def _map_to_tmdb_episode(tmdb_id, season, episode):
+	# NIENTE STAGIONE O EPISODIO: non c'e' niente da mappare, e si esce PRIMA di toccare la rete
+	# (lotto 115). Senza questa riga un FILM finiva comunque dentro tvshow_meta, cioe' una chiamata
+	# TMDb a /tv/<id_del_film>: nel log del 30/08 due volte, /tv/931285 e /tv/680493, entrambe
+	# partite da _push_bookmark_to_trakt con media_type=movie. L'esito non cambiava -- int('') alza
+	# ValueError e il vecchio 'except' tornava (season, episode), gli stessi valori che si tornano
+	# adesso -- ma il prezzo si pagava lo stesso: una richiesta di rete inutile a ogni segnalibro di
+	# un film, cioe' durante la riproduzione e alla chiusura del player, dove la rete e' contesa.
+	# La guardia sta QUI e non nel chiamante perche' questa funzione parla di episodi per definizione:
+	# cosi' vale anche per _mark_on_trakt (dove oggi e' il chiamante a passare ep_map_for=None per i
+	# film) e per qualunque uso futuro.
+	if season in (None, '') or episode in (None, ''): return season, episode
+	try:
+		int(season); int(episode)
+	except: return season, episode
 	try:
 		meta = metadata.tvshow_meta('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime())
 		ep_map = meta.get('tvdb_to_tmdb_ep')
@@ -80,8 +103,13 @@ def refresh_container_for(media_id, refresh=True):
 	# Due comandi consecutivi sullo stesso titolo ('segna come visto' e poi 'segna come non visto')
 	# sono due eventi distinti e vanno eseguiti entrambi, altrimenti l'interfaccia resta indietro
 	# rispetto a un'operazione che su Trakt e' gia' andata a buon fine.
+	# L'AZIONE viaggia sempre (lotto 114): ogni chiamante di questa funzione e' una modifica di stato
+	# visto/avanzamento, cioe' esattamente cio' che cambia la COMPOSIZIONE di 'continua a guardare' --
+	# un film che entra quando lo metti in pausa, uno che esce quando ne azzeri l'avanzamento. La
+	# regola per id non puo' decidere quel caso, perche' in aggiunta l'id non e' ancora nell'elenco
+	# del widget e in rimozione l'elenco e' quello di prima.
 	if not refresh: return
-	if media_id: return kodi_refresh_ids([str(media_id)], coalesce=False)
+	if media_id: return kodi_refresh_ids([str(media_id)], (kodi_utils.CONTINUE_WATCHING_ACTION,), coalesce=False)
 	kodi_refresh(coalesce=False)
 
 def active_tvshows_information(status_type):
@@ -183,9 +211,15 @@ def get_progress_status_season(watched, aired_eps):
 	return progress
 
 def watched_info_episode(media_id, watched_db=None):
+	# Torna un SET, non una lista (lotto 102). Ogni consumatore di questo valore lo usa solo con `in`
+	# (get_watched_status_episode e' due righe: `if season_episode in watched_info`), e get_next fa
+	# quel controllo per OGNI episodio candidato di OGNI stagione a partire da quella corrente. Con la
+	# lista ogni controllo e' una scansione lineare di tutti gli episodi visti della serie: simulato
+	# sui dati veri della stick (1087 episodi visti su 22 serie) sono **96.313 confronti di tuple**
+	# per passata, contro **969** con il set. I tipi non cambiano: sqlite3 torna gia' tuple di interi.
 	if not watched_db: watched_db = get_database()
-	try: watched_info = watched_db.execute('SELECT season, episode FROM watched WHERE db_type = ? AND media_id = ?', ('episode', str(media_id))).fetchall()
-	except: watched_info = []
+	try: watched_info = set(watched_db.execute('SELECT season, episode FROM watched WHERE db_type = ? AND media_id = ?', ('episode', str(media_id))).fetchall())
+	except: watched_info = set()
 	return watched_info
 
 def get_watched_status_episode(watched_info, season_episode):
@@ -241,6 +275,7 @@ def _mark_on_trakt(args, cache_media_type, ep_map_for=None):
 		if ep_map_for is not None:
 			args = tuple(args) + _map_to_tmdb_episode(*ep_map_for)
 		if not trakt_watched_status_mark(*args): return notification('Error')
+		from caches.trakt_cache import clear_trakt_collection_watchlist_data
 		clear_trakt_collection_watchlist_data('watchlist', cache_media_type)
 		# Timbro per il monitor Trakt: questo cambiamento l'abbiamo fatto NOI e la riga locale e' gia'
 		# scritta. Senza, il monitor lo scambia per una modifica remota e ricostruisce l'intera
@@ -286,7 +321,7 @@ def erase_bookmark(media_type, media_id, season='', episode='', refresh='false')
 		watched_db.execute('DELETE FROM progress where db_type = ? and media_id = ? and season = ? and episode = ?', (media_type, media_id, season, episode))
 		refresh_container_for(media_id, refresh == 'true')
 		if watched_indicators == 1 and resume_id is not None:
-			Thread(target=_clear_progress_on_trakt, args=(media_type, media_id, season, episode, resume_id)).start()
+			_spawn(_clear_progress_on_trakt, (media_type, media_id, season, episode, resume_id))
 	except: pass
 
 def batch_erase_bookmark(watched_indicators, insert_list, action):
@@ -304,7 +339,7 @@ def batch_erase_bookmark(watched_indicators, insert_list, action):
 						sleep(1000)
 						trakt_progress('clear_progress', i[0], i[1], 0, i[2], i[3], resume_id)
 					except: pass
-			Thread(target=_process).start()
+			_spawn(_process)
 		watched_db.executemany('DELETE FROM progress where db_type = ? and media_id = ? and season = ? and episode = ?', modified_list)
 	except: pass
 
@@ -347,7 +382,7 @@ def set_bookmark(params):
 					dbcon.execute('INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
 						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time), get_last_played_value(1), 0, title))
 				except: pass
-				Thread(target=_push_bookmark_to_trakt, args=(media_type, tmdb_id, season, episode, resume_point)).start()
+				_spawn(_push_bookmark_to_trakt, (media_type, tmdb_id, season, episode, resume_point))
 		else:
 			erase_bookmark(media_type, tmdb_id, season, episode)
 			last_played = get_last_played_value(watched_indicators)
@@ -374,7 +409,7 @@ def mark_movie(params):
 	watched_status_mark(watched_indicators, media_type, tmdb_id, action, title=title)
 	refresh_container_for(tmdb_id, refresh)
 	if watched_indicators == 1:
-		Thread(target=_mark_on_trakt, args=((action, 'movies', tmdb_id), media_type)).start()
+		_spawn(_mark_on_trakt, ((action, 'movies', tmdb_id), media_type))
 
 def mark_tvshow(params):
 	title, action, tmdb_id = params.get('title', ''), params.get('action'), params.get('tmdb_id')
@@ -386,7 +421,7 @@ def mark_tvshow(params):
 	# La rete parte subito ma in PARALLELO al lotto locale, che qui e' lungo (un inserimento per
 	# episodio, con dialogo di avanzamento): prima la si aspettava e basta.
 	if watched_indicators == 1:
-		Thread(target=_mark_on_trakt, args=((action, 'shows', tmdb_id, tvdb_id), 'tvshow')).start()
+		_spawn(_mark_on_trakt, ((action, 'shows', tmdb_id, tvdb_id), 'tvshow'))
 	current_date = get_datetime()
 	insert_list = []
 	insert_append = insert_list.append
@@ -425,7 +460,7 @@ def mark_season(params):
 	heading = '[B]Mark Watched %s[/B]' if action == 'mark_as_watched' else '[B]Mark Unwatched %s[/B]'
 	# Come mark_tvshow: la rete in parallelo al lotto locale, non davanti.
 	if watched_indicators == 1:
-		Thread(target=_mark_on_trakt, args=((action, 'season', tmdb_id, tvdb_id, season), 'tvshow')).start()
+		_spawn(_mark_on_trakt, ((action, 'season', tmdb_id, tvdb_id, season), 'tvshow'))
 	progress_backround = progressDialogBG()
 	progress_backround.create('[B]Please Wait..[/B]', '')
 	current_date = get_datetime()
@@ -458,8 +493,8 @@ def mark_episode(params):
 	watched_status_mark(watched_indicators, media_type, tmdb_id, action, season, episode, title)
 	refresh_container_for(tmdb_id, refresh)
 	if watched_indicators == 1:
-		Thread(target=_mark_on_trakt, args=((action, media_type, tmdb_id, tvdb_id), 'tvshow',
-					(tmdb_id, season, episode))).start()
+		_spawn(_mark_on_trakt, ((action, media_type, tmdb_id, tvdb_id), 'tvshow',
+					(tmdb_id, season, episode)))
 
 def watched_status_mark(watched_indicators, media_type='', media_id='', action='', season='', episode='', title=''):
 	try:
@@ -501,8 +536,22 @@ def get_next(season, episode, watched_info, season_data, nextep_content):
 	elif nextep_content == 0:
 		try:
 			episode_count = next((i['episode_count'] for i in season_data if i['season_number'] == season), None)
-			season = season if episode < episode_count else season + 1
-			episode = episode + 1 if episode < episode_count else 1
+			if episode < episode_count: episode = episode + 1
+			else:
+				season, episode = season + 1, 1
+				# La stagione successiva puo' semplicemente NON ESISTERE, e finora nessuno lo
+				# controllava (lotto 104). Chi ha finito una serie conclusa arrivava qui con l'ultimo
+				# episodio dell'ultima stagione e si portava via una coppia inventata: Breaking Bad
+				# stagione 6, I Soprano stagione 7, The Office stagione 10. A valle succedeva questo:
+				#   episodes_meta chiedeva quella stagione a TMDb, TMDb rispondeva niente, e la
+				#   risposta vuota veniva SCRITTA in cache con 4 giorni di scadenza -- quindi una
+				#   richiesta di rete inutile per ogni serie finita, ogni quattro giorni -- e infine
+				#   _build scartava l'elemento su 'stagione_vuota'.
+				# Nel log del 29/08 alle 02:39 erano **16 elementi su 22** del widget 'continua a
+				# guardare', cioe' i due terzi del lavoro, tutti per serie che l'utente ha finito.
+				# L'esito per l'utente non cambia (l'elemento spariva prima e sparisce adesso): cambia
+				# che ora sparisce subito, senza cache e senza rete.
+				if not any(i['season_number'] == season for i in season_data): return None, None
 		except: pass
 	else:
 		try:

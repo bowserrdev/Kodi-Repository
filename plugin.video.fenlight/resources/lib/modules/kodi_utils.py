@@ -613,6 +613,12 @@ PENDING_REFRESH_PROP = 'fenlight.refresh_pending'
 # Gli id che accompagnano un refresh rimandato: senza di loro il rinvio degrada in ricostruzione
 # globale, buttando via un'informazione che avevamo gia'. Vedi kodi_refresh_ids e WidgetRefresher.
 PENDING_IDS_PROP = 'fenlight.refresh_pending_ids'
+# Lo scope che ha PRODOTTO un rinvio, quando a produrlo e' stata la rete di sicurezza qui sotto. Quel
+# riarmo e' per definizione lavoro destinato a un'ALTRA finestra: consumarlo dove e' nato non fa
+# niente di utile e lo rimette in coda identico, cioe' un ciclo a ogni giro di WidgetRefresher (10 s).
+# Non serviva finche' il rinvio si consumava solo sulla Home, dove questa rete non scatta mai.
+# Un rinvio depositato dal monitor Trakt e' invece valido ovunque, e infatti azzera questa marca.
+PENDING_SCOPE_PROP = 'fenlight.refresh_pending_scope'
 # Nella vista "Combined" della finestra Video il pannello episodi NON e' il contenitore della finestra:
 # e' un pannello della skin il cui <content> vale $INFO[Container(52X).ListItem.FolderPath], cioe' la
 # URL della stagione a fuoco. Container.Refresh ricostruisce la lista stagioni, ma quella URL torna
@@ -624,6 +630,64 @@ PENDING_IDS_PROP = 'fenlight.refresh_pending_ids'
 # in paginator._VOLATILE_PARAMS, quindi non entra nella chiave del widget ne' nella paginazione.
 PANEL_RELOAD_PROP = 'fenlight.panel_reload'
 
+# Riproduzione in corso, letta SENZA toccare la GUI (lotto 111).
+#
+# playback_active() qui sotto usa get_visibility, cioe' chiede il lock grafico. Dal thread di un
+# plugin che sta costruendo una cartella e' la mossa vietata descritta nel commento di
+# end_directory: il thread GUI di Kodi e' fermo ad aspettare PROPRIO quella cartella. Questa
+# proprieta' di finestra risponde alla stessa domanda con una lettura che non attraversa nulla.
+#
+# Chi la alza: modules/player.py subito PRIMA di consegnare l'URL a Kodi (l'istante esatto in cui
+# la scelta dell'utente diventa riproduzione) e service.py su Player.OnPlay, per la riproduzione
+# che non parte da noi. Chi la abbassa: service.py su Player.OnStop e media_watched_marker.
+PLAYBACK_ACTIVE_PROP = 'fenlight.playback.active'
+
+def playback_running():
+	return get_property(PLAYBACK_ACTIVE_PROP) == 'true'
+
+# Istante in cui la riproduzione e' stata dichiarata attiva, e istante del Select (lotto 113).
+# Servono alla DIAGNOSTICA: la riga PERF di ogni costruzione stampa la distanza da questi due
+# momenti, cosi' il prossimo log dice quanto lavoro di interfaccia cade davvero nella finestra di
+# transizione -- Select -> apertura sorgenti -> Player.OnPlay -> schermo intero. E' la sola finestra
+# in cui i widget si ricostruiscono: durante il fullscreen i provider non si svegliano mai.
+PLAYBACK_START_PROP = 'fenlight.perf.playstart'
+SELECT_PROP = 'fenlight.perf.select'
+
+def mark_playback_start():
+	set_property(PLAYBACK_ACTIVE_PROP, 'true')
+	try:
+		from time import time
+		set_property(PLAYBACK_START_PROP, str(time()))
+	except: pass
+
+# Bandiera di refresh in posto. Il nome e' paginator.PG_REFRESH_PROP, ripetuto qui alla lettera
+# perche' kodi_utils non puo' importare paginator (sarebbe un ciclo, e 1206 righe caricate a ogni
+# invocazione). service.py usa la stessa stringa su Player.OnStop.
+PG_REFRESH_FLAG = 'fenlight.pg.refresh'
+
+def mark_inplace_rebuild():
+	"""Dichiara che le prossime ricostruzioni sono un REFRESH IN POSTO, non l'apertura di un widget.
+
+	get_pages, quando trova questa bandiera, ricostruisce alla LUNGHEZZA CORRENTE invece che al
+	default: gli elementi restano fermi dove sono e il fuoco e' preservato. E' lo stesso meccanismo
+	del lotto 112 alla chiusura del player, esteso all'altro estremo della riproduzione.
+
+	hold_refresh_flag scrive una SCADENZA e torna subito -- nessuna attesa dentro l'invocazione,
+	e a spegnere la bandiera pensa WidgetRefresher, che gira gia' ogni 10 s. La finestra di 20 s
+	copre l'intera transizione misurata: fra il Select (17:46:50) e Player.OnPlay (17:46:59)
+	passano nove secondi, e altri cinque fino allo schermo intero.
+	"""
+	try:
+		from time import time
+		set_property(SELECT_PROP, str(time()))
+	except: pass
+	hold_refresh_flag(PG_REFRESH_FLAG)
+
+# Nome della proprieta' con cui una build dichiara "sono partita", per widget. Definito QUI e non
+# in paginator perche' lo rileggono anche moduli che non possono permettersi di caricarne le 1206
+# righe. paginator.LASTBUILD_PROP lo rilegge da qui: una definizione sola.
+PG_LASTBUILD_PROP = 'fenlight.pg.%s.lastbuild'
+
 def playback_active():
 	return get_visibility('Player.HasVideo')
 
@@ -632,6 +696,7 @@ def _defer_refresh_if_playing(kind):
 	# Questo rinvio non porta id con se': gli eventuali id di un rinvio precedente vanno tolti, o
 	# WidgetRefresher ricaricherebbe i contenitori del titolo SBAGLIATO invece di ricadere sul globale.
 	clear_property(PENDING_IDS_PROP)
+	clear_property(PENDING_SCOPE_PROP)
 	set_property(PENDING_REFRESH_PROP, kind)
 	logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), riproduzione in corso' % kind)
 	return True
@@ -759,6 +824,13 @@ def kodi_refresh(coalesce=True):
 	except: pass
 	execute_builtin('UpdateLibrary(video,special://skin/foo)')
 
+# AZIONE di 'continua a guardare' (lotto 114). Come 'trakt_watchlist', questo widget cambia
+# COMPOSIZIONE e non stato: azzerando l'avanzamento di un film quel film ESCE dalla lista, e la
+# regola per id non basta a decidere se va ricostruito. Il nome vive qui perche' lo usano quattro
+# moduli che non hanno motivo di importarsi a vicenda (indexers/continue_watching, watched_status,
+# player, apis/trakt_api).
+CONTINUE_WATCHING_ACTION = 'continue_watching'
+
 def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# Ricarica MIRATA: ricostruisce i soli contenitori che contengono uno degli id cambiati -- piu'
 	# quelli la cui AZIONE e' fra le richieste, per i casi in cui a cambiare e' la composizione della
@@ -843,6 +915,10 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	if window_id != 10000 and not other:
 		set_property(PENDING_IDS_PROP, ','.join(str(i) for i in (ids or []) if i))
 		set_property(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
+		# Marca la finestra d'origine: questo riarmo serve alle ALTRE, e senza la marca verrebbe
+		# riconsumato qui ogni 10 s all'infinito. Vedi PENDING_SCOPE_PROP.
+		try: set_property(PENDING_SCOPE_PROP, _pg.ctl_scope())
+		except: pass
 	logger('Fen Light', 'DIAG refresh: MIRATO %s contenitori ricaricati | altre finestre %s | id=%s azioni=%s finestra=%s%s'
 			% (hit, other, len(ids or []), len(actions or ()), window_id,
 				'' if (window_id == 10000 or other) else ' | nessuna finestra censita, resto RIMANDATO alla Home'))

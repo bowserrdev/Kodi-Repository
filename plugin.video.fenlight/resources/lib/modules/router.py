@@ -79,6 +79,20 @@ def routing(sys):
 	params = dict(parse_qsl(sys.argv[2][1:], keep_blank_values=True))
 	_get = params.get
 	mode = _get('mode', 'navigator.main')
+	# QUI C'ERA IL CANCELLO RIPRODUZIONE (lotto 111, rimosso col lotto 113).
+	# Chiudeva la cartella con succeeded=False quando un widget veniva ricostruito durante la
+	# riproduzione. Funzionava -- 18 invocazioni tagliate su tre film, da 5-6 s a 150-280 ms l'una --
+	# ma la misura successiva ha spostato la domanda: contando i risvegli dei CDirectoryProvider per
+	# fase, i provider si svegliano PRIMA del passaggio a schermo intero e DOPO Player.OnStop, e
+	# ZERO volte durante il fullscreen (crash_film 5/0/0, sess_ok 5/0/40, sess_112 3/0/21). Kodi non
+	# aggiorna da se' un provider che non e' visibile: la CPU durante il film era gia' tutta della
+	# riproduzione, e il cancello non stava proteggendo il film ma solo i pochi secondi di
+	# transizione in cui la home e' ancora a schermo. In cambio svuotava il contenitore -- non
+	# esiste nessun modo, nell'API dei plugin, di chiudere una cartella dicendo "tieni quello che
+	# hai": qualunque cosa diversa da un elenco completo e riuscito lascia il widget senza elementi.
+	# Da qui la paginazione persa, il fuoco al primo elemento e la ricostruzione totale al ritorno.
+	# La transizione ora si affronta marcandola come refresh IN POSTO (vedi 'playback.media' qui
+	# sotto e Player.OnStop in service.py), non tagliandola.
 	if 'navigator.' in mode:
 		from indexers.navigator import Navigator
 		return getattr(Navigator(params), mode.split('.')[1])()
@@ -90,6 +104,16 @@ def routing(sys):
 		return getattr(easynews, mode.split('.')[1])(params)
 	if 'playback.' in mode:
 		if mode == 'playback.media':
+			# MARCATORE IN POSTO (lotto 113). Questo e' l'istante del Select: si apre
+			# sources_playback.xml, la home passa in secondo piano e Kodi reinvalida i suoi
+			# CDirectoryProvider. Senza marcatore _get_pages_legacy tratta quelle ricostruzioni come
+			# l'APERTURA di un widget nuovo e torna al default (2 pagine). Nel log del 29/08 alle
+			# 17:46:50 un contenitore da 101 elementi e' cosi' tornato a 50 col fuoco sul primo --
+			# NOVE secondi prima di Player.OnPlay, cioe' la paginazione si perdeva gia' al Select,
+			# anche senza arrivare a riprodurre niente. Il cancello non poteva vederlo: la bandiera
+			# di riproduzione si alza molto dopo.
+			from modules.kodi_utils import mark_inplace_rebuild
+			mark_inplace_rebuild()
 			from modules.sources import Sources
 			return Sources().playback_prep(params)
 		if mode == 'playback.video':

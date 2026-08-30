@@ -7,9 +7,8 @@ from time import perf_counter as _perf
 # che non ne tocca nessuna delle due. trakt_api si porta dietro modules.metadata, tre cache e la
 # strada verso 'requests', che nei log del 25/08 si importa in 7,2-8,0 s sotto contesa. Ora stanno
 # nei due rami che le usano davvero.
-from caches.favorites_cache import favorites_cache
 from modules import kodi_utils, settings, watched_status as ws, paginator
-from modules.metadata import tvshow_meta, episodes_meta, all_episodes_meta, tvshow_meta_prefetch, meta_prefetch_key
+from modules.metadata import tvshow_meta, episodes_meta, all_episodes_meta, tvshow_meta_prefetch, meta_prefetch_key, episodes_meta_prefetch
 from modules.utils import jsondate_to_datetime, adjust_premiered_date, make_day, get_datetime, title_key, date_difference, make_thread_list, get_current_timestamp
 # logger = kodi_utils.logger
 
@@ -27,6 +26,9 @@ get_watched_status_episode, get_bookmarks_episode, get_progress_status_episode =
 get_in_progress_episodes, get_next_episodes, get_recently_watched = ws.get_in_progress_episodes, ws.get_next_episodes, ws.get_recently_watched
 get_bookmarks_all_episode, get_progress_status_all_episode = ws.get_bookmarks_all_episode, ws.get_progress_status_all_episode
 get_hidden_progress_items, get_database, watched_info_episode, get_next = ws.get_hidden_progress_items, ws.get_database, ws.watched_info_episode, ws.get_next
+# Segnaposto condiviso per "stato visto non letto perche' non serve" (lotto 105): e' un frozenset,
+# quindi l'unico uso possibile -- `in` dentro get_watched_status_episode -- resta valido.
+_NIENTE_VISTO = frozenset()
 get_watched_status_tvshow, watched_info_tvshow = ws.get_watched_status_tvshow, ws.watched_info_tvshow
 string =  str
 # Vedi il commento in movies.py: URL per formattazione diretta invece che con build_url/urlencode.
@@ -201,6 +203,22 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 	# uscita e' uno SCARTO (metadati mancanti, prossimo episodio gia' in pausa, episodio non ancora
 	# andato in onda) e costa comunque tempo -- su 'continua a guardare' gli scarti sono la meta' degli
 	# elementi esaminati, e senza contarli il conto non torna mai.
+	def _dw(reason):
+		_drop_why[reason] = _drop_why.get(reason, 0) + 1
+	def _scarta_non_in_onda(meta, season, episode):
+		# Vedi la nota nel pre-passaggio. Torna True solo quando si puo' DIMOSTRARE che l'elemento
+		# verrebbe scartato piu' avanti: l'episodio che serviremmo e' esattamente quello indicato da
+		# next_episode_to_air (quindi la data e' nota, non dedotta da un ordine presunto), la data e'
+		# futura, e l'esito del controllo che _build farebbe comunque e' 'scarta'. In ogni altro caso
+		# torna False e non cambia niente.
+		try:
+			nea = (meta.get('extra_info') or {}).get('next_episode_to_air') or {}
+			if int(nea.get('season_number')) != int(season) or int(nea.get('episode_number')) != int(episode): return False
+			_ed, _ = adjust_premiered_date(nea.get('air_date'), adjust_hours)
+			if not _ed or current_date >= _ed: return False
+			if not include_unaired: return True
+			return not date_difference(current_date, _ed, 7)
+		except: return False
 	def _process(_position, ep_data):
 		_t_in = _perf()
 		try:
@@ -215,14 +233,20 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			# Il lotto e' gia' stato letto in UNA volta sola, fuori dal pool (vedi sotto). Qui resta solo
 			# il ripiego per chi non c'era: identico alla chiamata di prima, quindi il comportamento non
 			# cambia, cambia solo quante volte si arriva al database.
-			_pk = meta_prefetch_key('trakt_dict', ep_data_get('media_ids'), 'tvshow')
-			meta = _prefetch.get(_pk) if _pk else None
-			# Una voce vuota vale come assenza, non come risposta: prima di questo strato tvshow_meta
-			# sarebbe andato in rete a rifarla, e deve continuare a farlo.
-			if meta is not None and 'blank_entry' in meta: meta = None
-			if meta is None:
-				meta = tvshow_meta('trakt_dict', ep_data_get('media_ids'), api_key, mpaa_region_value, current_date, current_time)
-			if not meta: return
+			# _pre e' il memo del pre-passaggio del lotto 102: contiene meta, stato visto e la coppia
+			# (stagione, episodio) gia' risolti. Chi non c'e' -- perche' il suo meta non era in cache al
+			# momento del pre-passaggio -- percorre la strada di prima, invariata.
+			_pre_entry = _pre.get(_position)
+			if _pre_entry is not None: meta = _pre_entry[0]
+			else:
+				_pk = meta_prefetch_key('trakt_dict', ep_data_get('media_ids'), 'tvshow')
+				meta = _prefetch.get(_pk) if _pk else None
+				# Una voce vuota vale come assenza, non come risposta: prima di questo strato tvshow_meta
+				# sarebbe andato in rete a rifarla, e deve continuare a farlo.
+				if meta is not None and 'blank_entry' in meta: meta = None
+				if meta is None:
+					meta = tvshow_meta('trakt_dict', ep_data_get('media_ids'), api_key, mpaa_region_value, current_date, current_time)
+			if not meta: return _dw('senza_meta')
 			_ph1 = _perf()
 			meta_get = meta.get
 			cm = []
@@ -234,17 +258,23 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			_position = ep_data_get('custom_order', _position)
 			tmdb_id, tvdb_id, imdb_id, title, show_year = meta_get('tmdb_id'), meta_get('tvdb_id'), meta_get('imdb_id'), meta_get('title'), meta_get('year') or '2050'
 			season_data = meta_get('season_data')
-			watched_info = watched_info_episode(meta_get('tmdb_id'), watched_db)
+			if _pre_entry is not None: watched_info = _pre_entry[1]
+			elif _serve_visto: watched_info = watched_info_episode(meta_get('tmdb_id'), watched_db)
+			else: watched_info = _NIENTE_VISTO
 			if list_type_starts_with('next_'):
-				orig_season, orig_episode = get_next(orig_season, orig_episode, watched_info, season_data, nextep_content)
-				if not orig_season or not orig_episode: return
-				if exclude_keys and (int(tmdb_id), int(orig_season), int(orig_episode)) in exclude_keys: return
+				if _pre_entry is not None: orig_season, orig_episode = _pre_entry[2], _pre_entry[3]
+				else: orig_season, orig_episode = get_next(orig_season, orig_episode, watched_info, season_data, nextep_content)
+				if not orig_season or not orig_episode: return _dw('senza_prossimo')
+				if exclude_keys and (int(tmdb_id), int(orig_season), int(orig_episode)) in exclude_keys: return _dw('gia_in_pausa')
+				# Verdetto del pre-passaggio: dimostrato non ancora andato in onda, quindi scartato
+				# senza leggere la stagione. Vedi _scarta_non_in_onda.
+				if _pre_entry is not None and _pre_entry[4]: return _dw('non_in_onda_anticipato')
 				playcount = 0
 			_pa = _perf()
-			episodes_data = episodes_meta(orig_season, meta)
-			if not episodes_data: return
+			episodes_data = episodes_meta(orig_season, meta, _season_prefetch)
+			if not episodes_data: return _dw('stagione_vuota')
 			item = next((i for i in episodes_data if i['episode'] == orig_episode), None)
-			if not item: return
+			if not item: return _dw('episodio_assente')
 			_pb = _perf()
 			item_get = item.get
 			season, episode, ep_name = item_get('season'), item_get('episode'), item_get('title')
@@ -253,9 +283,9 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			episode_id = item_get('episode_id') or None
 			if not episode_date or current_date < episode_date:
 				if list_type_starts_with('next_'):
-					if not episode_date: return
-					if not include_unaired: return
-					if not date_difference(current_date, episode_date, 7): return
+					if not episode_date: return _dw('senza_data')
+					if not include_unaired: return _dw('non_in_onda')
+					if not date_difference(current_date, episode_date, 7): return _dw('non_in_onda_lontano')
 				unaired = True
 			else: unaired = False
 			orig_title, rootname, trailer, genre, studio = meta_get('original_title'), meta_get('rootname'), string(meta_get('trailer')), meta_get('genre'), meta_get('studio')
@@ -368,6 +398,10 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 	# prossimi episodi), e una phase_reset() globale cancellerebbe le misure dell'altra -- e anche
 	# quelle di Movies(), che gira come terzo thread.
 	_phase_rows, _dropped, _errors, _unwatched_cost = [], [], [], []
+	# Perche' un elemento viene scartato, non solo quanti (lotto 103). Su 'continua a guardare' gli
+	# scarti sono i due terzi degli elementi esaminati e finora non si sapeva su quale dei sei rami
+	# cadessero: senza saperlo, ottimizzare il ramo sbagliato e' questione di fortuna.
+	_drop_why = {}
 	_phase_append = _phase_rows.append
 	item_list, airing_today, unwatched, return_results = [], [], [], False
 	resinsert = ''
@@ -402,6 +436,10 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 					unwatched.extend([{'media_ids': i['media_ids'], 'season': 1, 'episode': 0, 'unwatched': True, 'title': i['title']} for i in original_list])
 				except: pass
 			if include_unwatched in (2, 3):
+				# Import pigro (lotto 101): favorites_cache costava 178 ms nel log di riferimento ed e'
+				# usato SOLO qui, nel ramo 'prossimi episodi' con i preferiti inclusi. Lo pagava anche
+				# build_single_episode, cioe' 'continua a guardare', che non ci arriva mai.
+				from caches.favorites_cache import favorites_cache
 				try: unwatched.extend([{'media_ids': {'tmdb': int(i['tmdb_id'])}, 'season': 1, 'episode': 0, 'unwatched': True, 'title': i['title']} \
 									for i in favorites_cache.get_favorites('tvshow') if not int(i['tmdb_id']) in [x['media_ids']['tmdb'] for x in data]])
 				except: pass
@@ -437,6 +475,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			_extra = ' | costruzione a %s worker | esaminati %s, scartati %s (%.0f ms), errori %s' % (
 					_BUILD_WORKERS, len(data), len(_dropped), sum(_dropped) * 1000, len(_errors))
 			if _unwatched_cost: _extra += ' | unwatched_info %s letture (%.0f ms)' % (len(_unwatched_cost), sum(_unwatched_cost) * 1000)
+			if _drop_why: _extra += ' | motivi scarto: %s' % ', '.join('%s %s' % (k, v) for k, v in sorted(_drop_why.items(), key=lambda i: -i[1]))
 			paginator.phase_report_rows('episodi singoli %s' % list_type,
 					('meta', 'watched+next', 'ep_meta', 'prep', 'bookmarks', 'cm',
 					'infotag', 'cast+resume', 'setLabel', 'ctxmenu', 'setArt', 'props'),
@@ -492,6 +531,77 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 	# Scelto 1: la parete perde 258 ms su un widget che chiude tre secondi prima che la home sia
 	# pronta, mentre la CPU risparmiata (4,2x) va agli mdblist, che sono la catena critica.
 	_BUILD_WORKERS = 1
+	# PRE-PASSAGGIO (lotto 102). Il ciclo qui sotto chiedeva una stagione per elemento -- una query su
+	# season_metadata alla volta, dentro una costruzione a un worker -- e nei log quella fase (ep_meta)
+	# valeva il 60-79% di tutta la costruzione. La lettura in blocco esiste gia' per i metadati della
+	# serie (meta_cache.get_many, poche righe sopra) ma non si poteva applicare alle stagioni per un
+	# motivo preciso: **la stagione dei tipi 'next_' non sta in ep_data**, la calcola get_next a partire
+	# dallo stato visto. Senza saperla in anticipo non c'e' niente da leggere in blocco.
+	# Questo passaggio la calcola, e per non pagarla due volte memorizza cio' che ha prodotto: meta,
+	# stato visto, stagione, episodio e il verdetto del filtro. Sono le stesse decisioni che _build
+	# prendeva comunque, prese una volta sola invece che due.
+	# Chi non ha il meta in cache non entra nel memo e percorre la strada di prima, invariata.
+	_pre, _season_prefetch, _season_pairs = {}, {}, []
+	_t_visto = _t_next = 0.0
+	_sp0 = _perf()
+	# LO STATO VISTO SI LEGGE SOLO SE SERVE DAVVERO (lotto 105). Per i tipi 'next_' l'unico
+	# consumatore di watched_info e' get_next, che lo guarda **soltanto** nel ramo nextep_method != 0
+	# ("Last Watched"); con nextep_method = 0 ("Last Aired") -- l'impostazione di questo dispositivo,
+	# letta in settings.db: `nextep.method = 0` -- quella funzione non lo tocca mai. L'altro
+	# consumatore, il playcount in _build, e' esplicitamente riservato ai tipi NON 'next_'.
+	# Erano quindi 22 query per costruzione, 195 ms misurati, per un valore che nessuno leggeva.
+	_serve_visto = (not list_type_starts_with('next_')) or nextep_content != 0
+	_saltati_non_in_onda = 0
+	for _position, ep_data in enumerate(data):
+		try:
+			_pk = meta_prefetch_key('trakt_dict', ep_data.get('media_ids'), 'tvshow')
+			_meta = _prefetch.get(_pk) if _pk else None
+			if _meta is not None and 'blank_entry' in _meta: _meta = None
+			if not _meta: continue
+			_s, _e = ep_data.get('season'), ep_data.get('episode')
+			if _serve_visto:
+				_x = _perf()
+				_wi = watched_info_episode(_meta.get('tmdb_id'), watched_db)
+				_t_visto += _perf() - _x
+			else: _wi = _NIENTE_VISTO
+			if list_type_starts_with('next_'):
+				_x = _perf()
+				_s, _e = get_next(_s, _e, _wi, _meta.get('season_data'), nextep_content)
+				_t_next += _perf() - _x
+			# FILTRO PRIMA DELLA RETE (lotto 103). Il controllo "non ancora andato in onda" sta DOPO la
+			# lettura della stagione, che serve solo a scoprirne la data -- ma quella data e' gia' nei
+			# metadati della serie, in extra_info.next_episode_to_air, lo stesso campo che il lotto 98
+			# usa per la scadenza della cache.
+			# ONESTA' SUI NUMERI: il lotto 103 nasceva dall'idea che questo ramo valesse 16 scarti su
+			# 22 in 'continua a guardare'. Il contatore dei motivi, aggiunto nello stesso lotto, ha
+			# smentito la deduzione al primo avvio: quei 16 erano serie FINITE con una stagione
+			# inventata da get_next (vedi lotto 104), e questo filtro non e' mai scattato. Resta qui
+			# perche' e' corretto, non costa niente quando non si applica, e copre il caso che gli
+			# compete davvero: una serie in onda il cui prossimo episodio deve ancora uscire.
+			# La regola si applica SOLO quando l'episodio che serviremmo E' ESATTAMENTE quello indicato
+			# da next_episode_to_air. In quel caso la data e' nota con certezza e non si assume niente
+			# sull'ordine di messa in onda; in ogni altro caso si prosegue per la strada di prima.
+			# Solo l'esito "scartato" fa saltare il lavoro: se l'episodio va tenuto servono comunque i
+			# dati della stagione, quindi si prosegue normalmente.
+			_skip = False
+			if list_type_starts_with('next_') and _s is not None:
+				_skip = _scarta_non_in_onda(_meta, _s, _e)
+				if _skip: _saltati_non_in_onda += 1
+			_pre[_position] = (_meta, _wi, _s, _e, _skip)
+			# `is not None` e non la verita' di _s: la stagione 0 (gli speciali) e' una stagione valida
+			# per episodes_meta, mentre None e' l'esito di un get_next che non ha trovato nulla.
+			if _s is not None and not _skip: _season_pairs.append((_meta.get('tmdb_id'), _s))
+		except: pass
+	_sp1 = _perf()
+	try: _season_prefetch = episodes_meta_prefetch(_season_pairs)
+	except: _season_prefetch = {}
+	# Due numeri, non uno. Il primo log del lotto 102 dava 614 ms per l'intero pre-passaggio e non
+	# permetteva di dire quanto fosse la RISOLUZIONE (22 letture dello stato visto piu' 22 get_next,
+	# che e' lavoro Python puro con scansioni lineari) e quanto la LETTURA in blocco delle stagioni
+	# (una query piu' 22 json.loads). Senza questa separazione si tira a indovinare.
+	paginator.log_prefetch('stagioni %s [risoluzione %.0f ms = visto %.0f (%s) + next %.0f | %s saltati perche\' non in onda]'
+			% (list_type, (_sp1 - _sp0) * 1000, _t_visto * 1000, 'letto' if _serve_visto else 'NON SERVE', _t_next * 1000, _saltati_non_in_onda),
+			len(set(_season_pairs)), len(_season_prefetch), _perf() - _sp1)
 	for _position, ep_data in enumerate(data): _process(_position, ep_data)
 	if return_results:
 		paginator.log_build('episodi singoli', list_type, _t0, _t1, paginator.now(), len(item_list))

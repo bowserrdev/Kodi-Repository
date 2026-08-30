@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 import json
 import time
-from threading import Lock
+# Vedi la nota in caches/base_cache.py: threading.Lock E' _thread.allocate_lock, e _thread e'
+# builtin. Qui serviva solo refresh_lock.
+from _thread import allocate_lock as Lock
 from caches import trakt_cache
 from caches.settings_cache import get_setting, set_setting
 from caches.main_cache import cache_object
@@ -564,7 +566,9 @@ def hide_unhide_progress_items(params):
 	trakt_sync_activities()
 	# Nascondere o riesporre un titolo nel 'continua a guardare' tocca il widget che lo contiene:
 	# l'id ce l'abbiamo gia' nei parametri, non c'e' motivo di ricostruire l'intera home.
-	kodi_refresh_ids([media_id], coalesce=False)
+	# Con l'azione (lotto 114) il widget si ricostruisce anche quando il titolo RIENTRA, cioe' quando
+	# il suo id non e' ancora nell'elenco pubblicato.
+	kodi_refresh_ids([media_id], (kodi_utils.CONTINUE_WATCHING_ACTION,), coalesce=False)
 
 def trakt_search_lists(search_title, page_no):
 	def _process(dummy_arg):
@@ -823,13 +827,77 @@ def self_mark_recent(cache_media_type=None):
 	except: return False
 
 def trakt_indicators_movies():
-	# I film erano rimasti l'unico percorso senza via incrementale: nessun confronto con la cronologia,
-	# solo il rebuild integrale a ogni cambio di attivita'. Nel log della stick del 22/08 alle 23:16:13
-	# sono state scaricate 6 pagine per ottenere '599 da Trakt, 599 in cache, 0 scartati' -- cioe' per
-	# non cambiare una riga -- e per giunta mentre la stessa CPU stava costruendo la lista stagioni.
+	# I film sono stati fino al lotto 107 l'unico percorso senza via incrementale: nessun confronto con
+	# la cronologia, solo il rebuild integrale a ogni cambio di attivita'. Nel log della stick del
+	# 22/08 alle 23:16:13 sono state scaricate 6 pagine per ottenere '599 da Trakt, 599 in cache,
+	# 0 scartati' -- cioe' per non cambiare una riga -- e per giunta mentre la stessa CPU stava
+	# costruendo la lista stagioni. Il rebuild resta qui sotto come strada di riserva, e serve ancora:
+	# e' l'unica che si accorge delle RIMOZIONI.
 	if self_mark_recent('movie'):
 		_SYNC_DEFERRED[0] = True
 		return logger('FenLight Trakt', 'watched movies: rebuild RIMANDATO, la modifica sembra nostra -- segnalibro attivita' + "'" + ' NON avanzato')
+	# VIA INCREMENTALE (lotto 107), gemella di quella che le serie hanno gia' in trakt_indicators_tv.
+	# La cronologia arriva dal piu' recente al piu' vecchio: tutto cio' che sta sopra il play piu'
+	# recente gia' in locale e' esattamente cio' che e' cambiato. Se il confine cade DENTRO la prima
+	# pagina, allora tutto il resto lo abbiamo gia', e non c'e' niente da ricostruire.
+	# Il guardiano `len(new_plays) < len(history)` non e' un dettaglio: se la prima pagina fosse tutta
+	# nuova non sapremmo se la seconda ne contiene altre, e salteremmo dei play. In quel caso si passa
+	# dal rebuild come prima.
+	# Le RIMOZIONI non compaiono nella cronologia (togliere un film da "visti" non aggiunge un play):
+	# quando non c'e' nessun play nuovo si cade sul rebuild completo, che e' l'unico modo di accorgersi
+	# di una riga sparita. Il caso peggiore resta quindi il comportamento di prima.
+	# Misura che motiva tutto questo: nel log del 29/08 alle 03:25 la sincronizzazione ha scaricato
+	# 6 pagine, '599 da Trakt, 599 in cache, 0 scartati', ~10 s di rete, per scoprire UN titolo
+	# cambiato -- ed e' il pezzo piu' grosso dei 21 s che separano l'avvio dall'allineamento a Trakt.
+	try: _first = call_trakt('sync/history/movies', params={'limit': history_page_limit}, with_auth=True, pagination=True, page_no=1)
+	except: _first = None
+	if _first:
+		_history = list(_first[0] or [])
+		_last_synced = trakt_watched_cache.last_watched_movie_date()
+		_new_plays = [i for i in _history if i.get('watched_at', '') > _last_synced] if _last_synced else []
+		if _new_plays and len(_new_plays) < len(_history):
+			_rows = []
+			# DAL PIU' VECCHIO AL PIU' RECENTE. La cronologia arriva al contrario, e per i film la
+			# chiave della tabella e' (tipo, id, '', ''): due visioni dello stesso film finiscono sulla
+			# STESSA riga, e WATCHED_UPSERT e' un INSERT OR REPLACE. Inserendoli nell'ordine di arrivo
+			# l'ultimo a vincere sarebbe il piu' VECCHIO, e last_played resterebbe indietro -- cioe'
+			# proprio il valore che al giro successivo decide cosa e' nuovo.
+			for _item in reversed(_new_plays):
+				try:
+					_movie = _item['movie']
+					_tmdb_id = get_trakt_movie_id(_movie['ids'])
+					if not _tmdb_id: continue
+					_rows.append(('movie', _tmdb_id, '', '', _item['watched_at'], _movie['title']))
+				except: pass
+			if _rows:
+				# CONTROLLO DI COMPLETEZZA (lotto 108). La cronologia racconta solo cio' che e' stato
+				# AGGIUNTO: se nella stessa finestra un film e' stato visto e un altro TOLTO dai visti,
+				# i play nuovi ci sono, la via incrementale scatta, e la rimozione non verrebbe notata
+				# mai piu' -- il giro dopo le attivita' non cambiano e non si guarda piu' indietro.
+				# Il conto remoto lo si ottiene con UNA richiesta da un solo elemento: con limit=1
+				# l'intestazione X-Pagination-Page-Count vale esattamente il numero di film visti.
+				# Se i due conti non coincidono, o se la richiesta non riesce, si passa dal rebuild:
+				# il caso peggiore resta il comportamento di prima, mai un dato sbagliato.
+				_remote_count = None
+				try:
+					_probe = call_trakt('sync/watched/movies', params={'limit': 1}, with_auth=True, pagination=True, page_no=1)
+					if _probe: _remote_count = int(_probe[1])
+				except: _remote_count = None
+				if _remote_count is not None:
+					_changed = trakt_watched_cache.add_movie_watched(_rows)
+					_local_count = trakt_watched_cache.watched_movie_count()
+					if _local_count == _remote_count:
+						logger('FenLight Trakt', 'watched movies: %s play nuovi aggiunti, nessun rebuild (via incrementale) | %s visti, coincide con Trakt' % (len(_rows), _local_count))
+						return _changed
+					logger('FenLight Trakt', 'watched movies: via incrementale INSUFFICIENTE, %s in locale contro %s su Trakt -- si ricostruisce' % (_local_count, _remote_count))
+				else:
+					logger('FenLight Trakt', 'watched movies: conto remoto non disponibile, si ricostruisce per sicurezza')
+		try:
+			if not _last_synced: _why = 'nessuna cronologia locale'
+			elif not _new_plays: _why = 'nessun play piu' + "'" + ' recente del piu' + "'" + ' recente locale (rimozioni?)'
+			else: _why = 'prima pagina tutta nuova (%s su %s)' % (len(_new_plays), len(_history))
+			logger('FenLight Trakt', 'watched movies: rebuild completo, motivo: %s | ultimo locale=%s' % (_why, _last_synced))
+		except: pass
 	# Due canali silenziosi facevano sparire il badge "visto" da un sottoinsieme apparentemente casuale
 	# di film, senza lasciare traccia nel log: get_trakt_movie_id restituisce None quando l'id TMDb non
 	# e' risolvibile (e il film veniva saltato), e pool.submit non rilancia mai le eccezioni sollevate

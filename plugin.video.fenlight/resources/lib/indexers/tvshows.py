@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import sys
 from time import perf_counter as _perf
-from modules import meta_lists
+# modules.meta_lists non si importa piu' (lotto 110): questo file non ne usava un solo nome.
 from modules import kodi_utils, settings
 from modules import paginator
 from modules.metadata import tvshow_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url, dub_filter
