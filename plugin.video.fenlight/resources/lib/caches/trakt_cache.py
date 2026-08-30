@@ -124,6 +124,15 @@ class TraktWatched:
 			return dbcon.execute("SELECT COUNT(*) FROM watched WHERE db_type = 'movie'").fetchone()[0]
 		except: return None
 
+	def watched_episode_count(self):
+		# Gemella di watched_movie_count. Serve a separare 'in locale non c'e' niente' da 'non lo so':
+		# last_watched_episode_date() restituisce None in entrambi i casi, e su quella distinzione si
+		# decide se allinearsi a un vuoto di Trakt o lasciare tutto intatto.
+		try:
+			dbcon = connect_database('trakt_db')
+			return dbcon.execute("SELECT COUNT(*) FROM watched WHERE db_type = 'episode'").fetchone()[0]
+		except: return None
+
 	def last_watched_movie_date(self):
 		try:
 			dbcon = connect_database('trakt_db')
