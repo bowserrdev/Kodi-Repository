@@ -32,7 +32,7 @@
 
     <include name="Part_List_Icon">
         <param name="icon">$INFO[ListItem.Icon]</param>
-        <param name="is_defaulticon">[String.StartsWith(ListItem.Icon,Default) | String.StartsWith(ListItem.Icon,special://skin/extras/icons/)]</param>
+        <param name="is_defaulticon">[String.StartsWith(ListItem.Icon,Default) | String.StartsWith(ListItem.Icon,resource://resource.images.arcticfuse/icons/)]</param>
         <param name="colordiffuse">dialog_fg_90</param>
         <definition>
             <control type="group">
@@ -213,7 +213,7 @@
         <param name="id">90001</param>
         <param name="groupid">90101</param>
         <param name="onclick">Close</param>
-        <param name="icon">special://skin/extras/icons/xmark.png</param>
+        <param name="icon">resource://resource.images.arcticfuse/icons/xmark.png</param>
         <definition>
             <control type="group">
                 <centerright>60</centerright>
@@ -386,7 +386,7 @@
                     <centerleft>50</centerleft>
                     <width>40</width>
                     <bordersize>-12</bordersize>
-                    <texture colordiffuse="$PARAM[colordiffuse]">special://skin/extras/icons/info2.png</texture>
+                    <texture colordiffuse="$PARAM[colordiffuse]">resource://resource.images.arcticfuse/icons/info2.png</texture>
                 </control>
                 <control type="group">
                     <left>90</left>

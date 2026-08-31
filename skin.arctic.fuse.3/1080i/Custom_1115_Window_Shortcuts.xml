@@ -89,7 +89,7 @@
                                 </item>
                                 <item id="5">
                                     <label>$LOCALIZE[137]</label>
-                                    <icon>special://skin/extras/icons/search.png</icon>
+                                    <icon>resource://resource.images.arcticfuse/icons/search.png</icon>
                                     <property name="checkmark">true</property>
                                     <property name="editmenu">menu=search</property>
                                     <property name="enabled">$VAR[Action_SearchEnabled]</property>
@@ -98,11 +98,11 @@
                                 </item>
                                 <item id="8">
                                     <label>$LOCALIZE[31604]</label>
-                                    <icon>special://skin/extras/icons/window-restore.png</icon>
+                                    <icon>resource://resource.images.arcticfuse/icons/window-restore.png</icon>
                                 </item>
                                 <item id="9">
                                     <label>$LOCALIZE[33060]</label>
-                                    <icon>special://skin/extras/icons/power.png</icon>
+                                    <icon>resource://resource.images.arcticfuse/icons/power.png</icon>
                                     <property name="editmenu">menu=power</property>
                                 </item>
                             </content>

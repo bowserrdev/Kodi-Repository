@@ -186,55 +186,55 @@
                                     <item>
                                         <label>LibreELEC</label>
                                         <label2>service.libreelec.settings</label2>
-                                        <icon>special://skin/extras/icons/libreelec.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/libreelec.png</icon>
                                         <onclick>RunAddon(service.libreelec.settings)</onclick>
                                         <visible>System.AddonIsEnabled(service.libreelec.settings)</visible>
                                     </item>
                                     <item>
                                         <label>CoreELEC</label>
                                         <label2>service.coreelec.settings</label2>
-                                        <icon>special://skin/extras/icons/coreelec.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/coreelec.png</icon>
                                         <onclick>RunAddon(service.coreelec.settings)</onclick>
                                         <visible>System.AddonIsEnabled(service.coreelec.settings)</visible>
                                     </item>
                                     <item>
                                         <label>TMDbHelper</label>
                                         <label2>plugin.video.themoviedb.helper</label2>
-                                        <icon>special://skin/extras/icons/tmdb.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/tmdb.png</icon>
                                         <onclick>Addon.OpenSettings(plugin.video.themoviedb.helper)</onclick>
                                         <visible>System.AddonIsEnabled(plugin.video.themoviedb.helper)</visible>
                                     </item>
                                     <item>
                                         <label>Artist Slideshow</label>
                                         <label2>script.artistslideshow</label2>
-                                        <icon>special://skin/extras/icons/image.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/image.png</icon>
                                         <onclick>Addon.OpenSettings(script.artistslideshow)</onclick>
                                         <visible>System.AddonIsEnabled(script.artistslideshow)</visible>
                                     </item>
                                     <item>
                                         <label>Up Next</label>
                                         <label2>service.upnext</label2>
-                                        <icon>special://skin/extras/icons/arrows-turn-right.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/arrows-turn-right.png</icon>
                                         <onclick>Addon.OpenSettings(service.upnext)</onclick>
                                         <visible>System.AddonIsEnabled(service.upnext)</visible>
                                     </item>
                                     <item>
                                         <label>Arctic Mirage</label>
                                         <label2>screensaver.arctic.mirage</label2>
-                                        <icon>special://skin/extras/icons/sun2.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/sun2.png</icon>
                                         <onclick>Addon.OpenSettings(screensaver.arctic.mirage)</onclick>
                                         <visible>System.AddonIsEnabled(screensaver.arctic.mirage)</visible>
                                     </item>
                                     <item>
                                         <label>[CAPITALIZE]$LOCALIZE[31496][/CAPITALIZE]</label>
                                         <label2>skin.arctic.fuse.3</label2>
-                                        <icon>special://skin/extras/icons/screwdriver-wrench.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/screwdriver-wrench.png</icon>
                                         <onclick>ActivateWindow(1115)</onclick>
                                     </item>
                                     <item>
                                         <label>[CAPITALIZE]$LOCALIZE[31275][/CAPITALIZE]</label>
                                         <label2>skin.arctic.fuse.3</label2>
-                                        <icon>special://skin/extras/icons/search.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/search.png</icon>
                                         <onclick>SetProperty(Shortcuts.EditMenu,menu=searchwidgets,Home)</onclick>
                                         <onclick>ClearProperty(Shortcuts.EditMode,Home)</onclick>
                                         <onclick>ClearProperty(Shortcuts.EditGUID,Home)</onclick>
@@ -243,7 +243,7 @@
                                     <item>
                                         <label>$LOCALIZE[31203] $LOCALIZE[31434]</label>
                                         <label2>skin.arctic.fuse.3</label2>
-                                        <icon>special://skin/extras/icons/gauge.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/gauge.png</icon>
                                         <onclick>SetProperty(CustomDialogSettingsItems,DialogCustom_VideoOSD_Items,Home)</onclick>
                                         <onclick>SetProperty(CustomDialogSettingsTitle,$LOCALIZE[31434],Home)</onclick>
                                         <onclick>ActivateWindow(1118)</onclick>
@@ -251,7 +251,7 @@
                                     <item>
                                         <label>[CAPITALIZE]$LOCALIZE[31203] $LOCALIZE[12003][/CAPITALIZE]</label>
                                         <label2>skin.arctic.fuse.3</label2>
-                                        <icon>special://skin/extras/icons/circle-info.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/circle-info.png</icon>
                                         <onclick>SetProperty(CustomDialogSettingsItems,DialogCustom_VideoInfo_Items,Home)</onclick>
                                         <onclick>SetProperty(CustomDialogSettingsTitle,$LOCALIZE[12003],Home)</onclick>
                                         <onclick>ActivateWindow(1118)</onclick>
@@ -259,13 +259,13 @@
                                     <item>
                                         <label>[CAPITALIZE]$LOCALIZE[31321][/CAPITALIZE]</label>
                                         <label2>skin.arctic.fuse.3</label2>
-                                        <icon>special://skin/extras/icons/table.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/table.png</icon>
                                         <onclick>runscript(script.skinvariables,action=buildviews,configure)</onclick>
                                     </item>
                                     <item>
                                         <label>[CAPITALIZE]$LOCALIZE[31234][/CAPITALIZE]</label>
                                         <label2>skin.arctic.fuse.3</label2>
-                                        <icon>special://skin/extras/icons/cube.png</icon>
+                                        <icon>resource://resource.images.arcticfuse/icons/cube.png</icon>
                                         <onclick>SetProperty(CustomDialogSettingsItems,DialogCustom_Settings_Items_Indicators,Home)</onclick>
                                         <onclick>SetProperty(CustomDialogSettingsTitle,$LOCALIZE[31235],Home)</onclick>
                                         <onclick>ActivateWindow(1118)</onclick>

@@ -172,14 +172,14 @@
                                         <include content="Settings_EditButton">
                                             <param name="id">17</param>
                                             <param name="groupid">9017</param>
-                                            <param name="icon">special://skin/extras/icons/pencil.png</param>
+                                            <param name="icon">resource://resource.images.arcticfuse/icons/pencil.png</param>
                                             <param name="hasfocus">[ControlGroup(9001).HasFocus() | Control.HasFocus(17)]</param>
                                             <param name="hasbutton">false</param>
                                         </include>
                                         <include content="Settings_EditButton">
                                             <param name="id">20</param>
                                             <param name="groupid">9020</param>
-                                            <param name="icon">special://skin/extras/icons/search.png</param>
+                                            <param name="icon">resource://resource.images.arcticfuse/icons/search.png</param>
                                             <param name="hasfocus">[ControlGroup(9001).HasFocus() | Control.HasFocus(17)]</param>
                                         </include>
                                     </control>
@@ -202,13 +202,13 @@
             <param name="id">18</param>
             <param name="groupid">9318</param>
             <label>$LOCALIZE[186]</label>
-            <param name="icon">special://skin/extras/icons/circle-check.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/circle-check.png</param>
         </include>
         <include content="Button_Dialog">
             <param name="id">19</param>
             <param name="groupid">9319</param>
             <label>$LOCALIZE[222]</label>
-            <param name="icon">special://skin/extras/icons/circle-xmark.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/circle-xmark.png</param>
         </include>
     </include>
 
@@ -218,27 +218,27 @@
                 <param name="id">15</param>
                 <param name="groupid">9315</param>
                 <label>$LOCALIZE[21435]</label>
-                <param name="icon">special://skin/extras/icons/pencil.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/pencil.png</param>
                 <visible>Control.IsEnabled(15)</visible>
             </include>
             <include content="Button_Dialog">
                 <param name="id">14</param>
                 <param name="groupid">9314</param>
                 <label>$LOCALIZE[1210]</label>
-                <param name="icon">special://skin/extras/icons/trash-can.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/trash-can.png</param>
                 <visible>Control.IsEnabled(14)</visible>
             </include>
             <include content="Button_Dialog">
                 <param name="id">20</param>
                 <param name="groupid">9320</param>
                 <label>$LOCALIZE[190]</label>
-                <param name="icon">special://skin/extras/icons/floppy-disk.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/floppy-disk.png</param>
             </include>
             <include content="Button_Dialog">
                 <param name="id">21</param>
                 <param name="groupid">9321</param>
                 <label>$LOCALIZE[15067]</label>
-                <param name="icon">special://skin/extras/icons/circle-xmark.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/circle-xmark.png</param>
             </include>
         </definition>
     </include>

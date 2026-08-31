@@ -27,7 +27,7 @@
             <fadetime>4000</fadetime>
             <pauseatend>0</pauseatend>
             <loop>true</loop>
-            <imagepath background="true">special://skin/extras/backgrounds/music_colors</imagepath>
+            <imagepath background="true">resource://resource.images.arcticfuse/backgrounds/music_colors</imagepath>
             <colordiffuse>9fffffff</colordiffuse>
             <visible>Skin.HasSetting(Visualisation.EnableColours)</visible>
         </control>

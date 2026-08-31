@@ -120,21 +120,21 @@
                 <param name="id">18</param>
                 <param name="groupid">9318</param>
                 <label>$LOCALIZE[186]</label>
-                <param name="icon">special://skin/extras/icons/circle-check.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/circle-check.png</param>
             </include>
             <include content="Button_Dialog">
                 <param name="id">17</param>
                 <param name="groupid">9317</param>
                 <param name="builtin">true</param>
                 <label>$LOCALIZE[10043]</label>
-                <param name="icon">special://skin/extras/icons/circle-question.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/circle-question.png</param>
             </include>
             <include content="Button_Dialog">
                 <param name="id">9001</param>
                 <param name="groupid">9101</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/gamepad.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/gamepad.png</param>
                 <label>$LOCALIZE[31107]</label>
                 <onclick>SetFocus(5)</onclick>
             </include>
@@ -143,7 +143,7 @@
                 <param name="groupid">9320</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/circle-plus.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/circle-plus.png</param>
                 <label>$LOCALIZE[21452]</label>
                 <visible>Control.IsEnabled(20)</visible>
             </include>
@@ -152,7 +152,7 @@
                 <param name="groupid">9321</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/not-equal.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/not-equal.png</param>
                 <label>$LOCALIZE[35019]</label>
                 <visible>Control.IsEnabled(21)</visible>
             </include>
@@ -161,7 +161,7 @@
                 <param name="groupid">9322</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/download.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/download.png</param>
                 <label>$LOCALIZE[35021]</label>
                 <visible>Control.IsEnabled(22)</visible>
             </include>
@@ -170,7 +170,7 @@
                 <param name="groupid">9319</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/triangle-exclamation.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/triangle-exclamation.png</param>
                 <label>$LOCALIZE[13007]</label>
                 <visible>Control.IsEnabled(19)</visible>
             </include>

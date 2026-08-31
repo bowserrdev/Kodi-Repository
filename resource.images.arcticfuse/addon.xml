@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="resource.images.arcticfuse" name="Arctic Fuse Images" version="1.1.0" provider-name="Bowserr">
+    <extension point="kodi.resource.images" compile="false" />
+    <requires>
+        <import addon="kodi.resource" version="1.0.0"/>
+    </requires>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="it">Artwork statico di Arctic Fuse 3</summary>
+        <summary lang="en">Arctic Fuse 3 static artwork</summary>
+        <description lang="it">Sfondi e anteprime dei viewtype di Arctic Fuse 3, separati dalla skin perche' non cambiano fra una versione e l'altra: cosi' un aggiornamento della skin non deve trasferirli ogni volta.</description>
+        <description lang="en">Backgrounds and viewtype previews for Arctic Fuse 3, split out of the skin because they do not change between releases: a skin update no longer has to ship them every time.</description>
+        <platform>all</platform>
+        <license>Creative Commons Attribution Non-Commercial Share-Alike 4.0</license>
+        <assets>
+            <icon>icon.png</icon>
+        </assets>
+    </extension>
+</addon>

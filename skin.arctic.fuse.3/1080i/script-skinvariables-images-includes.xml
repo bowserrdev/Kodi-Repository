@@ -18,7 +18,7 @@
         <value condition="String.IsEqual(Container(450).ListItem.DBType,tag)"/>
         <value condition="String.IsEqual(Container(450).ListItem.DBType,director)"/>
         <value condition="String.StartsWith(Container(450).ListItem.Icon,Default)"/>
-        <value condition="String.StartsWith(Container(450).ListItem.Icon,special://skin/extras/icons/)"/>
+        <value condition="String.StartsWith(Container(450).ListItem.Icon,resource://resource.images.arcticfuse/icons/)"/>
         <value condition="!String.IsEmpty(Container(450).ListItem.Icon)">$INFO[Container(450).ListItem.Icon]</value>
     </variable>
     <variable name="Image_MediaList_Thumb">
@@ -38,7 +38,7 @@
         <value condition="String.IsEqual(ListItem.DBType,tag)"/>
         <value condition="String.IsEqual(ListItem.DBType,director)"/>
         <value condition="String.StartsWith(ListItem.Icon,Default)"/>
-        <value condition="String.StartsWith(ListItem.Icon,special://skin/extras/icons/)"/>
+        <value condition="String.StartsWith(ListItem.Icon,resource://resource.images.arcticfuse/icons/)"/>
         <value condition="!String.IsEmpty(ListItem.Icon)">$INFO[ListItem.Icon]</value>
     </variable>
     <variable name="Image_MediaList_Icon_C450">
@@ -55,15 +55,15 @@
         <value condition="!String.IsEmpty(Container(450).ListItem.Art(tvshow.poster))"/>
         <value condition="!String.IsEmpty(Container(450).ListItem.Art(thumb)) + !String.IsEqual(Container(450).ListItem.Art(thumb),Container(450).ListItem.Icon)"/>
         <value condition="!String.IsEmpty(Container(450).ListItem.Property(icon))">$INFO[Container(450).ListItem.Property(icon)]</value>
-        <value condition="String.IsEqual(Container(450).ListItem.DBType,tag)">special://skin/extras/icons/tag.png</value>
-        <value condition="String.IsEqual(Container(450).ListItem.DBType,director)">special://skin/extras/icons/clapperboard.png</value>
-        <value condition="String.IsEqual(Container(450).ListItem.Icon,DefaultFolder.png)">special://skin/extras/icons/folder.png</value>
-        <value condition="String.IsEqual(Container(450).ListItem.Icon,DefaultPlaylist.png)">special://skin/extras/icons/list-check.png</value>
-        <value condition="String.IsEqual(Container(450).ListItem.Icon,DefaultPartyMode.png)">special://skin/extras/icons/list-check.png</value>
-        <value condition="String.IsEqual(Container(450).ListItem.Icon,DefaultAddSource.png)">special://skin/extras/icons/file-circle-plus.png</value>
-        <value condition="String.IsEqual(Container(450).ListItem.Icon,DefaultFile.png)">special://skin/extras/icons/file-circle-plus.png</value>
+        <value condition="String.IsEqual(Container(450).ListItem.DBType,tag)">resource://resource.images.arcticfuse/icons/tag.png</value>
+        <value condition="String.IsEqual(Container(450).ListItem.DBType,director)">resource://resource.images.arcticfuse/icons/clapperboard.png</value>
+        <value condition="String.IsEqual(Container(450).ListItem.Icon,DefaultFolder.png)">resource://resource.images.arcticfuse/icons/folder.png</value>
+        <value condition="String.IsEqual(Container(450).ListItem.Icon,DefaultPlaylist.png)">resource://resource.images.arcticfuse/icons/list-check.png</value>
+        <value condition="String.IsEqual(Container(450).ListItem.Icon,DefaultPartyMode.png)">resource://resource.images.arcticfuse/icons/list-check.png</value>
+        <value condition="String.IsEqual(Container(450).ListItem.Icon,DefaultAddSource.png)">resource://resource.images.arcticfuse/icons/file-circle-plus.png</value>
+        <value condition="String.IsEqual(Container(450).ListItem.Icon,DefaultFile.png)">resource://resource.images.arcticfuse/icons/file-circle-plus.png</value>
         <value condition="String.StartsWith(Container(450).ListItem.Icon,Default)">$INFO[Container(450).ListItem.Icon]</value>
-        <value condition="String.StartsWith(Container(450).ListItem.Icon,special://skin/extras/icons/)">$INFO[Container(450).ListItem.Icon]</value>
+        <value condition="String.StartsWith(Container(450).ListItem.Icon,resource://resource.images.arcticfuse/icons/)">$INFO[Container(450).ListItem.Icon]</value>
     </variable>
     <variable name="Image_MediaList_Icon">
         <value condition="[String.IsEqual(ListItem.DBType,episode) | String.IsEqual(ListItem.DBType,video) | String.IsEqual(ListItem.DBType,musicvideo)] + !String.IsEmpty(ListItem.Art(thumb)) + !String.IsEqual(ListItem.Icon,ListItem.Art(fanart)) + !String.IsEqual(ListItem.Icon,OverlaySpoiler.png) + !String.IsEqual(ListItem.Art(thumb),ListItem.Art(poster)) + !String.IsEqual(ListItem.Art(thumb),ListItem.Art(tvshow.poster))"/>
@@ -79,15 +79,15 @@
         <value condition="!String.IsEmpty(ListItem.Art(tvshow.poster))"/>
         <value condition="!String.IsEmpty(ListItem.Art(thumb)) + !String.IsEqual(ListItem.Art(thumb),ListItem.Icon)"/>
         <value condition="!String.IsEmpty(ListItem.Property(icon))">$INFO[ListItem.Property(icon)]</value>
-        <value condition="String.IsEqual(ListItem.DBType,tag)">special://skin/extras/icons/tag.png</value>
-        <value condition="String.IsEqual(ListItem.DBType,director)">special://skin/extras/icons/clapperboard.png</value>
-        <value condition="String.IsEqual(ListItem.Icon,DefaultFolder.png)">special://skin/extras/icons/folder.png</value>
-        <value condition="String.IsEqual(ListItem.Icon,DefaultPlaylist.png)">special://skin/extras/icons/list-check.png</value>
-        <value condition="String.IsEqual(ListItem.Icon,DefaultPartyMode.png)">special://skin/extras/icons/list-check.png</value>
-        <value condition="String.IsEqual(ListItem.Icon,DefaultAddSource.png)">special://skin/extras/icons/file-circle-plus.png</value>
-        <value condition="String.IsEqual(ListItem.Icon,DefaultFile.png)">special://skin/extras/icons/file-circle-plus.png</value>
+        <value condition="String.IsEqual(ListItem.DBType,tag)">resource://resource.images.arcticfuse/icons/tag.png</value>
+        <value condition="String.IsEqual(ListItem.DBType,director)">resource://resource.images.arcticfuse/icons/clapperboard.png</value>
+        <value condition="String.IsEqual(ListItem.Icon,DefaultFolder.png)">resource://resource.images.arcticfuse/icons/folder.png</value>
+        <value condition="String.IsEqual(ListItem.Icon,DefaultPlaylist.png)">resource://resource.images.arcticfuse/icons/list-check.png</value>
+        <value condition="String.IsEqual(ListItem.Icon,DefaultPartyMode.png)">resource://resource.images.arcticfuse/icons/list-check.png</value>
+        <value condition="String.IsEqual(ListItem.Icon,DefaultAddSource.png)">resource://resource.images.arcticfuse/icons/file-circle-plus.png</value>
+        <value condition="String.IsEqual(ListItem.Icon,DefaultFile.png)">resource://resource.images.arcticfuse/icons/file-circle-plus.png</value>
         <value condition="String.StartsWith(ListItem.Icon,Default)">$INFO[ListItem.Icon]</value>
-        <value condition="String.StartsWith(ListItem.Icon,special://skin/extras/icons/)">$INFO[ListItem.Icon]</value>
+        <value condition="String.StartsWith(ListItem.Icon,resource://resource.images.arcticfuse/icons/)">$INFO[ListItem.Icon]</value>
     </variable>
     <variable name="Image_Icon_C450">
         <value condition="String.IsEqual(Container(450).ListItem.DBType,studio) | String.IsEqual(Container(450).ListItem.Property(DBType),studio)">$INFO[Container(450).ListItem.Label,resource://resource.images.studios.white/,.png]</value>

@@ -18,7 +18,7 @@
 
             <!-- Left -->
             <include content="Furniture_ItemIcon">
-                <param name="icon">special://skin/extras/icons/comment-dots.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/comment-dots.png</param>
                 <param name="flipped">true</param>
                 <param name="right">15</param>
                 <param name="visible">String.StartsWith(Control.GetLabel(400),Default)</param>

@@ -272,7 +272,7 @@
         <param name="hasspinner">false</param>
         <param name="hasprogress">false</param>
         <param name="hasicon">true</param>
-        <param name="icon">special://skin/extras/icons/kodi.png</param>
+        <param name="icon">resource://resource.images.arcticfuse/icons/kodi.png</param>
         <param name="spinspinner">false</param>
         <param name="spinnervisible">true</param>
         <param name="flipspinner">true</param>

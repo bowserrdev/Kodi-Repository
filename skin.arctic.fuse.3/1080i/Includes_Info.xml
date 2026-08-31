@@ -130,7 +130,7 @@
                 <control type="grouplist">
                     <orientation>vertical</orientation>
                     <include content="Info_Meta_Item_Row">
-                        <param name="icon">special://skin/extras/icons/music.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/music.png</param>
                         <param name="infolabel">Title</param>
                         <param name="listitem">$PARAM[listitem]</param>
                         <param name="container">$PARAM[container]</param>
@@ -139,7 +139,7 @@
                         <param name="visible">$PARAM[visible]</param>
                     </include>
                     <include content="Info_Meta_Item_Row">
-                        <param name="icon">special://skin/extras/icons/person.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/person.png</param>
                         <param name="infolabel">Contributors</param>
                         <param name="listitem">$PARAM[listitem]</param>
                         <param name="container">$PARAM[container]</param>
@@ -147,7 +147,7 @@
                         <param name="visible">$PARAM[visible]</param>
                     </include>
                     <include content="Info_Meta_Item_Row">
-                        <param name="icon">special://skin/extras/icons/clock-rotate-left.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/clock-rotate-left.png</param>
                         <param name="infolabel">LastPlayed</param>
                         <param name="listitem">$PARAM[listitem]</param>
                         <param name="container">$PARAM[container]</param>
@@ -213,7 +213,7 @@
                     <!-- Total Episodes (Service Disabled) -->
                     <include content="Info_Meta_Object" condition="!$PARAM[ratings_only] + !$EXP[Exp_TMDbHelper_IsData]">
                         <param name="bordersize">-12</param>
-                        <param name="icon">special://skin/extras/icons/table-list.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/table-list.png</param>
                         <param name="label">$INFO[$PARAM[container]$PARAM[listitem].Property(totalepisodes),, $LOCALIZE[20360]]</param>
                         <param name="visible">[String.IsEqual($PARAM[container]$PARAM[listitem].DBType,tvshow) | String.IsEqual($PARAM[container]$PARAM[listitem].DBType,season)] + !String.IsEmpty($PARAM[container]$PARAM[listitem].Property(totalepisodes))</param>
                     </include>
@@ -221,7 +221,7 @@
                     <!-- Album -->
                     <include content="Info_Meta_Object" condition="!$PARAM[ratings_only]">
                         <param name="bordersize">-12</param>
-                        <param name="icon">special://skin/extras/icons/compact-disc.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/compact-disc.png</param>
                         <param name="label">$INFO[$PARAM[container]$PARAM[listitem].Album]</param>
                         <param name="visible">[String.IsEqual($PARAM[container]$PARAM[listitem].DBType,album) | String.IsEqual($PARAM[container]$PARAM[listitem].DBType,song)] + !String.IsEmpty($PARAM[container]$PARAM[listitem].Album)</param>
                     </include>
@@ -229,7 +229,7 @@
                     <!-- Birthday -->
                     <include content="Info_Meta_Object" condition="!$PARAM[ratings_only]">
                         <param name="bordersize">-12</param>
-                        <param name="icon">special://skin/extras/icons/cake-candles.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/cake-candles.png</param>
                         <param name="label">$INFO[$PARAM[container]$PARAM[listitem].Property(birthday)]</param>
                         <param name="visible">[String.IsEqual($PARAM[container]$PARAM[listitem].DBType,actor) | String.IsEqual($PARAM[container]$PARAM[listitem].DBType,artist) | String.IsEqual($PARAM[listitem].Property(tmdb_type),person)] + !String.IsEmpty($PARAM[container]$PARAM[listitem].Property(birthday))</param>
                     </include>
@@ -237,7 +237,7 @@
                     <!-- Deathday -->
                     <include content="Info_Meta_Object" condition="!$PARAM[ratings_only]">
                         <param name="bordersize">-12</param>
-                        <param name="icon">special://skin/extras/icons/cross.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/cross.png</param>
                         <param name="label">$INFO[$PARAM[container]$PARAM[listitem].Property(deathday)]</param>
                         <param name="visible">[String.IsEqual($PARAM[container]$PARAM[listitem].DBType,actor) | String.IsEqual($PARAM[container]$PARAM[listitem].DBType,artist) | String.IsEqual($PARAM[listitem].Property(tmdb_type),person)] + !String.IsEmpty($PARAM[container]$PARAM[listitem].Property(deathday))</param>
                     </include>

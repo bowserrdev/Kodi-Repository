@@ -224,7 +224,7 @@
                                 <width>40</width>
                                 <height>40</height>
                                 <bordersize>-12</bordersize>
-                                <texture background="true" colordiffuse="dialog_fg_90">special://skin/extras/icons/circle-arrow-left.png</texture>
+                                <texture background="true" colordiffuse="dialog_fg_90">resource://resource.images.arcticfuse/icons/circle-arrow-left.png</texture>
                             </control>
 
                             <control type="label">
@@ -256,7 +256,7 @@
                                 <width>40</width>
                                 <height>40</height>
                                 <bordersize>-12</bordersize>
-                                <texture background="true" colordiffuse="dialog_fg_90">special://skin/extras/icons/circle-arrow-right.png</texture>
+                                <texture background="true" colordiffuse="dialog_fg_90">resource://resource.images.arcticfuse/icons/circle-arrow-right.png</texture>
                             </control>
                         </control>
 
@@ -484,9 +484,9 @@
         <value>$INFO[Control.GetLabel(5)]</value>
     </variable>
     <variable name="DialogSelect_SideButtons_Image_5">
-        <value condition="String.IsEqual(Control.GetLabel(5),$LOCALIZE[21335])">special://skin/extras/icons/filebox.png</value>
-        <value condition="String.IsEqual(Control.GetLabel(5),$LOCALIZE[186])">special://skin/extras/icons/circle-check.png</value>
-        <value>special://skin/extras/icons/circle-plus.png</value>
+        <value condition="String.IsEqual(Control.GetLabel(5),$LOCALIZE[21335])">resource://resource.images.arcticfuse/icons/filebox.png</value>
+        <value condition="String.IsEqual(Control.GetLabel(5),$LOCALIZE[186])">resource://resource.images.arcticfuse/icons/circle-check.png</value>
+        <value>resource://resource.images.arcticfuse/icons/circle-plus.png</value>
     </variable>
 
     <variable name="DialogSelect_SideButtons_Label_7">
@@ -499,9 +499,9 @@
         <value>$INFO[Control.GetLabel(8)]</value>
     </variable>
     <variable name="DialogSelect_SideButtons_Image_8">
-        <value condition="String.IsEqual(Control.GetLabel(5),$LOCALIZE[21335])">special://skin/extras/icons/book.png</value>
-        <value condition="String.IsEqual(Control.GetLabel(8),$LOCALIZE[186])">special://skin/extras/icons/circle-check.png</value>
-        <value>special://skin/extras/icons/circle-plus.png</value>
+        <value condition="String.IsEqual(Control.GetLabel(5),$LOCALIZE[21335])">resource://resource.images.arcticfuse/icons/book.png</value>
+        <value condition="String.IsEqual(Control.GetLabel(8),$LOCALIZE[186])">resource://resource.images.arcticfuse/icons/circle-check.png</value>
+        <value>resource://resource.images.arcticfuse/icons/circle-plus.png</value>
     </variable>
 
     <!-- Items -->
@@ -530,7 +530,7 @@
             <param name="id">9003</param>
             <param name="groupid">9103</param>
             <label>$VAR[DialogSelect_SideButtons_Label_7]</label>
-            <param name="icon">special://skin/extras/icons/circle-xmark.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/circle-xmark.png</param>
             <visible>Control.IsEnabled(7) + Control.IsVisible(7)</visible>
             <onclick>SetFocus(7)</onclick>
             <onclick>Action(Select)</onclick>
@@ -544,7 +544,7 @@
                 <param name="groupid">9321</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/play3.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/play3.png</param>
                 <label>$LOCALIZE[208]</label>
                 <visible>Control.IsEnabled(21)</visible>
                 <onback>50</onback>
@@ -554,7 +554,7 @@
                 <param name="groupid">9322</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/circle-plus.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/circle-plus.png</param>
                 <label>$LOCALIZE[15019]</label>
                 <visible>Control.IsEnabled(22) + Window.IsVisible(managevideoversions)</visible>
                 <onback>50</onback>
@@ -564,7 +564,7 @@
                 <param name="groupid">9323</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/circle-plus.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/circle-plus.png</param>
                 <label>$LOCALIZE[15019]</label>
                 <visible>Control.IsEnabled(23) + Window.IsVisible(managevideoextras)</visible>
                 <onback>50</onback>
@@ -574,7 +574,7 @@
                 <param name="groupid">9324</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/i-cursor.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/i-cursor.png</param>
                 <label>$LOCALIZE[118]</label>
                 <visible>Control.IsEnabled(24)</visible>
                 <onback>50</onback>
@@ -584,7 +584,7 @@
                 <param name="groupid">9325</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/heart-circle-plus.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/heart-circle-plus.png</param>
                 <label>$LOCALIZE[571]</label>
                 <visible>Control.IsEnabled(25) + Window.IsVisible(managevideoversions)</visible>
                 <onback>50</onback>
@@ -594,7 +594,7 @@
                 <param name="groupid">9326</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/trash-can.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/trash-can.png</param>
                 <label>$LOCALIZE[1210]</label>
                 <visible>Control.IsEnabled(26)</visible>
                 <onback>50</onback>
@@ -604,7 +604,7 @@
                 <param name="groupid">9327</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/images.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/images.png</param>
                 <label>$LOCALIZE[39123]</label>
                 <visible>Control.IsEnabled(27)</visible>
                 <onback>50</onback>
@@ -614,7 +614,7 @@
                 <param name="groupid">9301</param>
                 <param name="control">button</param>
                 <param name="dialog">true</param>
-                <param name="icon">special://skin/extras/icons/circle-xmark.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/circle-xmark.png</param>
                 <label>$LOCALIZE[15067]</label>
                 <onclick>SetFocus(50)</onclick>
                 <onback>50</onback>

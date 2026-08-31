@@ -153,7 +153,7 @@
             <include content="Button_Dialog">
                 <param name="id">309</param>
                 <param name="groupid">9309</param>
-                <param name="icon">special://skin/extras/icons/language.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/language.png</param>
             </include>
         </definition>
     </include>

@@ -4,7 +4,7 @@
 
         <item>
             <label>$LOCALIZE[559]</label>
-            <icon>special://skin/extras/icons/playlist.png</icon>
+            <icon>resource://resource.images.arcticfuse/icons/playlist.png</icon>
             <onclick>Action(Back)</onclick>
             <onclick condition="Integer.IsGreater(Playlist.Length(video),0) + [Player.HasVideo | Integer.IsEqual(Playlist.Length(music),0)]">ActivateWindow(videoplaylist)</onclick>
             <onclick condition="Integer.IsGreater(Playlist.Length(music),0) + !Player.HasVideo">ActivateWindow(musicplaylist)</onclick>
@@ -13,7 +13,7 @@
 
         <item>
             <label>$LOCALIZE[31579]</label>
-            <icon>special://skin/extras/icons/backward-step.png</icon>
+            <icon>resource://resource.images.arcticfuse/icons/backward-step.png</icon>
             <onclick>PlayerControl(Previous)</onclick>
             <!-- <visible>Player.HasAudio</visible> -->
         </item>
@@ -32,14 +32,14 @@
 
         <item>
             <label>$LOCALIZE[209]</label>
-            <icon>special://skin/extras/icons/forward-step.png</icon>
+            <icon>resource://resource.images.arcticfuse/icons/forward-step.png</icon>
             <onclick>PlayerControl(Next)</onclick>
             <!-- <visible>Player.HasAudio</visible> -->
         </item>
 
         <!-- <item>
             <label>$LOCALIZE[31485]</label>
-            <icon>special://skin/extras/icons/stop.png</icon>
+            <icon>resource://resource.images.arcticfuse/icons/stop.png</icon>
             <onclick>PlayerControl(Stop)</onclick>
             <visible>Player.HasMedia</visible>
         </item> -->
@@ -48,7 +48,7 @@
 
         <item>
             <label>$LOCALIZE[21483]</label>
-            <icon>special://skin/extras/icons/fullscreen.png</icon>
+            <icon>resource://resource.images.arcticfuse/icons/fullscreen.png</icon>
             <onclick>Dialog.Close(all,true)</onclick>
             <onclick>Fullscreen</onclick>
             <!-- <visible>Player.HasMedia</visible> -->
@@ -240,7 +240,7 @@
                 <nested />
                 <control type="image">
                     <bordersize>4</bordersize>
-                    <texture colordiffuse="$PARAM[icon_colordiffuse]" diffuse="diffuse/circle/circle_120.png">special://skin/extras/icons/sysinfo.png</texture>
+                    <texture colordiffuse="$PARAM[icon_colordiffuse]" diffuse="diffuse/circle/circle_120.png">resource://resource.images.arcticfuse/icons/sysinfo.png</texture>
                     <width>80</width>
                     <height>80</height>
                     <left>20</left>
@@ -248,7 +248,7 @@
                 </control>
                 <control type="image">
                     <bordersize>4</bordersize>
-                    <texture colordiffuse="$PARAM[icon_colordiffuse]" diffuse="diffuse/circle/circle_120.png">special://skin/extras/icons/memory.png</texture>
+                    <texture colordiffuse="$PARAM[icon_colordiffuse]" diffuse="diffuse/circle/circle_120.png">resource://resource.images.arcticfuse/icons/memory.png</texture>
                     <width>80</width>
                     <height>80</height>
                     <left>20</left>
@@ -387,7 +387,7 @@
         <include content="ButtonMenu_Special_Button">
             <param name="id">$PARAM[id]</param>
             <param name="sublabel">$LOCALIZE[5]</param>
-            <param name="icon">special://skin/extras/icons/settings.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/settings.png</param>
             <param name="icon_bordersize">4</param>
             <param name="icon_withtext">true</param>
             <nested />

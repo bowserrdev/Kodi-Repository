@@ -6,7 +6,7 @@
         <include content="Furniture_Busy">
             <param name="hasprogress">true</param>
             <param name="spinspinner">Window.IsActive(DialogBusy.xml)</param>
-            <param name="icon">special://skin/extras/icons/kodi.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/kodi.png</param>
             <param name="progress">Control.GetLabel(32)</param>
             <param name="progress_id">32</param>
             <param name="minilabel">$INFO[Control.GetLabel(31)]</param>

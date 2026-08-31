@@ -67,7 +67,7 @@
                                         <include content="Object_ListItem_Iconic">
                                             <param name="icon">$VAR[Image_ProfileIcon]</param>
                                             <param name="color">main_fg_70</param>
-                                            <param name="icon_check">[[!String.IsEqual(ListItem.Icon,DefaultUser.png) + !String.IsEmpty(ListItem.Icon)] + [String.StartsWith(ListItem.Icon,Default) | String.StartsWith(ListItem.Icon,special://skin/extras/icons/)]]</param>
+                                            <param name="icon_check">[[!String.IsEqual(ListItem.Icon,DefaultUser.png) + !String.IsEmpty(ListItem.Icon)] + [String.StartsWith(ListItem.Icon,Default) | String.StartsWith(ListItem.Icon,resource://resource.images.arcticfuse/icons/)]]</param>
                                         </include>
                                     </control>
                                     <include content="Object_IsSelected_Checkmark">
@@ -89,7 +89,7 @@
                                         <include content="Object_ListItem_Iconic">
                                             <param name="color">$VAR[ColorSelected]</param>
                                             <param name="icon">$VAR[Image_ProfileIcon]</param>
-                                            <param name="icon_check">[[!String.IsEqual(ListItem.Icon,DefaultUser.png) + !String.IsEmpty(ListItem.Icon)] + [String.StartsWith(ListItem.Icon,Default) | String.StartsWith(ListItem.Icon,special://skin/extras/icons/)]]</param>
+                                            <param name="icon_check">[[!String.IsEqual(ListItem.Icon,DefaultUser.png) + !String.IsEmpty(ListItem.Icon)] + [String.StartsWith(ListItem.Icon,Default) | String.StartsWith(ListItem.Icon,resource://resource.images.arcticfuse/icons/)]]</param>
                                         </include>
                                     </control>
                                     <include content="Object_IsSelected_Checkmark_Focus">

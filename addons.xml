@@ -29,7 +29,7 @@
         <news>INFO: For latest changes see Changelog within Tools of add-on.</news>
     </extension>
 </addon>
-<addon id="repository.bowserr" name="Bowserr Repo" version="1.1.27" provider-name="Bowserr">
+<addon id="repository.bowserr" name="Bowserr Repo" version="1.1.28" provider-name="Bowserr">
     <requires>
         <import addon="xbmc.addon" version="12.0.0"/>
     </requires>
@@ -38,6 +38,7 @@
             <info compressed="false">https://raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml</info>
             <checksum>https://raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml.md5</checksum>
             <datadir zip="true">https://raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/</datadir>
+            <hashes>true</hashes>
         </dir>
     </extension>
     <extension point="xbmc.addon.metadata">
@@ -49,7 +50,24 @@
         </assets>
     </extension>
 </addon>
-<addon id="skin.arctic.fuse.3" name="Arctic Fuse 3" provider-name="jurialmunkey" version="3.3.8">
+<addon id="resource.font.arcticfuse" name="Arctic Fuse Fonts" version="1.0.0" provider-name="Bowserr">
+    <extension point="kodi.resource.font" />
+    <requires>
+        <import addon="kodi.resource" version="1.0.0"/>
+    </requires>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="it">Font di Arctic Fuse 3</summary>
+        <summary lang="en">Arctic Fuse 3 fonts</summary>
+        <description lang="it">I font usati da Arctic Fuse 3, separati dalla skin perche' non cambiano fra una versione e l'altra.</description>
+        <description lang="en">Fonts used by Arctic Fuse 3, split out of the skin because they do not change between releases.</description>
+        <platform>all</platform>
+        <license>Creative Commons Attribution Non-Commercial Share-Alike 4.0</license>
+        <assets>
+            <icon>icon.png</icon>
+        </assets>
+    </extension>
+</addon>
+<addon id="skin.arctic.fuse.3" name="Arctic Fuse 3" provider-name="jurialmunkey" version="3.3.10">
     <requires>
         <import addon="xbmc.gui" version="5.17.0" />
         <import addon="script.skinvariables" version="2.2.1" />
@@ -57,6 +75,8 @@
         <import addon="plugin.video.fenlight" version="2.1.1" />
         <import addon="resource.images.weathericons.white" version="0.0.1" />
         <import addon="resource.images.studios.coloured" version="0.0.1" />
+        <import addon="resource.images.arcticfuse" version="1.0.0" />
+        <import addon="resource.font.arcticfuse" version="1.0.0" />
         <import addon="resource.font.robotocjksc" version="0.0.3" />
     </requires>
     <extension debugging="false" defaultthemename="Textures.xbt" effectslowdown="1" point="xbmc.gui.skin">
@@ -87,6 +107,23 @@
         <assets>
             <icon>icon.png</icon>
             <fanart>fanart.jpg</fanart>
+        </assets>
+    </extension>
+</addon>
+<addon id="resource.images.arcticfuse" name="Arctic Fuse Images" version="1.1.0" provider-name="Bowserr">
+    <extension point="kodi.resource.images" compile="false" />
+    <requires>
+        <import addon="kodi.resource" version="1.0.0"/>
+    </requires>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="it">Artwork statico di Arctic Fuse 3</summary>
+        <summary lang="en">Arctic Fuse 3 static artwork</summary>
+        <description lang="it">Sfondi e anteprime dei viewtype di Arctic Fuse 3, separati dalla skin perche' non cambiano fra una versione e l'altra: cosi' un aggiornamento della skin non deve trasferirli ogni volta.</description>
+        <description lang="en">Backgrounds and viewtype previews for Arctic Fuse 3, split out of the skin because they do not change between releases: a skin update no longer has to ship them every time.</description>
+        <platform>all</platform>
+        <license>Creative Commons Attribution Non-Commercial Share-Alike 4.0</license>
+        <assets>
+            <icon>icon.png</icon>
         </assets>
     </extension>
 </addon>
