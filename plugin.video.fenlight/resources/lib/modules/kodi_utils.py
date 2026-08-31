@@ -216,15 +216,6 @@ def mark_phase(name):
 	# finestra: la diagnostica non deve diventare il carico che sta misurando.
 	from time import perf_counter
 	_PHASE[name] = perf_counter()
-	# Confine del cancello sulla concorrenza: da qui in poi c'e' il lavoro dell'indexer, dove sta la
-	# RETE e dove il GIL viene rilasciato -- quindi il parallelismo torna a rendere e lo slot va
-	# restituito. Agganciato qui e non ai quattro mark_phase('indexer_in') di router.py perche' e'
-	# un punto solo e non puo' sfuggire l'aggiunta di un quinto ramo.
-	if name == 'indexer_in':
-		try:
-			from modules import gate
-			gate.release()
-		except Exception: pass
 
 def add_items(handle, item_list):
 	from time import perf_counter as _pc
@@ -308,14 +299,6 @@ def log_invocation(argv, t_start, t_import, t_end):
 		if eod_end: parts.append('coda %.0f' % _ms(eod_end, t_end))
 		if not add_start: parts.append('nessuna cartella costruita, solo azione %.0f' % _ms(t_import, t_end))
 		if 'view_ms' in _PHASE: parts.append('(set_view %.0f)' % _PHASE['view_ms'])
-		# Quanto questa invocazione ha atteso al cancello sulla concorrenza. Serve a distinguere due
-		# cose che nel totale si confondono: 'e' stata lenta' e 'ha aspettato il suo turno'. Compare
-		# solo quando c'e' stata attesa vera, cosi' le righe delle invocazioni sole restano pulite.
-		try:
-			from modules import gate
-			_w = gate.waited_ms()
-			if _w >= 1.0: parts.append('cancello %.0f' % _w)
-		except Exception: pass
 		# La memoria libera in coda a OGNI invocazione: e' la serie storica che mancava. Il valore
 		# assoluto dice poco (Android tiene la libera bassa di proposito), la derivata dice tutto.
 		perf_log('FenLight PERF INVOCAZIONE', '%s | totale %.0f ms | %s ms%s'
