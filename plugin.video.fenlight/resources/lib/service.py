@@ -12,7 +12,14 @@ playback_start_prop = 'fenlight.perf.playstart'
 current_skin_prop = 'fenlight.current_skin'
 trakt_service_string = 'TraktMonitor Service Update %s - %s'
 trakt_success_line_dict = {'success': 'Trakt Update Performed', 'no account': '(Unauthorized) Trakt Update Performed'}
-update_string = 'Next Update in %s minutes...'
+# SECONDI, non minuti, ed e' voluto. 'fenlight.trakt.sync_interval' e' in secondi in tutto il
+# sistema: l'etichetta dell'impostazione dice 'Resync Interval (secs)' e lo schema in
+# settings_cache.py la limita a 15-3600. Un poll stretto (30 s il minimo scelto) serve a dare
+# l'impressione di una sincronizzazione immediata fra dispositivi diversi, simulando un webhook
+# dove Trakt offre solo polling. Sul Mi Stick l'utente alza l'intervallo; altrove resta basso.
+# NON "correggerlo" moltiplicando per 60: il messaggio diceva 'minutes' e faceva sembrare un bug
+# di unita' di misura cio' che e' una scelta.
+update_string = 'Next Update in %s seconds...'
 # Finestra entro cui una ricostruzione globale gia' avvenuta rende superflua quella che Trakt
 # chiederebbe. Tarata sopra il ritardo osservato fra le due (7,1 s) e sotto nessun vincolo:
 # alzarla sopprime piu' duplicati ma ritarda di piu' un cambiamento fatto DAVVERO altrove.

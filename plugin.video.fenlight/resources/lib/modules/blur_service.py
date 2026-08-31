@@ -37,6 +37,17 @@ def _local_copy(source):
 	if url.startswith('image://'): url = unquote(url[8:]).rstrip('/')
 	cached = _texture_cache_path(url)
 	if cached: return cached
+	if url.startswith('resource://'):
+		# resource://<addon_id>/<percorso> -> special://home/addons/<addon_id>/resources/<percorso>.
+		# Senza questo ramo il blur non risolve piu' nulla da quando gli sfondi della skin sono
+		# stati spostati in resource.images.arcticfuse: cadeva sul solo texture cache, che c'e' o
+		# non c'e' a seconda che Kodi abbia gia' disegnato quell'immagine, rendendo il blur
+		# intermittente. xbmcvfs.translatePath non traduce lo schema resource://.
+		rest = url[11:]
+		addon_id, _, rel = rest.partition('/')
+		if not addon_id or not rel: return None
+		path = xbmcvfs.translatePath('special://home/addons/%s/resources/%s' % (addon_id, rel))
+		return path if os.path.exists(path) else None
 	if url.startswith('special://'):
 		path = xbmcvfs.translatePath(url)
 		return path if os.path.exists(path) else None
