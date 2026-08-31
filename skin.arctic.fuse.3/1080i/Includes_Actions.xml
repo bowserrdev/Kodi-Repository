@@ -107,7 +107,13 @@
     </variable>
 
     <include name="Action_BlurImage_SimpleBackground_Onload">
-        <onload>RunPlugin(plugin://plugin.video.fenlight/?mode=fen_blur&amp;prefix=SimpleBackground&amp;image=$VAR[Image_SimpleBackground])</onload>
+        <!-- Lo sfondo semplice e' GIA' un'immagine sfocata: rifarne il blur costava ~5 s di
+             interprete Python a ogni apertura della finestra (misurato 31/08: Window Init alle
+             15:56:30.308, interprete concluso alle 15:56:35.278) e produceva un'immagine quasi a
+             tinta unita: 1.335 byte contro i 338.406 del sorgente. Azzerando la proprieta'
+             Exp_Blur_IsUnavailable resta vera e Background_Blur tiene lo strato NITIDO, cioe'
+             mostra l'immagine per quello che e'. Zero CPU, zero attesa. -->
+        <onload>ClearProperty(TMDbHelper.SimpleBackground.BlurImage,Home)</onload>
         <onload>ClearProperty(Background.ShowOverlay,Home)</onload>
         <onload>ClearProperty(InfoPanel.FullSwitch,Home)</onload>
     </include>
@@ -265,7 +271,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.Reset(Background.DialogImage)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/purple_blur.jpg)</onclick>
-        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
+        <onclick>ClearProperty(TMDbHelper.SimpleBackground.BlurImage,Home)</onclick>
     </include>
 
     <include name="Action_Scheme_Onclick_Miami">
@@ -274,7 +280,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.Reset(Background.DialogImage)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/purple_blur.jpg)</onclick>
-        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
+        <onclick>ClearProperty(TMDbHelper.SimpleBackground.BlurImage,Home)</onclick>
     </include>
 
     <include name="Action_Scheme_Onclick_Aqua">
@@ -283,7 +289,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Green)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/green_blur.jpg)</onclick>
-        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
+        <onclick>ClearProperty(TMDbHelper.SimpleBackground.BlurImage,Home)</onclick>
     </include>
 
     <include name="Action_Scheme_Onclick_Sunset">
@@ -292,7 +298,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Blush)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/pink_blur.jpg)</onclick>
-        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
+        <onclick>ClearProperty(TMDbHelper.SimpleBackground.BlurImage,Home)</onclick>
     </include>
 
     <include name="Action_Scheme_Onclick_Slate">
@@ -301,7 +307,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Slate)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/slate_blur.jpg)</onclick>
-        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
+        <onclick>ClearProperty(TMDbHelper.SimpleBackground.BlurImage,Home)</onclick>
     </include>
 
     <include name="Action_Scheme_Onclick_Midnight">
@@ -310,7 +316,7 @@
         <onclick condition="!$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Coal)</onclick>
         <onclick condition="$EXP[Exp_TMDbHelper_IsBlur]">Skin.SetString(Background.DialogImage,Adaptive)</onclick>
         <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/coal_blur.jpg)</onclick>
-        <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=blur_image&amp;image=$ESCVAR[Image_SimpleBackground])</onclick>
+        <onclick>ClearProperty(TMDbHelper.SimpleBackground.BlurImage,Home)</onclick>
     </include>
 
     <variable name="Action_Shortcut_SetWidgetStyle">

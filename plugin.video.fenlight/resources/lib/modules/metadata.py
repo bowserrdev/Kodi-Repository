@@ -33,6 +33,18 @@ metacache_get, metacache_set, metacache_get_season, metacache_set_season = meta_
 writer_credits = ('Author', 'Writer', 'Screenplay', 'Characters')
 alt_titles_check, finished_show_check, empty_value_check = ('US', 'GB', 'UK', ''), ('Ended', 'Canceled'), ('', 'None', None)
 tmdb_image_url, youtube_url, date_format = 'https://image.tmdb.org/t/p/%s%s', 'plugin://plugin.video.youtube/play/?video_id=%s', '%Y-%m-%d'
+# Dimensioni richieste a TMDb. Il token nell'URL sceglie una variante gia' ridimensionata sul CDN:
+# non si scarica il grande per rimpicciolirlo, si scarica direttamente il piccolo. Risparmia banda,
+# decodifica (che sul Mi Stick e' swscale in C puro, senza NEON) e spazio nella cache miniature.
+# Misurato il 31/08/2026 sugli stessi file:
+#   clearlogo  original 1541x804 = 1 618 KB  ->  w500 500x261 = 201 KB   (8x)
+#   still      original 1920x1080 = 382 KB   ->  w780 780x439 =  57 KB   (6,7x)
+# Il clearlogo e' PNG (serve l'alpha) e il PNG costa piu' per pixel del JPEG: nel log delle 17:08
+# un clearlogo 'original' pesava 116 ms di decodifica da solo. Il still e' una miniatura landscape,
+# 780x439 la copre con margine su una GUI a 720p.
+# NON toccati: poster (w780) e fanart/landscape (w1280). w1280 e' esattamente la GUI a 720p della
+# stick, ridurli peggiorerebbe cio' che si vede a schermo intero senza un guadagno proporzionato.
+CLEARLOGO_SIZE, STILL_SIZE = 'w500', 'w780'
 EXPIRES_1_DAYS, EXPIRES_4_DAYS, EXPIRES_7_DAYS, EXPIRES_14_DAYS, EXPIRES_30_DAYS, EXPIRES_182_DAYS = 24, 96, 168, 336, 720, 4368
 invalid_error_codes = (6, 34, 37)
 
@@ -593,8 +605,8 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 						   next((i for i in logos if i.get('iso_639_1') == 'en'), None) or \
 						   logos[0]
 					logo_path = logo.get('file_path')
-					if logo_path.endswith('png'): clearlogo = tmdb_image_url % ('original', logo_path)
-					else: clearlogo = tmdb_image_url % ('original', logo_path.replace(logo_path.split('.')[-1], 'png'))
+					if logo_path.endswith('png'): clearlogo = tmdb_image_url % (CLEARLOGO_SIZE, logo_path)
+					else: clearlogo = tmdb_image_url % (CLEARLOGO_SIZE, logo_path.replace(logo_path.split('.')[-1], 'png'))
 				else: clearlogo = ''
 			except: clearlogo = ''
 			try:
@@ -801,8 +813,8 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 						   next((i for i in logos if i.get('iso_639_1') == 'en'), None) or \
 						   logos[0]
 					logo_path = logo.get('file_path')
-					if logo_path.endswith('png'): clearlogo = tmdb_image_url % ('original', logo_path)
-					else: clearlogo = tmdb_image_url % ('original', logo_path.replace(logo_path.split('.')[-1], 'png'))
+					if logo_path.endswith('png'): clearlogo = tmdb_image_url % (CLEARLOGO_SIZE, logo_path)
+					else: clearlogo = tmdb_image_url % (CLEARLOGO_SIZE, logo_path.replace(logo_path.split('.')[-1], 'png'))
 				else: clearlogo = ''
 			except: clearlogo = ''
 			try:
@@ -1018,7 +1030,7 @@ def episodes_meta(season, meta, prefetch=None):
 			try: duration = ep_data_get('runtime')*60
 			except: duration = 30*60
 			rating, votes, still_path = ep_data_get('vote_average'), ep_data_get('vote_count'), ep_data_get('still_path', None)
-			if still_path: thumb = tmdb_image_url % ('original', still_path)
+			if still_path: thumb = tmdb_image_url % (STILL_SIZE, still_path)
 			else: thumb = None
 			cast = ep_data_get('guest_stars', [])
 			if cast:
@@ -1078,7 +1090,7 @@ def episodes_meta(season, meta, prefetch=None):
 				_tmdb_s, _tmdb_e = _ep_map.get((_ep['season'], _ep['episode']), (_ep['season'], _ep['episode']))
 				_te = _tmdb_ep_data.get((_tmdb_s, _tmdb_e))
 				if _te:
-					if _te.get('still_path'): _ep['thumb'] = tmdb_image_url % ('original', _te['still_path'])
+					if _te.get('still_path'): _ep['thumb'] = tmdb_image_url % (STILL_SIZE, _te['still_path'])
 					if _te.get('name'): _ep['title'] = _te['name']
 					if _te.get('overview'): _ep['plot'] = _te['overview']
 			_tmdb_date_map = {}
