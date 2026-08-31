@@ -37,15 +37,6 @@ try:
 	_builtins.__import__ = _timed_import
 except: pass
 
-# Tetto sulle invocazioni concorrenti (vedi modules/gate.py per la misura che lo motiva).
-# Si prende PRIMA dell'import pesante e si molla a mark_phase('indexer_in'), cioe' prima del
-# lavoro dell'indexer: sotto cancello ci va solo il caricamento dei moduli, che tiene il GIL e
-# non guadagna niente dal parallelismo. La rete resta fuori e resta parallela.
-try:
-	from modules import gate
-	gate.acquire()
-except Exception:
-	gate = None
 from modules.router import routing, sys_exit_check
 _T_IMPORT = _pc()
 # from modules.kodi_utils import logger
@@ -60,11 +51,6 @@ try:
 	import builtins as _b
 	_b.__import__ = _real_import
 except: pass
-# Rete di sicurezza: se l'invocazione non e' mai arrivata a 'indexer_in' (azione pura, uscita
-# anticipata, eccezione) lo slot va restituito lo stesso, altrimenti resta occupato fino a STALE.
-try:
-	if gate is not None: gate.release()
-except Exception: pass
 try:
 	from modules.kodi_utils import log_invocation, log_import_profile
 	log_invocation(sys.argv, _T_START, _T_IMPORT, _T_END)
