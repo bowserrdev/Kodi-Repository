@@ -164,7 +164,7 @@
     <include name="DialogContextMenu_Items">
         <item>
             <label>$LOCALIZE[207]</label>
-            <icon>special://skin/extras/icons/quote.png</icon>
+            <icon>resource://resource.images.arcticfuse/icons/quote.png</icon>
             <onclick>Close</onclick>
             <onclick>ActivateWindow(1113)</onclick>
             <visible>[!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.base_plot))]</visible>
@@ -172,7 +172,7 @@
         </item>
         <item>
             <label>Wiki</label>
-            <icon>special://skin/extras/icons/globe.png</icon>
+            <icon>resource://resource.images.arcticfuse/icons/globe.png</icon>
             <visible>[!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.base_title))]</visible>
             <onclick>Dialog.Close(contextmenu,true)</onclick>
             <onclick>runscript(script.wikipedia,wikipedia=$VAR[DialogContextMenu_Wiki_Title]$VAR[DialogContextMenu_Wiki_Type])</onclick>
@@ -180,7 +180,7 @@
         </item>
         <item>
             <label>$LOCALIZE[31041]</label>
-            <icon>special://skin/extras/icons/fire2.png</icon>
+            <icon>resource://resource.images.arcticfuse/icons/fire2.png</icon>
             <visible>[String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),tvshow) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),season) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),episode) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),movie)]</visible>
             <onclick>Dialog.Close(contextmenu,true)</onclick>
             <onclick>RunScript(plugin.video.themoviedb.helper,related_lists,query=$VAR[Path_ContextParams_Query],tmdb_type=$VAR[Path_ContextParams_TMDbType])</onclick>
@@ -188,21 +188,21 @@
         </item>
         <item>
             <label>$LOCALIZE[15019]</label>
-            <icon>special://skin/extras/icons/circle-plus.png</icon>
+            <icon>resource://resource.images.arcticfuse/icons/circle-plus.png</icon>
             <visible>ListItem.IsFolder</visible>
             <onclick>Dialog.Close(contextmenu,true)</onclick>
             <onclick>RunScript(script.skinvariables,set_listitem_to_menunode=homewidgets||1101widgets||1102widgets||1103widgets||1104widgets||homesubmenu||1101submenu||1102submenu||1103submenu||1104submenu||powermenu||powertray,skin=$VAR[Path_SkinVariables_SkinFolder])</onclick>
         </item>
         <item>
             <label>$LOCALIZE[33061]</label>
-            <icon>special://skin/extras/icons/bars.png</icon>
+            <icon>resource://resource.images.arcticfuse/icons/bars.png</icon>
             <onclick>Dialog.Close(contextmenu,true)</onclick>
             <onclick condition="$EXP[Exp_View_IsMedia]">ActivateWindow(1171)</onclick>
             <onclick condition="!$EXP[Exp_View_IsMedia]">ActivateWindow(1170)</onclick>
         </item>
         <!-- <item>
             <label>$LOCALIZE[15067]</label>
-            <icon>special://skin/extras/icons/circle-xmark.png</icon>
+            <icon>resource://resource.images.arcticfuse/icons/circle-xmark.png</icon>
             <onclick>PreviousMenu</onclick>
         </item> -->
     </include>

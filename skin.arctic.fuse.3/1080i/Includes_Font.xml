@@ -23,7 +23,7 @@
             <!-- Font for codec flag -->
             <font>
                 <name>font_infotag_bold</name>
-                <filename>LeagueSpartan-ExtraBold.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/LeagueSpartan-ExtraBold.ttf</filename>
                 <size>24</size>
                 <style>uppercase</style>
             </font>
@@ -31,51 +31,51 @@
             <!-- Keyboard Symbol Font -->
             <font>
                 <name>font_midi_iconic</name>
-                <filename>fa-solid-900.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/fa-solid-900.ttf</filename>
                 <size>34</size>
             </font>
             <font>
                 <name>font_main_iconic</name>
-                <filename>fa-solid-900.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/fa-solid-900.ttf</filename>
                 <size>30</size>
             </font>
             <font>
                 <name>font_mini_iconic</name>
-                <filename>fa-solid-900.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/fa-solid-900.ttf</filename>
                 <size>26</size>
             </font>
             <font>
                 <name>font_tiny_iconic</name>
-                <filename>fa-solid-900.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/fa-solid-900.ttf</filename>
                 <size>22</size>
             </font>
             <font>
                 <name>font_hint_iconic</name>
-                <filename>fa-solid-900.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/fa-solid-900.ttf</filename>
                 <size>16</size>
             </font>
             <font>
                 <name>font_itsy_iconic</name>
-                <filename>fa-solid-900.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/fa-solid-900.ttf</filename>
                 <size>12</size>
             </font>
 
             <!-- Kodi Logo Font -->
             <font>
                 <name>font_logo</name>
-                <filename>Questrial-Regular.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/Questrial-Regular.ttf</filename>
                 <size>24</size>
             </font>
             <font>
                 <name>font_logo_large</name>
-                <filename>Questrial-Regular.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/Questrial-Regular.ttf</filename>
                 <size>44</size>
             </font>
 
             <!-- Testing Fonts -->
             <font>
                 <name>font_debug</name>
-                <filename>CommitMono-400-Regular.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/CommitMono-400-Regular.ttf</filename>
                 <size>22</size>
                 <aspect>$PARAM[aspect_system]</aspect>
             </font>
@@ -103,9 +103,9 @@
     </include>
 
     <include name="Font_Default">
-        <param name="font_bold">Inter-Bold.ttf</param>
-        <param name="font_regular">Inter-Regular.ttf</param>
-        <param name="font_light">Inter-Light.ttf</param>
+        <param name="font_bold">resource://resource.font.arcticfuse/Inter-Bold.ttf</param>
+        <param name="font_regular">resource://resource.font.arcticfuse/Inter-Regular.ttf</param>
+        <param name="font_light">resource://resource.font.arcticfuse/Inter-Light.ttf</param>
         <param name="style_light" />
         <param name="size_hint">15</param>
         <param name="size_tiny">21</param>
@@ -148,57 +148,57 @@
 
             <!-- <font>
                 <name>font_title_midi_1</name>
-                <filename>titles/LavishlyYours.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/titles/LavishlyYours.ttf</filename>
                 <linespacing>0.8</linespacing>
                 <size>$PARAM[size_midi_x2]</size>
             </font>
             <font>
                 <name>font_title_midi_2</name>
-                <filename>titles/BungeeShade.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/titles/BungeeShade.ttf</filename>
                 <linespacing>0.9</linespacing>
                 <size>$PARAM[size_midi_x2]</size>
             </font>
             <font>
                 <name>font_title_midi_3</name>
-                <filename>titles/PermanentMarker.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/titles/PermanentMarker.ttf</filename>
                 <linespacing>0.8</linespacing>
                 <size>$PARAM[size_midi_x2]</size>
             </font>
             <font>
                 <name>font_title_midi_4</name>
-                <filename>titles/Condiment.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/titles/Condiment.ttf</filename>
                 <linespacing>0.9</linespacing>
                 <size>$PARAM[size_midi_x2]</size>
             </font>
             <font>
                 <name>font_title_midi_5</name>
-                <filename>titles/OoohBaby.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/titles/OoohBaby.ttf</filename>
                 <linespacing>0.9</linespacing>
                 <size>$PARAM[size_midi_x2]</size>
             </font>
             <font>
                 <name>font_title_midi_6</name>
-                <filename>titles/Aboreto.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/titles/Aboreto.ttf</filename>
                 <size>$PARAM[size_midi_x2]</size>
             </font>
             <font>
                 <name>font_title_midi_7</name>
-                <filename>titles/Sail.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/titles/Sail.ttf</filename>
                 <size>$PARAM[size_midi_x2]</size>
             </font>
             <font>
                 <name>font_title_midi_8</name>
-                <filename>titles/Barrio.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/titles/Barrio.ttf</filename>
                 <size>$PARAM[size_midi_x2]</size>
             </font>
             <font>
                 <name>font_title_midi_9</name>
-                <filename>titles/Turnaround.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/titles/Turnaround.ttf</filename>
                 <size>$PARAM[size_midi_x2]</size>
             </font>
             <font>
                 <name>font_title_midi_0</name>
-                <filename>titles/Meddon.ttf</filename>
+                <filename>resource://resource.font.arcticfuse/titles/Meddon.ttf</filename>
                 <linespacing>0.6</linespacing>
                 <size>$PARAM[size_midi_x2]</size>
             </font> -->

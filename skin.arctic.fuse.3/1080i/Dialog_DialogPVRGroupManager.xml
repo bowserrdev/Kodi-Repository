@@ -192,7 +192,7 @@
                 <param name="id">9991</param>
                 <param name="groupid">9992</param>
                 <label>$LOCALIZE[186]</label>
-                <param name="icon">special://skin/extras/icons/circle-check.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/circle-check.png</param>
                 <onclick>SetFocus(9001)</onclick>
                 <onback>9001</onback>
             </include>
@@ -205,20 +205,20 @@
                 <param name="id">29</param>
                 <param name="groupid">9329</param>
                 <label>$LOCALIZE[186]</label>
-                <param name="icon">special://skin/extras/icons/circle-check.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/circle-check.png</param>
             </include> -->
             <include content="Button_Dialog">
                 <param name="id">26</param>
                 <param name="groupid">9326</param>
                 <label>$LOCALIZE[15019]</label>
-                <param name="icon">special://skin/extras/icons/circle-plus.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/circle-plus.png</param>
                 <visible>Control.IsEnabled(26)</visible>
             </include>
             <include content="Button_Dialog">
                 <param name="id">9001</param>
                 <param name="groupid">9101</param>
                 <label>$LOCALIZE[31109]</label>
-                <param name="icon">special://skin/extras/icons/table-list.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/table-list.png</param>
                 <onclick condition="!Integer.IsEqual(Container(12).NumItems,0)">SetFocus(12)</onclick>
                 <onclick condition="Integer.IsEqual(Container(12).NumItems,0)">SetFocus(11)</onclick>
             </include>
@@ -226,7 +226,7 @@
                 <param name="id">27</param>
                 <param name="groupid">9327</param>
                 <label>$LOCALIZE[118]</label>
-                <param name="icon">special://skin/extras/icons/i-cursor.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/i-cursor.png</param>
                 <visible>Control.IsEnabled(27)</visible>
             </include>
             <include content="Button_Dialog">
@@ -242,21 +242,21 @@
                 <param name="id">28</param>
                 <param name="groupid">9328</param>
                 <label>$LOCALIZE[117]</label>
-                <param name="icon">special://skin/extras/icons/delete-left.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/delete-left.png</param>
                 <visible>Control.IsEnabled(28)</visible>
             </include>
             <include content="Button_Dialog">
                 <param name="id">35</param>
                 <param name="groupid">9335</param>
                 <label>$LOCALIZE[184]</label>
-                <param name="icon">special://skin/extras/icons/image.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/image.png</param>
                 <visible>Control.IsEnabled(35)</visible>
             </include>
             <include content="Button_Dialog">
                 <param name="id">34</param>
                 <param name="groupid">9334</param>
                 <label>$VAR[Label_PVRChannelMgrToggle]</label>
-                <param name="icon">special://skin/extras/icons/right-left.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/right-left.png</param>
                 <visible>Control.IsEnabled(34)</visible>
             </include>
         </definition>

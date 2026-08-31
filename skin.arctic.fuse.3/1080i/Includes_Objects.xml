@@ -318,7 +318,7 @@
         <param name="hasprogress">false</param>
         <param name="texture">dialog/loading-back.png</param>
         <param name="size">100</param>
-        <param name="icon">special://skin/extras/icons/kodi.png</param>
+        <param name="icon">resource://resource.images.arcticfuse/icons/kodi.png</param>
         <param name="progress">Control.GetLabel(32)</param>
         <param name="progress_id">32</param>
         <param name="spinprogress">false</param>
@@ -726,7 +726,7 @@
                 <height>96</height>
                 <centerleft>50%</centerleft>
                 <aspectratio>keep</aspectratio>
-                <texture colordiffuse="$VAR[ColorHighlight]">special://skin/extras/icons/kodi.png</texture>
+                <texture colordiffuse="$VAR[ColorHighlight]">resource://resource.images.arcticfuse/icons/kodi.png</texture>
             </control>
             <control type="label">
                 <height>32</height>
@@ -1344,7 +1344,7 @@
     </include>
 
     <include name="Object_MenuHeader">
-        <param name="icon">special://skin/extras/icons/kodi.png</param>
+        <param name="icon">resource://resource.images.arcticfuse/icons/kodi.png</param>
         <param name="bordersize">icon_home_bordersize</param>
         <param name="label">$LOCALIZE[33063]</param>
         <param name="has_icon">true</param>
@@ -1936,7 +1936,7 @@
         <param name="color">main_fg_90</param>
         <param name="item_h">160</param>
         <param name="icon">$INFO[ListItem.Icon]</param>
-        <param name="icon_check">[String.StartsWith(ListItem.Icon,Default) | String.StartsWith(ListItem.Icon,special://skin/extras/icons/)]</param>
+        <param name="icon_check">[String.StartsWith(ListItem.Icon,Default) | String.StartsWith(ListItem.Icon,resource://resource.images.arcticfuse/icons/)]</param>
         <definition>
             <control type="group">
                 <left>0</left>

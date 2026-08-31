@@ -23,7 +23,7 @@
         <include content="Furniture_Busy">
             <param name="hasspinner">true</param>
             <param name="spinspinner">true</param>
-            <param name="icon">special://skin/extras/icons/kodi.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/kodi.png</param>
             <param name="haslabel">false</param>
             <param name="spinnervisible">[!Window.IsActive(DialogVolumeBar.xml) | Player.Muted]</param>
             <param name="visible_delay">400</param>
@@ -166,8 +166,8 @@
                     <right>20</right>
 
                     <control type="button" id="22901">
-                        <texturenofocus colordiffuse="$VAR[DialogShortcuts_ColorSelected_30]">special://skin/extras/icons/circle-arrow-up.png</texturenofocus>
-                        <texturefocus colordiffuse="$VAR[ColorSelected]">special://skin/extras/icons/circle-arrow-up.png</texturefocus>
+                        <texturenofocus colordiffuse="$VAR[DialogShortcuts_ColorSelected_30]">resource://resource.images.arcticfuse/icons/circle-arrow-up.png</texturenofocus>
+                        <texturefocus colordiffuse="$VAR[ColorSelected]">resource://resource.images.arcticfuse/icons/circle-arrow-up.png</texturefocus>
                         <onclick>RunPlugin($INFO[Container(22001).ListItem.Property(url),,&amp;func=do_move&amp;&amp;move::-1&amp;&amp;window_prop::url]$INFO[Container(22001).ListItem(-1).Property(item),&amp;&amp;offset::,])</onclick>
                         <onback>29999</onback>
                         <width>72</width>
@@ -175,8 +175,8 @@
                     </control>
 
                     <control type="button" id="22902">
-                        <texturenofocus colordiffuse="$VAR[DialogShortcuts_ColorSelected_30]">special://skin/extras/icons/circle-arrow-down.png</texturenofocus>
-                        <texturefocus colordiffuse="$VAR[ColorSelected]">special://skin/extras/icons/circle-arrow-down.png</texturefocus>
+                        <texturenofocus colordiffuse="$VAR[DialogShortcuts_ColorSelected_30]">resource://resource.images.arcticfuse/icons/circle-arrow-down.png</texturenofocus>
+                        <texturefocus colordiffuse="$VAR[ColorSelected]">resource://resource.images.arcticfuse/icons/circle-arrow-down.png</texturefocus>
                         <onclick>RunPlugin($INFO[Container(22001).ListItem.Property(url),,&amp;func=do_move&amp;&amp;move::1&amp;&amp;window_prop::url]$INFO[Container(22001).ListItem(1).Property(item),&amp;&amp;offset::,])</onclick>
                         <onback>29999</onback>
                         <width>72</width>
@@ -184,8 +184,8 @@
                     </control>
 
                     <control type="button" id="22903">
-                        <texturenofocus colordiffuse="$VAR[DialogShortcuts_ColorSelected_30]">special://skin/extras/icons/circle-plus.png</texturenofocus>
-                        <texturefocus colordiffuse="$VAR[ColorSelected]">special://skin/extras/icons/circle-plus.png</texturefocus>
+                        <texturenofocus colordiffuse="$VAR[DialogShortcuts_ColorSelected_30]">resource://resource.images.arcticfuse/icons/circle-plus.png</texturenofocus>
+                        <texturefocus colordiffuse="$VAR[ColorSelected]">resource://resource.images.arcticfuse/icons/circle-plus.png</texturefocus>
 
                         <include>DialogShortcuts_Allow_SubGroups_Onclick</include>
 
@@ -200,8 +200,8 @@
                     </control>
 
                     <control type="button" id="22904">
-                        <texturenofocus colordiffuse="$VAR[DialogShortcuts_ColorSelected_30]">special://skin/extras/icons/circle-xmark.png</texturenofocus>
-                        <texturefocus colordiffuse="$VAR[ColorSelected]">special://skin/extras/icons/circle-xmark.png</texturefocus>
+                        <texturenofocus colordiffuse="$VAR[DialogShortcuts_ColorSelected_30]">resource://resource.images.arcticfuse/icons/circle-xmark.png</texturenofocus>
+                        <texturefocus colordiffuse="$VAR[ColorSelected]">resource://resource.images.arcticfuse/icons/circle-xmark.png</texturefocus>
 
                         <include>DialogShortcuts_Allow_SubGroups_Onclick</include>
                         <onclick condition="!$EXP[DialogShortcuts_IsWidgetMode_Expression]">SetProperty(Shortcuts.Groupings.Links,Links,Home)</onclick>
@@ -219,8 +219,8 @@
     </include>
 
     <variable name="DialogShortcuts_Items_DisableEnable_Icon">
-        <value condition="!String.IsEqual(Container(22001).ListItem.Property(disabled),True)">special://skin/extras/icons/circle-check.png</value>
-        <value>special://skin/extras/icons/circle-cancel.png</value>
+        <value condition="!String.IsEqual(Container(22001).ListItem.Property(disabled),True)">resource://resource.images.arcticfuse/icons/circle-check.png</value>
+        <value>resource://resource.images.arcticfuse/icons/circle-cancel.png</value>
     </variable>
 
     <include name="DialogShortcuts_Items_Basic">
@@ -241,7 +241,7 @@
             <param name="id">29002</param>
             <param name="groupid">29102</param>
             <label>$LOCALIZE[424]</label>
-            <param name="icon">special://skin/extras/icons/share.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/share.png</param>
             <include>DialogShortcuts_Allow_SubGroups_Onclick</include>
             <onclick condition="!$EXP[DialogShortcuts_IsWidgetMode_Expression]">SetProperty(Shortcuts.Groupings.Links,Links,Home)</onclick>
             <onclick condition="$EXP[DialogShortcuts_IsWidgetMode_Expression]">ClearProperty(Shortcuts.Groupings.Links,Home)</onclick>
@@ -255,7 +255,7 @@
             <param name="id">29003</param>
             <param name="groupid">29103</param>
             <label>$LOCALIZE[573]</label>
-            <param name="icon">special://skin/extras/icons/terminal.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/terminal.png</param>
             <include>DialogShortcuts_Allow_SubGroups_Onclick</include>
             <onclick condition="!$EXP[DialogShortcuts_IsWidgetMode_Expression]">SetProperty(Shortcuts.Groupings.Links,Links,Home)</onclick>
             <onclick condition="$EXP[DialogShortcuts_IsWidgetMode_Expression]">ClearProperty(Shortcuts.Groupings.Links,Home)</onclick>
@@ -269,7 +269,7 @@
             <param name="id">29004</param>
             <param name="groupid">29104</param>
             <label>$LOCALIZE[118]</label>
-            <param name="icon">special://skin/extras/icons/i-cursor.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/i-cursor.png</param>
             <onclick>RunPlugin($INFO[Container(22001).ListItem.Property(url),,&amp;func=do_edit])</onclick>
             <onback>22904</onback>
             <visible>$EXP[DialogShortcuts_IsEnabled_Expression]</visible>
@@ -280,7 +280,7 @@
             <param name="id">29005</param>
             <param name="groupid">29105</param>
             <label>$LOCALIZE[31274]</label>
-            <param name="icon">special://skin/extras/icons/image.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/image.png</param>
             <onclick>SetProperty(url,$INFO[Container(22001).ListItem.Property(url)],1117)</onclick>
             <onclick>ActivateWindow(1117)</onclick>
             <onback>22904</onback>
@@ -940,7 +940,7 @@
             <label2>$INFO[Skin.String(OptionsTiles.0$PARAM[item].Icon)]</label2>
             <label> - $LOCALIZE[31274]</label>
             <visible>$PARAM[visible]</visible>
-            <onclick>Skin.SetImage(OptionsTiles.0$PARAM[item].Icon,special://skin/extras/icons/)</onclick>
+            <onclick>Skin.SetImage(OptionsTiles.0$PARAM[item].Icon,resource://resource.images.arcticfuse/icons/)</onclick>
             <visible>Skin.String(OptionsTiles.0$PARAM[item].Include,Custom)</visible>
         </include>
     </include>

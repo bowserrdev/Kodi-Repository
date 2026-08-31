@@ -20,7 +20,7 @@
         <value condition="String.IsEqual({listitem}.DBType,tag)" />
         <value condition="String.IsEqual({listitem}.DBType,director)" />
         <value condition="String.StartsWith({listitem}.Icon,Default)" />
-        <value condition="String.StartsWith({listitem}.Icon,special://skin/extras/icons/)" />
+        <value condition="String.StartsWith({listitem}.Icon,resource://resource.images.arcticfuse/icons/)" />
 
         <value condition="!String.IsEmpty({listitem}.Icon)">$INFO[{listitem}.Icon]</value>
     </variable>
@@ -40,15 +40,15 @@
         <value condition="!String.IsEmpty({listitem}.Art(thumb)) + !String.IsEqual({listitem}.Art(thumb),{listitem}.Icon)" />
 
         <value condition="!String.IsEmpty({listitem}.Property(icon))">$INFO[{listitem}.Property(icon)]</value>
-        <value condition="String.IsEqual({listitem}.DBType,tag)">special://skin/extras/icons/tag.png</value>
-        <value condition="String.IsEqual({listitem}.DBType,director)">special://skin/extras/icons/clapperboard.png</value>
-        <value condition="String.IsEqual({listitem}.Icon,DefaultFolder.png)">special://skin/extras/icons/folder.png</value>
-        <value condition="String.IsEqual({listitem}.Icon,DefaultPlaylist.png)">special://skin/extras/icons/list-check.png</value>
-        <value condition="String.IsEqual({listitem}.Icon,DefaultPartyMode.png)">special://skin/extras/icons/list-check.png</value>
-        <value condition="String.IsEqual({listitem}.Icon,DefaultAddSource.png)">special://skin/extras/icons/file-circle-plus.png</value>
-        <value condition="String.IsEqual({listitem}.Icon,DefaultFile.png)">special://skin/extras/icons/file-circle-plus.png</value>
+        <value condition="String.IsEqual({listitem}.DBType,tag)">resource://resource.images.arcticfuse/icons/tag.png</value>
+        <value condition="String.IsEqual({listitem}.DBType,director)">resource://resource.images.arcticfuse/icons/clapperboard.png</value>
+        <value condition="String.IsEqual({listitem}.Icon,DefaultFolder.png)">resource://resource.images.arcticfuse/icons/folder.png</value>
+        <value condition="String.IsEqual({listitem}.Icon,DefaultPlaylist.png)">resource://resource.images.arcticfuse/icons/list-check.png</value>
+        <value condition="String.IsEqual({listitem}.Icon,DefaultPartyMode.png)">resource://resource.images.arcticfuse/icons/list-check.png</value>
+        <value condition="String.IsEqual({listitem}.Icon,DefaultAddSource.png)">resource://resource.images.arcticfuse/icons/file-circle-plus.png</value>
+        <value condition="String.IsEqual({listitem}.Icon,DefaultFile.png)">resource://resource.images.arcticfuse/icons/file-circle-plus.png</value>
         <value condition="String.StartsWith({listitem}.Icon,Default)">$INFO[{listitem}.Icon]</value>
-        <value condition="String.StartsWith({listitem}.Icon,special://skin/extras/icons/)">$INFO[{listitem}.Icon]</value>
+        <value condition="String.StartsWith({listitem}.Icon,resource://resource.images.arcticfuse/icons/)">$INFO[{listitem}.Icon]</value>
     </variable>
 
     <variable name="Image_Icon" containers="450">

@@ -190,7 +190,7 @@
             <param name="groupid">9101</param>
             <label>$LOCALIZE[29915]</label>
             <altlabel>$LOCALIZE[29915]</altlabel>
-            <param name="icon">special://skin/extras/icons/info2.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/info2.png</param>
             <usealttexture>String.IsEmpty(Window.Property(ModeName))</usealttexture>
             <onfocus>ClearProperty(ModePath)</onfocus>
             <onfocus>ClearProperty(ModeName)</onfocus>
@@ -208,7 +208,7 @@
             <param name="groupid">9111</param>
             <label>$LOCALIZE[342]</label>
             <altlabel>$LOCALIZE[342]</altlabel>
-            <param name="icon">special://skin/extras/icons/film.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/film.png</param>
             <usealttexture>String.IsEqual(Window.Property(ModeName),$LOCALIZE[342])</usealttexture>
             <onfocus>SetProperty(ModeName,$LOCALIZE[342])</onfocus>
             <onfocus>SetProperty(ModePath,$INFO[Window.Property(TMDb_ID),plugin://plugin.video.themoviedb.helper/?info=stars_in_movies&amp;tmdb_type=person&amp;tmdb_id=,&amp;limit=250&amp;sort_by=premiered&amp;nextpage=false&amp;cacheonly=true&amp;length=1&amp;exclude_key=genre&amp;exclude_value=Documentary / News / Talk])</onfocus>
@@ -220,7 +220,7 @@
             <param name="groupid">9112</param>
             <label>$LOCALIZE[20343]</label>
             <altlabel>$LOCALIZE[20343]</altlabel>
-            <param name="icon">special://skin/extras/icons/tv.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/tv.png</param>
             <usealttexture>String.IsEqual(Window.Property(ModeName),$LOCALIZE[20343])</usealttexture>
             <onfocus>SetProperty(ModeName,$LOCALIZE[20343])</onfocus>
             <onfocus>SetProperty(ModePath,$INFO[Window.Property(TMDb_ID),plugin://plugin.video.themoviedb.helper/?info=stars_in_tvshows&amp;tmdb_type=person&amp;tmdb_id=,&amp;limit=250&amp;sort_by=premiered&amp;nextpage=false&amp;cacheonly=true&amp;length=1&amp;exclude_key=genre&amp;exclude_value=Documentary / News / Talk])</onfocus>
@@ -232,7 +232,7 @@
             <param name="groupid">9113</param>
             <label>$LOCALIZE[31050]</label>
             <altlabel>$LOCALIZE[31050]</altlabel>
-            <param name="icon">special://skin/extras/icons/director.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/director.png</param>
             <usealttexture>String.IsEqual(Window.Property(ModeName),$LOCALIZE[31035])</usealttexture>
             <onfocus>SetProperty(ModeName,$LOCALIZE[31035])</onfocus>
             <onfocus>SetProperty(ModePath,$INFO[Window.Property(TMDb_ID),plugin://plugin.video.themoviedb.helper/?info=crew_in_both&amp;tmdb_type=person&amp;tmdb_id=,&amp;limit=250&amp;sort_by=premiered&amp;nextpage=false&amp;cacheonly=true&amp;length=1])</onfocus>
@@ -244,7 +244,7 @@
             <param name="groupid">9114</param>
             <label>$LOCALIZE[206]</label>
             <altlabel>$LOCALIZE[206]</altlabel>
-            <param name="icon">special://skin/extras/icons/person.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/person.png</param>
             <usealttexture>String.IsEqual(Window.Property(ModeName),$LOCALIZE[31076])</usealttexture>
             <onfocus>SetProperty(ModeName,$LOCALIZE[31076])</onfocus>
             <onfocus>SetProperty(ModePath,$INFO[Window.Property(TMDb_ID),plugin://plugin.video.themoviedb.helper/?info=cast&amp;tmdb_id=,&amp;limit=250]$INFO[Window.Property(tmdb_type),&amp;tmdb_type=,&amp;nextpage=false&amp;cacheonly=true&amp;length=1])</onfocus>
@@ -256,7 +256,7 @@
             <param name="groupid">9115</param>
             <label>$LOCALIZE[31050]</label>
             <altlabel>$LOCALIZE[31050]</altlabel>
-            <param name="icon">special://skin/extras/icons/director.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/director.png</param>
             <usealttexture>String.IsEqual(Window.Property(ModeName),$LOCALIZE[31383])</usealttexture>
             <onfocus>SetProperty(ModeName,$LOCALIZE[31383])</onfocus>
             <onfocus>SetProperty(ModePath,$INFO[Window.Property(TMDb_ID),plugin://plugin.video.themoviedb.helper/?info=crew&amp;tmdb_id=,&amp;limit=250]$INFO[Window.Property(tmdb_type),&amp;tmdb_type=,&amp;nextpage=false&amp;cacheonly=true&amp;length=1])</onfocus>

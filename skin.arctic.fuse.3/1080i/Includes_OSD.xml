@@ -14,7 +14,7 @@
 
             <include content="DialogInfo_Button">
                 <param name="vertical">false</param>
-                <param name="icon">special://skin/extras/icons/play2.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/play2.png</param>
                 <param name="id">3012</param>
                 <param name="groupid">5012</param>
                 <param name="label">$LOCALIZE[208]</param>
@@ -28,7 +28,7 @@
 
             <include content="DialogInfo_Button">
                 <param name="vertical">false</param>
-                <param name="icon">special://skin/extras/icons/xmark.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/xmark.png</param>
                 <param name="id">4013</param>
                 <param name="groupid">5013</param>
                 <param name="label">$LOCALIZE[222]</param>
@@ -101,7 +101,7 @@
                         <height>40</height>
                         <width>40</width>
                         <aspectratio>keep</aspectratio>
-                        <texture colordiffuse="main_fg_30">special://skin/extras/icons/arrow-$PARAM[arrow_direction].png</texture>
+                        <texture colordiffuse="main_fg_30">resource://resource.images.arcticfuse/icons/arrow-$PARAM[arrow_direction].png</texture>
                     </control>
                     <include>OSD_CastInfo_HintText_DirectionLabel_$PARAM[arrow_direction]</include>
                     <control type="label">
@@ -309,7 +309,7 @@
             </control>
 
             <!-- <control type="image">
-                <texture colordiffuse="panel_bg_70">special://skin/extras/backgrounds/overlay/combined_flixart.png</texture>
+                <texture colordiffuse="panel_bg_70">resource://resource.images.arcticfuse/backgrounds/overlay/combined_flixart.png</texture>
             </control> -->
         </control>
     </include>
@@ -797,7 +797,7 @@
                 <!-- <include content="Object_InfoCircle">
                     <param name="name">[UPPERCASE]$INFO[VideoPlayer.VideoResolution]$INFO[VideoPlayer.VideoCodec, • ,]$INFO[VideoPlayer.VideoAspect, • ,:1]$INFO[VideoPlayer.AudioCodec, • ,]$VAR[Label_VideoPlayer_AudioChannels, • ,][/UPPERCASE]</param>
                     <param name="role">$INFO[VideoPlayer.VideoVersionName]</param>
-                    <param name="icon">special://skin/extras/icons/photo-film.png</param>
+                    <param name="icon">resource://resource.images.arcticfuse/icons/photo-film.png</param>
                     <param name="fallback_role">$LOCALIZE[31207]</param>
                     <param name="textcolor_top">$PARAM[textcolor_top]</param>
                     <param name="textcolor_sub">$PARAM[textcolor_sub]</param>

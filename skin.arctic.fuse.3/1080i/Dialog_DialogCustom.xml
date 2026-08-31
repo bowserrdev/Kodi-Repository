@@ -580,8 +580,8 @@
             <param name="control">radiobutton</param>
             <param name="istext">true</param>
             <param name="label">$LOCALIZE[31220]</param>
-            <selected>Skin.String(Background.Image,special://skin/extras/backgrounds/blur/purple_blur.jpg) | String.IsEmpty(Skin.String(Background.Image))</selected>
-            <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/blur/purple_blur.jpg)</onclick>
+            <selected>Skin.String(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/purple_blur.jpg) | String.IsEmpty(Skin.String(Background.Image))</selected>
+            <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/purple_blur.jpg)</onclick>
             <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground],prefix=SimpleBackground)</onclick>
         </include>
         <include content="Button_Dialog_Setting">
@@ -591,8 +591,8 @@
             <param name="control">radiobutton</param>
             <param name="istext">true</param>
             <param name="label">$LOCALIZE[762]</param>
-            <selected>Skin.String(Background.Image,special://skin/extras/backgrounds/blur/blue_blur.jpg)</selected>
-            <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/blur/blue_blur.jpg)</onclick>
+            <selected>Skin.String(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/blue_blur.jpg)</selected>
+            <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/blue_blur.jpg)</onclick>
             <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground],prefix=SimpleBackground)</onclick>
         </include>
         <include content="Button_Dialog_Setting">
@@ -602,8 +602,8 @@
             <param name="control">radiobutton</param>
             <param name="istext">true</param>
             <param name="label">$LOCALIZE[31224]</param>
-            <selected>Skin.String(Background.Image,special://skin/extras/backgrounds/pink_blur.jpg)</selected>
-            <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/pink_blur.jpg)</onclick>
+            <selected>Skin.String(Background.Image,resource://resource.images.arcticfuse/backgrounds/pink_blur.jpg)</selected>
+            <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/pink_blur.jpg)</onclick>
             <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground],prefix=SimpleBackground)</onclick>
         </include>
         <include content="Button_Dialog_Setting">
@@ -613,8 +613,8 @@
             <param name="control">radiobutton</param>
             <param name="istext">true</param>
             <param name="label">$LOCALIZE[13342]</param>
-            <selected>Skin.String(Background.Image,special://skin/extras/backgrounds/blur/orange_blur.jpg)</selected>
-            <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/blur/orange_blur.jpg)</onclick>
+            <selected>Skin.String(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/orange_blur.jpg)</selected>
+            <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/orange_blur.jpg)</onclick>
             <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground],prefix=SimpleBackground)</onclick>
         </include>
         <include content="Button_Dialog_Setting">
@@ -624,8 +624,8 @@
             <param name="control">radiobutton</param>
             <param name="istext">true</param>
             <param name="label">$LOCALIZE[31221]</param>
-            <selected>Skin.String(Background.Image,special://skin/extras/backgrounds/blur/slate_blur.jpg)</selected>
-            <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/blur/slate_blur.jpg)</onclick>
+            <selected>Skin.String(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/slate_blur.jpg)</selected>
+            <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/slate_blur.jpg)</onclick>
             <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground],prefix=SimpleBackground)</onclick>
         </include>
         <include content="Button_Dialog_Setting">
@@ -635,8 +635,8 @@
             <param name="control">radiobutton</param>
             <param name="istext">true</param>
             <param name="label">$LOCALIZE[31222]</param>
-            <selected>Skin.String(Background.Image,special://skin/extras/backgrounds/blur/coal_blur.jpg)</selected>
-            <onclick>Skin.SetString(Background.Image,special://skin/extras/backgrounds/blur/coal_blur.jpg)</onclick>
+            <selected>Skin.String(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/coal_blur.jpg)</selected>
+            <onclick>Skin.SetString(Background.Image,resource://resource.images.arcticfuse/backgrounds/blur/coal_blur.jpg)</onclick>
             <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground],prefix=SimpleBackground)</onclick>
         </include>
         <include content="Button_Dialog_Setting">
@@ -646,7 +646,7 @@
             <param name="control">radiobutton</param>
             <param name="istext">true</param>
             <param name="label">$LOCALIZE[636]</param>
-            <selected>!String.StartsWith(Skin.String(Background.Image),special://skin/extras/backgrounds/blur/) + !String.IsEmpty(Skin.String(Background.Image))</selected>
+            <selected>!String.StartsWith(Skin.String(Background.Image),resource://resource.images.arcticfuse/backgrounds/blur/) + !String.IsEmpty(Skin.String(Background.Image))</selected>
             <onclick>Skin.SetImage(Background.Image)</onclick>
             <onclick>RunScript(plugin.video.themoviedb.helper,blur_image=$VAR[Image_SimpleBackground],prefix=SimpleBackground)</onclick>
         </include>
@@ -659,7 +659,7 @@
             <param name="control">button</param>
             <param name="dialog">true</param>
             <param name="label">$LOCALIZE[31270]</param>
-            <param name="icon">special://skin/extras/icons/image.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/image.png</param>
             <onclick>Close</onclick>
             <onclick>Skin.Reset(Startup.VideoPath)</onclick>
             <onclick>Skin.SetImage(Startup.ImageFolder)</onclick>
@@ -670,7 +670,7 @@
             <param name="control">button</param>
             <param name="dialog">true</param>
             <param name="label">$LOCALIZE[31271]</param>
-            <param name="icon">special://skin/extras/icons/folder.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/folder.png</param>
             <onclick>Close</onclick>
             <onclick>Skin.Reset(Startup.VideoPath)</onclick>
             <onclick>Skin.SetPath(Startup.ImageFolder)</onclick>
@@ -681,7 +681,7 @@
             <param name="control">button</param>
             <param name="dialog">true</param>
             <param name="label">$LOCALIZE[31369]</param>
-            <param name="icon">special://skin/extras/icons/video.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/video.png</param>
             <onclick>Close</onclick>
             <onclick>Skin.Reset(Startup.ImageFolder)</onclick>
             <onclick>Skin.SetFile(Startup.VideoPath,.mp4|.mkv|.avi)</onclick>
@@ -692,10 +692,10 @@
             <param name="control">button</param>
             <param name="dialog">true</param>
             <param name="label">$LOCALIZE[571]</param>
-            <param name="icon">special://skin/extras/icons/triangle-exclamation.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/triangle-exclamation.png</param>
             <onclick>Close</onclick>
             <onclick>Skin.Reset(Startup.VideoPath)</onclick>
-            <onclick>Skin.SetString(Startup.ImageFolder,special://skin/extras/backgrounds/launch/)</onclick>
+            <onclick>Skin.SetString(Startup.ImageFolder,resource://resource.images.arcticfuse/backgrounds/launch/)</onclick>
         </include>
     </include>
 
@@ -1603,7 +1603,7 @@
             <param name="id">8001</param>
             <param name="groupid">8101</param>
             <param name="dialog">true</param>
-            <param name="icon">special://skin/extras/icons/image.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/image.png</param>
             <description>Video filter button</description>
             <label>$LOCALIZE[35225]</label>
             <onclick>ActivateWindow(GameVideoFilter)</onclick>
@@ -1612,7 +1612,7 @@
             <param name="id">8002</param>
             <param name="groupid">8102</param>
             <param name="dialog">true</param>
-            <param name="icon">special://skin/extras/icons/arrows-left-right-to-line.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/arrows-left-right-to-line.png</param>
             <description>Stretch mode button</description>
             <label>$LOCALIZE[35233]</label>
             <onclick>ActivateWindow(GameStretchMode)</onclick>
@@ -1621,7 +1621,7 @@
             <param name="id">8003</param>
             <param name="groupid">8103</param>
             <param name="dialog">true</param>
-            <param name="icon">special://skin/extras/icons/arrow-rotate-right.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/arrow-rotate-right.png</param>
             <description>Video rotation button</description>
             <label>$LOCALIZE[35227]</label>
             <onclick>ActivateWindow(GameVideoRotation)</onclick>
@@ -1630,7 +1630,7 @@
             <param name="id">8004</param>
             <param name="groupid">8104</param>
             <param name="dialog">true</param>
-            <param name="icon">special://skin/extras/icons/volume-low.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/volume-low.png</param>
             <description>Volume button</description>
             <label>$LOCALIZE[13376]</label>
             <param name="label2">$LOCALIZE[31338]</param>
@@ -1641,7 +1641,7 @@
             <param name="id">8005</param>
             <param name="groupid">8105</param>
             <param name="dialog">true</param>
-            <param name="icon">special://skin/extras/icons/gamepad.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/gamepad.png</param>
             <description>Controller settings button</description>
             <label>$LOCALIZE[35234]</label>
             <onclick>ActivateWindow(GameControllers)</onclick>
@@ -1650,7 +1650,7 @@
             <param name="id">8006</param>
             <param name="groupid">8106</param>
             <param name="dialog">true</param>
-            <param name="icon">special://skin/extras/icons/plug.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/plug.png</param>
             <description>Controller port configuration</description>
             <label>$LOCALIZE[35110]</label>
             <onclick>ActivateWindow(GamePorts)</onclick>
@@ -1659,7 +1659,7 @@
             <param name="id">8007</param>
             <param name="groupid">8107</param>
             <param name="dialog">true</param>
-            <param name="icon">special://skin/extras/icons/screwdriver-wrench.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/screwdriver-wrench.png</param>
             <description>Advanced settings</description>
             <label>$LOCALIZE[35226]</label>
             <onclick>ActivateWindow(GameAdvancedSettings)</onclick>
@@ -1673,7 +1673,7 @@
             <description>Pause / Resume button</description>
             <label>$LOCALIZE[35224]</label>
             <label2>$LOCALIZE[31336]</label2>
-            <param name="icon">special://skin/extras/icons/play2.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/play2.png</param>
             <onclick>Play</onclick>
         </include>
         <include content="Settings_ButtonImage">
@@ -1681,7 +1681,7 @@
             <param name="groupid">8102</param>
             <description>Save / Load button</description>
             <label>$LOCALIZE[35249]</label>
-            <param name="icon">special://skin/extras/icons/floppy-disk.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/floppy-disk.png</param>
             <onclick>ActivateWindow(InGameSaves)</onclick>
         </include>
         <include content="Settings_ButtonImage">
@@ -1689,7 +1689,7 @@
             <param name="groupid">8103</param>
             <description>Reset button</description>
             <label>$LOCALIZE[13007]</label>
-            <param name="icon">special://skin/extras/icons/rotate.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/rotate.png</param>
             <onclick>PlayerControl(Reset)</onclick>
         </include>
         <include content="Settings_ButtonImage">
@@ -1698,7 +1698,7 @@
             <description>Stop button</description>
             <label>$LOCALIZE[35222]</label>
             <label2>$LOCALIZE[31337]</label2>
-            <param name="icon">special://skin/extras/icons/stop.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/stop.png</param>
             <onclick>Stop</onclick>
         </include>
         <include content="Settings_ButtonImage">
@@ -1706,7 +1706,7 @@
             <param name="groupid">8105</param>
             <description>Settings button</description>
             <label>$LOCALIZE[5]</label>
-            <param name="icon">special://skin/extras/icons/settings.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/settings.png</param>
             <onclick>SetProperty(CustomDialogSettingsTitle,[CAPITALIZE]$LOCALIZE[5][/CAPITALIZE],Home)</onclick>
             <onclick>SetProperty(CustomDialogSettingsItems,DialogCustom_GameOptions_Items,Home)</onclick>
             <onclick>ActivateWindow(1118)</onclick>

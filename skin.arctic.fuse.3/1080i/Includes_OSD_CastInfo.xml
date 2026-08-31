@@ -27,7 +27,7 @@
         <param name="role">$VAR[Label_NowPlayingTitle]</param>
         <param name="name">$VAR[Label_NowPlayingSubLabel]</param>
         <param name="text">$INFO[VideoPlayer.Plot]</param>
-        <param name="fallback_icon">special://skin/extras/icons/photo-film.png</param>
+        <param name="fallback_icon">resource://resource.images.arcticfuse/icons/photo-film.png</param>
         <param name="textcolor_top">panel_fg_90</param>
         <param name="textcolor_sub">panel_fg_70</param>
         <param name="visible">true</param>

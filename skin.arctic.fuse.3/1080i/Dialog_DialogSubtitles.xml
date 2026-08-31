@@ -111,7 +111,7 @@
             <include content="Button_Dialog">
                 <param name="id">160</param>
                 <param name="groupid">9160</param>
-                <param name="icon">special://skin/extras/icons/search.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/search.png</param>
                 <label>$LOCALIZE[137]</label>
             </include>
             <include content="DialogSubtitles_Items_ListItem">

@@ -3,23 +3,23 @@
 
     <variable name="Home_Icon_home">
         <value condition="!String.IsEmpty(Skin.String(HomeSwitcher.Home.Icon))">$INFO[Skin.String(HomeSwitcher.Home.Icon)]</value>
-        <value>special://skin/extras/icons/home.png</value>
+        <value>resource://resource.images.arcticfuse/icons/home.png</value>
     </variable>
     <variable name="Home_Icon_1101">
         <value condition="!String.IsEmpty(Skin.String(HomeSwitcher.1101.Icon))">$INFO[Skin.String(HomeSwitcher.1101.Icon)]</value>
-        <value>special://skin/extras/icons/shapes.png</value>
+        <value>resource://resource.images.arcticfuse/icons/shapes.png</value>
     </variable>
     <variable name="Home_Icon_1102">
         <value condition="!String.IsEmpty(Skin.String(HomeSwitcher.1102.Icon))">$INFO[Skin.String(HomeSwitcher.1102.Icon)]</value>
-        <value>special://skin/extras/icons/shapes.png</value>
+        <value>resource://resource.images.arcticfuse/icons/shapes.png</value>
     </variable>
     <variable name="Home_Icon_1103">
         <value condition="!String.IsEmpty(Skin.String(HomeSwitcher.1103.Icon))">$INFO[Skin.String(HomeSwitcher.1103.Icon)]</value>
-        <value>special://skin/extras/icons/shapes.png</value>
+        <value>resource://resource.images.arcticfuse/icons/shapes.png</value>
     </variable>
     <variable name="Home_Icon_1104">
         <value condition="!String.IsEmpty(Skin.String(HomeSwitcher.1104.Icon))">$INFO[Skin.String(HomeSwitcher.1104.Icon)]</value>
-        <value>special://skin/extras/icons/shapes.png</value>
+        <value>resource://resource.images.arcticfuse/icons/shapes.png</value>
     </variable>
 
     <include name="Home_ControlList_Item">
@@ -38,7 +38,7 @@
     <include name="Home_ControlList_Item_1105">
         <include content="Home_ControlList_Item">
             <param name="label">Search</param>
-            <param name="icon">special://skin/extras/icons/search.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/search.png</param>
             <param name="action">ReplaceWindow(1105)</param>
             <param name="enabled">[!Skin.HasSetting(HomeSwitcher.DisableSearch)]</param>
             <param name="visible">Window.IsVisible(1105)</param>
@@ -264,7 +264,7 @@
                 <include>Home_Fade_Animation</include>
                 <visible>!String.IsEmpty(Window(Home).Property(HomeSwitcher.IsVisible))</visible>
                 <visible>!Skin.HasSetting(HomeSwitcher.Vertical)</visible>
-                <texture colordiffuse="main_bg_70">special://skin/extras/backgrounds/overlay/combined_topmenu.png</texture>
+                <texture colordiffuse="main_bg_70">resource://resource.images.arcticfuse/backgrounds/overlay/combined_topmenu.png</texture>
                 <bottom>0</bottom>
             </control>
         </definition>
@@ -328,7 +328,7 @@
                     <width>80</width>
                     <control type="image">
                         <include>Home_Grouplist_Icon_Definition</include>
-                        <texture background="true" colordiffuse="main_fg_30">special://skin/extras/icons/search.png</texture>
+                        <texture background="true" colordiffuse="main_fg_30">resource://resource.images.arcticfuse/icons/search.png</texture>
                         <visible>!Control.HasFocus(300)</visible>
                     </control>
                 </control>
@@ -395,7 +395,7 @@
                     <itemgap>20</itemgap>
                     <align>center</align>
                     <include content="Home_Object_VertIcon" condition="!Skin.HasSetting(HomeSwitcher.DisableSearch)">
-                        <param name="icon">special://skin/extras/icons/search.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/search.png</param>
                         <param name="window">1105</param>
                     </include>
                     <include content="Home_Object_VertIcon">
@@ -423,12 +423,12 @@
                         <param name="window">1106</param>
                     </include>
                     <include content="Home_Object_VertIcon" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))">
-                        <param name="icon">special://skin/extras/icons/livetv.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/livetv.png</param>
                         <param name="window">1107</param>
                         <param name="visible">System.HasPVRAddon + PVR.HasTVChannels</param>
                     </include>
                     <include content="Home_Object_VertIcon" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1108.Toggle))">
-                        <param name="icon">special://skin/extras/icons/addon.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/addon.png</param>
                         <param name="window">1108</param>
                     </include>
                 </control>
@@ -465,8 +465,8 @@
     </include>
 
     <variable name="Home_Switcher_Right_Buttons_Calendar">
-        <value condition="Skin.String(HomeSwitcher.1106.UpNextMode,trakt_calendar)">special://skin/extras/icons/trakt.png</value>
-        <value>special://skin/extras/icons/calendar.png</value>
+        <value condition="Skin.String(HomeSwitcher.1106.UpNextMode,trakt_calendar)">resource://resource.images.arcticfuse/icons/trakt.png</value>
+        <value>resource://resource.images.arcticfuse/icons/calendar.png</value>
     </variable>
 
     <include name="Home_Switcher_Right_Buttons">
@@ -487,13 +487,13 @@
                 <param name="id">3106</param>
             </include>
             <include content="Home_Settings_Button" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))">
-                <param name="icon">special://skin/extras/icons/livetv.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/livetv.png</param>
                 <param name="window">1107</param>
                 <param name="id">3107</param>
                 <param name="visible">System.HasPVRAddon + PVR.HasTVChannels</param>
             </include>
             <include content="Home_Settings_Button" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1108.Toggle))">
-                <param name="icon">special://skin/extras/icons/addon.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/addon.png</param>
                 <param name="window">1108</param>
                 <param name="id">3108</param>
             </include>
@@ -505,7 +505,7 @@
     </include>
 
     <include name="Home_Settings_Button">
-        <param name="icon">special://skin/extras/icons/settings.png</param>
+        <param name="icon">resource://resource.images.arcticfuse/icons/settings.png</param>
         <param name="window">1170</param>
         <param name="id">3170</param>
         <param name="visible">true</param>
@@ -540,7 +540,7 @@
             <control type="group">
                 <visible>!Window.IsVisible(1105)</visible>
                 <include content="Home_Settings_Button">
-                    <param name="icon">special://skin/extras/icons/settings.png</param>
+                    <param name="icon">resource://resource.images.arcticfuse/icons/settings.png</param>
                     <param name="window">1170</param>
                     <param name="id">3170</param>
                 </include>

@@ -85,28 +85,28 @@
                                         <include content="Settings_EditButton">
                                             <param name="id">10</param>
                                             <param name="groupid">9010</param>
-                                            <param name="icon">special://skin/extras/icons/pencil.png</param>
+                                            <param name="icon">resource://resource.images.arcticfuse/icons/pencil.png</param>
                                             <param name="hasfocus">[ControlGroup(9001).HasFocus() | Control.HasFocus(10)]</param>
                                             <param name="hasbutton">false</param>
                                         </include>
                                         <include content="Settings_EditButton">
                                             <param name="id">11</param>
                                             <param name="groupid">9011</param>
-                                            <param name="icon">special://skin/extras/icons/search.png</param>
+                                            <param name="icon">resource://resource.images.arcticfuse/icons/search.png</param>
                                             <param name="hasfocus">[ControlGroup(9001).HasFocus() | Control.HasFocus(10)]</param>
                                             <visible>Control.IsEnabled(11)</visible>
                                         </include>
                                         <include content="Settings_EditButton">
                                             <param name="id">13</param>
                                             <param name="groupid">9013</param>
-                                            <param name="icon">special://skin/extras/icons/circle-plus.png</param>
+                                            <param name="icon">resource://resource.images.arcticfuse/icons/circle-plus.png</param>
                                             <param name="hasfocus">[ControlGroup(9001).HasFocus() | Control.HasFocus(10)]</param>
                                             <visible>Control.IsEnabled(13)</visible>
                                         </include>
                                         <include content="Settings_EditButton">
                                             <param name="id">14</param>
                                             <param name="groupid">9014</param>
-                                            <param name="icon">special://skin/extras/icons/trash-can.png</param>
+                                            <param name="icon">resource://resource.images.arcticfuse/icons/trash-can.png</param>
                                             <param name="hasfocus">[ControlGroup(9001).HasFocus() | Control.HasFocus(10)]</param>
                                             <visible>Control.IsEnabled(14)</visible>
                                         </include>
@@ -138,7 +138,7 @@
         <include content="Button_Dialog">
             <param name="id">18</param>
             <param name="groupid">9118</param>
-            <param name="icon">special://skin/extras/icons/circle-check.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/circle-check.png</param>
             <label>$LOCALIZE[31032]</label>
             <visible>Control.IsEnabled(18)</visible>
         </include>
@@ -146,7 +146,7 @@
         <include content="Button_Dialog">
             <param name="id">19</param>
             <param name="groupid">9119</param>
-            <param name="icon">special://skin/extras/icons/circle-xmark.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/circle-xmark.png</param>
             <label>$LOCALIZE[222]</label>
             <visible>Control.IsEnabled(19)</visible>
         </include>

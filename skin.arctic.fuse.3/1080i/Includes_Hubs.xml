@@ -485,7 +485,7 @@
                         <width>40</width>
                         <height>40</height>
                         <centertop>50%</centertop>
-                        <texture colordiffuse="main_fg_30">special://skin/extras/icons/angle-left.png</texture>
+                        <texture colordiffuse="main_fg_30">resource://resource.images.arcticfuse/icons/angle-left.png</texture>
                         <include content="Animation_Fade_Out">
                             <param name="condition">!ControlGroup(310).HasFocus() | Skin.HasSetting(HomeSwitcher.Vertical)</param>
                         </include>
@@ -543,7 +543,7 @@
                         <width>40</width>
                         <height>40</height>
                         <centertop>50%</centertop>
-                        <texture colordiffuse="main_fg_30">special://skin/extras/icons/angle-right.png</texture>
+                        <texture colordiffuse="main_fg_30">resource://resource.images.arcticfuse/icons/angle-right.png</texture>
                         <include content="Animation_Fade_Out">
                             <param name="condition">!ControlGroup(310).HasFocus()</param>
                         </include>
@@ -679,7 +679,7 @@
                     <left>40</left>
                     <width>1080</width>
                     <height>1080</height>
-                    <texture colordiffuse="$VAR[ColorBackground]">special://skin/extras/backgrounds/overlay/combined_sidemenu.png</texture>
+                    <texture colordiffuse="$VAR[ColorBackground]">resource://resource.images.arcticfuse/backgrounds/overlay/combined_sidemenu.png</texture>
                 </control>
             </control>
         </definition>
@@ -1053,7 +1053,7 @@
                     <param name="hasspinner">true</param>
                     <param name="spinspinner">true</param>
                     <param name="spinnervisible">[!Window.IsActive(DialogVolumeBar.xml) | Player.Muted]</param>
-                    <param name="icon">special://skin/extras/icons/kodi.png</param>
+                    <param name="icon">resource://resource.images.arcticfuse/icons/kodi.png</param>
                     <param name="haslabel">false</param>
                 </include>
             </control>

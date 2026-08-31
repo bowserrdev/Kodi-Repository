@@ -81,7 +81,7 @@
                     <param name="id">9001</param>
                     <param name="groupid">9101</param>
                     <param name="control">button</param>
-                    <param name="icon">special://skin/extras/icons/circle-xmark.png</param>
+                    <param name="icon">resource://resource.images.arcticfuse/icons/circle-xmark.png</param>
                     <onclick>PreviousMenu</onclick>
                     <label>$LOCALIZE[15067]</label>
                 </include>
@@ -90,7 +90,7 @@
                     <param name="id">9002</param>
                     <param name="groupid">9102</param>
                     <param name="control">button</param>
-                    <param name="icon">special://skin/extras/icons/layer-group.png</param>
+                    <param name="icon">resource://resource.images.arcticfuse/icons/layer-group.png</param>
                     <description>Default Setting Button</description>
                     <label>$VAR[Label_ColorPicker_Type]</label>
                     <onclick condition="String.IsEqual(Window(Home).Property(ColorPicker_Type),Highlight)">SetProperty(ColorPicker_Type,Indicator,Home)</onclick>
@@ -107,7 +107,7 @@
                     <param name="id">9005</param>
                     <param name="groupid">9105</param>
                     <param name="control">button</param>
-                    <param name="icon">special://skin/extras/icons/paint-roller.png</param>
+                    <param name="icon">resource://resource.images.arcticfuse/icons/paint-roller.png</param>
                     <label>$LOCALIZE[31203] $VAR[ColorPickerHex]</label>
                     <onclick>SetFocus(8002)</onclick>
                 </include>

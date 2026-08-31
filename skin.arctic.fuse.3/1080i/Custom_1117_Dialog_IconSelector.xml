@@ -10,7 +10,7 @@
 
         <include content="Object_Hidden_List">
             <param name="id">451</param>
-            <content>special://skin/extras/icons/</content>
+            <content>resource://resource.images.arcticfuse/icons/</content>
         </include>
 
         <include>Part_Dim_Overlay</include>
@@ -70,7 +70,7 @@
                                 <param name="id">8002</param>
                                 <param name="groupid">8102</param>
                                 <param name="control">button</param>
-                                <param name="icon">special://skin/extras/icons/folder.png</param>
+                                <param name="icon">resource://resource.images.arcticfuse/icons/folder.png</param>
                                 <param name="left">20</param>
                                 <label>$LOCALIZE[1024]</label>
                                 <onclick condition="!String.IsEmpty(Window.Property(url))">RunPlugin($INFO[Window.Property(url),,&amp;func=do_icon&amp;&amp;icon_dir::])</onclick>
@@ -175,7 +175,7 @@
         <include content="Furniture_Busy">
             <param name="hasspinner">true</param>
             <param name="spinspinner">true</param>
-            <param name="icon">special://skin/extras/icons/kodi.png</param>
+            <param name="icon">resource://resource.images.arcticfuse/icons/kodi.png</param>
             <param name="haslabel">false</param>
             <param name="spinnervisible">[!Window.IsActive(DialogVolumeBar.xml) | Player.Muted]</param>
             <param name="visible_delay">400</param>

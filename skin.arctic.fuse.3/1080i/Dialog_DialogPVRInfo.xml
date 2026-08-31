@@ -75,19 +75,19 @@
                                             <itemgap>20</itemgap>
                                             <orientation>vertical</orientation>
                                             <include content="Part_AddonDetails">
-                                                <param name="icon">special://skin/extras/icons/list-ul.png</param>
+                                                <param name="icon">resource://resource.images.arcticfuse/icons/list-ul.png</param>
                                                 <param name="label">$INFO[ListItem.ChannelName]$INFO[ListItem.ChannelNumberLabel, (Ch.,)]</param>
                                             </include>
                                             <include content="Part_AddonDetails">
-                                                <param name="icon">special://skin/extras/icons/calendar.png</param>
+                                                <param name="icon">resource://resource.images.arcticfuse/icons/calendar.png</param>
                                                 <param name="label">$INFO[ListItem.StartDate]</param>
                                             </include>
                                             <include content="Part_AddonDetails">
-                                                <param name="icon">special://skin/extras/icons/clock.png</param>
+                                                <param name="icon">resource://resource.images.arcticfuse/icons/clock.png</param>
                                                 <param name="label">$INFO[ListItem.StartTime]$INFO[ListItem.EndTime, - ,]</param>
                                             </include>
                                             <include content="Part_AddonDetails">
-                                                <param name="icon">special://skin/extras/icons/tags.png</param>
+                                                <param name="icon">resource://resource.images.arcticfuse/icons/tags.png</param>
                                                 <param name="label">$INFO[ListItem.Genre]</param>
                                             </include>
                                         </control>
@@ -131,7 +131,7 @@
             <include content="Button_Dialog" description="Switch">
                 <param name="groupid">9205</param>
                 <param name="id">05</param>
-                <param name="icon">special://skin/extras/icons/play2.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/play2.png</param>
                 <label>$LOCALIZE[19165]</label>
                 <visible>Window.IsActive(PVRGuideInfo) + Control.IsEnabled(5) + Control.IsVisible(5)</visible>
             </include>
@@ -139,7 +139,7 @@
             <include content="Button_Dialog" description="Play Programme">
                 <param name="groupid">9220</param>
                 <param name="id">10</param>
-                <param name="icon">special://skin/extras/icons/play3.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/play3.png</param>
                 <label>$LOCALIZE[208]</label>
                 <visible>Window.IsActive(PVRGuideInfo) + Control.IsEnabled(10) + Control.IsVisible(10)</visible>
             </include>
@@ -147,7 +147,7 @@
             <include content="Button_Dialog" description="Play Recording">
                 <param name="groupid">9221</param>
                 <param name="id">08</param>
-                <param name="icon">special://skin/extras/icons/play3.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/play3.png</param>
                 <label>$LOCALIZE[208]</label>
                 <visible>[Window.IsActive(PVRGuideInfo) | Window.IsActive(PVRRecordingInfo)] + Control.IsEnabled(8) + Control.IsVisible(8)</visible>
             </include>
@@ -155,7 +155,7 @@
             <include content="Button_Dialog" description="Record">
                 <param name="groupid">9222</param>
                 <param name="id">06</param>
-                <param name="icon">special://skin/extras/icons/record-vinyl.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/record-vinyl.png</param>
                 <label>$LOCALIZE[264]</label>
                 <visible>Window.IsActive(PVRGuideInfo) + Control.IsEnabled(6) + Control.IsVisible(6)</visible>
             </include>
@@ -163,7 +163,7 @@
             <include content="Button_Dialog" description="Add Timer">
                 <param name="groupid">9223</param>
                 <param name="id">09</param>
-                <param name="icon">special://skin/extras/icons/clock.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/clock.png</param>
                 <label>$LOCALIZE[19061]</label>
                 <visible>Window.IsActive(PVRGuideInfo) + Control.IsEnabled(9) + Control.IsVisible(9)</visible>
             </include>
@@ -171,7 +171,7 @@
             <include content="Button_Dialog" description="Set Reminder">
                 <param name="groupid">9224</param>
                 <param name="id">11</param>
-                <param name="icon">special://skin/extras/icons/clock.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/clock.png</param>
                 <label>$LOCALIZE[826]</label>
                 <visible>Window.IsActive(PVRGuideInfo) + Control.IsEnabled(11) + Control.IsVisible(11)</visible>
             </include>
@@ -179,7 +179,7 @@
             <include content="Button_Dialog" description="Similar">
                 <param name="groupid">9225</param>
                 <param name="id">04</param>
-                <param name="icon">special://skin/extras/icons/binoculars.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/binoculars.png</param>
                 <label>$LOCALIZE[31041]</label>
                 <visible>[Window.IsActive(PVRGuideInfo) | Window.IsActive(PVRRecordingInfo)] + Control.IsEnabled(4) + Control.IsVisible(4)</visible>
             </include>
@@ -187,7 +187,7 @@
             <include content="Button_Dialog">
                 <param name="groupid">9226</param>
                 <param name="id">9026</param>
-                <param name="icon">special://skin/extras/icons/globe.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/globe.png</param>
                 <label>Wiki</label>
                 <onclick>Close</onclick>
                 <onclick>runscript(script.wikipedia,wikipedia=$VAR[Path_Wikipedia_Title],tmdb_type=$VAR[Path_Wikipedia_Type])</onclick>

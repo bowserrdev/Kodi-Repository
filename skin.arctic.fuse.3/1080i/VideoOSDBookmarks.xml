@@ -47,7 +47,7 @@
                             <height>128</height>
                             <centerleft>50%</centerleft>
                             <centertop>50%</centertop>
-                            <texture colordiffuse="panel_fg_70">special://skin/extras/icons/image.png</texture>
+                            <texture colordiffuse="panel_fg_70">resource://resource.images.arcticfuse/icons/image.png</texture>
                         </control>
 
                         <include content="OSD_UpNext_Labels">
@@ -69,7 +69,7 @@
 
                     <include content="DialogInfo_Button">
                         <param name="vertical">false</param>
-                        <param name="icon">special://skin/extras/icons/plus.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/plus.png</param>
                         <param name="visible">Control.IsEnabled(2)</param>
                         <param name="id">2</param>
                         <param name="groupid">9002</param>
@@ -78,7 +78,7 @@
                     </include>
                     <include content="DialogInfo_Button">
                         <param name="vertical">false</param>
-                        <param name="icon">special://skin/extras/icons/triangle-exclamation.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/triangle-exclamation.png</param>
                         <param name="visible">Control.IsEnabled(3) + !Integer.IsEqual(Container(11).NumItems,0)</param>
                         <param name="id">3</param>
                         <param name="groupid">9003</param>
@@ -87,7 +87,7 @@
                     </include>
                     <include content="DialogInfo_Button">
                         <param name="vertical">false</param>
-                        <param name="icon">special://skin/extras/icons/image.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/image.png</param>
                         <param name="visible">Control.IsEnabled(4)</param>
                         <param name="id">4</param>
                         <param name="groupid">9004</param>

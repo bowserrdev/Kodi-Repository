@@ -62,7 +62,7 @@
                         <onfocus condition="!String.IsEmpty(Window(Home).Property(ResetScroll))">ClearProperty(ResetScroll,home)</onfocus>
                     </control>
                     <include content="OSD_Button_Icon_Overlay">
-                        <param name="icon">special://skin/extras/icons/forward-step.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/forward-step.png</param>
                         <param name="id">6002</param>
                         <param name="groupid">6102</param>
                         <param name="flipx">true</param>
@@ -80,7 +80,7 @@
                         <onfocus condition="!String.IsEmpty(Window(Home).Property(ResetScroll))">ClearProperty(ResetScroll,home)</onfocus>
                     </control>
                     <include content="OSD_Button_Icon_Overlay">
-                        <param name="icon">special://skin/extras/icons/forward-step.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/forward-step.png</param>
                         <param name="id">6003</param>
                         <param name="groupid">6103</param>
                         <param name="flipx">false</param>
@@ -98,7 +98,7 @@
                         <onfocus condition="!String.IsEmpty(Window(Home).Property(ResetScroll))">ClearProperty(ResetScroll,home)</onfocus>
                     </control>
                     <include content="OSD_Button_Icon_Overlay">
-                        <param name="icon">special://skin/extras/icons/stop.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/stop.png</param>
                         <param name="id">6004</param>
                         <param name="groupid">6104</param>
                         <param name="flipx">false</param>
@@ -129,7 +129,7 @@
                         <onfocus>SetProperty(OSDArtistDetails,1,Home)</onfocus>
                     </control>
                     <include content="OSD_Button_Icon_Overlay">
-                        <param name="icon">special://skin/extras/icons/microphone.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/microphone.png</param>
                         <param name="id">6005</param>
                         <param name="groupid">6105</param>
                         <param name="itemgap">osd_itemgap</param>
@@ -171,7 +171,7 @@
                         <onfocus>SetProperty(OSDArtistDetails,1,Home)</onfocus>
                     </control>
                     <include content="OSD_Button_Icon_Overlay">
-                        <param name="icon">special://skin/extras/icons/settings.png</param>
+                        <param name="icon">resource://resource.images.arcticfuse/icons/settings.png</param>
                         <param name="id">6008</param>
                         <param name="groupid">6108</param>
                         <param name="itemgap">osd_itemgap</param>

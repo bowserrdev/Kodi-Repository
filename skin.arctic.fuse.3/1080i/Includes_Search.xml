@@ -464,12 +464,12 @@
             <width>80</width>
             <control type="image">
                 <include>Home_Grouplist_Icon_Definition</include>
-                <texture background="true" colordiffuse="main_fg_30">special://skin/extras/icons/search.png</texture>
+                <texture background="true" colordiffuse="main_fg_30">resource://resource.images.arcticfuse/icons/search.png</texture>
                 <visible>!Control.HasFocus(3000) + !Control.HasFocus(3005)</visible>
             </control>
             <control type="image">
                 <include>Home_Grouplist_Icon_Definition</include>
-                <texture background="true" colordiffuse="$VAR[ColorSelected]">special://skin/extras/icons/search.png</texture>
+                <texture background="true" colordiffuse="$VAR[ColorSelected]">resource://resource.images.arcticfuse/icons/search.png</texture>
                 <visible>Control.HasFocus(3000) | Control.HasFocus(3005)</visible>
             </control>
         </control>
@@ -525,15 +525,15 @@
             <!-- Cerchio di sfondo (maschera bianca tinta via colordiffuse).
                  Barra inattiva: piu' trasparente. Barra attiva: grigio pieno. Focus sulla X: nero. -->
             <control type="image">
-                <texture colordiffuse="main_fg_30">special://skin/extras/icons/circle.png</texture>
+                <texture colordiffuse="main_fg_30">resource://resource.images.arcticfuse/icons/circle.png</texture>
                 <visible>!Control.HasFocus(3005) + !Control.HasFocus(3000)</visible>
             </control>
             <control type="image">
-                <texture colordiffuse="main_fg_50">special://skin/extras/icons/circle.png</texture>
+                <texture colordiffuse="main_fg_50">resource://resource.images.arcticfuse/icons/circle.png</texture>
                 <visible>!Control.HasFocus(3005) + Control.HasFocus(3000)</visible>
             </control>
             <control type="image">
-                <texture colordiffuse="main_bg_100">special://skin/extras/icons/circle.png</texture>
+                <texture colordiffuse="main_bg_100">resource://resource.images.arcticfuse/icons/circle.png</texture>
                 <visible>Control.HasFocus(3005)</visible>
             </control>
 
@@ -543,7 +543,7 @@
                 <top>17</top>
                 <width>34</width>
                 <height>34</height>
-                <texture colordiffuse="main_bg_100">special://skin/extras/icons/xmark.png</texture>
+                <texture colordiffuse="main_bg_100">resource://resource.images.arcticfuse/icons/xmark.png</texture>
                 <visible>!Control.HasFocus(3005)</visible>
             </control>
             <control type="image">
@@ -551,7 +551,7 @@
                 <top>17</top>
                 <width>34</width>
                 <height>34</height>
-                <texture colordiffuse="main_fg_100">special://skin/extras/icons/xmark.png</texture>
+                <texture colordiffuse="main_fg_100">resource://resource.images.arcticfuse/icons/xmark.png</texture>
                 <visible>Control.HasFocus(3005)</visible>
             </control>
         </control>
@@ -869,7 +869,7 @@
                 <top>20</top>
                 <width>40</width>
                 <height>40</height>
-                <texture colordiffuse="main_fg_30">special://skin/extras/icons/sliders.png</texture>
+                <texture colordiffuse="main_fg_30">resource://resource.images.arcticfuse/icons/sliders.png</texture>
                 <visible>!Control.HasFocus(3004)</visible>
             </control>
             <control type="image">
@@ -877,7 +877,7 @@
                 <top>20</top>
                 <width>40</width>
                 <height>40</height>
-                <texture colordiffuse="$VAR[ColorSelected]">special://skin/extras/icons/sliders.png</texture>
+                <texture colordiffuse="$VAR[ColorSelected]">resource://resource.images.arcticfuse/icons/sliders.png</texture>
                 <visible>Control.HasFocus(3004)</visible>
             </control>
         </control>
@@ -1241,7 +1241,7 @@
                         <top>15</top>
                         <width>30</width>
                         <height>30</height>
-                        <texture colordiffuse="main_fg_30">special://skin/extras/icons/clock-rotate-left.png</texture>
+                        <texture colordiffuse="main_fg_30">resource://resource.images.arcticfuse/icons/clock-rotate-left.png</texture>
                     </control>
                     <control type="label">
                         <left>52</left>
@@ -1259,7 +1259,7 @@
                     <control type="image">
                         <top>5</top>
                         <height>50</height>
-                        <texture colordiffuse="20ffffff" border="10">special://skin/extras/icons/rounded-rect.png</texture>
+                        <texture colordiffuse="20ffffff" border="10">resource://resource.images.arcticfuse/icons/rounded-rect.png</texture>
                         <visible>Control.HasFocus(3060)</visible>
                     </control>
                     <!-- Icona orologio: bianca se focus, grigia se elemento selezionato senza focus -->
@@ -1268,7 +1268,7 @@
                         <top>15</top>
                         <width>30</width>
                         <height>30</height>
-                        <texture colordiffuse="main_fg_100">special://skin/extras/icons/clock-rotate-left.png</texture>
+                        <texture colordiffuse="main_fg_100">resource://resource.images.arcticfuse/icons/clock-rotate-left.png</texture>
                         <visible>Control.HasFocus(3060)</visible>
                     </control>
                     <control type="image">
@@ -1276,7 +1276,7 @@
                         <top>15</top>
                         <width>30</width>
                         <height>30</height>
-                        <texture colordiffuse="main_fg_30">special://skin/extras/icons/clock-rotate-left.png</texture>
+                        <texture colordiffuse="main_fg_30">resource://resource.images.arcticfuse/icons/clock-rotate-left.png</texture>
                         <visible>!Control.HasFocus(3060)</visible>
                     </control>
                     <!-- Testo: bold bianco se focus, normale grigio se selezionato senza focus -->

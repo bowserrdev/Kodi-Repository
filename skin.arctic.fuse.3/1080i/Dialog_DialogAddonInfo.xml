@@ -74,19 +74,19 @@
                                         <itemgap>20</itemgap>
                                         <orientation>vertical</orientation>
                                         <include content="Part_AddonDetails">
-                                            <param name="icon">special://skin/extras/icons/id-card.png</param>
+                                            <param name="icon">resource://resource.images.arcticfuse/icons/id-card.png</param>
                                             <param name="label">$INFO[ListItem.AddonCreator]</param>
                                         </include>
                                         <include content="Part_AddonDetails">
-                                            <param name="icon">special://skin/extras/icons/tag.png</param>
+                                            <param name="icon">resource://resource.images.arcticfuse/icons/tag.png</param>
                                             <param name="label">$INFO[ListItem.AddonType]</param>
                                         </include>
                                         <include content="Part_AddonDetails">
-                                            <param name="icon">special://skin/extras/icons/code-branch.png</param>
+                                            <param name="icon">resource://resource.images.arcticfuse/icons/code-branch.png</param>
                                             <param name="label">$INFO[ListItem.AddonVersion,v,]</param>
                                         </include>
                                         <include content="Part_AddonDetails">
-                                            <param name="icon">special://skin/extras/icons/clock-rotate-left.png</param>
+                                            <param name="icon">resource://resource.images.arcticfuse/icons/clock-rotate-left.png</param>
                                             <param name="label">$VAR[Label_AddonInfo_LastUpdated]</param>
                                         </include>
                                     </control>
@@ -160,21 +160,21 @@
             <include content="Button_Dialog" description="Update">
                 <param name="id">08</param>
                 <param name="groupid">9308</param>
-                <param name="icon">special://skin/extras/icons/update.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/update.png</param>
                 <visible>Control.IsEnabled(8)</visible>
                 <label>$LOCALIZE[24138]</label>
             </include>
             <include content="Button_Dialog" description="Versions">
                 <param name="id">14</param>
                 <param name="groupid">9314</param>
-                <param name="icon">special://skin/extras/icons/network.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/network.png</param>
                 <label>$LOCALIZE[24069]</label>
                 <visible>Control.IsEnabled(14)</visible>
             </include>
             <include content="Button_Dialog" description="Dependencies">
                 <param name="id">10</param>
                 <param name="groupid">9310</param>
-                <param name="icon">special://skin/extras/icons/dependencies.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/dependencies.png</param>
                 <label>$LOCALIZE[39024]</label>
                 <visible>Control.IsEnabled(10)</visible>
             </include>
@@ -187,21 +187,21 @@
             <include content="Button_Dialog" description="Settings">
                 <param name="id">09</param>
                 <param name="groupid">9309</param>
-                <param name="icon">special://skin/extras/icons/settings.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/settings.png</param>
                 <visible>Control.IsEnabled(9)</visible>
                 <label>$LOCALIZE[5]</label>
             </include>
             <include content="Button_Dialog">
                 <param name="id">12</param>
                 <param name="groupid">9312</param>
-                <param name="icon">special://skin/extras/icons/play3.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/play3.png</param>
                 <visible>Control.IsEnabled(12)</visible>
             </include>
             <!-- <include content="Button_Dialog">
                 <param name="id">99</param>
                 <param name="groupid">9399</param>
                 <label>$LOCALIZE[15067]</label>
-                <param name="icon">special://skin/extras/icons/circle-xmark.png</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/circle-xmark.png</param>
                 <onclick>PreviousMenu</onclick>
             </include> -->
 
