@@ -41,7 +41,10 @@ KODI_ADDONS = os.path.expanduser('~/Library/Application Support/Kodi/addons')
 
 # File che nascono dall'uso e non appartengono al sorgente. Vanno esclusi in ENTRAMBE
 # le direzioni: non si copiano dal repo e non si cancellano dalla destinazione.
-JUNK = ('.DS_Store', '.git', '.github', '.gitignore', '.gitattributes', '__pycache__')
+# '.gate' sono gli slot del tetto sulla concorrenza (modules/gate.py): file transitori creati a
+# runtime dentro l'addon, non sorgente. Vanno ignorati in entrambe le direzioni, altrimenti il
+# deploy li vedrebbe come roba da cancellare mentre un'invocazione li sta usando.
+JUNK = ('.DS_Store', '.git', '.github', '.gitignore', '.gitattributes', '__pycache__', '.gate')
 
 
 def norm(relpath):
