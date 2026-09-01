@@ -203,7 +203,13 @@
         <param name="border">20</param>
         <definition>
             <control type="image">
-                <include content="$PARAM[shadow_include]" condition="!$PARAM[selected]">
+                <!-- Ombra sotto ogni voce non in focus. Misurata sul Mi Stick: vale ZERO fps.
+                     Resta spenta perche' da quando il blur service e' fermo lo sfondo dietro i
+                     widget e' praticamente nero, e un'ombra nera sul nero non si vede. La
+                     condizione di un include si risolve al CARICAMENTO della skin, non a ogni
+                     fotogramma: da spenta questo blocco non entra nell'albero dei controlli.
+                     Per riaccenderla: Skin.SetBool(Effects.ItemShadows) e ricarica skin. -->
+                <include content="$PARAM[shadow_include]" condition="!$PARAM[selected] + Skin.HasSetting(Effects.ItemShadows)">
                     <param name="colordiffuse">$PARAM[shadow_colordiffuse]</param>
                 </include>
                 <texture colordiffuse="$PARAM[colordiffuse]" border="$PARAM[border]">$PARAM[texture]</texture>
@@ -399,7 +405,46 @@
         </definition>
     </include>
 
+    <!-- La cascata completa (_Full) e' tre controlli immagine: quello vero, la variante per le
+         icone Default*.png di Kodi e il ripiego "altri elementi". Con Fen Light gli ultimi due non
+         si vedono mai, ma le loro <visible> non stanno sotto nessun gruppo che le ripari: Kodi le
+         valuta per OGNI voce a OGNI fotogramma. Misurato sul Mi Stick, in home: 35 -> 40 fps da
+         fermo passando alla variante _Light, senza nessuna differenza a schermo.
+         light=true SOLO da Layout_Poster e Layout_Landscape, gli unici due misurati e gli unici
+         alimentati esclusivamente da Fen Light. Gli altri sei richiami restano su _Full, perche'
+         nei browser di Kodi le icone Default e la voce "cartella superiore" esistono davvero e
+         senza quei controlli resterebbero vuote. -->
     <include name="Object_Layout_Image_Rectangle">
+        <param name="aspectratio">keep</param>
+        <param name="selected">false</param>
+        <param name="light">false</param>
+        <definition>
+            <include content="Object_Layout_Image_Rectangle_Light" condition="$PARAM[light]">
+                <param name="diffuse">$PARAM[diffuse]</param>
+                <param name="icon">$PARAM[icon]</param>
+                <param name="aspectratio">$PARAM[aspectratio]</param>
+            </include>
+            <include content="Object_Layout_Image_Rectangle_Full" condition="![$PARAM[light]]">
+                <param name="diffuse">$PARAM[diffuse]</param>
+                <param name="icon">$PARAM[icon]</param>
+                <param name="listitem">$PARAM[listitem]</param>
+                <param name="aspectratio">$PARAM[aspectratio]</param>
+                <param name="selected">$PARAM[selected]</param>
+            </include>
+        </definition>
+    </include>
+
+    <include name="Object_Layout_Image_Rectangle_Light">
+        <param name="aspectratio">keep</param>
+        <definition>
+            <control type="image">
+                <texture background="true" diffuse="$PARAM[diffuse]">$PARAM[icon]</texture>
+                <aspectratio scalediffuse="false">$PARAM[aspectratio]</aspectratio>
+            </control>
+        </definition>
+    </include>
+
+    <include name="Object_Layout_Image_Rectangle_Full">
         <param name="aspectratio">keep</param>
         <param name="selected">false</param>
         <definition>
@@ -430,6 +475,7 @@
         <control type="group">
             <visible>![String.IsEmpty($PARAM[listitem].Art(discart)) + String.IsEmpty($PARAM[listitem].Art(album.discart)) + [String.IsEqual($PARAM[listitem].DBType,movie) | String.IsEqual($PARAM[listitem].DBType,album) | String.IsEqual($PARAM[listitem].DBType,song) | String.IsEqual($PARAM[listitem].DBType,season)]]</visible>
             <include content="Object_Layout_Image_Rectangle">
+                <param name="light">$PARAM[light]</param>
                 <param name="diffuse">$PARAM[diffuse]</param>
                 <param name="icon">$PARAM[icon]</param>
                 <param name="listitem">$PARAM[listitem]</param>
@@ -445,6 +491,7 @@
         <control type="group">
             <visible>String.IsEmpty($PARAM[listitem].Art(discart)) + String.IsEmpty($PARAM[listitem].Art(album.discart)) + [String.IsEqual($PARAM[listitem].DBType,movie) | String.IsEqual($PARAM[listitem].DBType,album) | String.IsEqual($PARAM[listitem].DBType,song) | String.IsEqual($PARAM[listitem].DBType,season)]</visible>
             <include content="Object_Layout_Image_Rectangle">
+                <param name="light">$PARAM[light]</param>
                 <param name="diffuse">diffuse/circle/discart.png</param>
                 <param name="icon">$PARAM[icon]</param>
                 <param name="listitem">$PARAM[listitem]</param>
@@ -459,6 +506,7 @@
     </include>
 
     <include name="Object_Layout_Image_Icon">
+        <param name="light">false</param>
         <param name="genre_bordersize">50</param>
         <param name="other_bordersize">20</param>
         <param name="include_discart">false</param>
@@ -470,6 +518,7 @@
                 <visible>![String.IsEqual($PARAM[listitem].DBType,country) | String.IsEqual($PARAM[listitem].Property(DBType),country)]</visible>
 
                 <include content="Object_Layout_Image_Circle" condition="$PARAM[include_discart]">
+                    <param name="light">$PARAM[light]</param>
                     <param name="diffuse">$PARAM[diffuse]</param>
                     <param name="icon">$PARAM[icon]</param>
                     <param name="listitem">$PARAM[listitem]</param>
@@ -478,6 +527,7 @@
                 </include>
 
                 <include content="Object_Layout_Image_Rectangle" condition="![$PARAM[include_discart]]">
+                    <param name="light">$PARAM[light]</param>
                     <param name="diffuse">$PARAM[diffuse]</param>
                     <param name="icon">$PARAM[icon]</param>
                     <param name="listitem">$PARAM[listitem]</param>
