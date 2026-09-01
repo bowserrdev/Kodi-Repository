@@ -13676,3 +13676,687 @@ marcatore resta corretto e provato in laboratorio, ma sul campo non ha ancora do
    sono dichiarati in `script-skinvariables-generator-includes-.xml` ma senza contenuto, e Kodi li
    segnala come `Skin has invalid include`. Da li' escono `GetDirectory - Error getting include` e i
    tre path monchi `&pgctl=1105.501/502/505` a ogni apertura dell'hub di ricerca.
+
+## Diagnosi della fluidita' -- 01/09, misura diretta dei fotogrammi (stick)
+
+Sessione dedicata a "perche' la navigazione non e' fluida". Non e' un lotto di modifiche: e' una
+misura, e serve a impedire che le sessioni future ripercorrano le strade gia' escluse. **Tutte le
+ipotesi elencate sotto come escluse sono state escluse con un controllo, non per impressione.**
+
+### Il fatto centrale
+
+Durante lo scorrimento **la GUI non regge il passo del telecomando**, e il problema e' il *disegno*,
+non la logica.
+
+| | video fermo | scorrimento |
+|---|---|---|
+| fps medio | 40,5 | **18,3** |
+| fotogramma mediano | 16,7 ms | **33,4 ms** |
+| fotogramma p90 | 33,4 ms | **150-183 ms** |
+
+Il display e' a 60 Hz (periodo 16,67 ms), la GUI disegna a 1280x720 su pannello 1920x1080 -- quindi
+l'impostazione della risoluzione GUI funziona e **non e' li' il problema**. I p90 dello scorrimento
+sono multipli esatti del vsync (150,2 / 166,9 / 183,5 ms = 9, 10, 11 periodi): Kodi perde 8-10 vsync
+consecutivi.
+
+Numeri derivati, tutti misurati su 11 campioni di scorrimento:
+- **~46 ms persi per ogni cambio di fuoco** (banda 40-55 ms fra i campioni, molto stabile)
+- **il 52% del tempo di scorrimento** se ne va negli scatti
+- la ripetizione tasto di Android arriva ogni **51 ms**: il costo per fuoco e 46 ms sta *sul filo*,
+  ed e' per questo che il sistema oscilla fra tenere il passo e crollare invece di essere
+  uniformemente lento
+
+**Gli scatti sono a grappoli, non periodici.** Distanza fra due scatti consecutivi: 145 casi su 257
+valgono **un solo fotogramma**, CV = 2,38. Non e' un pedaggio per elemento e non e' un pool che si
+svuota a cadenza fissa (ipotesi dei "3 worker": verificata e **non confermata**, la cadenza regolare
+darebbe CV vicino a 0). La forma vera sono **episodi di circa un secondo a 5-6 fps separati da tratti
+a 30 fps**: qualcosa entra in uno stato cattivo e poi ne esce.
+
+### Come si rifa' la misura (fondamentale: senza questo si torna a dedurre)
+
+`dumpsys SurfaceFlinger --latency` restituisce i tempi reali di presentazione. **Il buffer tiene 128
+fotogrammi**: a 60 fps copre solo ~2 s, quindi campionare *dopo* aver smesso di scorrere non serve a
+niente, i fotogrammi buoni evacuano subito quelli cattivi. Va campionato **durante**, e dal
+dispositivo, perche' il protocollo adb vieta cicli di polling dal Mac (vedi [[mistick-adb-access]]).
+
+```sh
+# sul dispositivo, lanciato con nohup e poi 'adb kill-server' per tutta la durata
+L="SurfaceView - org.xbmc.kodi/org.xbmc.kodi.Main#0"
+for i in $(seq 1 25); do
+  sleep 4
+  echo "campione $i @ $(date +%H:%M:%S)" > /data/local/tmp/fps/t_$i.txt
+  dumpsys SurfaceFlinger --latency "$L" > /data/local/tmp/fps/lat_$i.txt
+done
+```
+
+Formato: prima riga = periodo di refresh in ns, poi fino a 128 righe da tre numeri (desiderato,
+**effettivo**, pronto) in ns; scartare le voci a 0 e a INT64_MAX. L'orario di ogni campione permette
+di incrociarlo con `kodi.log` e sapere se in quella finestra si stava scorrendo (conteggio di
+`HandleKey`), caricando (`load_cumulative`), decodificando (`swscaler`).
+
+### Ipotesi ESCLUSE, ciascuna col suo controllo -- non ripercorrerle
+
+1. **Lo sfondo che cambia a ogni fuoco.** Provato con un pin diagnostico su `Image_Foreground`
+   (`Skin.HasSetting(Diag.PinBackground)`, poi rimosso). A/B pulito: stalli 23,5% -> 26,1%
+   **invariati**, mentre le decodifiche lente scendevano 5,7 -> 1,0 al minuto e la memoria libera
+   minima saliva 227 -> 241 MB. Il pipeline dello sfondo fa il suo lavoro ma **non c'entra con la
+   fluidita'**.
+2. **Il paginatore / il caricamento dinamico delle pagine.** I campioni con **zero** caricamenti
+   hanno lo stesso p90 di quelli con caricamenti; correlazione normalizzata +0,30. Anche la quota di
+   stalli e' piatta rispetto al tempo trascorso dall'ultimo caricamento (34,7% entro 1 s, 31,6% a
+   1-3 s, 31,3% a 3-8 s, 35,0% oltre 8 s). Quando a occhio sembra crollare "mentre carica", e' lo
+   stesso crollo dello scorrimento.
+3. **La decodifica delle immagini degli elementi.** Correlazione grezza con gli scatti **+0,87**, che
+   normalizzata per numero di cambi di fuoco **crolla a +0,39** (n=11, non significativa). Vedi la
+   trappola metodologica sotto.
+4. **La pressione di memoria.** Conta solo come *soglia*: sotto i 240 MB liberi gli stalli vanno al
+   100%, sopra la relazione non e' monotona (280-319 MB -> 51%, 320-359 MB -> 67%). Il lavoro sulle
+   immagini ha portato il minimo da 203 a 241-245 MB, cioe' appena sopra la soglia.
+5. **La concorrenza fra interpreti Python.** Cancello a 2 slot implementato (`gate.py`, lotto del
+   31/08) e **revertito** (6c63401): import 2391/2526/2553 ms senza, 2507/1184/2559 ms con. Il
+   confondente era il *momento* della sessione, non la concorrenza: a interprete singolo si sono
+   misurati 2170 ms, come con 3 attivi. **Non reimplementarlo.**
+6. **La latenza di Kodi sugli input.** Quota interna p50 32 ms / p90 46 ms, stabile su tre sessioni:
+   impercettibile. Il ritardo percepito del telecomando vive **fuori da Kodi** (stack BLE Android,
+   `BtGatt.ContextMap` / `com.google.android.tv.remote.service`) e non e' raggiungibile ne' dalla
+   skin ne' da Fen Light.
+7. **Il costo *logico* per fuoco della skin** (le variabili, le espressioni, i residui TMDbHelper).
+   Quando il thread principale si libera smaltisce i tasti accumulati a **0,5 ms l'uno**: valutare le
+   variabili non e' il costo. Attenzione a non confondere i due piani -- lo *smaltimento* dell'evento
+   e' gratis, il *disegno* dello stato nuovo no. I 46 ms per fuoco stanno nel disegno.
+
+### La trappola metodologica, da tenere a mente
+
+Tre ipotesi sono cadute in questa sessione perche' la correlazione era confusa con un fattore comune.
+Il caso peggiore: decodifiche di immagini e scatti correlavano a **+0,87**, ma entrambe crescono con
+*quanto* si e' scorso; normalizzando per cambio di fuoco resta +0,39, cioe' niente. **Prima di
+attribuire una causa, dividere per il driver comune** (numero di eventi, durata della finestra) e
+verificare che la relazione sopravviva.
+
+### Difetti trovati e NON corretti (in attesa)
+
+- `Image_SimpleBackground` in `1080i/Includes_Images.xml` ricade su
+  `resource://resource.images.arcticfuse/backgrounds/blur/**purle**_blur.jpg` -- il file si chiama
+  `purple_blur.jpg`. Manca la *p*: lo strato di sfondo di base punta a una texture inesistente. Non
+  corretto durante la sessione per non alterare il confronto A/B in corso.
+- `Image_Foreground_NoService` ha 52 diramazioni, ma la **prima** e'
+  `!String.IsEmpty(Container.ListItem.Art(fanart))` ed e' sempre vera dentro una finestra media: Kodi
+  si ferma al primo ramo vero, quindi le 52 diramazioni **mordono solo sulla Home**. Il residuo
+  TMDbHelper e' un problema circoscritto alla Home, non della navigazione in generale.
+- `$VAR[Home_Icon_1106] is not defined` (avviso di formattazione etichette nel log).
+
+### Cosa resta aperto
+
+**Perche'** un fotogramma di scorrimento costi il doppio di uno fermo, e perche' si formino episodi
+di ~1 s a 5-6 fps. A video fermo Kodi non ridisegna (regioni sporche); durante lo scorrimento
+ridisegna, e la skin impila strati a schermo intero (`Background_Main_Overlay` ne aggiunge due con
+`colordiffuse` sopra a sfondo e FlixArt). E' un sospetto, **non una conclusione**.
+
+Ordine di bisezione deciso, dal piu' economico da provare al piu' costoso, uno alla volta e ognuno
+giudicato col misuratore sopra (fps mediano + ms persi per cambio di fuoco):
+
+1. **`scrolltime` a 0** sui container dei widget (oggi 400 ms su sei controlli, 500 su due): isola il
+   costo del ridisegno continuo dovuto all'animazione.
+2. **Togliere uno strato a schermo intero** dell'overlay: isola il costo di riempimento.
+3. **Semplificare il layout delle voci** di un solo widget: isola il costo per elemento.
+
+Se nessuno dei tre sposta il numero, il costo e' nel motore di Kodi e non nella skin, e la conclusione
+va scritta come tale invece di continuare a limare.
+
+### Correzione all'ordine: sono DUE fenomeni, non uno
+
+Rileggendo i numeri, il mediano e il p90 non possono avere la stessa causa:
+
+- **il mediano a 33,4 ms** (contro 16,7 da fermo) e' un costo *costante* pagato a ogni fotogramma
+  mentre si scorre -- compatibile con riempimento/ridisegno, cioe' con i punti 1 e 2 della bisezione;
+- **gli episodi di ~1 s a 5-6 fps** sono *episodici* per definizione, e un costo costante non li
+  produce. Il riempimento non va e viene.
+
+Un costo che va e viene, a grappoli di circa un secondo, su un dispositivo passivo e sotto carico,
+somiglia molto piu' al **governor della CPU o al throttling termico** che alla skin. E' verificabile
+a costo zero aggiungendo alla cattura, accanto al `dumpsys`:
+
+```sh
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq
+cat /sys/class/thermal/thermal_zone*/temp
+```
+
+Se la frequenza cala proprio durante gli episodi, **gli episodi non sono un problema di skin** e
+limare la skin non li togliera'. Va misurato PRIMA di spendere il capitolo skin su di essi: il punto 1
+della bisezione resta il primo per il mediano, ma la frequenza va campionata gia' da quella prova.
+
+### Bisezione, prove 0 e 1 -- entrambe NEGATIVE (01/09)
+
+Banco v2: calibrazione fra i due orologi portata da +-291 ms a **14,5 ms** (`date +%s%N` e
+`/proc/uptime` scritti insieme dal dispositivo), frequenza dei 4 core e `scaling_max_freq` campionati
+a 2 Hz. Sessione: 4033 tasti, 98 caricamenti, 30 campioni.
+
+**Prova 0 -- governor / throttling termico: ESCLUSO, definitivo.** 240 campioni su 240, tutti e
+quattro i core a **1416000 kHz**, che e' il massimo della piattaforma
+(`scaling_available_frequencies` arriva li'), e `scaling_max_freq` mai calato. La CPU e' al massimo
+per tutta la durata e non ce la fa lo stesso. Le zone termiche non sono leggibili senza root, ma non
+servono: il throttling si manifesterebbe come calo di `scaling_max_freq`, che non avviene.
+
+**Prova 1 -- `scrolltime` a 0: ESCLUSO.** Portato da 400 a 0 su `List_Core` (il template delle righe
+orizzontali dei widget), `Includes_Lists.xml:635`, `Includes_Categories.xml:270`,
+`Includes_Hubs.xml:605`. Fotogramma mediano in scorrimento **33,4 ms prima e dopo**, p90 183,5 ms.
+L'animazione di scorrimento non c'entra: **non spendere altro tempo sui tween.**
+
+**Paginazione -- ESCLUSA, ora in modo definitivo.** Con la calibrazione buona si puo' chiedere, per
+ogni singolo fotogramma, quanto dista dal caricamento piu' vicino. Su 981 fotogrammi >100 ms, 2418
+normali e 115 caricamenti: rapporto lenti/normali 0,88x entro 100 ms, 1,00x entro 200, 1,01x entro
+400, 1,01x entro 800, 1,11x entro 1500. **Piatto.** L'impressione che "crolli quando carica" e' reale
+ma e' lo stesso crollo dello scorrimento, che sta gia' avvenendo.
+
+### L'indizio che restringe il campo: il costo NON e' proporzionale al contenuto
+
+Letture del contatore di Kodi fatte dall'utente:
+
+| | fermo | scorrimento |
+|---|---|---|
+| home (meno widget) | ~45 fps | ~6 fps |
+| hub (piu' widget) | ~35 fps | ~5,5 fps |
+
+Il numero di widget sposta **l'fps da fermo** (45 contro 35): quello e' costo di disegno, e scala col
+contenuto come atteso. Ma sotto scorrimento i due crollano quasi allo **stesso valore assoluto**
+(~170 ms per fotogramma). Se il crollo fosse disegno, l'hub dovrebbe stare molto peggio della home.
+**Il costo dello scorrimento e' fisso, non proporzionale a quanto c'e' da disegnare** -- il che
+esclude in blocco riempimento, sovrapposizione di strati e complessita' dei layout, cioe' le prove 2
+e 3 che erano in programma.
+
+### Prossimo candidato: il watcher del paginatore
+
+`service.py`, ciclo `WidgetPaginator`: `wait_for_abort(0.2)`, cioe' **5 giri al secondo**, e ogni giro
+fa **15 chiamate all'API di Kodi** (`getInfoLabel`, `getCondVisibility`, `getProperty`) piu' un
+censimento che ne fa tre per ogni contenitore della finestra. Nel log: **789 righe di watcher durante
+lo scorrimento contro 1 sola a video fermo** (2,6/s contro 0,0/s).
+
+Perche' e' il candidato giusto: quelle chiamate, da un thread Python, prendono il **lock del contesto
+grafico**, lo stesso che il thread di rendering tiene per l'intera durata di un fotogramma. Ed e' un
+costo **indipendente dal contenuto**, che e' esattamente la firma della tabella qui sopra.
+
+**Attenzione a non prendere la coincidenza per causa**: il watcher gira *perche'* si scorre. La
+coincidenza da sola non prova niente -- e' la stessa trappola gia' documentata. Ma la prova e'
+gratuita: l'impostazione `paginate.interactive` e' esposta nel settings manager di Fen Light
+(`settings_manager.xml:751`), quindi si spegne dalla UI, **senza deploy e senza toccare codice**, si
+riscorre e si rimisura. Se il fotogramma mediano scende, e' lui.
+
+## TROVATA: la decodifica delle immagini. Correzione di un'esclusione sbagliata (01/09)
+
+**Rettifica.** Piu' sopra in questo documento la decodifica delle immagini risulta ESCLUSA, due volte.
+Era sbagliato, e l'errore era nello **strumento**, non nei dati: la prima volta avevo contato le righe
+`DoWork - took`, che Kodi emette solo per le operazioni lente, e la seconda avevo correlato a
+granularita' di **4 secondi** con una calibrazione fra orologi di **+-291 ms**. Il fenomeno vero dura
+**30 ms**. Nessuno dei due strumenti poteva vederlo. Dove sopra si legge che le immagini sono escluse,
+vale questa sezione.
+
+Con il banco v2 (calibrazione 14,5 ms) e la correlazione fatta **fotogramma per fotogramma**, sui soli
+campioni di scorrimento:
+
+| distanza da una decodifica JPEG | fotogrammi LENTI (>100ms) | fotogrammi normali | rapporto |
+|---|---|---|---|
+| entro 50 ms | **91,5%** | 3,9% | **23,6x** |
+| entro 100 ms | 96,3% | 23,4% | 4,1x |
+| entro 200 ms | 98,7% | 51,0% | 1,9x |
+
+Distanza mediana da una decodifica: **30 ms per i fotogrammi lenti, 197 ms per i normali.** Su 981
+fotogrammi lenti, 2418 normali, 2664 decodifiche. Il confronto e' gia' ristretto allo scorrimento,
+quindi non e' l'effetto di "si stava scorrendo": e' il controllo giusto.
+
+Spiega anche l'indipendenza dal contenuto che aveva ristretto il campo: un passo di scorrimento scopre
+**un elemento nuovo**, cioe' una decodifica, che ci siano 5 widget in home o 15 nell'hub.
+
+### Quanti pixel vengono buttati
+
+Kodi limita la cache a 720 di altezza (`imageres` di default; `advancedsettings.xml` sulla stick non
+contiene ne' `imageres` ne' `fanartres`). Misurato su 30 file reali in `userdata/Thumbnails`:
+poster **480x720** (0,35 Mpixel), fanart/landscape **1280x720** (0,92 Mpixel), media 0,48 Mpixel.
+
+La skin e' scritta in coordinate 1920x1080 e Kodi la disegna a 1280x720, cioe' scala per **2/3**
+(`Includes_Constants.xml`: `view_poster_item_w` 217,14 x `view_poster_item_h` 310;
+`view_landscape_item_w` 410 x `view_landscape_item_h` 230,6):
+
+| | decodificato | disegnato | pixel buttati |
+|---|---|---|---|
+| poster | 480 x 720 | **145 x 207** | **11,7x** |
+| landscape | 1280 x 720 | **273 x 154** | **22x** |
+
+**Questo non e' un compromesso sulla qualita'.** La GUI disegna a 1280x720: quei pixel non arrivano
+allo schermo, vengono scartati dopo essere stati convertiti uno per uno da `yuv420p` a `bgra` in C
+puro senza NEON. Ridurli non peggiora nulla di visibile a questa risoluzione della GUI -- e' la
+differenza fra la posizione presa a suo tempo ("e' un peccato rovinare la risoluzione per
+velocizzarla") e questa, che non tocca la risoluzione percepita.
+
+### Due leve, indipendenti
+
+1. **`imageres` / `fanartres` in `advancedsettings.xml`** (lato dispositivo, un file, nessun deploy):
+   agisce su tutto e non richiede modifiche al codice. Vale solo per le immagini messe in cache DOPO,
+   quindi la prova richiede di svuotare la cache texture.
+2. **I token di dimensione TMDb in `metadata.py`**: riducono anche il traffico di rete e il tempo di
+   scaricamento, ma vanno distinti per uso -- il landscape serve sia da miniatura nei widget (273x154)
+   sia da sfondo a schermo intero (1280x720), e questi due non possono avere lo stesso token.
+
+Ordine ragionevole: prima la leva 1, che e' reversibile con un file e misurabile subito; se conferma,
+la leva 2 per non scaricare inutilmente pixel che verranno comunque buttati.
+
+### Prova sulle immagini: il grilletto e' confermato, ma NON e' il numero di pixel (01/09)
+
+Ridotta la dimensione delle immagini in cache di **3,2x** (media da 0,48 a 0,151 Mpixel):
+`imageres` 360 e `fanartres` 360 in `advancedsettings.xml`, cache invalidata e riscaldata.
+Necessario abbassare **entrambi**: con `fanartres` a 720 restavano 62 immagini a 1280x720 che da sole
+erano l'83% dei pixel, e la prova non misurava niente. Miniature landscape dei widget e sfondo a
+schermo intero condividono la **stessa URL `w1280`**, quindi la stessa voce di cache: da
+`advancedsettings.xml` non sono separabili.
+
+| | prima (0,48 Mpx) | dopo (0,151 Mpx) |
+|---|---|---|
+| scorrimento, fotogramma mediano | 33,4 ms | 33,4 ms |
+| scorrimento, p90 | 183,5 ms | **250,2 ms** |
+| quota >100 ms | 28,9% | **28,6%** |
+
+**Tre volte meno pixel, zero differenza.** Il costo per immagine **non e' proporzionale ai pixel**.
+
+Ma il grilletto resta lo stesso: la correlazione fotogramma-per-fotogramma con le decodifiche regge,
+**80,2% contro 6,2% = 13x** (era 91,5/3,9 = 23,6x con le immagini piene). Quindi:
+
+**Il caricamento di un'immagine costa una cifra FISSA, indipendente dalla sua dimensione.** Non e'
+lavoro sui pixel (decodifica, conversione di spazio colore, banda verso la GPU): sarebbe tutto
+proporzionale. E' un costo per *evento di caricamento* -- apertura del file, lettura dalla eMMC,
+ricerca nel database delle texture, allocazione.
+
+**Conseguenza operativa, importante:** rimpicciolire le immagini NON e' la strada, ne' da
+`advancedsettings.xml` ne' dai token TMDb in `metadata.py`. La leva 2 prevista va **abbandonata**.
+L'unica strada che resta e' ridurre il NUMERO di caricamenti durante lo scorrimento, oppure
+impedire che blocchino il disegno. Il che riporta esattamente all'intuizione iniziale dell'utente:
+*"non caricare istantaneamente i metadati di ogni elemento che si scorre se l'utente sta scorrendo
+velocemente; basterebbe un mini ritardo che faccia partire il caricamento solo quando lo scorrimento
+si ferma."* I dati ora dicono che era la strada giusta fin dall'inizio.
+
+**Prossima prova, gratuita e decisiva:** scorrere avanti e indietro sugli **stessi** elementi, gia'
+caricati nella cache texture in memoria. Se gli scatti spariscono al secondo passaggio e' il
+caricamento (I/O + apertura), e la strada e' il ritardo. Se restano, non e' il caricamento e la
+correlazione con le decodifiche e' un effetto comune di qualcosa d'altro.
+
+**Stato dell'impostazione:** `imageres`/`fanartres` a 360 sono rimasti attivi. Non danno beneficio di
+fluidita' ma nemmeno danno misurato: l'utente riferisce immagini indistinguibili, e la cache passa da
+636 MB a una frazione. Backup in `advancedsettings.xml.bak-imageres` sul dispositivo.
+
+### VERDETTO: non e' un limite dell'hardware. Confronto con Estuary (01/09)
+
+Stessa stick, stessi contenuti Fen Light, stesso database di texture, skin minimale:
+
+| | Arctic Fuse 3 | Estuary |
+|---|---|---|
+| da fermo | 35-45 fps | **52-58 fps** |
+| scorrimento veloce (minimo) | 5-6 fps | **12-15 fps** |
+| scorrendo dentro la finestra gia' in memoria | -- | ~20 fps |
+
+**La stick non e' il muro.** Arctic Fuse costa circa **1,4x** in piu' di Estuary a disegnare la
+schermata ferma, ma **2 - 2,5x** in piu' quando si scorre. Il fattore di amplificazione e' molto piu'
+alto sullo scorrimento che sul disegno statico: c'e' lavoro **per elemento rivelato** che Estuary non
+fa e Arctic Fuse si'.
+
+Osservazione dell'utente che conferma il meccanismo della cache: Kodi tiene in memoria l'artwork di
+circa **20-30 elementi** attorno al fuoco. Restando dentro quella finestra Estuary sta a ~20 fps;
+appena si esce e deve ricaricare scende a 10-15. Combacia con la misura delle decodifiche che non
+calano mai (0,56 e 0,47 per tasto nei due minuti): non e' una cache che si scalda, e' una finestra
+scorrevole.
+
+**Correzione a una mia esclusione affrettata.** Piu' sopra avevo accantonato la prova 3
+(semplificare il layout delle voci) sostenendo che l'indipendenza dal contenuto la escludesse. Era un
+errore di ragionamento: quell'indipendenza riguardava il numero di **widget** in schermata (home
+contro hub), non la complessita' del layout della **singola voce**, che invece si paga identica in
+entrambe le finestre e quindi e' perfettamente compatibile con i dati. Il confronto con Estuary la
+rimette in cima: e' esattamente li' che le due skin differiscono.
+
+**Aspettativa realistica, da non gonfiare:** anche Estuary crolla da 55 a 12-15 fps scorrendo. Quel
+crollo e' il pavimento imposto da Kodi + hardware + caricamento artwork, e non e' attaccabile dalla
+skin. L'obiettivo realistico per Arctic Fuse e' **avvicinarsi ai 12-20 fps di Estuary**, cioe' un
+guadagno di 2-2,5x sullo stato attuale -- la differenza fra inusabile e accettabile, non fra 6 e 60.
+
+**Le due strade rimaste, entrambe ora sostenute dai dati:**
+1. **Alleggerire il layout della singola voce** dei widget. E' la differenza misurata fra le due
+   skin. Da fare per bisezione col banco, partendo da una sola riga di widget.
+2. **Il "mini ritardo"**: non caricare artwork durante una raffica di scorrimento, caricarlo quando
+   il fuoco si ferma. Resta valido nonostante il secondo passaggio non dia beneficio, perche' il
+   costo si paga a **ogni** rivelazione e non solo alla prima: evitare 20 rivelazioni durante una
+   raffica evita 20 costi.
+
+### Prova sul layout della voce: dissocia due costi che erano stati confusi (01/09)
+
+Sostituito il layout della voce con uno minimo (sola artwork, nessuna etichetta, nessun indicatore,
+nessuno degli 11-13 include annidati di `Layout_Poster`/`Layout_Landscape`), dietro l'interruttore
+`Skin.HasSetting(Diag.MinimalItems)` in `Includes_Lists.xml`. Il template `List_Core` istanzia il
+layout in **tre** punti -- `<itemlayout>` piu' due gruppi sovrapposti nel `<focusedlayout>`
+(`selected` false e true, mescolati da dissolvenze) -- e la sostituzione copre tutti e tre.
+
+| | da fermo | scorrimento |
+|---|---|---|
+| layout completo | 35-45 fps | 5,5-6 fps |
+| layout minimo | **55 fps** | **5,5 fps** |
+| Estuary | 52-58 fps | 12-15 fps |
+
+**Due conclusioni distinte, e sono opposte.**
+
+1. **Il layout della voce E' il motivo per cui Arctic Fuse sta sotto Estuary a video fermo.** Tolto,
+   si va da 35-45 a 55 fps, esattamente il livello di Estuary. E' un guadagno reale e incassabile,
+   indipendente dal problema dello scorrimento: alleggerire quei 13 include annidati (non azzerarli)
+   migliorerebbe la reattivita' generale dell'interfaccia.
+2. **Il layout della voce NON c'entra col crollo dello scorrimento.** 5,5 fps prima, 5,5 dopo.
+
+E il conteggio dei caricamenti lo conferma: **0,65 decodifiche per cambio di fuoco col layout minimo
+contro 0,53 col completo**, cioe' uguale. Il layout non caricava immagini in piu': l'artwork e' una
+per elemento in entrambi i casi.
+
+### Il fatto centrale, ormai isolato
+
+**Un caricamento di artwork = un fotogramma da ~180 ms.** Non lo cambia:
+
+- la **dimensione** dell'immagine (3,2x meno pixel: nessuna differenza)
+- l'**averla gia' vista** (Kodi ridecodifica a ogni rivelazione, 0,56 e 0,47 per tasto nei due minuti)
+- la **complessita' di cio' che si disegna** (layout minimo: nessuna differenza)
+- lo **sfondo** (pin diagnostico: nessuna differenza)
+
+E' un costo fisso per evento di caricamento, dentro la pipeline delle texture di Kodi su questo
+hardware. Estuary paga circa la meta' (10-15 fps contro 5,5) ma paga anche lei: l'utente ha osservato
+che scende a 10-15 solo quando carica, e sta a ~20 fps finche' resta dentro la finestra di 20-30
+elementi tenuta in memoria.
+
+**Resta una sola leva, ed e' quella proposta dall'utente a inizio sessione:** non caricare artwork
+durante una raffica di scorrimento, caricarlo quando il fuoco si ferma. Tutto il resto e' stato
+misurato ed escluso. Evitare 20 rivelazioni durante una raffica evita 20 costi da 180 ms.
+
+**Stato:** interruttore `Diag.MinimalItems` spento, skin normale. Il codice del layout minimo resta in
+`Includes_Lists.xml` dietro l'interruttore: serve per il lavoro sul punto 1 (alleggerire il layout per
+guadagnare i 10-15 fps da fermo), che e' un cantiere separato e con un guadagno gia' quantificato.
+
+### Il caricamento delle immagini NON e' la causa. La correlazione a 23x era un confondente (01/09)
+
+Prova decisiva: layout della voce sostituito da un **segnaposto di colore pieno**, nessuna artwork,
+nessun caricamento dal layout. Risultato: **scorrimento sempre a 5,5 fps**, identico. Da fermo 55 fps.
+
+Le decodifiche sono scese da 0,53-0,80 a **0,29 per cambio di fuoco** (le rimanenti vengono da fuori
+il layout: sfondo, clearlogo dell'intestazione). Quindi: **dimezzati i caricamenti, fps invariato.**
+
+Sommato alle prove precedenti -- pixel ridotti di 3,2x, sfondo pinnato, layout azzerato, tutte a
+risultato nullo -- la conclusione e' che il caricamento delle immagini **non causa** il crollo. La
+correlazione fotogramma-per-fotogramma a 13-23x era un **confondente**: caricamenti e fotogrammi
+lenti accadono entrambi quando un elemento viene rivelato, ma il primo non e' la causa del secondo.
+
+**E' la terza volta in questa sessione che una correlazione fortissima si rivela un confondente.** La
+regola gia' scritta piu' sopra -- dividere per il driver comune prima di attribuire una causa -- non
+basta quando il driver comune e' l'evento stesso ("un elemento e' stato rivelato"). In quel caso
+l'unico controllo valido e' **rimuovere il presunto meccanismo e rimisurare**, che e' esattamente cio'
+che ha smentito l'ipotesi. Le correlazioni qui non hanno mai deciso niente: hanno deciso solo gli
+interventi.
+
+### Riepilogo: cosa e' escluso, con quale controllo
+
+Tutto misurato, tutto negativo: sfondo per-fuoco (pin A/B) | paginazione e caricamento pagine
+(fotogramma-per-fotogramma, 115 eventi) | watcher del paginatore (spento dall'impostazione) |
+concorrenza fra interpreti Python (cancello, revertito) | animazione di scorrimento (`scrolltime` 0) |
+governor e throttling termico (240/240 campioni al massimo) | memoria (soglia sotto 240 MB soltanto) |
+dimensione delle immagini (3,2x) | **caricamento delle immagini** (segnaposto) | complessita' del
+layout della voce **per lo scorrimento** | `preloaditems` (2 -> 0) | servizio blur del menu
+contestuale (**non gira**: `service.py:811` e' commentato dal lotto 48).
+
+Unico risultato POSITIVO della sessione: il layout della voce vale **35-45 -> 55 fps da fermo**.
+
+### Cosa NON e' ancora stato variato
+
+Il **pannello informazioni della finestra**: il riquadro che mostra titolo, trama, valutazioni e
+metadati dell'elemento in fuoco. Cambia a ogni cambio di fuoco, e' fatto quasi solo di **testo**, e
+nessuna prova finora lo ha toccato -- il layout minimo sostituiva la voce dentro il container, non il
+pannello fuori. Kodi disegna il testo generando texture di glifi: una trama di qualche centinaio di
+caratteri rigenerata a ogni fuoco e' un candidato serio, e ha la firma giusta (indipendente dal
+contenuto dei widget, indifferente all'artwork, per cambio di fuoco). Estuary in vista lista non ha
+niente di equivalente.
+
+E' la prossima prova, e per ora e' anche l'ultima ipotesi in piedi.
+
+## CONCLUSIONE della sessione del 01/09: il costo e' nello scorrimento del container
+
+Ultima prova: finestra spogliata di **tutto** tranne le righe dei widget -- niente sfondo, FlixArt,
+blur, ne' i due strati di overlay a schermo intero (`Skin.HasSetting(Diag.NoChrome)`). Risultato:
+**scorrimento sempre a 5,5 fps**. Non e' la cornice della finestra.
+
+Con questo il campo e' chiuso. Il crollo da ~55 a 5,5 fps quando si scorre **non e'** causato da:
+sfondo per-fuoco, paginazione, watcher del paginatore, concorrenza fra interpreti Python, animazione
+di scorrimento, governor o throttling termico, memoria, dimensione delle immagini, **caricamento**
+delle immagini, complessita' del layout della voce, `preloaditems`, cornice/sfondo/overlay della
+finestra. Ognuna verificata togliendo il meccanismo e rimisurando, non per correlazione.
+
+Cio' che resta e' **l'atto stesso di far scorrere il container** in Kodi su questo hardware. Estuary
+paga la meta' (10-15 fps) facendo la stessa cosa con un container piu' semplice, quindi non e' un
+muro assoluto -- ma non e' aggredibile da nessuna delle leve che questa sessione ha saputo isolare.
+
+### Cosa la sessione lascia di concreto
+
+1. **Il layout della voce vale 35-45 -> 55 fps DA FERMO.** Unico guadagno positivo misurato.
+   Alleggerire i 13 include annidati di `Layout_Poster`/`Layout_Landscape` (non azzerarli) e' un
+   cantiere a rischio basso con un ritorno gia' quantificato. Non tocca lo scorrimento.
+2. **`imageres` 360 / `fanartres` 360**: nessuna regressione visibile a GUI 720p, cache da 636 MB a
+   una frazione. Tenuto attivo. **Attenzione**: e' tarato sulla GUI a 720p. A 1080p i poster
+   reggerebbero ancora, ma lo sfondo a schermo intero (640x360 ingrandito a 1920x1080) si vedrebbe.
+3. **Il banco di misura** (SurfaceFlinger + calibrazione a 14,5 ms + correlazione con `kodi.log`),
+   descritto sopra, riutilizzabile per qualsiasi prova futura.
+4. **Dodici strade chiuse**, ognuna col suo controllo, che nessuna sessione futura deve ripercorrere.
+
+### La lezione di metodo, che vale piu' del resto
+
+Tre correlazioni fortissime si sono rivelate confondenti, l'ultima a **23x**. Quando il fattore comune
+e' l'evento stesso ("un elemento e' stato rivelato"), nessuna statistica separa la causa dalla
+coincidenza: **l'unico controllo valido e' rimuovere il presunto meccanismo e rimisurare.** In questa
+sessione le correlazioni non hanno mai deciso niente di corretto; hanno deciso solo gli interventi.
+Aver seguito la correlazione a 23x avrebbe portato a costruire ritardi, segnaposti e tarature --
+settimane di lavoro su una skin complessa -- per un guadagno di zero.
+
+---
+
+## Lotto 116 -- fps da fermo: due guadagni veri e tre modelli sbagliati
+
+Seguito diretto del lotto precedente. Li' si era stabilito che il layout della voce vale 35-45 -> 55
+fps da fermo (prova `Diag.MinimalItems`, che svuotava la scheda) ma non tocca lo scorrimento. Qui si
+e' cercato **quale pezzo** della scheda costa, con lo stesso metodo: togliere il meccanismo e
+rimisurare, un interruttore alla volta, gatato da `Skin.HasSetting(...)`.
+
+Tutte le misure sono a **home da fermo**, contatore di Kodi, stick a 192.168.1.3. Lo scorrimento e'
+stato ricontrollato a ogni giro e non si e' MAI mosso da ~5-6 fps: confermato per l'ennesima volta
+che gli fps da fermo e il crollo in scorrimento sono due fenomeni scollegati.
+
+### Il meccanismo degli interruttori
+
+`<include content="X" condition="Skin.HasSetting(Y)">` -- la condizione di un include si risolve al
+**caricamento della skin**, non a ogni fotogramma. Con l'impostazione assente il blocco non entra
+proprio nell'albero dei controlli: costo di runtime esattamente zero, e l'A/B si fa scrivendo il
+valore in `userdata/addon_data/skin.arctic.fuse.3/settings.xml` a Kodi chiuso, senza rispedire file.
+E' il modo piu' economico di fare bisezione su una skin. Le impostazioni non dichiarate funzionano.
+
+### I sei esperimenti
+
+| # | interruttore | cosa toglieva | esito |
+|---|---|---|---|
+| 1 | `Effects.ItemShadows` | ombra sotto ogni voce non in focus (`Object_ItemBack`) | **0** |
+| 2 | `Diag.NoIndicators` | i badge: 12 controlli + condizione di gruppo + disegno | **+5** (35->40) |
+| 3 | `Diag.DumbIndicators` | badge sostituiti da 3 controlli senza condizioni, disegnati su TUTTE le voci | **0** |
+| 4 | `Diag.SimpleImage` | cascata `Object_Layout_Image_Rectangle` da 3 controlli a 1 | **+5** (35->40) |
+| 5 | `Diag.NoLabels` | `Layout_Labels` nel poster: 8 controlli sotto un gruppo gia' invisibile | **0** |
+| 6 | `Diag.NoFallbackText` | casella di testo di ripiego: 3 `<visible>` non riparate, letture di artwork | **0** |
+| | 2+4 insieme | | **43,5 medi / 44,6 di picco** |
+
+**I guadagni si sommano.** Era stato ipotizzato un tetto a 40 (due interventi indipendenti che
+finivano entrambi esattamente li'): l'ipotesi e' stata testata e smentita.
+
+### Verifica del cancello: la diagnostica rossa
+
+L'esperimento 1 ha dato zero e l'utente riferiva di vedere ancora delle ombre. "Nessuna differenza"
+non distingue fra *ombra invisibile* e *cancello inerte*, quindi si e' colorata l'ombra di
+**FFFF0000** e riaccesa: il rosso e' comparso, il cancello funziona, lo zero e' valido. **Da
+ripetere ogni volta che un interruttore da' zero al primo colpo.** Costa un giro e toglie l'unica
+alternativa alla lettura del risultato.
+
+Quello che l'utente vedeva agli angoli non era un'ombra: e' il `common/box.png` tinto `main_fg_12`
+che `Object_ItemBack` disegna dietro ogni voce, scoperto dalla maschera stondata negli angoli.
+
+### Tre modelli proposti, tre smentiti
+
+1. **Fill rate.** Le ombre erano 8 quadrilateri traslucidi per voce, il candidato piu' grosso lato
+   riempimento. Zero. La GPU non e' satura di alpha blending.
+2. **Numero di controlli.** L'esperimento 3 porta i controlli del badge da 12 a 3 e non guadagna
+   niente. Non e' il conteggio.
+3. **Condizioni non riparate da un padre invisibile.** Modello costruito per far tornare 1-5, con
+   previsione esplicita (+3/+5 sull'esperimento 6). Previsione **fallita**: zero.
+
+Nessun modello a un fattore spiega i sei risultati, e non se ne e' costruito un quarto. Vale la pena
+notare che i modelli 1 e 3 erano *coerenti con tutti i dati disponibili al momento in cui sono stati
+proposti*: e' il motivo per cui vanno messi alla prova con una previsione quantitativa prima di
+scriverci sopra del codice. Il modello 3 ha risparmiato una riscrittura in Python (proprieta' `badge`
+precalcolata in Fen Light) che si sarebbe rivelata inutile: l'esperimento 3 mostra che le condizioni
+dei badge non costavano, perche' sono gia' dietro un cancello di gruppo.
+
+### Censimento dei controlli (con le impostazioni vere della stick)
+
+Voce di poster NON in focus: **31 controlli**. `Object_Indicator` 12, `Layout_Labels` 8, immagine 5,
+`Object_ItemBack` 1. Attenzione: un primo censimento dava 67 perche' contava `Object_ContentBanner`
+(23) e `Object_TraktOverlays` (5), che sono **esclusi al caricamento** -- `indicator.movieversionbanner`,
+`indicator.episodetypebanner`, `traktwatchlist`, `traktfavourites` sono tutti `false`. Qualunque
+censimento futuro deve risolvere le condizioni con le impostazioni reali del dispositivo.
+
+### Cosa e' rimasto nel repository
+
+Due sole modifiche, riapplicate da zero su un albero pulito dopo aver srotolato tutte le diagnostiche:
+
+1. **`Effects.ItemShadows`** (`Includes_Objects.xml`, `Object_ItemBack`) -- ombre spente. Vale 0 fps:
+   e' una scelta estetica dell'utente, non una prestazionale. Da quando il blur service e' fermo lo
+   sfondo dietro i widget e' nero e un'ombra nera sul nero non si vede. Riaccendibile con
+   `Skin.SetBool(Effects.ItemShadows)` + ricarica skin, se un giorno torna uno sfondo chiaro.
+2. **Percorso `light` della cascata immagini** -- `Object_Layout_Image_Rectangle` si sdoppia in
+   `_Light` (1 controllo) e `_Full` (i 3 originali). **+5 fps, nessuna differenza a schermo.**
+   `light=true` viene passato SOLO da `Layout_Poster` e `Layout_Landscape`, gli unici due misurati e
+   gli unici alimentati esclusivamente da Fen Light. Gli altri sei richiami (`Layout_Card`,
+   `Layout_Banner`, `Layout_Square`, `Layout_Circle`, `Layout_MediaList_Detailed`) restano su
+   `_Full`: i due controlli che `_Light` toglie servono alle icone `Default*.png` di Kodi e alla voce
+   "cartella superiore", che nei browser di Kodi esistono davvero e senza quei controlli
+   resterebbero vuote. **Non estendere `light=true` agli altri layout senza verificarlo a schermo.**
+
+Stato finale con i badge tenuti (scelta dell'utente): **40 fps da fermo contro i 35 di partenza**,
++14%, a costo visivo nullo. I badge costano 5 fps ed e' un prezzo ora quantificato.
+
+### Cosa NON e' un bersaglio, e perche'
+
+- Le ombre, `Layout_Labels`, la casella di ripiego: misurati, zero.
+- La catena di condizioni lunga venti righe di `Object_Indicator`: e' dietro un cancello di gruppo,
+  di espressioni ne viene raggiunta una sola per voce. Non e' mai stata il problema.
+- `Object_ContentBanner` e `Object_TraktOverlays`: gia' fuori dall'albero.
+- La maschera stondata (`diffuse=`): seconda unita' di texture nello stesso passaggio di shader,
+  nessun quadrilatero e nessuna chiamata di disegno in piu'. E' la piu' economica delle
+  implementazioni possibili; disegnare gli angoli sopra costerebbe di piu', cuocerli nelle immagini
+  richiederebbe Pillow sulla stick (lo stesso profilo di costo che ha fatto spegnere il blur service).
+- La cornice bianca (`Texture_Box_Highlight_V`): `condition="$PARAM[selected]"` si risolve al
+  caricamento, esiste solo nella variante selezionata del focusedlayout. Un elemento per lista.
+
+### Il punto che conta piu' dei 5 fps
+
+Il divario con Estuary si spacca in due meta' che non si somigliano:
+
+- **Da fermo**: spiegato per intero dal layout della voce. `Diag.MinimalItems` dava 55 fps, cioe'
+  esattamente i 52-58 di Estuary. Raggiungibile, al prezzo di una skin che non e' piu' lei.
+- **Scorrendo**: non spiegato da niente. Tredici prove contando questa sessione, layout minimale
+  incluso, e non si e' mai mosso da 5,5.
+
+Gli fps da fermo non sono il problema percepito: da fermo non si sta facendo niente. Il fastidio e'
+lo scorrimento, ed e' l'unica cosa che nessun intervento ha mai toccato. Se il caso si riapre, si
+riapra su **perche' far scorrere un container costa a questa skin il doppio che a Estuary**, non
+sulla limatura della scheda.
+
+---
+
+## Lotto 117 -- dove va il tempo durante lo scorrimento: la misura, finalmente
+
+Dopo QUATTORDICI rimozioni a vuoto (lotti precedenti + lotto 116) si e' cambiato strumento: invece
+di indovinare *cosa* costa, si e' misurato *dove va il tempo*. E' stata la mossa giusta e andava
+fatta molto prima.
+
+### Gli strumenti, e cosa e' ottenibile senza root
+
+- **`/proc/stat`**: vivo, leggibile, da' il carico dei 4 core e la ripartizione user/sys/**iowait**.
+- **`dumpsys SurfaceFlinger --latency "SurfaceView - org.xbmc.kodi/org.xbmc.kodi.Main#0"`**: anello
+  di 128 fotogrammi, tempi di presentazione reali. Campionandolo ogni 2 s e deduplicando le
+  marcature temporali si ricostruisce una serie continua di fps senza leggere il contatore a occhio.
+- **`/proc/net/xt_qtaguid/stats`**: traffico di rete **per uid** (Kodi = 10066).
+- **NON ottenibili dall'esterno**: la CPU per thread. Android monta /proc con `hidepid`, quindi
+  l'utente `shell` non vede `/proc/<pid>` di un'altra app: `top -H` non mostra Kodi, `pidof` torna
+  vuoto, e `dumpsys cpuinfo` e' **congelato** su una finestra vecchia di minuti (inutile dal vivo).
+- **La scappatoia**: un addon di servizio Python gira DENTRO il processo Kodi, e `/proc/self/task/`
+  e' sempre leggibile da se stessi. Venti righe di Python, nessun permesso speciale. **E' il modo di
+  profilare i thread di Kodi su Android senza root.**
+
+Trappole pratiche incontrate, tutte da ricordare:
+- `/sdcard` e' montato **noexec**: uno script li' va lanciato con `sh /sdcard/x.sh`, non eseguito.
+- In POSIX sh `$12` NON e' il campo 12 (e' `$1` seguito da `2`): serve `${12}`.
+- Kodi installa un addon trovato su disco ma lo lascia **`enabled=0`** in `Addons33.db`. Il servizio
+  non parte finche' non si mette `enabled=1` (Kodi chiuso; sul dispositivo non c'e' `sqlite3`, si
+  scarica il db, si modifica e si rispedisce). Il collegamento e' asimmetrico: pull ~50 KB/s (45 s
+  per 2 MB), push ~2 MB/s.
+- Gli orologi: SurfaceFlinger usa CLOCK_MONOTONIC, `date +%s%N` e `time.time_ns()` l'orologio di
+  sistema. Non si allineano per sottrazione: i fotogrammi vanno attribuiti al momento in cui
+  **compaiono** in un dump.
+- Non scaricare il file mentre la sonda scrive ancora: la prima lettura si e' fermata 20 secondi
+  prima delle finestre di crollo, sovrapposizione zero, misura da rifare.
+- Protocollo: finestra lunga (2-3 minuti) e nessuna scaletta per l'utente. "Scorri quando vuoi per
+  20-30 secondi" funziona; "resta fermo 15 secondi poi scorri" fallisce, perche' l'utente sta
+  leggendo. Le fasi si separano dopo, dai tempi di fotogramma.
+
+### Il risultato
+
+Registrazione unica, 156 s, 6 finestre di crollo e 48 normali. Confronto a parita' di tutto:
+
+| | normale | crollo |
+|---|---|---|
+| fps | 38 | **5,2** |
+| ms per fotogramma | 26 | **192** |
+| CPU totale (4 core) | 1,93 core | 1,92 core |
+| iowait | 0,02% | 0,04% |
+| rete Kodi | 0,1 KB/s | 0,1 KB/s |
+| **thread applicativo (tid 5053)** | **0,86 core** | **0,93 core** |
+| **CPU del thread principale per fotogramma** | **22,5 ms** | **181 ms** |
+
+**Otto volte piu' lavoro per fotogramma su un solo thread, gia' saturo al 93%.**
+
+Kodi non aspetta e non e' limitato dalla macchina: e' limitato da **un core**. Il thread applicativo
+(su Android si chiama `Thread-3`, nome di default di Java) fa ingresso comandi, InfoLabel,
+animazioni, `Process()` di ogni controllo ed emissione dei comandi di disegno. E' strutturalmente
+uno solo -- come in ogni interfaccia a stato ritenuto -- e a 38 fps era gia' allo 86%. **I 38 fps da
+fermo non sono un limite della GPU, sono il limite di un core.** Tre core restano spenti e non c'e'
+niente da fare: non e' una configurazione sbagliata, e' l'architettura.
+
+Corollario che vale per il futuro: **l'unica leva possibile e' togliere lavoro a quel thread.**
+Ed e' anche la conferma retroattiva del lotto 116: alleggerire il layout della voce dava fps proprio
+perche' toglieva lavoro li'.
+
+### Una correlazione a 3 su 3, di nuovo falsa
+
+Il log mostra che durante il crollo Kodi **rilancia il plugin Fen Light da capo** (`CDirectoryProvider`
+-> `CScriptRunner` -> `CPythonInvoker`, interprete nuovo ogni volta perche' `reuselanguageinvoker` e'
+false), URL `mode=mdblist.list.build_mdblist_list&...&pgctl=home.502`. Tre invocazioni in tutta la
+registrazione, **tutte e tre dentro la finestra di crollo, zero nei due minuti precedenti**, e nella
+sonda comparivano 9 thread Python nuovi per ~0,4 core aggregati.
+
+Sembrava il colpevole. **Non lo e'.** Separando le finestre di crollo per presenza del plugin:
+
+- con plugin attivo: **12,7 fps** medi (3 finestre)
+- senza plugin: **10,7 fps** medi (8 finestre)
+
+e le tre finestre peggiori in assoluto (4,8 / 5,2 / 5,5 fps) non hanno **nessuna** attivita' Python.
+Il plugin correla perfettamente perche' scorrere causa entrambe le cose: e' un effetto collaterale,
+non la causa. Con la separazione fatta PRIMA di agire, questa volta.
+
+### Stato dell'indagine
+
+Escluso, con misura diretta e non per ipotesi: rete (zero), disco (iowait zero), parallelismo (3
+core liberi), il plugin Python, e -- dai 14 esperimenti del lotto 116 e precedenti -- tutto cio' che
+la skin disegna o dichiara, layout svuotato incluso.
+
+Resta: **181 ms di CPU del thread applicativo di Kodi per fotogramma, dentro il codice C++ dei
+container**, quando gli elementi scorrono. Non e' piu' instrumentabile da qui senza una build di
+debug di Kodi. Se il caso si riapre, si riapre da li' -- non dalla skin.
