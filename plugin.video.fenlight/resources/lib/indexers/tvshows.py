@@ -75,6 +75,20 @@ class TVShows:
 		# other build search_query is None and these guards are no-ops. See paginator.search_should_abort.
 		self.search_query = self.params_get('query') if (self.action == 'tmdb_tv_search_filtered' and self.params_get('search_hub')) else None
 
+
+	# LOTTO 119. Vedi la nota al punto di chiamata di set_head.
+	PG_MEDIA_TYPE = 'tvshow'
+
+	def pg_action(self):
+		"""L'azione pubblicata per la ricarica mirata, qualificata per tipo di media.
+
+		Non e' self.action perche' lo stesso nome di azione costruisce due widget diversi a seconda
+		della classe che lo esegue. None resta None: un widget senza azione continua a essere deciso
+		dal solo elenco degli id, come prima.
+		"""
+		if not self.action: return None
+		return '%s:%s' % (self.action, self.PG_MEDIA_TYPE)
+
 	def fetch_list(self):
 		handle = int(sys.argv[1])
 		_t0 = paginator.now()
@@ -181,7 +195,14 @@ class TVShows:
 				pass
 			else:
 				add_items(handle, items)
-				if self.interactive: paginator.set_head(self.pg_key, items, self.action)
+				# AZIONE QUALIFICATA PER TIPO DI MEDIA (lotto 119). 'trakt_watchlist' e' lo stesso nome di
+				# azione per DUE widget distinti -- la watchlist dei film la costruisce questa classe,
+				# quella delle serie la gemella in indexers/movies.py -- e finche' l'azione pubblicata era il nome nudo
+				# i due erano indistinguibili: aggiungere un film ricostruiva anche la watchlist delle
+				# serie. Il qualificatore lo aggiunge chi COSTRUISCE, che e' l'unico a sapere con
+				# certezza di che tipo e' il proprio widget. Chi chiede senza qualificatore li prende
+				# ancora entrambi: vedi paginator._action_matches.
+				if self.interactive: paginator.set_head(self.pg_key, items, self.pg_action())
 				if self.new_page and not self.widget_hide_next_page:
 							self.new_page.update({'mode': 'build_tvshow_list', 'action': self.action, 'category_name': self.category_name})
 							add_dir(self.new_page, 'Next Page (%s) >>' % self.new_page['new_page'], handle, 'nextpage', nextpage_landscape)

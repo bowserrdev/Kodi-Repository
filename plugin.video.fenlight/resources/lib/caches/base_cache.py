@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-import json
+# json NON si importa piu' qui (lotto 126). Serviva a due soli metodi -- BaseCache.get e
+# BaseCache.set, cioe' la serializzazione degli oggetti in cache -- ma base_cache lo importa
+# CHIUNQUE tocchi un database, comprese le azioni che fanno una sola DELETE. E json non viene solo:
+# si tira dietro 're', e con lui enum, functools, collections, operator, copyreg, sre_* -- una
+# quindicina di moduli. Misurato sulla stick: ~8 ms per modulo, cioe' un ottavo di secondo per una
+# riga di codice che quell'azione non esegue mai.
 import time
 # _thread invece di threading (lotto 101): threading.local E' _thread._local -- lo stesso oggetto,
 # threading.py lo importa da li'. _thread e' un modulo BUILTIN (compilato nell'interprete), quindi
@@ -330,6 +335,7 @@ class BaseCache:
 			row = dbcon.execute(BASE_GET % self.table, (string,)).fetchone()
 			if row:
 				if row[0] > current_time:
+					import json
 					return json.loads(row[1])
 				self.delete(string)
 		except: pass
@@ -339,6 +345,7 @@ class BaseCache:
 		try:
 			dbcon = connect_database(self.dbfile)
 			expires = get_timestamp(expiration)
+			import json
 			dbcon.execute(BASE_SET % self.table, (string, json.dumps(data, ensure_ascii=False), int(expires)))
 		except: pass
 

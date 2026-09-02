@@ -1,14 +1,27 @@
 # -*- coding: utf-8 -*-
-from datetime import datetime
 # apis.trakt_api NON si importa piu' qui (lotto 51). Era un import a livello di modulo, quindi lo
 # pagava CHIUNQUE toccasse watched_status -- compresa la lista stagioni, che di Trakt non chiede
 # niente: legge lo stato visto dal database locale. trakt_api sono 1155 righe e si porta dietro
 # 'requests' con tutto il suo albero. Misura del 24/08: build_season_list spendeva 2094 ms di
 # import per 23 ms di lavoro vero. Ora l'import sta nelle sette funzioni che lo usano davvero.
-from caches.base_cache import connect_database, database, get_timestamp
-from caches.main_cache import main_cache, cache_object
-from modules import kodi_utils, settings, metadata
-from modules.utils import get_datetime, adjust_premiered_date, sort_for_article, make_thread_list
+# LOTTO 126 -- stesso rimedio, applicato al resto della testata. watched_status e' importato a
+# livello di modulo da OGNI indexer e dal router, quindi il suo albero lo paga chiunque lo sfiori:
+# 'azzera avanzamento' dal menu contestuale costava 423 ms totali, di cui 374 di import, per una
+# DELETE su una riga. Le quattro righe che stavano qui tiravano dentro modules.metadata (e con lui
+# modules.paginator e caches.meta_cache), caches.main_cache e modules.utils -- nessuno dei quali
+# serve a cancellare un segnalibro.
+# La mappa e' verificata sull'albero sintattico, non a occhio:
+#   metadata + get_datetime -> _map_to_tmdb_episode, active_tvshows_information, mark_movie,
+#                              mark_season, mark_tvshow
+#   main_cache              -> get_hidden_progress_items, hide_unhide_progress_items
+#   sort_for_article        -> i quattro costruttori di elenchi
+#   adjust_premiered_date   -> mark_season, mark_tvshow
+#   make_thread_list        -> active_tvshows_information
+#   datetime                -> get_last_played_value
+#   database                -> clear_local_bookmarks
+# E due nomi erano MORTI, importati e mai usati: cache_object e get_timestamp.
+from caches.base_cache import connect_database
+from modules import kodi_utils, settings
 # logger = kodi_utils.logger
 
 watched_indicators_function, lists_sort_order, date_offset, nextep_method = settings.watched_indicators, settings.lists_sort_order, settings.date_offset, settings.nextep_method
@@ -55,6 +68,7 @@ def get_database(watched_indicators=None):
 # 	except: return False
 
 def hide_unhide_progress_items(params):
+	from caches.main_cache import main_cache
 	action, media_id = params['action'], int(params.get('media_id', '0'))
 	current_items = main_cache.get(progress_db_string) or []
 	if action == 'hide': current_items.append(media_id)
@@ -64,6 +78,7 @@ def hide_unhide_progress_items(params):
 	return refresh_container_for(media_id, True)
 
 def get_last_played_value(watched_indicators):
+	from datetime import datetime
 	if watched_indicators == 0: return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 	else: return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
@@ -78,6 +93,8 @@ def _map_to_tmdb_episode(tmdb_id, season, episode):
 	# La guardia sta QUI e non nel chiamante perche' questa funzione parla di episodi per definizione:
 	# cosi' vale anche per _mark_on_trakt (dove oggi e' il chiamante a passare ep_map_for=None per i
 	# film) e per qualunque uso futuro.
+	from modules import metadata
+	from modules.utils import get_datetime
 	if season in (None, '') or episode in (None, ''): return season, episode
 	try:
 		int(season); int(episode)
@@ -113,6 +130,8 @@ def refresh_container_for(media_id, refresh=True):
 	kodi_refresh(coalesce=False)
 
 def active_tvshows_information(status_type):
+	from modules import metadata
+	from modules.utils import get_datetime, make_thread_list
 	def _process(item):
 		media_id = item['media_id']
 		meta = metadata.tvshow_meta('tmdb_id', media_id, api_key, mpaa_region_value, get_datetime())
@@ -256,6 +275,7 @@ def get_progress_status_all_episode(progress_info, season, episode):
 	return percent
 
 def clear_local_bookmarks():
+	from caches.base_cache import database
 	try:
 		dbcon = database.connect(get_video_database_path())
 		file_ids = dbcon.execute("SELECT idFile FROM files WHERE strFilename LIKE 'plugin.video.fenlight%'").fetchall()
@@ -295,9 +315,19 @@ def _clear_progress_on_trakt(media_type, media_id, season, episode, resume_id):
 	# L'attesa di un secondo era gia' qui prima: ora la paga un thread di sfondo invece
 	# dell'interfaccia. Se fallisce, la riga locale e' comunque gia' andata: il segnalibro remoto
 	# viene ripulito alla prima sincronizzazione Trakt utile.
-	from apis.trakt_api import trakt_progress
 	try:
 		sleep(1000)
+		# L'IMPORT STA DOPO L'ATTESA, e non e' pignoleria (lotto 126 bis). Prima stava sopra, quindi
+		# questo thread cominciava a caricare apis.trakt_api -- con metadata, paginator, utils,
+		# main_cache, meta_cache, lists_cache, trakt_cache, piu' re, json, hashlib e unicodedata: 31
+		# moduli -- NELLO STESSO ISTANTE in cui l'invocazione principale stava ancora finendo. Con il
+		# GIL non e' lavoro parallelo, e' lavoro sottratto. La prova sta nel log della stick del
+		# 02/09 alle 16:12: fra gli import contati dall'invocazione compare '40 ms _weakrefset <-
+		# threading', e threading in questo percorso lo importa soltanto _spawn -- cioe' il conto
+		# della fase di sfondo cadeva dentro la finestra di quella in primo piano.
+		# L'attesa di un secondo c'era gia' e non fa niente: e' il posto giusto per pagare l'import,
+		# perche' quando finisce l'invocazione e' chiusa da un pezzo.
+		from apis.trakt_api import trakt_progress
 		trakt_progress('clear_progress', media_type, media_id, 0, season, episode, resume_id)
 	except: pass
 
@@ -359,7 +389,25 @@ def _push_bookmark_to_trakt(media_type, tmdb_id, season, episode, resume_point):
 	except: pass
 
 def set_bookmark(params):
+	# STRUMENTAZIONE (lotto 125). Questa funzione e' misurata a 806-1275 ms sulla stick, ed e' il
+	# numero che rende fragile tutta la zona: e' la finestra dentro cui la rilettura spontanea di Kodi
+	# puo' arrivare prima del dato. La INSERT non puo' costare tanto, ma la stima e' gia' stata
+	# sbagliata una volta ('una manciata di operazioni SQLite'), percio' stavolta si misura invece di
+	# dedurre. I sospetti sono le LETTURE DI CONFIGURAZIONE che vengono prima: watched_indicators
+	# (proprieta' di finestra o SQLite) e soprattutto trakt_official_status, che fa due
+	# getCondVisibility piu' l'apertura delle impostazioni di script.trakt -- cioe' chiede il lock
+	# della GUI proprio mentre il thread grafico e' occupato a smontare il player e a rinegoziare
+	# l'HDMI. Le fasi si stampano in una riga sola.
+	from time import perf_counter as _pc
+	_lap = [_pc()]
+	_ph = []
+	def _lap_ms(_name):
+		_n = _pc(); _ph.append('%s %.0f ms' % (_name, (_n - _lap[0]) * 1000)); _lap[0] = _n
+	def _report(_esito):
+		try: kodi_utils.perf_log('FenLight PERF BOOKMARK', '%s | %s' % (_esito, ' + '.join(_ph)))
+		except: pass
 	from apis.trakt_api import trakt_official_status
+	_lap_ms('import trakt_api')
 	try:
 		media_type, tmdb_id, curr_time, total_time = params.get('media_type'), params.get('tmdb_id'), params.get('curr_time'), params.get('total_time')
 		refresh = False if params.get('from_playback', 'false') == 'true' else True
@@ -367,8 +415,11 @@ def set_bookmark(params):
 		adjusted_current_time = float(curr_time) - 5
 		resume_point = round(adjusted_current_time/float(total_time)*100,1)
 		watched_indicators = watched_indicators_function()
+		_lap_ms('watched_indicators')
 		if watched_indicators == 1:
-			if trakt_official_status(media_type) == False: return
+			_official = trakt_official_status(media_type)
+			_lap_ms('trakt_official_status')
+			if _official == False: return _report('uscita anticipata (scrobble delegato a script.trakt)')
 			else:
 				# Il minuto a cui si e' chiuso e' un dato LOCALE: lo sappiamo gia', e il badge legge
 				# solo questa riga. Quindi si scrive SUBITO e l'allineamento con Trakt va in secondo
@@ -379,20 +430,35 @@ def set_bookmark(params):
 				# da remoto (erase_bookmark), non a mostrare il progresso.
 				try:
 					dbcon = get_database(1)
+					_lap_ms('apertura database')
 					dbcon.execute('INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
 						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time), get_last_played_value(1), 0, title))
+					# La riga e' NOSTRA e Trakt non puo' ancora saperlo: si annota, cosi' la
+					# riscrittura in blocco non la scambia per una cancellazione remota anche dopo
+					# che la spinta asincrona le avra' messo il resume_id vero (lotto 128).
+					kodi_utils.note_local_progress_write(media_type, tmdb_id, season, episode)
+					_lap_ms('INSERT')
 				except: pass
 				_spawn(_push_bookmark_to_trakt, (media_type, tmdb_id, season, episode, resume_point))
+				_lap_ms('avvio push a Trakt')
 		else:
 			erase_bookmark(media_type, tmdb_id, season, episode)
+			_lap_ms('erase_bookmark')
 			last_played = get_last_played_value(watched_indicators)
 			dbcon = get_database(watched_indicators)
+			_lap_ms('apertura database')
 			dbcon.execute('INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
 						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time), last_played, 0, title))
+			kodi_utils.note_local_progress_write(media_type, tmdb_id, season, episode)
+			_lap_ms('INSERT')
 		refresh_container_for(tmdb_id, refresh)
+		_lap_ms('refresh_container_for')
+		_report('scritto')
 	except: pass
 
 def mark_movie(params):
+	from modules import metadata
+	from modules.utils import get_datetime
 	action, media_type = params.get('action'), 'movie'
 	refresh, from_playback = params.get('refresh', 'true') == 'true', params.get('from_playback', 'false') == 'true'
 	if from_playback: refresh = False
@@ -412,6 +478,8 @@ def mark_movie(params):
 		_spawn(_mark_on_trakt, ((action, 'movies', tmdb_id), media_type))
 
 def mark_tvshow(params):
+	from modules import metadata
+	from modules.utils import get_datetime, adjust_premiered_date
 	title, action, tmdb_id = params.get('title', ''), params.get('action'), params.get('tmdb_id')
 	try: tvdb_id = int(params.get('tvdb_id', '0'))
 	except: tvdb_id = 0
@@ -449,6 +517,8 @@ def mark_tvshow(params):
 	refresh_container_for(tmdb_id)
 
 def mark_season(params):
+	from modules import metadata
+	from modules.utils import get_datetime, adjust_premiered_date
 	season = int(params.get('season'))
 	if season == 0: return notification('Failed')
 	insert_list = []
@@ -573,6 +643,7 @@ def get_next(season, episode, watched_info, season_data, nextep_content):
 	return season, episode
 
 def get_in_progress_movies(dummy_arg, page_no):
+	from modules.utils import sort_for_article
 	dbcon = get_database()
 	data = dbcon.execute('SELECT media_id, title, last_played FROM progress WHERE db_type = ?', ('movie',)).fetchall()
 	data = [{'media_id': i[0], 'title': i[1], 'last_played': i[2]} for i in data if not i[0] == '']
@@ -582,6 +653,7 @@ def get_in_progress_movies(dummy_arg, page_no):
 
 def get_in_progress_tvshows(dummy_arg, page_no):
 	# results = cache_watched_tvshow_status(active_tvshows_information, 'progress')
+	from modules.utils import sort_for_article
 	results = active_tvshows_information('progress')
 	hidden_items = get_hidden_progress_items(watched_indicators_function())
 	results = [i for i in results if not int(i['media_id']) in hidden_items]
@@ -590,6 +662,7 @@ def get_in_progress_tvshows(dummy_arg, page_no):
 	return results
 
 def get_in_progress_episodes():
+	from modules.utils import sort_for_article
 	dbcon = get_database()
 	data = dbcon.execute('SELECT media_id, season, episode, resume_point, last_played, title FROM progress WHERE db_type = ?', ('episode',)).fetchall()
 	if lists_sort_order('progress') == 0: data = sort_for_article(data, 5)
@@ -598,6 +671,7 @@ def get_in_progress_episodes():
 	return episode_list
 
 def get_watched_items(media_type, page_no):
+	from modules.utils import sort_for_article
 	if media_type == 'tvshow': results = active_tvshows_information('watched')
 	else: results = [v for k,v in watched_info_movie().items()]
 	if lists_sort_order('watched') == 0: results = sort_for_article(results, 'title')
@@ -630,6 +704,7 @@ def get_hidden_progress_items(watched_indicators):
 	# dalla cache locale e Trakt non lo tocca mai: avere l'import in cima caricava comunque
 	# apis.trakt_api, cioe' 1155 righe, per un ramo che non lo chiama. E' su questo percorso che si
 	# costruisce 'continua a guardare' a ogni avvio.
+	from caches.main_cache import main_cache
 	try:
 		if watched_indicators == 0: return main_cache.get(progress_db_string) or []
 		from apis.trakt_api import trakt_get_hidden_items

@@ -237,6 +237,25 @@ def set_category(handle, label):
 # la nostra ricarica e' lavoro doppio. Il timbro sta in una proprieta' di finestra, quindi lo vedono
 # anche gli altri interpreti: ogni costruzione di widget e' un processo Python a se'.
 LAST_BUILD_PROP = 'fenlight.lastbuild'
+# Gemella della precedente per le cartelle NON widget: la lista aperta di una finestra. Due timbri
+# separati e non uno solo perche' rispondono a due domande diverse, e chi cerca l'una non deve poter
+# essere accontentato dall'altra. Vedi open_folder_built_since.
+OPEN_FOLDER_BUILD_PROP = 'fenlight.lastbuild.openfolder'
+# REGISTRO delle ultime costruzioni, 'ts|query' separati da a capo, la piu' recente in fondo.
+# Nasce dal fallimento della prima versione del lotto 125, ed e' l'unico modo di porre la domanda
+# "il contenitore X e' stato ricostruito?" senza doverne indovinare la casella. I due timbri qui
+# sopra ne tengono UNO solo a testa, e su quale dei due finisca una costruzione decide external(),
+# che NON risponde alla domanda "sono un widget?": legge Container.PluginName della finestra
+# corrente. Dentro la finestra Video, dove il contenitore attivo e' gia' una lista Fen Light,
+# external() e' falso anche per i DirectoryProvider -- quindi lista stagioni E pannello episodi
+# scrivono nella stessa casella, e la seconda cancella la prima. Misurato sulla stick il 02/09 alle
+# 14:22: il pannello si era ricostruito con il dato nuovo a +1,1 s dalla scrittura, la guardia lo
+# cercava in LAST_BUILD_PROP dove non e' mai arrivato, ha aspettato sei secondi e ha ordinato una
+# ricostruzione identica. Con un registro la domanda si fa sull'IDENTITA' e la casella non conta.
+BUILD_LOG_PROP = 'fenlight.lastbuild.log'
+# Otto voci coprono qualunque raffica plausibile in una finestra sola (all'avvio della Home sono
+# cinque widget insieme) restando una stringa corta da rileggere a ogni costruzione.
+BUILD_LOG_CAP = 8
 
 def end_directory(handle, cacheToDisc=True):
 	# La misura avvolge la chiamata, non la duplica: endOfDirectory resta una sola, fuori da qualunque
@@ -255,9 +274,43 @@ def end_directory(handle, cacheToDisc=True):
 		# bloccato viene ucciso dal sistema, che dall'esterno si vede come un crash.
 		# Dopo endOfDirectory il thread GUI e' libero: e' lo stesso punto in cui set_view_mode chiama
 		# gia' external() da sempre, senza mai aver dato problemi.
+		from time import time as _stamp_now
+		# IL TIMBRO PORTA ANCHE L'IDENTITA' DI CIO' CHE E' STATO COSTRUITO, non solo l'istante
+		# (lotto 125). Con il solo istante la domanda "Kodi ha gia' ricostruito?" e' ambigua: la
+		# risposta puo' arrivare da una cartella che non c'entra. Misurato sulla stick il 02/09 alle
+		# 12:12: la guardia del player cercava la ricostruzione del PANNELLO EPISODI -- l'unico
+		# contenitore che disegna il segnalibro -- e si e' accontentata della lista STAGIONI, che di
+		# segnalibri non ne mostra. E' andata bene perche' il pannello e' arrivato 0,6 s dopo, non
+		# perche' la guardia lo avesse verificato. sys.argv[2] e' la query di QUESTA costruzione
+		# ('?mode=build_episode_list&season=1&tmdb_id=287238'): chi interroga il timbro puo' cosi'
+		# chiedere un contenitore preciso invece di accontentarsi del primo che passa.
+		import sys as _sys
+		try: _what = _sys.argv[2] if len(_sys.argv) > 2 else ''
+		except: _what = ''
+		_mark = '%s|%s' % (_stamp_now(), _what)
+		# Il registro riceve OGNI costruzione, prima della biforcazione: e' proprio la biforcazione
+		# ad aver reso la domanda inaffidabile. La lettura-modifica-scrittura non e' protetta, quindi
+		# sotto contesa una voce puo' perdersi; la conseguenza e' al massimo una ricostruzione di
+		# troppo, mai una guardia soddisfatta a torto.
+		try:
+			_raw = get_property(BUILD_LOG_PROP)
+			_rows = [r for r in _raw.split('\n') if r] if _raw else []
+			_rows.append(_mark)
+			set_property(BUILD_LOG_PROP, '\n'.join(_rows[-BUILD_LOG_CAP:]))
+		except: pass
 		if external():
-			from time import time
-			set_property(LAST_BUILD_PROP, str(time()))
+			set_property(LAST_BUILD_PROP, _mark)
+		else:
+			# LA CARTELLA APERTA DI UNA FINESTRA NON E' UN WIDGET, e fino al lotto 121 non timbrava
+			# niente. LAST_BUILD_PROP sta dentro `if external()`, cioe' copre solo le costruzioni dei
+			# widget: la lista stagioni e il pannello episodi dentro la finestra Video non ci finiscono
+			# mai. Chi chiedeva "Kodi ha gia' ricostruito?" per decidere se ricaricare la cartella
+			# aperta riceveva quindi SEMPRE no, e ordinava una seconda ricostruzione identica.
+			# Misurato sulla stick il 02/09: Kodi ricostruisce stagioni ed episodi alle 04:42:12,0 e
+			# 04:42:12,8 -- dopo la scrittura dello stato, quindi con il dato giusto -- e la guardia
+			# ha comunque aspettato i suoi 6 s e ordinato tutto da capo alle 04:42:17,5. Un difetto
+			# che non produce nessun errore: solo lavoro doppio, e per questo era invisibile.
+			set_property(OPEN_FOLDER_BUILD_PROP, _mark)
 	except: pass
 	if _DELIVERY[1]:
 		try:
@@ -348,9 +401,123 @@ def log_import_profile(argv, times, order, parents=None, top=18, floor_ms=25.0):
 			perf_log('FenLight PERF IMPORT', '  %7.0f ms  %s' % (ms, name))
 	except: pass
 
+def build_mark_since(prop, since_ts):
+	"""L'identita' dell'ultima costruzione timbrata in `prop`, se e' POSTERIORE a since_ts.
+
+	Torna la query del plugin ('?mode=build_episode_list&season=1&tmdb_id=287238'), stringa vuota se
+	la costruzione c'e' ma non ha saputo dire chi era, None se non c'e' nessuna costruzione recente.
+	La differenza fra '' e None conta: la prima e' 'e' successo qualcosa, non so cosa', e chi vuole
+	un contenitore PRECISO deve rifiutarla.
+	"""
+	try:
+		raw = get_property(prop) or ''
+		if not raw: return None
+		ts, _, what = raw.partition('|')
+		if float(ts or 0) > float(since_ts or 0): return what
+	except: pass
+	return None
+
+# Registro delle scritture LOCALI di avanzamento (lotto 128). Serve a proteggere dalla riscrittura
+# in blocco di Trakt una riga che abbiamo appena creato noi e che il `sync/playback` di Trakt non
+# puo' ancora conoscere. Il lotto 122 lo faceva gia', ma con la chiave sbagliata -- `resume_id = 0`,
+# cioe' 'non ancora confermata da Trakt' -- e quella protezione EVAPORA nell'istante in cui la
+# spinta asincrona torna e scrive il resume_id vero. Fra quell'istante e il momento in cui Trakt
+# elenca davvero la pausa nel proprio `sync/playback` c'e' una finestra in cui la riga e' confermata
+# ma assente dalla vista di Trakt: li' viene cancellata come se l'utente l'avesse tolta.
+# Misurato sulla stick il 02/09: film messo in pausa e scritto alle 18:24:32,9, giro del monitor
+# Trakt alle 18:24:37,0 -- la riga non c'e' piu' nel database. L'episodio della prova gemella, il cui
+# giro di Trakt e' caduto 13,5 s dopo la scrittura, e' sopravvissuto. Il commento del lotto 122
+# diceva gia' la verita' senza trarne la conseguenza: "era una corsa, e la si vinceva per fortuna".
+# La chiave giusta non e' 'confermata o no', e' 'scritta da noi da poco'.
+PROGRESS_LOCAL_WRITES_PROP = 'fenlight.progress.localwrites'
+# Quanto a lungo una scrittura locale e' protetta. Copre la propagazione su Trakt (di norma
+# immediata) piu' un giro di monitor abbondante. Il prezzo di essere generosi e' minimo: se in questi
+# secondi l'utente togliesse DAVVERO il titolo da Trakt altrove, la nostra riga sopravviverebbe a un
+# giro in piu' e sparirebbe al successivo.
+PROGRESS_LOCAL_GRACE = 120
+PROGRESS_LOCAL_CAP = 12
+
+def _progress_key(db_type, media_id, season, episode):
+	return '%s|%s|%s|%s' % (db_type, media_id, '' if season in (None, '') else season, '' if episode in (None, '') else episode)
+
+def note_local_progress_write(db_type, media_id, season='', episode=''):
+	"""Annota che ABBIAMO SCRITTO NOI questa riga di avanzamento, adesso."""
+	try:
+		from time import time as _now
+		key = _progress_key(db_type, media_id, season, episode)
+		raw = get_property(PROGRESS_LOCAL_WRITES_PROP) or ''
+		rows = [r for r in raw.split('\n') if r and r.partition('|')[2] != key]
+		rows.append('%s|%s' % (_now(), key))
+		set_property(PROGRESS_LOCAL_WRITES_PROP, '\n'.join(rows[-PROGRESS_LOCAL_CAP:]))
+	except: pass
+
+def recent_local_progress(db_type, grace=None):
+	"""Le identita' di questo db_type scritte da noi entro la grazia: set di (media_id, season, episode)."""
+	out = set()
+	try:
+		from time import time as _now
+		limit = _now() - (PROGRESS_LOCAL_GRACE if grace is None else grace)
+		raw = get_property(PROGRESS_LOCAL_WRITES_PROP) or ''
+		for row in raw.split('\n'):
+			if not row: continue
+			ts, _, key = row.partition('|')
+			try:
+				if float(ts or 0) < limit: continue
+			except: continue
+			parts = key.split('|')
+			if len(parts) == 4 and parts[0] == db_type: out.add((parts[1], parts[2], parts[3]))
+	except: pass
+	return out
+
+def build_log_rows(since_ts):
+	"""Le identita' delle costruzioni registrate DOPO since_ts, dalla piu' vecchia alla piu' recente.
+
+	Chi deve aspettare un contenitore preciso interroga questo, non i due timbri a casella singola:
+	vedi BUILD_LOG_PROP per il motivo.
+	"""
+	out = []
+	try:
+		raw = get_property(BUILD_LOG_PROP) or ''
+		for row in raw.split('\n'):
+			if not row: continue
+			ts, _, what = row.partition('|')
+			try:
+				if float(ts or 0) > float(since_ts or 0): out.append(what)
+			except: continue
+	except: pass
+	return out
+
+def build_mark_param(what, name):
+	"""Il valore del parametro `name` dentro l'identita' di una costruzione, o None.
+
+	Il confronto per sottostringa non basta e non e' un caso di scuola: 'tmdb_id=2872' e' contenuto
+	in 'tmdb_id=287238'. Oggi nessuna situazione reale lo produce -- nella finestra Video la serie
+	aperta e' una sola -- ma una guardia che si accontenta di una corrispondenza parziale e'
+	esattamente la categoria di difetto che questo lotto esiste per togliere, e costa sei righe
+	toglierla del tutto invece di argomentare perche' non capitera'.
+	"""
+	if not what: return None
+	for chunk in what.lstrip('?').split('&'):
+		key, _, value = chunk.partition('=')
+		if key == name: return value
+	return None
+
 def directory_built_since(since_ts):
-	try: return float(get_property(LAST_BUILD_PROP) or 0) > float(since_ts or 0)
-	except: return False
+	# ATTENZIONE: risponde SOLO per le costruzioni dei WIDGET (vedi il timbro in end_directory, dentro
+	# `if external()`), e la domanda e' GENERICA: 'un widget, uno qualunque'. Va bene a chi cerca un
+	# segno di vita; chi deve aspettare un contenitore PRECISO usa build_mark_since piu'
+	# build_mark_param, che confrontano l'identita' timbrata invece dell'istante soltanto.
+	return build_mark_since(LAST_BUILD_PROP, since_ts) is not None
+
+def open_folder_built_since(since_ts):
+	"""La cartella APERTA di una finestra e' stata ricostruita dopo questo istante?
+
+	Gemella di directory_built_since per l'altra meta' del mondo: le cartelle che non sono widget --
+	lista stagioni, pannello episodi, qualunque elenco dentro la finestra Video. Sono esattamente
+	quelle che Kodi rilegge da solo tornando dal player, ed erano l'unica cosa che il timbro dei
+	widget non poteva vedere.
+	"""
+	return build_mark_since(OPEN_FOLDER_BUILD_PROP, since_ts) is not None
 
 # Quanto si concede al contenitore per dichiarare il contenuto atteso, OLTRE al settle da 100 ms.
 # Tarato su tutti i campioni raccolti il 24/08, non su una stima:
@@ -613,6 +780,12 @@ PENDING_REFRESH_PROP = 'fenlight.refresh_pending'
 # Gli id che accompagnano un refresh rimandato: senza di loro il rinvio degrada in ricostruzione
 # globale, buttando via un'informazione che avevamo gia'. Vedi kodi_refresh_ids e WidgetRefresher.
 PENDING_IDS_PROP = 'fenlight.refresh_pending_ids'
+# Le AZIONI che accompagnano un refresh rimandato (lotto 119). Gemella esatta di PENDING_IDS_PROP e
+# per lo stesso motivo: gli id da soli non sanno dire 'ricostruisci il widget della watchlist' o
+# 'ricostruisci continua a guardare' quando il titolo cambiato non e' ANCORA nella lista. Finche'
+# questo canale non esisteva, un rinvio che nasceva da un'azione la perdeva per strada e a valle
+# restava solo l'elenco degli id -- cioe' proprio il criterio che in aggiunta non puo' funzionare.
+PENDING_ACTIONS_PROP = 'fenlight.refresh_pending_actions'
 # Lo scope che ha PRODOTTO un rinvio, quando a produrlo e' stata la rete di sicurezza qui sotto. Quel
 # riarmo e' per definizione lavoro destinato a un'ALTRA finestra: consumarlo dove e' nato non fa
 # niente di utile e lo rimette in coda identico, cioe' un ciclo a ogni giro di WidgetRefresher (10 s).
@@ -696,6 +869,7 @@ def _defer_refresh_if_playing(kind):
 	# Questo rinvio non porta id con se': gli eventuali id di un rinvio precedente vanno tolti, o
 	# WidgetRefresher ricaricherebbe i contenitori del titolo SBAGLIATO invece di ricadere sul globale.
 	clear_property(PENDING_IDS_PROP)
+	clear_property(PENDING_ACTIONS_PROP)
 	clear_property(PENDING_SCOPE_PROP)
 	set_property(PENDING_REFRESH_PROP, kind)
 	logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), riproduzione in corso' % kind)
@@ -798,6 +972,7 @@ def kodi_refresh(coalesce=True):
 	# Lasciarla accesa farebbe scattare la rete di sicurezza del WidgetRefresher, cioe' una TERZA onda.
 	clear_property(PENDING_REFRESH_PROP)
 	clear_property(PENDING_IDS_PROP)
+	clear_property(PENDING_ACTIONS_PROP)
 	age = refresh_age()
 	# Si accorpa solo dietro un'altra ricostruzione GLOBALE: quella e' davvero un superset. Dietro una
 	# mirata no -- la globale potrebbe riguardare tutt'altro, e saltarla lo perderebbe.
@@ -831,6 +1006,38 @@ def kodi_refresh(coalesce=True):
 # player, apis/trakt_api).
 CONTINUE_WATCHING_ACTION = 'continue_watching'
 
+# AZIONE della watchlist di Trakt. Stesso nome per DUE widget -- film e serie -- che vanno colpiti
+# separatamente: vedi qualify_action e paginator._action_matches.
+WATCHLIST_ACTION = 'trakt_watchlist'
+
+def qualify_action(action, media_type):
+	"""Azione qualificata per tipo di media: 'trakt_watchlist' + 'movie' -> 'trakt_watchlist:movie'.
+
+	Il separatore ':' e' una convenzione con UN solo proprietario, questa funzione, perche' la
+	compongono i costruttori (indexers/movies, indexers/tvshows) e la interroga chi chiede la ricarica
+	(apis/trakt_api): due convenzioni diverse non darebbero nessun errore, solo un widget che non si
+	aggiorna mai. media_type e' 'movie' o 'tvshow', gli stessi due valori del resto del codice.
+	"""
+	if not action: return None
+	return '%s:%s' % (action, media_type)
+
+def episode_uid(tmdb_id, season, episode):
+	"""Identita' di UN episodio nel canale della ricarica mirata: 'tmdb:stagione:episodio'.
+
+	Il tmdb_id di un episodio E' quello della serie: senza questa forma, nel canale degli id
+	'S03E04 di X in pausa' e 'la serie X' sono la stessa stringa, e un avanzamento su un episodio
+	ricarica OGNI widget che contenga quella serie. Vive qui e non in paginator perche' la compongono
+	due mondi che non devono importarsi a vicenda: chi PUBBLICA (paginator._publish_ids, leggendola
+	dagli URL degli elementi) e chi CHIEDE (apis/trakt_api, leggendola dalle righe della tabella
+	progress). Stagione ed episodio sono quelli REMAPPATI su tvdb -- e' cio' che finisce nella tabella
+	progress e quindi anche negli URL costruiti a partire da lei.
+
+	Torna None su valori non numerici: chi la chiama ricade sul solo livello serie, che e' il
+	comportamento di prima e non peggiora nulla.
+	"""
+	try: return '%s:%s:%s' % (int(tmdb_id), int(season), int(episode))
+	except: return None
+
 def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# Ricarica MIRATA: ricostruisce i soli contenitori che contengono uno degli id cambiati -- piu'
 	# quelli la cui AZIONE e' fra le richieste, per i casi in cui a cambiare e' la composizione della
@@ -842,6 +1049,7 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	if _defer_refresh_if_playing('kodi_refresh'): return
 	clear_property(PENDING_REFRESH_PROP)
 	clear_property(PENDING_IDS_PROP)
+	clear_property(PENDING_ACTIONS_PROP)
 	# Stessa finestra di kodi_refresh(): due ricostruzioni accavallate sono la stessa, e non importa
 	# se una e' mirata e l'altra globale -- chi arriva secondo lavorerebbe a vuoto.
 	age = refresh_age()
@@ -883,6 +1091,7 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 		# 24/08 alle 15:19, un refresh MIRATO su 1 titolo diventava una ricostruzione di tutto solo
 		# perche' l'utente si trovava dentro la finestra Video. L'informazione c'era, la buttavamo noi.
 		set_property(PENDING_IDS_PROP, ','.join(str(i) for i in (ids or []) if i))
+		set_property(PENDING_ACTIONS_PROP, ','.join(str(a) for a in (actions or ()) if a))
 		set_property(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
 		return
 	# Stesso segnale che alza refresh_widgets(): i widget 'random' lo leggono per riestrarre
@@ -891,11 +1100,30 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	try:
 		from modules import paginator
 		hit = paginator.refresh_containers_for_ids(ids, actions)
-	except: hit = 0
-	if not hit:
+		seen_any, other = paginator.LAST_SEEN_ANY[0], paginator.LAST_OTHER_HITS[0]
+	except:
+		hit, seen_any, other = 0, False, 0
+	# LOTTO 119 -- il fallback globale scatta solo se non si e' potuto verificare NIENTE, da nessuna
+	# parte. Prima bastava 'zero contenitori ricaricati a schermo', che confonde due esiti opposti:
+	#   - nessun contenitore nostro in questa finestra, e nessuna altra finestra raggiunta
+	#     -> non sappiamo niente, il globale e' l'unica rete;
+	#   - contenitori identificati e SCARTATI perche' dimostrato che non contengono i titoli cambiati
+	#     -> e' la risposta, non un fallimento. Ricostruire tutto qui vuol dire buttare via proprio il
+	#     lavoro appena fatto, ed e' il modo in cui una ricarica mirata tornava a essere globale.
+	#   - niente a schermo ma ALTRE finestre gia' invalidate -> il lavoro e' fatto, si rileggeranno
+	#     da sole al rientro; un UpdateLibrary adesso non aggiungerebbe nulla.
+	if not hit and not seen_any and not other:
 		logger('Fen Light', 'DIAG refresh: nessun contenitore identificato, si ricade sul GLOBALE | id=%s azioni=%s finestra=%s'
 				% (len(ids or []), len(actions or ()), getCurrentWindowId()))
 		kodi_refresh(coalesce)
+		return
+	if not hit:
+		# Niente da ricostruire a schermo, e non e' un errore: si timbra comunque, o il monitor Trakt
+		# sparerebbe il globale un istante dopo per lo stesso evento.
+		_stamp_refresh(','.join(sorted(_scope_items(ids, actions))))
+		logger('Fen Light', 'DIAG refresh: MIRATO senza esito a schermo (%s) | altre finestre %s | id=%s azioni=%s finestra=%s'
+				% ('nessun contenitore contiene i titoli cambiati' if seen_any else 'nessun contenitore nostro qui',
+					other, len(ids or []), len(actions or ()), getCurrentWindowId()))
 		return
 	# Conta come ricostruzione ai fini dell'accorpamento: senza questo, il monitor Trakt sparerebbe
 	# comunque il globale un secondo dopo per lo stesso evento e il lavoro mirato sarebbe sprecato.
@@ -905,19 +1133,18 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# quella. Il resto lo fa refresh_containers_for_ids sul censimento (lotto 69): i token delle altre
 	# finestre vengono cambiati adesso, nello stesso istante, e Kodi li rilegge quando quelle finestre
 	# tornano a schermo. Niente due tempi, e nessuna finestra puo' restare disallineata.
-	try:
-		from modules import paginator as _pg
-		other = _pg.LAST_OTHER_HITS[0]
-	except: other = 0
 	# Rete di sicurezza per il solo caso in cui non ci fosse NIENTE di censito da raggiungere -- una
 	# finestra mai aperta in questa sessione. Se il censimento ha risposto, un rinvio sarebbe lavoro
 	# doppio sugli stessi contenitori.
 	if window_id != 10000 and not other:
 		set_property(PENDING_IDS_PROP, ','.join(str(i) for i in (ids or []) if i))
+		set_property(PENDING_ACTIONS_PROP, ','.join(str(a) for a in (actions or ()) if a))
 		set_property(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
 		# Marca la finestra d'origine: questo riarmo serve alle ALTRE, e senza la marca verrebbe
 		# riconsumato qui ogni 10 s all'infinito. Vedi PENDING_SCOPE_PROP.
-		try: set_property(PENDING_SCOPE_PROP, _pg.ctl_scope())
+		try:
+			from modules import paginator as _pg
+			set_property(PENDING_SCOPE_PROP, _pg.ctl_scope())
 		except: pass
 	logger('Fen Light', 'DIAG refresh: MIRATO %s contenitori ricaricati | altre finestre %s | id=%s azioni=%s finestra=%s%s'
 			% (hit, other, len(ids or []), len(actions or ()), window_id,
@@ -931,6 +1158,7 @@ def refresh_widgets(show_notification='false', coalesce=True):
 	if _defer_refresh_if_playing('refresh_widgets'): return
 	clear_property(PENDING_REFRESH_PROP)
 	clear_property(PENDING_IDS_PROP)
+	clear_property(PENDING_ACTIONS_PROP)
 	hold_refresh_flag('fenlight.refresh_widgets')
 	sleep(250)
 	run_plugin({'mode': 'kodi_refresh', 'coalesce': 'true' if coalesce else 'false'}, block=True)

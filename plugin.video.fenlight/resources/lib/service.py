@@ -33,6 +33,44 @@ TRAKT_REFRESH_COALESCE = 30
 # test). Il compromesso e' rimandarne l'avvio oltre la finestra critica (0-25s misurati finora):
 # l'interprete Kodi e' gia' vivo, aspettare qui non costa un processo in piu', solo un thread fermo.
 BLUR_START_DELAY = 25
+
+def refresh_official_status():
+	"""Ricalcola in anticipo la risposta di trakt_official_status, fuori dal percorso critico.
+
+	Vedi apis.trakt_api.trakt_official_status: e' una domanda di configurazione che costava 2347 ms
+	quando veniva posta alla chiusura del player, perche' passa da getCondVisibility e li' il lock
+	della GUI e' conteso. Chiesta da qui, mentre non succede niente, costa quello che deve costare e
+	set_bookmark la trova gia' pronta.
+	Sta in un thread perche' anche questa chiamata puo' bloccare, e il ciclo del TraktMonitor non
+	deve dipenderne.
+	"""
+	def _work():
+		try:
+			from apis.trakt_api import compute_official_status
+			for media_type in ('movie', 'episode'): compute_official_status(media_type, store=True)
+		except: pass
+	Thread(target=_work).start()
+
+def refresh_ids_inproc(ids, actions):
+	"""kodi_refresh_ids chiamato QUI invece di ordinato con RunPlugin (lotto 125).
+
+	RunPlugin fa nascere un interprete Python nuovo che deve reimportare tutto l'albero del plugin
+	per eseguire una funzione fatta di letture di proprieta' e di infolabel piu' un executebuiltin.
+	Misurato sulla stick: ~350 ms di soli import a invocazione, piu' l'avvio dell'interprete, che su
+	un dispositivo debole compete con la CPU che serve alla ricostruzione vera. Il servizio ha gia'
+	kodi_utils caricato -- lo importa per run_plugin e refresh_age -- quindi la funzione si puo'
+	chiamare direttamente: fa lo stesso lavoro, sugli stessi canali (proprieta' di finestra e
+	builtin), che sono globali al processo Kodi e non appartengono all'invocazione del plugin.
+
+	Il thread non e' un dettaglio: refresh_containers_for_ids interroga i contenitori a schermo e
+	non deve mai poter ritardare il ciclo del monitor, che e' proprio cio' che RunPlugin garantiva
+	gratis rendendo la chiamata asincrona. Togliere l'interprete senza rimettere l'asincronia
+	sarebbe stato un baratto, non un guadagno.
+	"""
+	from modules.kodi_utils import kodi_refresh_ids
+	_ids = [i for i in (ids or '').split(',') if i]
+	_actions = tuple(a for a in (actions or '').split(',') if a)
+	Thread(target=kodi_refresh_ids, args=(_ids, _actions)).start()
 # Giri dopo un cambio di finestra in cui si ripassa il censimento dei contenitori. I giri sono da
 # 0,3 s: 0 / 1,5 / 3 / 6 / 10,5 / 16,5 secondi. Copre il tempo in cui i widget si stanno ancora
 # costruendo -- sulla stick una costruzione supera spesso i 5 s -- senza sondare per sempre una
@@ -108,6 +146,8 @@ class TraktMonitor:
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		while not monitor.abortRequested():
 			while is_playing() or window.getProperty(pause_services_prop) == 'true': wait_for_abort(10)
+			# Prima del giro di sincronizzazione, cioe' sempre mentre non si sta riproducendo nulla.
+			refresh_official_status()
 			wait_time = 1800
 			try:
 				sync_interval, wait_time = trakt_sync_interval()
@@ -149,13 +189,25 @@ class TraktMonitor:
 						# elenco non veniva nemmeno guardato. Vedi _defer_widget_refresh.
 						changed = window.getProperty('fenlight.trakt.changed_ids')
 						window.clearProperty('fenlight.trakt.changed_ids')
+						# Le AZIONI viaggiano accanto agli id (lotto 119) e sono un canale a se': un
+						# 'paused_at' su un film che ENTRA adesso in 'continua a guardare' non ha ancora
+						# il suo id nell'elenco pubblicato dal widget, quindi la regola per id lo
+						# scarterebbe proprio mentre va ricostruito. Lo stesso vale per la watchlist.
+						# Non c'e' un valore '-' per le azioni: '' significa semplicemente 'nessuna'.
+						actions = window.getProperty('fenlight.trakt.changed_actions')
+						window.clearProperty('fenlight.trakt.changed_actions')
 						age = refresh_age()
-						if changed == '-':
+						if changed == '-' and not actions:
 							logger('Fen Light', 'TraktMonitor: nessun titolo cambiato davvero, nessuna ricostruzione')
-						elif age < TRAKT_REFRESH_COALESCE: self._defer_widget_refresh(window, changed, age)
-						elif changed:
-							logger('Fen Light', 'TraktMonitor: refresh MIRATO su %d titoli' % len(changed.split(',')))
-							run_plugin({'mode': 'kodi_refresh_ids', 'ids': changed})
+						elif age < TRAKT_REFRESH_COALESCE: self._defer_widget_refresh(window, changed, actions, age)
+						elif changed or actions:
+							# '-' vuol dire 'nessun id', non 'nessun lavoro': con le sole azioni si
+							# ricostruiscono comunque i widget che cambiano composizione.
+							ids = '' if changed == '-' else changed
+							logger('Fen Light', 'TraktMonitor: refresh MIRATO su %d titoli e %d azioni%s'
+									% (len(ids.split(',')) if ids else 0, len(actions.split(',')) if actions else 0,
+										(' [%s]' % actions) if actions else ''))
+							refresh_ids_inproc(ids, actions)
 						else: run_plugin({'mode': 'kodi_refresh'})
 			except Exception as e: logger('Fen Light', trakt_service_string % ('Failed', 'The following Error Occured: %s' % str(e)))
 			wait_for_abort(wait_time)
@@ -165,7 +217,7 @@ class TraktMonitor:
 		except: pass
 		return logger('Fen Light', 'TraktMonitor Service Finished')
 
-	def _defer_widget_refresh(self, window, changed, age):
+	def _defer_widget_refresh(self, window, changed, actions, age):
 		# La guardia dell'accorpamento vieta di ricostruire ADESSO, e ha ragione: all'avvio scatta
 		# sempre, perche' stamp_startup_rebuild timbra la costruzione iniziale dei widget come
 		# ricostruzione globale, e senza di lei la prima sincronizzazione ordinava UpdateLibrary sopra
@@ -184,7 +236,7 @@ class TraktMonitor:
 		# fuori dalla tempesta: 20 s di attesa iniziale piu' 10 di ciclo, cioe' ~37 s dall'apertura
 		# contro i ~12,5 in cui la home si assesta. Margine abbondante, per ora voluto: stringerlo e'
 		# una regolazione da fare dopo aver visto il meccanismo in un log vero.
-		from modules.kodi_utils import PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_SCOPE_PROP
+		from modules.kodi_utils import PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP
 		# Questo rinvio nasce da un cambiamento vero su Trakt: vale in qualunque finestra mostri widget,
 		# quindi cancella l'eventuale marca lasciata dalla rete di sicurezza di kodi_refresh_ids.
 		window.clearProperty(PENDING_SCOPE_PROP)
@@ -192,25 +244,39 @@ class TraktMonitor:
 		# n'e' gia' uno in coda, aggiungerci degli id lo RESTRINGEREBBE. E' la stessa ragione per cui
 		# _defer_refresh_if_playing cancella gli id invece di lasciarli: WidgetRefresher ricaricherebbe
 		# i contenitori del titolo sbagliato invece di ricadere sul globale.
-		pending_global = bool(window.getProperty(PENDING_REFRESH_PROP)) and not window.getProperty(PENDING_IDS_PROP)
-		if not changed or pending_global:
+		# Un rinvio GLOBALE in coda e' un superset: non ha ne' id ne' azioni proprio perche' li copre
+		# tutti. Si riconosce dall'assenza di ENTRAMBI i canali, non del solo elenco di id -- con la
+		# sola verifica sugli id un rinvio nato da un'azione pura (watchlist, continua a guardare)
+		# sarebbe stato scambiato per globale e avrebbe cancellato la propria azione.
+		pending_global = (bool(window.getProperty(PENDING_REFRESH_PROP))
+							and not window.getProperty(PENDING_IDS_PROP)
+							and not window.getProperty(PENDING_ACTIONS_PROP))
+		changed = '' if changed == '-' else changed
+		if (not changed and not actions) or pending_global:
 			window.clearProperty(PENDING_IDS_PROP)
+			window.clearProperty(PENDING_ACTIONS_PROP)
 			window.setProperty(PENDING_REFRESH_PROP, 'kodi_refresh')
 			return logger('Fen Light', 'TraktMonitor: refresh GLOBALE rimandato, interfaccia ricostruita %.1fs fa' % age)
 		# Gli id di un rinvio precedente non si perdono, si sommano: sono due cambiamenti distinti che
 		# nessuno ha ancora mostrato, e chi arriva secondo non ha titolo per cancellare il primo.
 		ids = set(i for i in window.getProperty(PENDING_IDS_PROP).split(',') if i)
 		ids.update(i for i in changed.split(',') if i)
+		# Le azioni si sommano per la stessa ragione, e su un canale separato: sono un criterio
+		# diverso, non un altro tipo di id. Vedi paginator.refresh_containers_for_ids.
+		acts = set(a for a in window.getProperty(PENDING_ACTIONS_PROP).split(',') if a)
+		acts.update(a for a in actions.split(',') if a)
 		window.setProperty(PENDING_IDS_PROP, ','.join(sorted(ids)))
+		window.setProperty(PENDING_ACTIONS_PROP, ','.join(sorted(acts)))
 		window.setProperty(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
-		logger('Fen Light', 'TraktMonitor: refresh MIRATO rimandato su %d titoli, interfaccia ricostruita %.1fs fa' % (len(ids), age))
+		logger('Fen Light', 'TraktMonitor: refresh MIRATO rimandato su %d titoli e %d azioni%s, interfaccia ricostruita %.1fs fa'
+				% (len(ids), len(acts), (' [%s]' % ','.join(sorted(acts))) if acts else '', age))
 
 class WidgetRefresher:
 	def run(self):
 		logger('Fen Light', 'WidgetRefresher Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_SCOPE_PROP, refresh_flag_expired
+		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, refresh_flag_expired
 		self.refresh_flag_expired = refresh_flag_expired
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, self.is_playing = monitor.waitForAbort, player.isPlayingVideo
@@ -238,15 +304,22 @@ class WidgetRefresher:
 					if self.pending_since is None: self.pending_since = time()
 					if not self.is_playing() and self._nothing_building() and self._widgets_on_screen():
 						pending_ids = self.window.getProperty(PENDING_IDS_PROP)
+						pending_actions = self.window.getProperty(PENDING_ACTIONS_PROP)
 						self.window.clearProperty(PENDING_REFRESH_PROP)
 						self.window.clearProperty(PENDING_IDS_PROP)
+						self.window.clearProperty(PENDING_ACTIONS_PROP)
 						self.window.clearProperty(PENDING_SCOPE_PROP)
 						logger('Fen Light', 'WidgetRefresher: rinvio consumato dopo %.1fs di attesa, nessuna costruzione in volo'
 								% (time() - self.pending_since))
 						self.pending_since = None
 						# Con gli id si ricaricano i soli contenitori che li contengono; senza, si ricade
 						# sul globale come prima. Vedi lotto 60: gli id c'erano gia' e venivano buttati qui.
-						if pending_ids: run_plugin({'mode': 'kodi_refresh_ids', 'ids': pending_ids})
+						# Le azioni bastano da sole (lotto 119): un rinvio che porta solo
+						# 'continue_watching' o 'trakt_watchlist:movie' e' un rinvio MIRATO a tutti gli
+						# effetti, e degradarlo a globale perche' l'elenco di id e' vuoto sarebbe
+						# esattamente il difetto che il canale delle azioni esiste per togliere.
+						if pending_ids or pending_actions:
+							refresh_ids_inproc(pending_ids, pending_actions)
 						else: run_plugin({'mode': 'refresh_widgets'})
 				elif self.pending_since is not None: self.pending_since = None
 				tick += 1

@@ -50,6 +50,17 @@ def mdblist_get_list_contents(list_id):
 		by_date_added = str(lid) in MDBLIST_DATE_ADDED_LISTS
 		if by_date_added: params.update({'sort': 'added', 'order': 'asc'})
 		raw = call_mdblist('lists/%s/items/' % lid, params=params)
+		# DUE ESITI CHE SI SOMIGLIANO E NON VANNO CONFUSI (lotto 120). call_mdblist torna None per
+		# QUALUNQUE eccezione -- timeout, 5xx, limite di frequenza, DNS -- e una lista vuota quando la
+		# lista e' davvero vuota. Finche' i due finivano insieme in 'return []', un singolo errore di
+		# rete veniva messo in cache per 24 ore come se fosse la risposta giusta: il widget restava
+		# 'nessun risultato' per un giorno intero, sullo stesso account su cui gli altri dispositivi
+		# vedevano la lista piena. Misurato sulla stick il 01/09: 'mdblist_list_contents_2194' con due
+		# byte di dati ('[]') scritti alle 14:17 e validi fino alle 14:17 del giorno dopo, mentre sul
+		# Mac la stessa lista rispondeva 300 elementi.
+		# None risale fino a lists_cache_object, che NON mette in cache i fallimenti: il giro dopo si
+		# riprova. La lista vuota vera resta una risposta e continua a essere memorizzata.
+		if raw is None: return None
 		if not raw: return []
 		results = []
 		for idx, item in enumerate(raw):
@@ -62,4 +73,6 @@ def mdblist_get_list_contents(list_id):
 				})
 			except: pass
 		return results
-	return lists_cache_object(_process, 'mdblist_list_contents_%s' % list_id, list_id, False, 24)
+	# 'or []': i chiamanti fanno len() su questo valore e non devono conoscere la distinzione fra
+	# fallimento e lista vuota -- a loro serve solo una lista. La distinzione e' servita alla cache.
+	return lists_cache_object(_process, 'mdblist_list_contents_%s' % list_id, list_id, False, 24) or []

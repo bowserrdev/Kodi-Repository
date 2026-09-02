@@ -40,8 +40,10 @@ restore_activity = trakt_cache.restore_activity
 _SYNC_DEFERRED = [False]
 clear_daily_cache = trakt_cache.clear_daily_cache
 clear_trakt_collection_watchlist_data, clear_trakt_hidden_data = trakt_cache.clear_trakt_collection_watchlist_data, trakt_cache.clear_trakt_hidden_data
-clear_trakt_recommendations, clear_trakt_list_data = trakt_cache.clear_trakt_recommendations, trakt_cache.clear_trakt_list_data
-clear_trakt_favorites = trakt_cache.clear_trakt_favorites
+# LOTTO 119: qui vivevano anche clear_trakt_recommendations, clear_trakt_list_data e
+# clear_trakt_favorites. Erano usate SOLO dai rami della sincronizzazione ora rimossi (vedi la nota
+# 'strumenti morti' in trakt_sync_activities): le funzioni restano in caches/trakt_cache per chi le
+# chiama da altrove, ma qui non ha piu' senso legarle a ogni import del modulo.
 empty_setting_check = (None, 'empty_setting', '')
 standby_date = '2050-01-01T01:00:00.000Z'
 res_format = '%Y-%m-%dT%H:%M:%S.%fZ'
@@ -475,7 +477,18 @@ def _refresh_watchlist(data):
 	#    id non contiene ancora il titolo, quindi la regola per id lo scarterebbe proprio mentre va
 	#    ricostruito -- ed e' esattamente il motivo per cui "aggiungi" non era istantaneo.
 	# coalesce=False: e' sempre un comando dell'utente. Vedi kodi_refresh in kodi_utils.
-	kodi_refresh_ids(_tmdb_ids_from_data(data), ('trakt_watchlist',), coalesce=False)
+	# L'azione e' QUALIFICATA per tipo di media (lotto 119): la watchlist sono due widget e i dati
+	# spediti a Trakt dicono gia' quale dei due e' stato toccato -- 'movies' e/o 'shows'. Aggiungere un
+	# film non ha motivo di ricostruire la watchlist delle serie.
+	actions = set()
+	try:
+		if data.get('movies'): actions.add(kodi_utils.qualify_action(kodi_utils.WATCHLIST_ACTION, 'movie'))
+		if data.get('shows'): actions.add(kodi_utils.qualify_action(kodi_utils.WATCHLIST_ACTION, 'tvshow'))
+	except: pass
+	# Se i dati non dicono di che tipo sono, si torna al nome nudo: non qualificato vuol dire
+	# 'entrambi i widget', cioe' il comportamento di prima. Vedi paginator._action_matches.
+	if not actions: actions.add(kodi_utils.WATCHLIST_ACTION)
+	kodi_refresh_ids(_tmdb_ids_from_data(data), tuple(sorted(actions)), coalesce=False)
 
 def add_to_list(user, slug, data):
 	result = call_trakt('/users/%s/lists/%s/items' % (user, slug), data=data)
@@ -1120,12 +1133,13 @@ def trakt_progress_movies(progress_info):
 	insert_list = []
 	insert_append = insert_list.append
 	progress_items = [i for i in progress_info  if i['type'] == 'movie' and i['progress'] > 1]
-	if not progress_items:
-		trakt_watched_cache.set_bulk_movie_progress([])
-		return
+	# Torna QUALI film hanno cambiato avanzamento, per la ricarica mirata (lotto 119). Anche il caso
+	# 'nessun film in corso' e' un cambiamento da mostrare -- e' l'ultimo film che ESCE da 'continua a
+	# guardare' -- quindi passa dallo stesso calcolo invece di uscire a mani vuote.
+	if not progress_items: return trakt_watched_cache.set_bulk_movie_progress([])
 	threads = list(make_thread_list(_process, progress_items))
 	[i.join() for i in threads]
-	trakt_watched_cache.set_bulk_movie_progress(insert_list)
+	return trakt_watched_cache.set_bulk_movie_progress(insert_list)
 
 def trakt_progress_tv(progress_info):
 	def _process_show(show):
@@ -1152,14 +1166,46 @@ def trakt_progress_tv(progress_info):
 			except: pass
 	shows_info = {}
 	progress_items = [i for i in progress_info if i['type'] == 'episode' and i['progress'] > 1]
-	if not progress_items:
-		trakt_watched_cache.set_bulk_tvshow_progress([])
-		return
+	# Gemella di trakt_progress_movies: torna le triple 'tmdb:stagione:episodio' cambiate, non i soli
+	# id di serie. Vedi kodi_utils.episode_uid per il perche' della tripla.
+	if not progress_items: return trakt_watched_cache.set_bulk_tvshow_progress([])
 	all_shows = {i['show']['ids'].get('trakt'): i['show'] for i in progress_items}
 	make_thread_list(_process_show, list(all_shows.values()))
-	trakt_watched_cache.set_bulk_tvshow_progress(list(_process()))
+	return trakt_watched_cache.set_bulk_tvshow_progress(list(_process()))
+
+OFFICIAL_STATUS_PROP = 'fenlight.trakt.official_status.%s'
 
 def trakt_official_status(media_type):
+	"""script.trakt sta gia' facendo lui lo scrobble di questo tipo di media?
+
+	LA RISPOSTA E' MEMORIZZATA, e non e' un'ottimizzazione opportunistica (lotto 125). Misurato sulla
+	stick il 02/09 alle 14:22: questa funzione da sola e' costata 2347 ms dei 2380 della scrittura
+	dello stato locale -- la INSERT ne ha presi 1. Il motivo non e' il lavoro che fa, e' QUANDO lo fa:
+	addon_installed e addon_enabled sono due getCondVisibility, cioe' chiedono il lock della GUI, e
+	set_bookmark gira alla chiusura del player, mentre il thread grafico smonta il decoder, rinegozia
+	l'HDMI e ricostruisce la finestra. Il costo e' contesa, non calcolo.
+	E' una domanda di CONFIGURAZIONE: quale addon e' installato, abilitato, autorizzato e con quali
+	preferenze di scrobble. Non cambia durante una riproduzione, quindi non ha nessun motivo di
+	essere posta nell'unico istante in cui costa. Il valore lo semina il servizio a intervalli
+	tranquilli (vedi service.refresh_official_status); qui resta il calcolo diretto come ripiego per
+	la primissima chiamata, se il servizio non ha ancora girato.
+	La conseguenza da tenere presente: cambiando le impostazioni di script.trakt il valore vecchio
+	resta valido finche' il servizio non rigira. E' un ciclo del TraktMonitor, non una sessione.
+	"""
+	key = 'movie' if media_type in ('movie', 'movies') else 'episode'
+	cached = kodi_utils.get_property(OFFICIAL_STATUS_PROP % key)
+	if cached: return cached == 'true'
+	return compute_official_status(media_type, store=True)
+
+def compute_official_status(media_type, store=False):
+	result = _compute_official_status(media_type)
+	if store:
+		key = 'movie' if media_type in ('movie', 'movies') else 'episode'
+		try: kodi_utils.set_property(OFFICIAL_STATUS_PROP % key, 'true' if result else 'false')
+		except: pass
+	return result
+
+def _compute_official_status(media_type):
 	if not addon_installed('script.trakt'): return True
 	if not addon_enabled('script.trakt'): return True
 	trakt_addon = addon('script.trakt')
@@ -1214,6 +1260,39 @@ def get_trakt(params):
 						with_auth=params.get('with_auth', False), method=params.get('method'), pagination=params.get('pagination', True), page_no=params.get('page_no'))
 	return result[0] if params.get('pagination', True) else result
 
+def _publish_changed(changed_ids, changed_actions, changed_unknown):
+	"""Pubblica COSA e' cambiato, perche' il monitor ricarichi i soli contenitori interessati.
+
+	Due proprieta', due criteri diversi, e vanno lette insieme (service.TraktMonitor):
+
+	  fenlight.trakt.changed_ids      ''  = non lo sappiamo          -> ricostruzione globale
+	                                  '-' = lo sappiamo, nessun id   -> nessun id da colpire
+	                                  ... = le identita' cambiate    -> mirato per contenuto
+	  fenlight.trakt.changed_actions  ''  = nessuna azione
+	                                  ... = i widget che cambiano COMPOSIZIONE
+
+	Il '-' e' un'AFFERMAZIONE, non un'assenza, ed e' esattamente qui che il lotto 59 sbagliava: lo
+	pubblicava anche quando i rami che avevano lavorato non alimentavano changed_ids -- l'avanzamento,
+	la watchlist -- cioe' dichiarava 'non e' cambiato niente' per un cambiamento vero. Il monitor gli
+	credeva e non ricostruiva nulla. Ora ogni ramo vivo alimenta almeno uno dei due canali, e
+	changed_unknown resta l'unico modo di dire 'non lo so'.
+
+	Le identita' possono contenere ':' (livello episodio, kodi_utils.episode_uid): la separazione e'
+	sulla virgola e le due cose non si confondono.
+	"""
+	try:
+		_ids = '' if changed_unknown else (','.join(sorted(str(i) for i in changed_ids if i)) or '-')
+		_actions = ','.join(sorted(str(a) for a in changed_actions if a))
+		kodi_utils.set_property('fenlight.trakt.changed_ids', _ids)
+		kodi_utils.set_property('fenlight.trakt.changed_actions', _actions)
+		if changed_unknown:
+			logger('FenLight Trakt', 'cambiamento di natura ignota: si ricostruisce tutto')
+		else:
+			logger('FenLight Trakt', 'titoli cambiati: %d%s | azioni: %s'
+					% (len(changed_ids), (' -> %s' % sorted(changed_ids)[:10]) if changed_ids else '',
+						_actions or 'nessuna'))
+	except: pass
+
 def trakt_sync_activities(force_update=False):
 	# def clear_watched_tvshow_cache():
 	# 	from modules.watched_status import clear_cache_watched_tvshow_status
@@ -1251,32 +1330,54 @@ def trakt_sync_activities(force_update=False):
 				ep_ids = {i['id'] for i in progress_info if i['type'] == 'episode'}
 				movie_deleted = trakt_watched_cache.has_progress_deletions('movie', movie_ids)
 				ep_deleted = trakt_watched_cache.has_progress_deletions('episode', ep_ids)
+				changed_ids, changed_unknown = set(), False
 				if movie_deleted:
 					clear_properties('movie')
-					trakt_progress_movies(progress_info)
+					_ids = trakt_progress_movies(progress_info)
+					if _ids is None: changed_unknown = True
+					else: changed_ids |= _ids
 				if ep_deleted:
 					clear_properties('episode')
-					trakt_progress_tv(progress_info)
-				if movie_deleted or ep_deleted: return 'success'
+					_ids = trakt_progress_tv(progress_info)
+					if _ids is None: changed_unknown = True
+					else: changed_ids |= _ids
+				if movie_deleted or ep_deleted:
+					# Un titolo USCITO dall'avanzamento cambia la composizione di 'continua a guardare':
+					# l'id da solo non basta, perche' il widget lo mostra ancora e la regola per id lo
+					# troverebbe -- ma solo finche' non e' stato ricostruito da qualcun altro. L'azione
+					# lo copre in entrambe le direzioni. Vedi kodi_utils.CONTINUE_WATCHING_ACTION.
+					_publish_changed(changed_ids, {kodi_utils.CONTINUE_WATCHING_ACTION}, changed_unknown)
+					return 'success'
 		return 'not needed'
-	lists_actions, refresh_movies_progress, refresh_shows_progress, clear_tvshow_watched_cache = [], False, False, False
+	refresh_movies_progress, refresh_shows_progress = False, False
 	cached_movies, latest_movies = cached['movies'], latest['movies']
 	cached_shows, latest_shows = cached['shows'], latest['shows']
 	cached_episodes, latest_episodes = cached['episodes'], latest['episodes']
-	cached_lists, latest_lists = cached['lists'], latest['lists']
-	if _compare(latest['recommendations'], cached['recommendations']): clear_trakt_recommendations()
-	if _compare(latest['favorites'], cached['favorites']): clear_trakt_favorites()
-	if _compare(latest_movies['collected_at'], cached_movies['collected_at']): clear_trakt_collection_watchlist_data('collection', 'movie')
-	if _compare(latest_episodes['collected_at'], cached_episodes['collected_at']): clear_trakt_collection_watchlist_data('collection', 'tvshow')
-	if _compare(latest_movies['watchlisted_at'], cached_movies['watchlisted_at']): clear_trakt_collection_watchlist_data('watchlist', 'movie')
-	if _compare(latest_shows['watchlisted_at'], cached_shows['watchlisted_at']): clear_trakt_collection_watchlist_data('watchlist', 'tvshow')
+	# LOTTO 119 -- STRUMENTI MORTI RIMOSSI. Qui c'erano sei confronti in piu': 'recommendations',
+	# 'favorites', 'collected_at' (film e serie) e le liste 'updated_at'/'liked_at'. Sono funzioni che
+	# questa installazione non usa: nessun widget le mostra e nessuna schermata legge quelle cache,
+	# quindi non c'era niente da invalidare e tanto meno da ricostruire. Sei _compare in meno a ogni
+	# poll da 30 s, e -- soprattutto -- sei rami in meno capaci di dichiarare 'e' cambiato qualcosa'
+	# senza saper dire cosa, che e' il modo in cui un refresh mirato degenera in globale.
+	# Restano i tre eventi che governano widget veri: visto, avanzamento, watchlist.
+	# Raccolta di cosa e' cambiato, per il refresh mirato. Due canali distinti e non intercambiabili:
+	#  - changed_ids: CHI e' cambiato. Colpisce i widget che gia' lo contengono.
+	#  - changed_actions: QUALE widget cambia composizione. Colpisce il widget per quello che E',
+	#    ed e' l'unico criterio che funziona quando il titolo non e' ANCORA nella lista (un film che
+	#    entra in 'continua a guardare', un titolo aggiunto alla watchlist da un altro dispositivo).
+	# `None` da una ricostruzione significa "non so quali", e allora si ricade sul refresh globale:
+	# e' diverso da un insieme vuoto, che significa "nessun titolo e' cambiato davvero".
+	changed_ids, changed_actions, changed_unknown = set(), set(), False
+	# NASCONDI/RIESPONI una serie dal 'continua a guardare'. Spostato qui sotto perche' anche questo
+	# ramo deve DICHIARARE cosa ha toccato: prima invalidava la cache e usciva muto, quindi se era
+	# l'unico cambiamento del giro il payload finiva a '-' e il widget non si ricostruiva mai --
+	# lo stesso difetto dell'avanzamento, sullo stesso widget. Solo l'azione e nessun id: nascondere
+	# TOGLIE la serie dalla lista e riesporla ce la rimette, e in nessuno dei due casi l'id da solo
+	# risponde alla domanda giusta. Trakt non dice QUALE serie e' stata nascosta.
 	if _compare(latest_shows['hidden_at'], cached_shows['hidden_at']):
 		clear_properties('episode')
 		clear_trakt_hidden_data('progress_watched')
-	# Raccolta degli id toccati, per il refresh mirato (lotto 59). `None` da una ricostruzione significa
-	# "non so quali", e allora si deve ricadere sul refresh globale: e' diverso da un insieme vuoto,
-	# che significa "nessun titolo e' cambiato davvero".
-	changed_ids, changed_unknown = set(), False
+		changed_actions.add(kodi_utils.CONTINUE_WATCHING_ACTION)
 	if _compare(latest_movies['watched_at'], cached_movies['watched_at']):
 		clear_properties('movie')
 		_ids = trakt_indicators_movies()
@@ -1284,13 +1385,26 @@ def trakt_sync_activities(force_update=False):
 		else: changed_ids |= _ids
 	if _compare(latest_episodes['watched_at'], cached_episodes['watched_at']):
 		clear_properties('episode')
+		# Livello SERIE, ed e' voluto: un episodio VISTO fa avanzare la serie, quindi si aggiornano i
+		# widget che contengono la serie -- badge, prossimo episodio, 'continua a guardare' (che
+		# pubblica anche il tmdb nudo di ogni episodio, vedi paginator._publish_ids).
 		_ids = trakt_indicators_tv()
 		if _ids is None: changed_unknown = True
 		else: changed_ids |= _ids
+	# La WATCHLIST sono DUE widget, non uno: quello dei film e quello delle serie, costruiti dalla
+	# stessa azione 'trakt_watchlist' da due classi diverse. Trakt li distingue gia' con due
+	# timestamp separati, e fin qui la distinzione si perdeva: aggiungere un film da un altro
+	# dispositivo ricostruiva anche la watchlist delle serie. Qui ognuno colpisce il proprio.
+	# Solo l'AZIONE, e nessun id: l'evento e' 'la lista e' cambiata', e il titolo entrato non e'
+	# ancora nell'elenco pubblicato dal widget -- la regola per id lo scarterebbe.
+	if _compare(latest_movies['watchlisted_at'], cached_movies['watchlisted_at']):
+		clear_trakt_collection_watchlist_data('watchlist', 'movie')
+		changed_actions.add(kodi_utils.qualify_action(kodi_utils.WATCHLIST_ACTION, 'movie'))
+	if _compare(latest_shows['watchlisted_at'], cached_shows['watchlisted_at']):
+		clear_trakt_collection_watchlist_data('watchlist', 'tvshow')
+		changed_actions.add(kodi_utils.qualify_action(kodi_utils.WATCHLIST_ACTION, 'tvshow'))
 	if _compare(latest_movies['paused_at'], cached_movies['paused_at']): refresh_movies_progress = True
 	if _compare(latest_episodes['paused_at'], cached_episodes['paused_at']): refresh_shows_progress = True
-	if _compare(latest_lists['updated_at'], cached_lists['updated_at']): lists_actions.append('my_lists')
-	if _compare(latest_lists['liked_at'], cached_lists['liked_at']): lists_actions.append('liked_lists')
 	progress_info = None
 	if not (refresh_movies_progress and refresh_shows_progress):
 		progress_info = trakt_playback_progress()
@@ -1303,33 +1417,32 @@ def trakt_sync_activities(force_update=False):
 				if trakt_watched_cache.has_progress_deletions('episode', trakt_ids): refresh_shows_progress = True
 	if refresh_movies_progress or refresh_shows_progress:
 		if progress_info is None: progress_info = trakt_playback_progress()
+		# L'AVANZAMENTO era il buco: questi due rami ricostruivano la tabella progress e non
+		# dichiaravano NIENTE, quindi il payload usciva '-' -- 'lo sappiamo, non e' cambiato nulla' --
+		# ed era falso. Un film lasciato a meta' su un altro dispositivo arrivava nel database della
+		# stick e non compariva mai a schermo (log del 01/09, 20:04:45). Ora i due costruttori tornano
+		# le identita' che hanno davvero cambiato avanzamento, calcolate sul prima/dopo della tabella.
+		# L'azione accompagna sempre gli id, perche' 'continua a guardare' cambia COMPOSIZIONE:
+		# in aggiunta il titolo non e' ancora nella lista, in rimozione l'elenco e' quello di prima.
+		changed_actions.add(kodi_utils.CONTINUE_WATCHING_ACTION)
 		if refresh_movies_progress:
 			clear_properties('movie')
-			trakt_progress_movies(progress_info)
+			# Identita' di livello FILM: il tmdb nudo.
+			_ids = trakt_progress_movies(progress_info)
+			if _ids is None: changed_unknown = True
+			else: changed_ids |= _ids
 		if refresh_shows_progress:
 			clear_properties('episode')
-			trakt_progress_tv(progress_info)
-	if lists_actions:
-		for item in lists_actions:
-			clear_trakt_list_data(item)
-			clear_trakt_list_contents_data(item)
-	# if clear_tvshow_watched_cache: clear_watched_tvshow_cache()
+			# Identita' di livello EPISODIO ('tmdb:stagione:episodio'): un episodio in pausa non e' la
+			# sua serie, e non deve ricostruire ogni widget che contenga quella serie.
+			_ids = trakt_progress_tv(progress_info)
+			if _ids is None: changed_unknown = True
+			else: changed_ids |= _ids
 	# Qualcosa e' stato rimandato: il segnalibro torna indietro, cosi' il prossimo giro riprende il
 	# lavoro invece di trovare 'nessuna modifica'. La guardia self_mark diventa cosi' un RINVIO e non
 	# piu' un cestino: al massimo ritarda di una finestra self_mark, non perde piu' niente.
 	if _SYNC_DEFERRED[0]:
 		_SYNC_DEFERRED[0] = False
 		restore_activity(cached)
-	# Pubblica QUALI titoli sono cambiati, perche' il monitor possa ricaricare i soli contenitori che
-	# li contengono invece di sparare UpdateLibrary su tutta la schermata (lotto 59). Vuoto = non lo
-	# sappiamo, e chi legge ricade sul globale. L'API di Trakt non lo dice mai: questo elenco esce dal
-	# confronto fra l'insieme prima e quello dopo la ricostruzione, che facciamo comunque.
-	try:
-		# Tre stati distinti, e servono tutti e tre: '' = non lo sappiamo (globale), '-' = lo sappiamo ed
-		# e' cambiato nulla (nessun refresh), altrimenti l'elenco degli id (mirato).
-		_payload = '' if changed_unknown else (','.join(sorted(str(i) for i in changed_ids if i)) or '-')
-		kodi_utils.set_property('fenlight.trakt.changed_ids', _payload)
-		if not changed_unknown:
-			logger('FenLight Trakt', 'titoli cambiati: %d%s' % (len(changed_ids), (' -> %s' % sorted(changed_ids)[:10]) if changed_ids else ''))
-	except: pass
+	_publish_changed(changed_ids, changed_actions, changed_unknown)
 	return 'success'

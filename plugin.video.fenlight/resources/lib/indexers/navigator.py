@@ -226,7 +226,6 @@ class Navigator:
 		self.add({'mode': 'clear_all_cache', 'isFolder': 'false'}, 'Clear All Cache (Excluding Favorites)', 'settings')
 		self.add({'mode': 'clear_favorites_choice', 'isFolder': 'false'}, 'Clear Favorites Cache', 'settings')
 		self.add({'mode': 'search.clear_search', 'isFolder': 'false'}, 'Clear Search History Cache', 'settings')
-		self.add({'mode': 'search.clear_text_history', 'isFolder': 'false'}, 'Clear Text Search History', 'settings')
 		self.add({'mode': 'clear_cache', 'cache': 'main', 'isFolder': 'false'}, 'Clear Main Cache', 'settings')
 		self.add({'mode': 'clear_cache', 'cache': 'meta', 'isFolder': 'false'}, 'Clear Meta Cache', 'settings')
 		self.add({'mode': 'clear_cache', 'cache': 'list', 'isFolder': 'false'}, 'Clear Lists Cache', 'settings')
@@ -341,22 +340,6 @@ class Navigator:
 			except: pass
 		self.category_name = self.params_get('name') or 'History'
 		self.end_directory()
-
-	def text_search_history(self):
-		# Elenco testuale delle ultime ricerche dell'hub, consumato dal pannello 'Storico' della skin.
-		# Niente cache su disco: deve riflettere subito le nuove ricerche salvate.
-		handle = int(sys.argv[1])
-		data = main_cache.get('text_search_queries') or []
-		try: k.logger('FenLight Storico', 'navigator.text_search_history: pannello caricato, %s voci=%s' % (len(data), data))
-		except: pass
-		for q in data:
-			try:
-				listitem = make_listitem()
-				listitem.setLabel(q)
-				add_item(handle, build_url({'mode': 'noop', 'isFolder': 'false'}), listitem, False)
-			except: pass
-		set_content(handle, 'files')
-		end_directory(handle, cacheToDisc=False)
 
 	def keyword_results(self):
 		from apis.tmdb_api import tmdb_keywords_by_query

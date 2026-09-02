@@ -13,14 +13,6 @@ def _text_search_start(params, media_type):
 	from xbmcgui import Window
 	win = Window(10000)
 	if win.getProperty('FenLight.TextSearch.Query') != query:
-		try:
-			from modules.search import save_text_query, _slog
-			sealed_pick = win.getProperty('FenLight.TextSearch.SealNext') == '1'
-			_slog('_text_search_start: nuova query="%s" scope=%s sealed_pick=%s' % (query, search_scope, sealed_pick))
-			if sealed_pick: win.clearProperty('FenLight.TextSearch.SealNext')
-			save_text_query(query, sealed_pick=sealed_pick)
-			win.setProperty('FenLight.SearchHistory.Token', query)
-		except: pass
 		win.setProperty('FenLight.TextSearch.Query', query)
 		win.setProperty('FenLight.TextSearch.Scope', search_scope)
 		win.setProperty('FenLight.TextSearch.Movie.HasResults', 'false')
@@ -225,9 +217,6 @@ def routing(sys):
 		if mode == 'search.clear_search':
 			from modules.search import clear_search
 			return clear_search()
-		if mode == 'search.clear_text_history':
-			from modules.search import clear_text_history
-			return clear_text_history()
 		if mode == 'search.close_panel':
 			from modules.search import close_search_panel
 			close_search_panel(params.get('source', '?'))
@@ -252,9 +241,6 @@ def routing(sys):
 		if mode == 'search.clear_discover_filters':
 			from modules.search import clear_discover_filters
 			return clear_discover_filters(params)
-		if mode == 'search.add_to_history':
-			from modules.search import add_to_history
-			return add_to_history(params)
 	if 'real_debrid' in mode:
 		if mode == 'real_debrid.rd_cloud':
 			from indexers.real_debrid import rd_cloud
@@ -421,8 +407,17 @@ def routing(sys):
 		# Ricarica mirata a partire da un elenco di tmdb_id (lotto 59): la usa il monitor Trakt, che
 		# dopo la ricostruzione sa quali titoli sono cambiati. Se l'elenco arriva vuoto kodi_refresh_ids
 		# ricade da sola sul globale, quindi non puo' comportarsi peggio di prima.
+		# LOTTO 119 -- passano anche le AZIONI. Questo era il collo di bottiglia del canale: in
+		# processo kodi_refresh_ids le accettava gia', ma chi arriva da RunPlugin (il monitor Trakt e
+		# WidgetRefresher, cioe' proprio i due che sanno cosa e' cambiato su Trakt) poteva mandare
+		# solo gli id. Le azioni si perdevano QUI, e con loro l'unico criterio capace di ricostruire un
+		# widget in cui il titolo cambiato non e' ANCORA entrato -- watchlist e continua a guardare.
+		# Un id puo' contenere ':' (identita' di episodio, vedi paginator.episode_uid): urlencode lo
+		# cita e parse_qsl lo restituisce intatto, quindi lo split su ',' resta corretto.
 		from modules.kodi_utils import kodi_refresh_ids
-		return kodi_refresh_ids([i for i in _get('ids', '').split(',') if i], coalesce=_get('coalesce', 'true') != 'false')
+		return kodi_refresh_ids([i for i in _get('ids', '').split(',') if i],
+								tuple(a for a in _get('actions', '').split(',') if a),
+								coalesce=_get('coalesce', 'true') != 'false')
 	if mode == 'refresh_widgets':
 		from modules.kodi_utils import refresh_widgets
 		# user=true lo mette solo la voce di menu degli indexer, non il servizio.

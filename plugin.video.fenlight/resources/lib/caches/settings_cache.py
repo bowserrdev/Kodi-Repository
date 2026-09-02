@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-import json
+# json e' pigro per lo stesso motivo di caches/base_cache.py (lotto 126): serve a due finestre di
+# dialogo, non al percorso che legge un'impostazione.
 from modules import kodi_utils
 from caches.base_cache import connect_database
 
@@ -144,6 +145,7 @@ def set_numeric(params):
 	if negative_included:
 		multiplier_values = [('Positive(+)', 1), ('Negative(-)', -1)]
 		list_items = [{'line1': item[0]} for item in multiplier_values]
+		import json
 		kwargs = {'items': json.dumps(list_items), 'narrow_window': 'true', 'heading': 'Will this be a positive or negative number?'}
 		multiplier = select_dialog(multiplier_values, **kwargs)
 	else: multiplier = None
@@ -164,6 +166,7 @@ def set_path(params):
 def set_from_list(params):
 	setting_id = params['setting_id']
 	settings_list = [(v, k) for k, v in default_setting_values(setting_id)['settings_options'].items()]
+	import json
 	new_value = select_dialog(settings_list, **{'items': json.dumps([{'line1': item[0]} for item in settings_list]), 'narrow_window': 'true'})
 	if not new_value: return
 	setting_value = new_value[1]
