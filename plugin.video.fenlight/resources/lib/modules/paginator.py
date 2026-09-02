@@ -117,6 +117,13 @@ CTL_REGISTRY_PROP = 'fenlight.pg.ctlreg'
 # nella stessa invocazione per sapere se il lavoro fuori dalla finestra a schermo e' stato fatto qui
 # (e allora non serve nessun rinvio) o se non c'era niente di censito da raggiungere.
 LAST_OTHER_HITS = [0]
+# L'ultimo sondaggio ha VISTO almeno un contenitore Fen Light nella finestra a schermo? Distingue le
+# due ragioni per cui una ricarica mirata puo' finire con zero contenitori ricaricati, che sono
+# opposte fra loro: 'non ho potuto verificare niente' (nessun contenitore nostro qui) e 'ho verificato
+# e nessuno c'entra' (tutti identificati, nessuno contiene i titoli cambiati). La prima merita il
+# fallback globale, la seconda e' la RISPOSTA e ricadere sul globale la butterebbe via. Vedi
+# kodi_utils.kodi_refresh_ids.
+LAST_SEEN_ANY = [False]
 CTL_REGISTRY_CAP = 80
 
 def registry_pairs():
@@ -733,6 +740,28 @@ def _head_signature_from_items(items):
 # Ogni URL di elemento porta 'tmdb_id=' (URL_PLAY, URL_OPTIONS, URL_MARK... in tutti gli indexer),
 # quindi gli id si estraggono senza dover conoscere la forma dei dati di ciascuno.
 _TMDB_IN_URL = re_compile(r'[?&]tmdb_id=(\d+)')
+# LOTTO 119 -- l'identita' a livello EPISODIO. Il tmdb_id di un episodio E' quello della serie: nel
+# canale degli id 'S03E04 di X in pausa' e 'la serie X' erano la stessa stringa, quindi un
+# avanzamento su un episodio ricaricava OGNI widget che contenesse quella serie -- le serie popolari,
+# i preferiti, tutto. L'URL di riproduzione di un episodio (episodes.URL_PLAY) porta gia' stagione ed
+# episodio: da li' esce la tripla, che si pubblica ACCANTO al tmdb nudo e non al suo posto.
+#   'X'       -> la serie, per gli eventi di livello serie (un episodio visto la fa avanzare)
+#   'X:3:4'   -> quel singolo episodio, per gli eventi di avanzamento
+# Un widget di serie pubblica solo 'X' e resta cosi' fuori da un paused_at su un episodio; 'continua
+# a guardare' pubblica entrambe e risponde a tutti e due i livelli. La forma della tripla ha una
+# sola definizione, kodi_utils.episode_uid, condivisa con chi la CHIEDE (apis/trakt_api).
+_EPISODE_IN_URL = re_compile(r'[?&]media_type=episode(?=[?&]|$)')
+_SEASON_IN_URL = re_compile(r'[?&]season=(\d+)')
+_EPNUM_IN_URL = re_compile(r'[?&]episode=(\d+)')
+
+def _episode_uid_from_url(url, tmdb_id):
+	# 'season=all' (URL_ALL_EPISODES) e le voci di menu senza S/E non hanno identita' di episodio:
+	# tornano None e restano al solo livello serie.
+	if not _EPISODE_IN_URL.search(url): return None
+	s, e = _SEASON_IN_URL.search(url), _EPNUM_IN_URL.search(url)
+	if not s or not e: return None
+	from modules.kodi_utils import episode_uid
+	return episode_uid(tmdb_id, s.group(1), e.group(1))
 
 # LOTTO 95 -- gli id NASCOSTI dal filtro doppiaggio in attesa di verdetto (vedi modules/dub_queue).
 # Vivono in una lista di modulo e non in una proprieta' perche' non devono attraversare i processi:
@@ -775,8 +804,14 @@ def _publish_ids(key, items):
 			m = _TMDB_IN_URL.search(url)
 			if not m: continue
 			tid = m.group(1)
-			if tid in seen: continue
-			seen.add(tid); ids.append(tid)
+			if tid not in seen:
+				seen.add(tid); ids.append(tid)
+			# Livello EPISODIO in aggiunta, mai al posto del livello serie (lotto 119): il tmdb nudo
+			# serve ancora a rispondere 'questo widget contiene la serie X?', che e' la domanda giusta
+			# quando un episodio viene VISTO.
+			euid = _episode_uid_from_url(url, tid)
+			if euid and euid not in seen:
+				seen.add(euid); ids.append(euid)
 		# "Si occupa" comprende cio' che ha NASCOSTO. Un elemento tolto dal filtro doppiaggio non
 		# compare fra gli item, quindi senza questa aggiunta il contenitore che lo ha nascosto sarebbe
 		# proprio quello che refresh_containers_for_ids salta -- e il verdetto risolto dal servizio non
@@ -871,14 +906,39 @@ def set_head(key, items, action=None):
 	log('set_head key=%s built=%s firma=%s first_url=%s' %
 		(short(key), count, (headhash[:8] if headhash else '-'), (url[:90] if url else '-')))
 
+def _action_matches(stored, wanted_actions):
+	"""L'azione pubblicata da un widget soddisfa una delle azioni richieste?
+
+	Le azioni sono qualificate per tipo di media da chi le pubblica ('trakt_watchlist:movie'), perche'
+	lo stesso nome di azione costruisce DUE widget diversi -- la watchlist film e la watchlist serie --
+	e aggiungere un film non ha motivo di ricostruire quella delle serie.
+
+	Il confronto e' asimmetrico apposta: una richiesta NON qualificata vale per tutti i qualificatori
+	(chi chiede 'trakt_watchlist' vuole entrambi), una richiesta qualificata pretende l'uguaglianza
+	esatta. Cosi' i chiamanti che non hanno motivo di distinguere restano scritti come prima.
+	"""
+	if not stored or not wanted_actions: return False
+	if stored in wanted_actions: return True
+	return stored.partition(':')[0] in wanted_actions
+
 def refresh_containers_for_ids(ids, actions=()):
 	"""Ricostruisce SOLO i contenitori toccati da questi tmdb_id. Torna quanti ne ha ricaricati.
 
 	La regola e' volutamente PRUDENTE: si salta un contenitore soltanto quando si riesce a dimostrare
 	che non c'entra -- cioe' lo si e' identificato E il suo elenco di id non contiene nessuno di
-	quelli cambiati. Tutto il resto viene ricaricato. Cosi' un widget che non passa dal paginatore
-	(continua a guardare non chiama set_head, quindi non ha ne' chiave ne' elenco) continua ad
-	aggiornarsi come prima, invece di restare fermo: e' proprio quello che DEVE cambiare a fine film.
+	quelli cambiati. Tutto il resto viene ricaricato: un widget che non passa dal paginatore non ha
+	ne' chiave ne' elenco, e continua ad aggiornarsi come prima invece di restare fermo.
+
+	ATTENZIONE, e qui il commento precedente era rimasto indietro di un lotto: 'continua a guardare'
+	NON e' piu' fra quelli. Dal lotto 114 chiama set_head (continue_watching.py) e quindi pubblica il
+	suo elenco, il che ribalta la conseguenza: quando un titolo ENTRA nel widget il suo id non e'
+	ancora nell'elenco, la prudenza non lo copre piu' e il contenitore viene SALTATO proprio nel
+	momento in cui andrebbe ricostruito. Per quel widget l'AZIONE non e' un affinamento della regola
+	per id: e' la condizione perche' funzioni. Vedi CONTINUE_WATCHING_ACTION.
+
+	Le azioni si confrontano per PREFISSO qualificato (vedi _action_matches): 'trakt_watchlist:movie'
+	e 'trakt_watchlist:tvshow' sono due widget distinti e vanno colpiti separatamente, ma chi chiede
+	'trakt_watchlist' senza qualificatore li prende entrambi.
 
 	Torna 0 se non identifica nessun contenitore Fen Light: il chiamante ricade sul refresh globale,
 	quindi il comportamento non puo' essere peggiore di quello di oggi.
@@ -907,7 +967,7 @@ def refresh_containers_for_ids(ids, actions=()):
 		key, first_url = container_head(cid, scope)
 		if not first_url or 'plugin.video.fenlight' not in first_url: continue
 		seen_any = True
-		if key and get_property(ACTION_PROP % key) not in wanted_actions:
+		if key and not _action_matches(get_property(ACTION_PROP % key), wanted_actions):
 			stored = get_property(IDS_PROP % key)
 			# stored vuota = elenco mai pubblicato: non si puo' dimostrare niente, quindi si ricarica.
 			if stored and not wanted.intersection(stored.split(',')):
@@ -942,7 +1002,7 @@ def refresh_containers_for_ids(ids, actions=()):
 		# resta comunque raggiunto dal giro sulla finestra a schermo, qui sopra.
 		key = '%s.%s' % (other_scope, cid)
 		if not get_property(BUILT_PROP % key): continue
-		if get_property(ACTION_PROP % key) not in wanted_actions:
+		if not _action_matches(get_property(ACTION_PROP % key), wanted_actions):
 			stored = get_property(IDS_PROP % key)
 			if stored and not wanted.intersection(stored.split(',')): continue
 			if not stored: continue  # mai pubblicato: qui non si puo' verificare nulla e non si vede niente
@@ -951,6 +1011,7 @@ def refresh_containers_for_ids(ids, actions=()):
 		set_property(CTL_PAGES_PROP % (other_scope, cid), '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
 		hit_other += 1
 	LAST_OTHER_HITS[0] = hit_other
+	LAST_SEEN_ANY[0] = seen_any
 	log('refresh_for_ids ids=%s azioni=%s contenitori=%s ricaricati=%s altre_finestre=%s saltati=%s' %
 		(len(wanted), len(wanted_actions), 'trovati' if seen_any else 'NESSUNO', hit, hit_other, skipped))
 	# Il conteggio restituito resta quello della finestra a schermo: e' cio' che decide il fallback

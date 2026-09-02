@@ -166,6 +166,18 @@ def build_episode_list(params):
 			season_poster = (poster_path if poster_path.startswith('http') else tmdb_poster % poster_path) if poster_path is not None else show_poster
 		except: season_poster = show_poster
 		category_name = 'Season %s' % season
+	# DIAGNOSTICA DEI SEGNALIBRI (lotto 123). Serve a rispondere a una domanda che dal log non si
+	# poteva ricavare: quando Kodi ricostruisce il pannello episodi uscendo dal player, che cosa ha
+	# letto davvero dalla tabella progress? Finora si poteva solo dedurlo dall'orario della
+	# ricostruzione contro quello della scrittura -- e dedurre non basta, perche' il badge dipende da
+	# cio' che questa riga legge, non da quando gira. Costa una join di stringhe su una lista gia' in
+	# memoria, e solo quando la strumentazione e' accesa.
+	try:
+		_bm = bookmarks if season != 'all' else {k: v for _s in bookmarks.values() for k, v in _s.items()}
+		kodi_utils.perf_log('FenLight BOOKMARKS', 'serie %s stagione %s | %s segnalibri letti da progress: %s'
+				% (tmdb_id, season, len(_bm),
+					', '.join('E%s=%s%%' % (k, v.get('resume_point')) for k, v in sorted(_bm.items())) or 'nessuno'))
+	except: pass
 	# Qui finisce la RISOLUZIONE: una sola lettura di tvshow_meta piu' episodes_meta e i segnalibri,
 	# per l'intera lista. Da qui in poi e' costruzione di ListItem.
 	_t1 = paginator.now()

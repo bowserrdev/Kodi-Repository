@@ -36,5 +36,10 @@ def lists_cache_object(function, string, args, json=False, expiration=48):
 	else: args = (args,)
 	if json: result = function(*args).json()
 	else: result = function(*args)
-	lists_cache.set(string, result, expiration=expiration)
+	# UN FALLIMENTO NON E' UN RISULTATO (lotto 120). None qui vuol dire "la chiamata non e' riuscita":
+	# metterlo in cache non serve a niente -- il get qui sopra tratta None come assenza e rifa' la
+	# chiamata comunque -- ma soprattutto invita chi produce i dati a convertire l'errore in un valore
+	# vuoto pur di avere qualcosa da restituire, e QUELLO si mette in cache eccome. E' il difetto che
+	# ha spento 'Latest TV Shows' sulla stick per 24 ore: vedi mdblist_get_list_contents.
+	if result is not None: lists_cache.set(string, result, expiration=expiration)
 	return result
