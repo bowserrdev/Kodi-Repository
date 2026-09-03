@@ -15415,7 +15415,1012 @@ E resta una verifica da fare prima, non da assumere: che la rilettura di Kodi al
 finestra interroghi DAVVERO il plugin ogni volta e non serva mai dalla propria cache. Se in qualche
 stato servisse dalla cache, saltare il nostro refresh lascerebbe il badge vecchio.
 
-## Coda aperta dopo il lotto 128
+## Lotto 129 -- la ricostruzione doppia dei widget, tolta senza aspettare nessuno
+
+**Il difetto.** Alla chiusura del player, tornando a Home o a un hub, i widget si ricostruiscono
+DUE volte: una la ordina Kodi (rilegge i DirectoryProvider quando la finestra torna a schermo) e una
+la ordiniamo noi. Misurato sulla stick il 02/09:
+
+```
+18:34:19,412  scrittura dello stato locale
+18:34:19,952  CDirectoryProvider[...]: refreshing..   <- Kodi, DOPO la scrittura
+18:34:20,165  DIAG refresh: MIRATO 1 contenitori
+18:34:20,188  CDirectoryProvider[...]: refreshing..   <- e ripartono da capo
+18:34:22,4-23,2  1101.501..504 costruiti              <- il giro di Kodi
+18:34:24,9-26,8  1101.501..504 costruiti di nuovo     <- il nostro
+```
+
+La rilettura di Kodi era partita **dopo** la scrittura: conteneva gia' il badge. Il nostro refresh ha
+rifatto lo stesso lavoro e ha spostato il contenuto definitivo da **~+3 s a ~+7,3 s** dalla chiusura.
+
+**La premessa che rende la correzione sicura**, verificata e non assunta: i widget escono da
+`end_directory` con `cacheToDisc=False` (vale per ogni indexer costruibile come widget, `False if
+is_external`), quindi Kodi non li serve mai dalla propria cache. Controprova nel log: 24
+`CDirectoryProvider[...]: refreshing..` e 24 `CScriptRunner: running add-on script Fen Light`, uno
+a uno. Ogni rilettura e' una invocazione vera, che legge il database.
+
+**Il criterio: l'INIZIO della costruzione, non la fine.** Una costruzione FINITA dopo la scrittura
+puo' essere COMINCIATA prima, e in quel caso ha letto il dato vecchio: saltare il nostro refresh su
+quella prova lascerebbe il badge vecchio a schermo -- il modo peggiore di sbagliare, e quello che
+inseguiamo da sei lotti.
+
+**E l'istante d'inizio c'era gia'.** `_stamp_build` scrive `LASTBUILD_PROP % key` con l'orologio a
+muro all'avvio di ogni costruzione, **uno scrittore per chiave**, quindi senza la contesa che un
+registro condiviso avrebbe avuto proprio nel momento peggiore (cinque widget che partono insieme).
+Non e' servito ne' un registro nuovo, ne' un timbro di inizio da inventare, ne' -- soprattutto --
+alcuna ATTESA: la decisione si prende subito, alle 20,165, con informazione gia' disponibile.
+
+Era la parte che nella considerazione precedente avevo dato per mancante. C'era.
+
+**La correzione.** `refresh_containers_for_ids(ids, actions, fresh_since=None)`: se `fresh_since` e'
+passato, un contenitore la cui ultima costruzione e' cominciata dopo quell'istante non viene
+ricaricato. Vale per la finestra a schermo e per le altre. `kodi_refresh_ids` inoltra il parametro e
+conta i saltati in `LAST_FRESH_SKIPS`; `player._order_refresh_after_write` passa l'istante della
+scrittura. Chi non timbra l'inizio torna 0 e viene ricaricato come sempre: il predefinito e' prudente.
+
+Il fallback globale ora considera anche i "gia' freschi": un contenitore saltato perche' qualcun
+altro lo sta gia' ricostruendo con il dato nuovo **e' una risposta**, e ricadere sul globale per
+quello sarebbe il contrario di cio' che serve.
+
+### Verifica
+
+Dodici casi sul comportamento del paginatore, fra cui la scena esatta delle 18:34 (due contenitori
+ricostruiti da Kodi dopo la scrittura -> nessuno ricaricato, due contati come freschi) e **la
+trappola**: costruzione cominciata prima della scrittura e finita dopo -> ricaricata, non contata
+come fresca. Piu' il misto (uno fresco, uno vecchio), il contenitore che non timbra (ricaricato), il
+filtro per id che resta prioritario, e il widget che corrisponde per AZIONE ma e' fresco.
+
+Quattro casi sull'integrazione in `kodi_refresh_ids`: tutto fresco -> nessun `UpdateLibrary` e
+nessuna ricarica; contenitore vecchio -> ricaricato e ancora mirato; **nessun contenitore nostro ->
+il globale scatta ancora**; e senza `fresh_since` il comportamento e' identico a prima.
+
+Rieseguite le batterie dei lotti 124-128 e l'import di tutti i 93 moduli: nessuna regressione.
+Confronto dei simboli su paginator: 59 funzioni, nessuna persa, nessuna nuova.
+
+## Lotto 129 bis -- il segnale c'era, ma arrivava tre secondi dopo la decisione
+
+**La verifica sul campo del lotto 129 non ha cambiato niente**, e il log dice esattamente perche':
+
+```
+18:55:49,599  scrittura finita
+18:55:50,373  CDirectoryProvider[home.501]: refreshing..           <- Kodi ordina la rilettura
+18:55:50,380  CScriptRunner: running add-on script Fen Light
+18:55:50,564  refresh_for_ids ... ricaricati=2 saltati=1 gia_freschi=0   <- decidevamo QUI
+18:55:53,654  get_pages key=home.502                                <- il timbro arrivava QUI
+```
+
+**Tre secondi di scarto.** `_stamp_build` scrive `LASTBUILD_PROP` da dentro `get_pages`, cioe' dentro
+il lavoro dell'indexer, dopo l'avvio dell'interprete e gli import (`import 314 + import pigri 1840`).
+Al momento della nostra decisione -- 190 ms dopo il cambio finestra -- nessuna invocazione si era
+ancora dichiarata, quindi nessun contenitore risultava fresco e li abbiamo ricaricati tutti.
+
+L'errore non e' nel criterio: e' nell'aver dato per scontato che un timbro esistente fosse anche
+DISPONIBILE nel momento in cui serve. Sono due proprieta' diverse di un segnale, e avevo verificato
+solo la prima.
+
+### Le due correzioni
+
+**1. Il timbro si anticipa.** `PG_STARTED_PROP`, scritto in `router.routing()` appena i parametri sono
+letti, prima di qualunque import pigro. La chiave e' gia' nel path (`pgctl=home.501`), quindi uno
+scrittore per chiave e nessuna contesa. `build_declared(key)` prende il piu' recente fra il timbro
+precoce e quello di `get_pages`: chi non passa dal router con `pgctl` resta coperto dal secondo, e
+chi non dichiara niente vale 0 e viene ricaricato -- il verso prudente.
+
+**2. La decisione aspetta l'informazione.** `_wait_widgets_declare` attende che i contenitori a
+schermo da ricaricare abbiano dichiarato, fino a **3 secondi**, uscendo appena lo hanno fatto tutti.
+L'attesa non costa nulla di visibile: in quei millisecondi i widget mostrano il contenuto precedente
+e si stanno gia' ricostruendo per conto loro.
+
+Per sapere COSA aspettare serviva l'elenco dei contenitori interessati senza toccarli:
+`paginator.onscreen_targets(ids, actions)`, funzione pura estratta da `refresh_containers_for_ids` --
+una sola definizione della regola, usata da chi fa il lavoro e da chi decide se farlo.
+
+### Cosa vale, in secondi
+
+Nel giro misurato l'ondata di Kodi finisce alle 55,8 e la nostra alle 58,3. Saltare la nostra porta
+il contenuto definitivo da **+8,7 s a +6,2 s** dalla scrittura, e dimezza il lavoro di CPU nel
+momento in cui il dispositivo e' piu' carico. Non e' "gia' pronta all'uscita" -- quella meta' della
+differenza sta in Kodi (vedi la sezione precedente) -- ma e' la meta' che ci appartiene.
+
+### Verifica
+
+Diciotto casi sul paginatore, fra cui i nuovi: il timbro precoce basta da solo quando `get_pages` non
+e' ancora arrivato; il timbro precoce anteriore alla scrittura fa ricaricare; `build_declared` prende
+il piu' recente dei due in tutte le combinazioni; `onscreen_targets` e' davvero pura (trova i
+contenitori giusti e non scrive niente).
+
+Cinque casi sull'attesa: esce appena tutti hanno dichiarato (0,9 s quando la dichiarazione arriva a
+0,8); esce allo scadere se nessuno dichiara, senza restare appesa; **non si accontenta di uno su
+due**; nessun contenitore nostro -> nessuna attesa; gia' dichiarati -> nessuna attesa.
+
+Rieseguite le batterie dei lotti 124-129 e l'import dei 93 moduli: nessuna regressione.
+
+## Lotto 129 -- REVOCATO. La seconda ricostruzione non era mai nostra
+
+Il meccanismo del lotto 129 bis ha funzionato: nel log del 02/09 alle 19:03 si legge
+`ricaricati=0 gia_freschi=2` e `DIAG refresh: NON ordinato`. La nostra ricarica non e' partita.
+
+**E non e' cambiato niente.**
+
+```
+PRIMA (la nostra ricarica partiva)   DOPO (la nostra ricarica e' saltata)
+  18:55:54,433  continue_watching      19:03:49,673  continue_watching
+  18:55:55,363  mdblist                19:03:50,662  mdblist
+  18:55:55,846  mdblist                19:03:50,817  mdblist
+  18:55:56,685  continue_watching      19:03:52,353  continue_watching
+  18:55:58,101  mdblist                19:03:53,262  mdblist
+  18:55:58,303  mdblist                19:03:53,420  mdblist
+```
+
+Sei costruzioni prima, sei dopo.
+
+### La seconda ondata la ordina Kodi
+
+```
+19:03:45,641  CDirectoryProvider[...]: refreshing..   <- ondata 1: apertura finestra
+19:03:45,870  void CXBMCApp::OnPlayBackStopped()      <- l'annuncio di Kodi
+19:03:45,914  CDirectoryProvider[...]: refreshing..   <- ondata 2, 44 ms dopo
+```
+
+I `CDirectoryProvider` si risvegliano sugli ANNUNCI di Kodi, e `Player.OnStop` e' uno di quelli.
+Kodi li sveglia due volte da solo: all'apertura della finestra e all'annuncio di fine riproduzione.
+Nessuna delle due e' nostra, e nessuna delle due e' evitabile dal nostro lato.
+
+E nel giro precedente:
+
+```
+18:55:50,560  void CXBMCApp::OnPlayBackStopped()      <- l'annuncio di Kodi
+18:55:50,565  DIAG refresh: MIRATO 2 contenitori      <- la nostra ricarica, 5 ms dopo
+18:55:50,593  CDirectoryProvider[...]: refreshing..
+```
+
+**Cinque millisecondi.** La nostra ricarica cadeva addosso all'annuncio di Kodi e le due venivano
+accorpate in un'unica ondata. Non era mai una terza ondata: viaggiava gratis dentro una che Kodi
+faceva comunque.
+
+### L'errore di metodo
+
+Ho attribuito la causa per ADIACENZA NEL LOG: il risveglio dei provider seguiva la nostra riga DIAG,
+quindi l'ho letto come sua conseguenza. Seguiva altrettanto da vicino l'annuncio di Kodi, che nel
+log stava cinque righe piu' su. Due lotti costruiti sopra una correlazione letta come causa.
+
+E' la stessa lezione del lotto 124 in un'altra forma: li' era "non si e' ripresentato, quindi e'
+risolto", qui e' "e' successo dopo, quindi l'ho causato io". In entrambi i casi la prova mancante e'
+la stessa -- un controllo che distingua le due spiegazioni.
+
+### Cosa e' stato revocato
+
+`fresh_since`, `LAST_FRESH_SKIPS`, `build_declared`, `PG_STARTED_PROP` (il timbro precoce nel
+router), `_wait_widgets_declare` e l'estrazione `onscreen_targets` che esisteva solo per servirli.
+Il codice torna esattamente al commit 705c450, cioe' ai lotti fino al 128 compreso. Rieseguite le
+batterie dei lotti 124-128 e l'import dei 93 moduli: nessuna regressione.
+
+Motivo della revoca, e va scritto perche' non e' "non funzionava": funzionava ed era testato, ma
+sull'unico percorso che lo usava -- la chiusura del player -- era **inerte per costruzione**,
+perche' li' l'annuncio `Player.OnStop` di Kodi arriva sempre. In cambio portava un'attesa fino a 3 s
+nel caso in cui la dichiarazione non arrivasse. Macchina senza guadagno, con un caso peggiore.
+
+Durante la revoca ho anche cancellato per errore il blocco del lotto 127 (`_wait_window_settled`),
+perche' l'inserimento del 129 bis era finito PRIMA di quello del 127 nel file e ho tagliato per
+posizione invece che per contenuto. Se ne e' accorto il controllo dei simboli, non la compilazione:
+il file restava sintatticamente valido. E' la stessa trappola gia' annotata in memoria.
+
+### Dove stanno davvero i secondi
+
+```
+mdblist.list.build_mdblist_list | totale 6799 ms | import 1349 + import pigri 3877 + indexer 1498
+mdblist.list.build_mdblist_list | totale 6914 ms | import 1250 + import pigri 3991 + indexer 1637
+```
+
+**5,2 secondi di import su 6,8.** Sei costruzioni per ogni uscita dal player, ognuna che ricarica il
+proprio albero da zero perche' ogni widget e' un interprete nuovo. Il numero di ondate non e' il
+problema: il costo di UNA costruzione lo e'. E' lo stesso lavoro del lotto 126, spostato dal percorso
+delle azioni brevi a quello dei widget -- con la differenza che li' si trattava di 46 moduli, qui di
+un albero molto piu' grande.
+
+## Lotto 130 -- il dispositivo che apre per secondo resta indietro per sempre
+
+Sintomo riferito: azzerato l'avanzamento di molti titoli dalla stick, aprendo Kodi sul Mac il widget
+'continua a guardare' mostrava ancora la lista vecchia e non dava "cenni di aggiornamento".
+L'aspettativa e' giusta: ogni dispositivo deve allinearsi a Trakt appena viene aperto.
+
+### Il dato era gia' arrivato. E' lo schermo che non e' mai stato ridisegnato
+
+Le due meta' della diagnosi, provate separatamente sul log del Mac del 02/09 (avvio alle 21:15:41):
+
+```
+21:15:42.996  DIAG progress movie:   da Trakt 0, conservate 0, prima 4 -> dopo 0 | SPARITE: 1084244, ...
+21:15:42.996  DIAG progress episode: da Trakt 0, conservate 0, prima 4 -> dopo 0 | SPARITE: 283297:1:2, ...
+21:15:42.996  titoli cambiati: 8 | azioni: continue_watching,trakt_watchlist:movie
+21:15:42.996  TraktMonitor Service Update Success. Trakt Update Performed
+```
+
+`select count(*) from progress` sul database del Mac: **0**. Il database era allineato dal primo
+secondo. Nei sei minuti successivi di log: **zero** ricostruzioni, nessun `refreshing..`, nessun
+`FENLIGHT_PG ... BUILD`. Dato giusto, schermo fermo.
+
+### Dove si perde
+
+```
+21:15:42.25?  stamp_startup_rebuild()      -> LAST_REFRESH_SCOPE_PROP = '*'
+21:15:42.78   i widget si costruiscono     -> leggono il database PRIMA del sync
+21:15:42.996  il sync trova gli 8 titoli   -> age 0.7s < TRAKT_REFRESH_COALESCE (30) -> RINVIATO
+21:15:44.288  WidgetRefresher: rinvio consumato dopo 1.0s, nessuna costruzione in volo
+21:15:44.299  refresh mirato accorpato: gli stessi id ricostruiti 2.04s fa      <-- QUI
+```
+
+Il rinvio ha funzionato: e' nato, ha atteso le sue condizioni, ed e' stato consumato al momento
+giusto. Poi `kodi_refresh_ids` lo ha giudicato una seconda volta con la propria guardia
+d'accorpamento e lo ha buttato, perche' `_refresh_covered_by_last` ha trovato lo scope `'*'` --
+il timbro di `stamp_startup_rebuild`, che per costruzione copre qualunque elenco di id.
+
+Quei "2.04 secondi fa" erano la costruzione d'avvio. Aveva davvero ricostruito quegli otto id.
+Li aveva ricostruiti **sbagliati**, perche' e' avvenuta prima della sincronizzazione.
+
+L'accorpamento sa rispondere a "questi id sono stati ricostruiti di recente?" e non a
+"la ricostruzione ha mostrato il dato NUOVO?". Sono la stessa domanda soltanto quando le due
+ricostruzioni nascono dallo stesso evento -- ed e' il caso per cui la guardia e' stata scritta
+(fine riproduzione + monitor Trakt, vedi il commento sopra `kodi_refresh`). All'avvio i due eventi
+sono distinti e l'ordine e' garantito nel verso peggiore: la costruzione viene sempre prima del sync.
+
+**E non torna piu'.** `reset_activity` ha gia' fatto avanzare il segnalibro "visto fino a qui", e
+infatti da li' in poi ogni poll dice `No Changes Needed`. E' la stessa forma del guasto del lotto 58
+-- un cambiamento consumato e perso -- entrata pero' da un'altra porta: li' si perdeva nel sync,
+qui nel ridisegno.
+
+Il difetto e' **deterministico all'avvio**: fra il timbro d'avvio e la maturazione del rinvio passano
+un paio di secondi, sempre meno dei 5 di `REFRESH_COALESCE_SECONDS`. Ogni apertura di Kodi con
+modifiche fatte altrove perdeva il ridisegno -- cioe' esattamente il caso che l'utente descrive come
+quello che dovrebbe funzionare per definizione.
+
+### Il rimedio
+
+Un rinvio e' per definizione lavoro **non ancora fatto**: e' nato perche' in quel momento non si
+poteva disegnare. Quando WidgetRefresher lo consuma ha gia' verificato le sue condizioni -- niente
+riproduzione, nessuna costruzione in volo, widget a schermo -- e ripassarlo sotto l'accorpamento
+significa giudicarlo due volte con la stessa guardia che l'aveva fatto rimandare.
+
+`kodi_refresh_ids` e `kodi_refresh` avevano gia' il parametro `coalesce`, usato per i comandi
+espliciti dell'utente ("mai accorpato"). Il rinvio maturo e' il secondo caso che merita la stessa
+esenzione, per una ragione diversa ma con la stessa conclusione:
+
+- `service.refresh_ids_inproc(ids, actions, coalesce=True)` -- il parametro arriva fino a
+  `kodi_refresh_ids`.
+- `WidgetRefresher`, e **solo** li', consuma il rinvio con `coalesce=False`, su entrambi i rami:
+  quello mirato e quello globale (`refresh_widgets`).
+- `router` traduce `coalesce` anche per `refresh_widgets`, che era l'unica delle tre rotte a non
+  averlo. Canale separato da `user`: due motivi diversi per non accorpare, che non vanno confusi.
+
+Il ramo GLOBALE aveva lo stesso identico buco (`kodi_refresh` accorpa dietro uno scope `'*'`), e
+sarebbe scattato appena un rinvio d'avvio fosse nato senza id -- p.es. da un cambiamento di natura
+ignota. Corretto insieme, non dopo.
+
+**Quello che NON si perde.** `stamp_startup_rebuild` resta e continua a fare il suo lavoro: il
+doppione che preveniva era una ricostruzione ordinata SOPRA la costruzione d'avvio ancora in corso.
+A garantirlo e' `_nothing_building()` in WidgetRefresher, che aspetta che l'ultima costruzione si
+spenga -- non l'accorpamento. La guardia dei 30 s del monitor resta intatta: continua a trasformare
+il refresh immediato in un rinvio, che e' cio' che deve fare. Verificato nel test (caso C): il timbro
+d'avvio copre ancora tutto e la finestra dei 5 s e' ancora aperta.
+
+### Verifica
+
+`test_130.py`, nove casi, tutti passati. Il **caso A riproduce il difetto**: con `coalesce=True` e
+lo stato esatto del log del Mac, il refresh viene ancora buttato -- cioe' il test avrebbe preso
+questo bug. Il caso B mostra il rimedio, il C che la guardia d'avvio non e' stata smontata, il D il
+buco gemello sul ramo globale, il E la traduzione nel router (servizio periodico accorpabile, rinvio
+e comando utente no). Batteria esistente 124-128 rieseguita: tutta verde. `smoke` 93 moduli, 0
+falliti.
+
+### Cosa si vedra' adesso
+
+All'apertura di un dispositivo con modifiche fatte altrove, la Home si ricostruira' una seconda
+volta un paio di secondi dopo, e quella sara' allineata. Non e' il comportamento ideale -- l'ideale
+sarebbe che la PRIMA costruzione fosse gia' giusta -- ma non e' ottenibile senza ritardare l'avvio:
+i widget partono a 21:15:42.78 e il sync finisce a 21:15:42.996, in pratica insieme, e il sync deve
+fare una chiamata di rete. Fra una ricostruzione visibile e uno schermo sbagliato a tempo
+indeterminato, vince la correttezza. Se la seconda ondata dara' fastidio, la leva e' l'ordine
+d'avvio, non la guardia.
+
+## Lotto 130 -- verifica sul campo, e una conclusione da ritirare
+
+Prova incrociata dell'utente: cambiare stato dal Mac e aprire la stick, e viceversa. Funziona in
+entrambi i sensi. I due log lo confermano riga per riga.
+
+**Mac** (avvio 21:52:05):
+```
+21:52:06.183  titoli cambiati: 1 -> ['1084244'] | azioni: continue_watching
+21:52:06.183  refresh MIRATO rimandato su 1 titoli e 1 azioni, interfaccia ricostruita 0.6s fa
+21:52:07.580  WidgetRefresher: rinvio consumato dopo 1.0s di attesa
+21:52:07.610  DIAG refresh: MIRATO 3 contenitori ricaricati
+```
+**Stick** (avvio 21:52:51):
+```
+21:53:03.101  refresh MIRATO rimandato su 1 titoli e 1 azioni, interfaccia ricostruita 5.3s fa
+21:53:04.599  WidgetRefresher: rinvio consumato dopo 1.0s di attesa
+21:53:04.699  DIAG refresh: MIRATO 1 contenitori ricaricati
+```
+Nessun `accorpato`. Il ridisegno arriva ~1,5 s dopo che la modifica e' stata vista, ~2 s dopo
+l'apertura. Nessun errore su nessuna delle due macchine (sul Mac restano tre righe `error` che non ci
+riguardano: permessi dei tasti multimediali, un fuoco negato in una finestra di sistema, e la texture
+di cui sotto).
+
+Nota sulla stick: `interfaccia ricostruita 5.3s fa`, cioe' **gia' oltre** i 5 s di
+`REFRESH_COALESCE_SECONDS`. Li' il difetto del lotto 130 era una corsa, non una certezza: la
+costruzione d'avvio e' cosi' lenta che spesso usciva da sola dalla finestra d'accorpamento. Sul Mac,
+dove la costruzione dura decimi di secondo, cadeva *sempre* dentro. E' il motivo per cui il sintomo
+si e' visto sul Mac e non sulla stick, ed e' anche il motivo per cui e' rimasto nascosto a lungo:
+sulla macchina su cui si prova tutto, il bug era intermittente.
+
+### RITIRATA la conclusione "5,2 secondi di import su 6,8"
+
+In coda dopo il lotto 129 avevo scritto che il costo di una costruzione widget e' fatto di import, e
+che il rimedio e' "lo stesso lavoro del lotto 126 spostato sul percorso dei widget". **Non regge.**
+Il controllo sta nello stesso log della stick, a 1,4 secondi di distanza:
+
+```
+21:53:03.525  build_continue_watching | totale 4396 ms | import 679 + import pigri 2546 + indexer 1154
+21:53:05.551  build_continue_watching |  totale 783 ms | import  53 + import pigri  310 + indexer  408
+```
+
+Stesso widget, stesso codice, stessa sessione, stesso dispositivo. Gli import passano da **3 225 ms a
+363 ms**: un fattore nove. La differenza non e' nell'albero degli import -- e' identico -- ma nel
+contesto: le tre costruzioni d'avvio partono insieme (invocatori 4, 5 e 6 alle 21:52:59.118, .199 e
+.385) mentre Kodi sta ancora finendo di avviarsi, la quarta gira da sola a macchina quieta.
+
+Quel numero misurava l'avvio, non gli import. Rendere pigri altri moduli lavorerebbe su 363 ms, non
+su 3 225.
+
+**E la strada apparentemente ovvia e' gia' chiusa.** Il tetto alla concorrenza degli interpreti era
+stato scritto e misurato il 01/09 (commit `b6d747d`) e **revocato mezz'ora dopo** (`6c63401`): il
+cancello funzionava -- un'invocazione ha atteso 2 453 ms -- ma gli import sono rimasti dove erano,
+2 507/2 559 ms contro 2 391/2 526/2 553 senza cancello. Serializzare non ha restituito il tempo.
+
+Quindi: il costo esiste, e' misurato, ma **non se ne conosce ancora la causa**. Non era gli import e
+non era la sola contesa fra interpreti. Prima di toccare qualcosa serve una misura a fasi dentro
+l'avvio -- e' la terza volta in questa sessione che una stima fatta da un solo numero si rivela
+sbagliata, e stavolta il controllo c'era nello stesso file.
+
+### Un contenitore che sfugge al censimento
+
+Sulla stick, al momento del refresh mirato:
+```
+21:53:04.373  set_head key=home.503        <- il terzo widget pubblica il suo elenco
+21:53:04.424  invocatore 6 termina         <- il plugin ha finito di consegnare
+21:53:04.698  refresh_for_ids ... ricaricati=1 altre_finestre=0 saltati=1
+```
+La Home della stick ha **tre** widget (home.501, .502, .503: tutti e tre hanno fatto `set_head`), ma
+il censimento ne ha visti **due**. Sul Mac, dove ce ne sono cinque, il conto torna sempre:
+`ricaricati=3 saltati=2` e piu' tardi `ricaricati=2 saltati=3`.
+
+Il motivo e' nel ciclo di `refresh_containers_for_ids`: `container_head(cid)` legge un'infolabel
+viva, e un contenitore che Kodi non ha ancora popolato non risponde. La riga `continue` che segue
+lo scarta **senza contarlo da nessuna parte** -- ne' fra i ricaricati, ne' fra i saltati, ne' come
+`seen_any` per se'. E i due conteggi che finiscono nel log non permettono di accorgersene, a meno di
+sapere a memoria quanti widget ci sono in quella schermata: e' cosi' che e' passato inosservato.
+
+`_nothing_building()` dimostra che il **plugin** ha finito, non che **Kodi** ha popolato i
+contenitori. Fra le due cose, sulla stick, passano centinaia di millisecondi.
+
+Conseguenza: se il titolo cambiato si trova in quel widget, quel widget resta vecchio finche' non lo
+si ricostruisce per altro motivo. Non e' un difetto introdotto dal lotto 130 -- e' una corsa che
+c'e' sempre stata -- ma il 130 la rende piu' probabile, perche' adesso il rinvio d'avvio *parte
+davvero*, e parte nel momento in cui la GUI e' piu' occupata.
+
+Non correggo alla cieca. Il primo passo giusto e' **rendere visibile il buco**: contare i
+contenitori non identificati e stamparli accanto a `ricaricati` e `saltati`. Costa una variabile,
+non cambia comportamento, e dice quanto spesso succede davvero -- che e' l'unico modo di decidere
+se serve un secondo giro di censimento o no.
+
+### Tre texture rimaste indietro dal partizionamento della skin
+
+`DoWork - Direct texture file loading failed for special://skin/extras/icons/power.png` (Mac,
+21:52:18). Non e' un caso isolato: dei 32 riferimenti `special://skin/extras/...` della skin, tre
+puntano a file che **non stanno piu' li'**, perche' il partizionamento statico li ha spostati in
+`resource.images.arcticfuse`:
+
+| riferimento nella skin | dove sta il file adesso |
+|---|---|
+| `special://skin/extras/icons/power.png` | `resource.images.arcticfuse/resources/icons/power.png` |
+| `special://skin/extras/icons/film.png`  | `resource.images.arcticfuse/resources/icons/film.png` |
+| `special://skin/extras/icons/tv.png`    | `resource.images.arcticfuse/resources/icons/tv.png` |
+
+Tutti e tre in `1080i/script-skinvariables-generator-includes-.xml` (righe 532, 650, 660): l'icona
+del menu di spegnimento e le due del selettore di ricerca (Movies / TV Shows). Gli altri 29
+riferimenti `extras/` -- pulsanti, modes, playlist -- sono rimasti nella skin e risolvono ancora.
+
+La convenzione giusta e' gia' in uso ovunque nella skin
+(`resource://resource.images.arcticfuse/icons/<nome>.png`, 25 occorrenze per `circle-plus.png` da
+sola).
+
+> **SBAGLIATO, corretto nel lotto 131.** Qui avevo scritto: "nessun `.xmltemplate` genera quelle
+> righe, il file e' l'unico posto dove compaiono, quindi si correggono li'". Falso su tutta la linea.
+> Quel file e' GENERATO da `script.skinvariables` e per giunta e' **gitignorato**
+> (`.gitignore` riga 1). Modificarlo a mano non sarebbe finito in git e sarebbe stato sovrascritto
+> alla prima rigenerazione. Avevo cercato la sorgente fra i `.xmltemplate` e, non trovandola, ho
+> concluso che non esistesse -- invece stava nei JSON accanto. Vedi il lotto 131.
+
+## Lotto 131 -- i tre punti aperti
+
+### 1. Il costo d'avvio: e' ATTESA, non lavoro. Domanda chiusa
+
+Il lotto 130 aveva ritirato la spiegazione ("sono import") senza saper dire quale fosse quella
+giusta. Mancava un solo taglio: **tempo di CPU del thread accanto al tempo di orologio**. Vicini =
+il thread macinava, e allora si toglie lavoro. Lontani = il thread era fermo, e togliere lavoro non
+restituisce niente.
+
+Aggiunto in `fenlight.py` (`time.thread_time` ai tre marcatori) e in `mark_phase`/`add_items`, con
+una riga di log a parte, `FenLight PERF CPU`. Misura sulla stick, avvio del 02/09 alle 22:0x:
+
+```
+INVOCAZIONE  build_continue_watching | totale 4533 ms | import 731 + import pigri 2572 + indexer 1196
+CPU          build_continue_watching | totale 593/4533 ms (13%) | import 61/731 (8%) + import pigri 391/2572 (15%) + indexer 131/1196 (11%)
+```
+
+**Il thread ha consumato 593 ms di CPU in 4 533 ms di orologio: il 13%.** Per l'87% del tempo non
+stava eseguendo nulla.
+
+E il dato che chiude la questione e' la colonna della CPU su sei costruzioni della stessa sessione,
+prima e seconda ondata:
+
+| costruzione | orologio `import pigri` | **CPU `import pigri`** |
+|---|---|---|
+| continue_watching | 2 572 ms | **391 ms** |
+| mdblist 1 | 2 923 ms | **439 ms** |
+| mdblist 2 | 2 904 ms | **445 ms** |
+| continue_watching (2a ondata) | 1 670 ms | **380 ms** |
+| mdblist 1 (2a ondata) | 1 878 ms | **421 ms** |
+| mdblist 2 (2a ondata) | 1 918 ms | **425 ms** |
+
+L'orologio varia da 1 670 a 2 923 ms. La CPU sta fra 380 e 445 ms, **sempre**. Il lavoro degli
+import e' una costante; a variare e' quanto si aspetta. Lo stesso vale per il totale: ~600-680 ms di
+CPU sia in una costruzione da 2 836 ms sia in una da 5 500 ms.
+
+Quindi, definitivamente: gli import "pigri" costano **~400 ms di lavoro vero**, non 2,5 s. Il lotto
+126 su questo percorso avrebbe raccolto una frazione di 400 ms, non di 2 500 -- il ritiro fatto nel
+lotto 130 era giusto, e ora si sa anche perche'.
+
+Resta da capire su COSA aspetta (GIL fra sotto-interpreti, letture dalla flash, il resto dell'avvio
+di Kodi). Ma la fase `import` in cima -- 61 ms di CPU su 731 di orologio, l'8% -- ha la forma
+dell'I/O: leggere i moduli dalla flash. E' la prossima cosa da guardare, con una misura, non con
+un'ipotesi.
+
+Nota di metodo: il tetto alla concorrenza (commit `b6d747d`, revocato con `6c63401`) era una risposta
+plausibile alla domanda sbagliata. Si era misurato *quanto* costava, mai *se* fosse lavoro.
+
+### 2. Il contenitore che sfuggiva al censimento
+
+`container_head` interroga un'infolabel viva, e un contenitore che Kodi non ha ancora popolato non
+risponde: il `continue` lo scartava senza contarlo da nessuna parte -- ne' ricaricato, ne' saltato,
+ne' `seen_any`. Non era un contenitore dimostrato estraneo: era un contenitore mai guardato.
+
+**La correzione non aspetta e non riprova: l'infolabel non serve.** Serviva solo a rispondere
+"questo contenitore e' nostro?", e il registro lo sa gia' -- e' esattamente il criterio con cui il
+giro sulle ALTRE finestre raggiunge contenitori che non sono nemmeno a schermo. Aggiunto un secondo
+giro sulla finestra corrente che applica la stessa regola del primo (si salta solo cio' che si
+dimostra estraneo) leggendo dalle proprieta' invece che dalla GUI.
+
+Il log adesso dichiara `non_identificati=N recuperati=N`. Senza quei due numeri il difetto era
+invisibile: si vedevano solo `ricaricati` e `saltati`, e per accorgersi che ne mancava uno bisognava
+sapere a memoria quanti widget ha quella schermata.
+
+`test_131.py`, sei scenari, 14 controlli. Il caso A e' quello della stick (il terzo widget non ancora
+popolato CONTIENE il titolo cambiato); B verifica che non si ricarichi cio' che si dimostra estraneo
+neanche per questa via; C che un elenco mai pubblicato porti a ricaricare; D che l'azione raggiunga
+il non identificato ('continua a guardare'); E che non cambi nulla quando la GUI risponde per tutti;
+F che un contenitore mai costruito non venga inventato.
+
+Da verificare sul campo: serve un cambiamento Trakt vero da un dispositivo all'altro, con la Home
+della stick aperta. In laboratorio non si riproduce la corsa.
+
+### 3. Le tre icone: era `buildv`, non il file
+
+La diagnosi del lotto 130 era giusta nel sintomo e **sbagliata nel rimedio**. Le sorgenti erano gia'
+corrette da tempo -- `skinvariables-shortcut-powermenu.json` e `skinvariables-shortcut-searchwidgets.json`
+puntano tutte e tre a `resource://resource.images.arcticfuse/icons/...`. A essere vecchio era il file
+GENERATO, che non si rigenera se non cambia l'impronta.
+
+E' la stessa identica trappola del 24-25/08 gia' scritta in `generator/data/LEGGIMI-rigenerazione.md`,
+compresa l'asimmetria fra le due macchine:
+
+```
+riferimenti 'special://skin/extras/icons' nel file generato
+  Mac    3     <- fermo al 31/08, mai rigenerato
+  stick  0     <- rigenerato per conto suo (lastbuildtime cambiato)
+```
+
+Sulla stick i widget erano stati spostati, quindi `lastbuildtime` e' cambiato e il file si e'
+rifatto; sul Mac non e' stato toccato nulla e il file e' rimasto quello vecchio. Nel 2024 questo
+aveva ucciso la paginazione sul Mac per giorni; stavolta si vedono tre icone mancanti.
+
+Rimedio: `buildv` da `0.1.7-fenlight-pgctl` a `0.1.8-icone-resource`. Non lo legge nessuno, esiste
+solo per entrare nell'impronta e forzare la rigenerazione su tutte le installazioni.
+
+**Da verificare al prossimo avvio di Kodi sul Mac**: il file deve rigenerarsi e i tre riferimenti
+`special://skin/extras/icons` devono sparire.
+
+### Manutenzione
+
+`test_stamp.py` era rotto da prima di questo lotto: chiamava `directory_built_since(0, want)`, firma
+intermedia del lotto 125 poi sostituita da `build_mark_param`. Riallineato all'API attuale, e gli si
+e' aggiunto il controllo che `tmdb_id=2872` non corrisponda a `tmdb_id=287238` -- che e' il motivo
+per cui quella funzione esiste. Un test che non gira e' peggio di nessun test: sembra copertura.
+
+Batteria completa: 9 file di test, tutti verdi. `smoke` 93 moduli, 0 falliti.
+
+## Lotto 132 -- i due endpoint di Trakt non rispondono dalla stessa fotografia
+
+Sintomo: film messo in pausa dalla stick, sul Mac non compare **mai** in 'continua a guardare'.
+Il verso opposto (Mac -> stick) funziona.
+
+### La prova, minuto per minuto
+
+```
+03:13:34.0  stick   set_bookmark -> push a Trakt. Trakt CONFERMA: resume_id 1838793482
+03:13:39.05 Mac     last_activities dice 'cambiato' -> "Trakt Update Performed"
+03:13:39.05 Mac     DIAG progress movie: da Trakt 2, conservate 1, prima 2 -> dopo 2
+03:13:39.05 Mac     titoli cambiati: 0
+03:13:39.58 stick   DIAG progress movie: da Trakt 3, ...
+03:14:09 -> 03:15:41  Mac: "No Changes Needed" x4
+```
+
+Mezzo secondo separa le due interrogazioni dello **stesso** endpoint `sync/playback` sullo **stesso**
+account: la stick riceve tre film, il Mac due. Non c'e' nessuna cache di mezzo -- `call_trakt` fa una
+GET diretta.
+
+Verifica finale sui database, due minuti dopo:
+
+```
+stick  movie|1084244  Toy Story 5        stessa ora, stesso account
+       movie|11542    Altered States
+       movie|1315772  Minions & Monsters   <- resume_id 1838793482, confermato da Trakt
+Mac    movie|1084244  Toy Story 5
+       movie|11542    Altered States       <- e basta
+```
+
+### Perche' non si recupera mai piu'
+
+`reset_activity` fa avanzare il segnalibro delle attivita' **subito**, appena `last_activities`
+risponde -- prima che `sync/playback` sia stato letto. Quando la seconda risposta arriva vecchia, il
+cambiamento risulta gia' consumato: da li' in poi ogni confronto da 'nessuna modifica', per sempre.
+
+E' esattamente il guasto del lotto 58, che ha gia' il suo rimedio in casa (`restore_activity`,
+attivato da `_SYNC_DEFERRED`). Mancava solo che questo caso lo accendesse: finora lo alzavano le
+guardie `self_mark`, cioe' 'sappiamo noi di non aver fatto il lavoro'. Qui il lavoro e' stato fatto
+e non ha trovato niente, che e' un'informazione diversa e altrettanto valida.
+
+### La firma, e perche' e' affidabile
+
+**`Trakt Update Performed` seguito da `titoli cambiati: 0`.** Ci e' stato detto che l'avanzamento e'
+cambiato e la tabella non e' cambiata di una riga: una delle due risposte e' vecchia.
+
+Due esclusioni la rendono sicura:
+- `self_mark_recent()` -- se la modifica e' NOSTRA, `titoli cambiati: 0` e' legittimo (la riga e' gia'
+  in locale, conservata dal lotto 128). Finestra 45 s; nel caso misurato erano passati 94 s, quindi
+  la condizione sarebbe scattata correttamente.
+- un budget di **3 tentativi** legato alla coppia di `paused_at`. Senza tetto, un cambiamento per noi
+  legittimamente vuoto -- una categoria che non guardiamo -- si ritenterebbe ogni 30 s all'infinito.
+  Tre giri = 90 s, contro il mezzo secondo che e' bastato alla stick. Un `paused_at` nuovo azzera il
+  budget; un arrivo riuscito lo cancella.
+
+`test_132.py`, cinque scenari, 14 controlli, sul vero `trakt_sync_activities`: la risposta vecchia
+fa tornare indietro il segnalibro; il tetto regge al quarto giro; un cambiamento nuovo riparte pieno;
+la modifica nostra non innesca niente; l'arrivo vero pulisce il budget e pubblica l'id.
+
+**Nota**: il film gia' perso sul Mac non torna da solo -- il segnalibro e' avanzato. Arrivera' al
+prossimo cambiamento Trakt vero, o subito con 'svuota cache Trakt'.
+
+### Rimasto scoperto
+
+`_push_bookmark_to_trakt` e' un `try/except: pass` muto: se la spinta fallisce non lo sa nessuno, e
+la riga resta con `resume_id = 0` in locale per sempre. Stavolta non e' stato il colpevole -- il
+resume_id c'era -- ma la prima mezz'ora dell'indagine e' servita a escluderlo, e sarebbe bastata una
+riga di log. Da fare.
+
+## Lotto 131 bis -- il punto 3 non era dove pensavo: i nodi utente
+
+`buildv` alzato, file generato **riscritto** (mtime 03/09 03:06)... e ancora i tre percorsi vecchi.
+
+Il generatore non rilegge i default della skin quando esistono le copie utente in
+`userdata/addon_data/script.skinvariables/nodes/skin.arctic.fuse.3/`. Quelle nascono appena si
+personalizza un collegamento, e da quel momento vincono loro. I JSON della skin erano corretti da
+tempo; i nodi utente del Mac erano fermi al 26/08 e al 21/06, cioe' prima dello spostamento delle
+immagini. Sulla stick gli stessi nodi erano stati risalvati il 31/08 ed erano gia' giusti -- ecco
+perche' il difetto si vedeva su una macchina sola.
+
+Corretti i tre percorsi nei due file del Mac (copia di sicurezza in scratchpad, JSON validato prima e
+dopo). `buildv` resta alzato: serve comunque a forzare la rigenerazione, che ora legge i nodi giusti.
+Le due meta' lavorano insieme.
+
+Regola aggiornata in memoria: quando un percorso non si aggiorna, cercarlo con `grep -rl` **anche in
+userdata**, non solo nel repo.
+
+## Revisione della sincronizzazione dell'avanzamento -- la falla e' una sola, ed e' strutturale
+
+Domanda posta il 03/09: "e' il nostro codice scritto da cani o c'e' solo un bug da chiudere?"
+Ne' l'uno ne' l'altro. C'e' **una domanda a cui i dati che teniamo non sanno rispondere**, e sei
+lotti hanno provato a indovinarla dal tempo.
+
+### La domanda
+
+La riconciliazione e' distruttiva: `DELETE` di tutte le righe del tipo, poi `INSERT` della vista di
+Trakt. Ma anche il dispositivo scrive, e spinge in modo asincrono. Quindi a ogni giro serve decidere:
+
+> questa riga e' in locale e non nella risposta di Trakt. E' **mia e non ancora pubblicata**, oppure
+> **e' stata cancellata altrove**?
+
+**I due stati sono indistinguibili con quello che salviamo.** Schema della tabella:
+
+```
+db_type, media_id, season, episode, resume_point, curr_time, last_played, resume_id, title
+```
+
+Nessuna colonna dice se quella riga l'abbiamo mai VISTA arrivare da Trakt. `resume_id` e' il
+surrogato usato dal lotto 122, e non risponde a nessuna delle due domande: diventa diverso da zero
+appena la spinta ritorna -- cioe' *prima* che Trakt la elenchi -- e resta diverso da zero *dopo* che
+Trakt l'ha cancellata.
+
+Da li' in poi, tutto e' stato tempo:
+
+| lotto | criterio aggiunto |
+|---|---|
+| 122 | `resume_id == 0` |
+| 128 | + finestra di grazia di 120 s sulle scritture locali |
+| 132 | + 3 tentativi quando il payload contraddice l'attivita' |
+
+### Il guasto di stanotte e' esattamente quella falla
+
+```
+03:29:00  stick   pausa 1315772, push OK (resume_id 1838801442, confermato)
+03:29:24  Mac     lo riceve
+~03:29:30 Mac     azzera avanzamento -> cancellato da Trakt
+03:30:02  stick   da Trakt 1, conservate 1 -> dopo 2     <- lo RIMETTE
+03:30:33  stick   da Trakt 1, conservate 1 -> dopo 2     <- ancora
+```
+
+La grazia dei 120 s dice "e' mia, non ancora pubblicata". La verita' era "era pubblicata, e poi e'
+stata cancellata". La stick resuscita a ogni giro il film appena tolto.
+
+Quanto sarebbe durata non lo sappiamo: la grazia scadeva alle 03:31:00 e Kodi e' stato chiuso alle
+03:30:47, **tredici secondi prima**. Dopo la scadenza `has_progress_deletions` avrebbe visto la
+riga mancante e l'avrebbe tolta, quindi con ogni probabilita' si sarebbe curata da sola verso le
+03:31:30 -- circa 90 s di film resuscitato a schermo. Non permanente, ma non e' una scusa.
+
+### Un difetto e' mio, del lotto 132
+
+Nello stesso log, su ENTRAMBE le macchine: `risposta vecchia, si riprova al giro 1 di 3` quando non
+c'era nessuna risposta vecchia. La causa e' un'asimmetria che non avevo controllato:
+
+```
+set_bookmark    -> kodi_utils.note_local_progress_write(...)   (2 punti)
+erase_bookmark  -> niente
+```
+
+Una cancellazione locale non lascia traccia. Quindi "l'attivita' e' cambiata + non e' cambiato
+niente" -- che dopo un azzera avanzamento e' la condizione NORMALE, perche' il lavoro l'abbiamo gia'
+fatto noi in locale -- viene letta come endpoint vecchio, e il segnalibro torna indietro per tre
+giri. Non perde dati (il tetto c'e'), ma sono tre ricostruzioni inutili e una diagnosi falsa nel log.
+Colpa mia, e si chiude con una riga.
+
+### Numeri della sezione
+
+```
+trakt_sync_activities     175 righe (117 codice, 58 commento)   41 rami if/try
+kodi_refresh_ids          111 righe ( 50 codice, 61 commento)    8 rami
+_SYNC_DEFERRED alzato in   6 punti
+```
+
+Dieci meccanismi distinti, a tempo, decidono "il cambiamento e' vero / vado a ridisegnare":
+`_compare(all)`, `has_progress_deletions`, la grazia dei 120 s, `self_mark_recent` (45 s, in due
+file), `restore_activity`/`_SYNC_DEFERRED`, il budget del 132, `TRAKT_REFRESH_COALESCE` (30 s),
+`REFRESH_COALESCE_SECONDS` (5 s) con `LAST_REFRESH_SCOPE_PROP`, `stamp_startup_rebuild`, il rinvio
+`PENDING_*` con `_nothing_building` e `_widgets_on_screen`.
+
+Presi uno per uno sono difendibili e ognuno ha il suo perche' scritto accanto. Il problema e' che
+**nessuno possiede la loro interazione**, e gli ultimi tre guasti sono stati interazioni, non errori
+isolati: il 130 era due guardie che giudicavano lo stesso rinvio, il 132 due endpoint incoerenti, e
+questo e' la grazia che combatte contro una cancellazione remota.
+
+### Come si chiude la classe, invece di aggiungere l'undicesimo criterio
+
+**Una colonna: `seen_on_trakt`.** Si scrive quando una riga arriva dentro una risposta
+`sync/playback`. La regola diventa esatta, e non guarda piu' l'orologio:
+
+- in locale, assente da Trakt, **mai vista** su Trakt -> e' mia, spinta in corso: si conserva
+- in locale, assente da Trakt, **gia' vista** -> cancellata altrove: si toglie
+
+Sostituisce `resume_id == 0`, la grazia dei 120 s e meta' di `has_progress_deletions`. Niente
+finestre, niente budget.
+
+**E, subito, la riga mancante:** `erase_bookmark` deve chiamare `note_local_progress_write` come fa
+`set_bookmark`, cosi' una cancellazione nostra e' riconoscibile come nostra.
+
+### Giudizio
+
+Il codice non e' scritto male: i commenti portano la misura e il ragionamento, le guardie falliscono
+dal lato prudente, i test esistono. Ma `trakt_sync_activities` fa troppe cose in una funzione
+(scarica, confronta sei categorie, ricostruisce, pubblica, decide la riprova) e la logica di
+riconciliazione e' sparsa su quattro file. La sincronizzazione continua a rompersi nello stesso
+punto perche' li' manca un dato, non perche' manchi attenzione.
+
+## Lotto 133 -- lo stato di sincronizzazione diventa un dato
+
+Nasce dalla revisione richiesta il 03/09 e dalla diagnosi dell'utente, che era giusta: *"il problema
+e' stato scrivere per ogni problema una piccola soluzione specifica, portando a una chimera di
+toppe che comunicano male fra loro, anziche' agire in maniera strutturata sullo stato condiviso"*.
+
+### La domanda che nessuna toppa poteva risolvere
+
+La riconciliazione era distruttiva -- `DELETE` di tutte le righe, poi `INSERT` della vista di Trakt --
+e a ogni giro doveva decidere:
+
+> questa riga e' in locale e non nella risposta di Trakt. E' MIA e non ancora pubblicata, oppure e'
+> stata CANCELLATA altrove?
+
+Con le colonne che c'erano, **i due stati erano indistinguibili**. `resume_id` non risponde: diventa
+diverso da zero appena la spinta ritorna (prima che Trakt elenchi la riga) e resta diverso da zero
+dopo che Trakt l'ha cancellata. Da qui tre lotti di deduzioni a tempo -- 122 (`resume_id == 0`),
+128 (grazia di 120 s), 132 (budget di riprove) -- e tre guasti diversi con la stessa radice.
+
+### Il modello
+
+Una colonna, `sync_state`, con tre valori, piu' `misses`. La logica sta in `caches/progress_sync.py`,
+che non importa ne' database ne' Kodi ne' rete: si prova per intero senza accendere niente.
+
+| locale | su Trakt | azione |
+|---|---|---|
+| assente | presente | INSERT -> `synced` |
+| `synced` | presente | UPDATE solo se qualcosa e' diverso |
+| **`synced`** | **assente** | **cancellata altrove -> DELETE** |
+| `pending_put` | presente | la spinta e' arrivata -> `synced`, con il resume_id vero |
+| `pending_put` | assente, spinta MAI confermata | si conserva a tempo indeterminato, e si rispinge |
+| `pending_put` | assente, spinta confermata | si conserva per `PENDING_PUT_MISSES_ALLOWED` giri |
+| `pending_delete` | assente | cancellazione confermata -> la riga sparisce |
+| **`pending_delete`** | **presente** | **non si reinserisce, e si ripete la DELETE remota** |
+
+Le due celle in grassetto sono i due guasti delle ultime sere. La quinta riga -- spinta mai
+confermata -- e' una correzione al modello che avevo proposto: contare le omissioni anche quando
+Trakt non ha *mai* accettato la scrittura avrebbe cancellato in silenzio la pausa dell'utente per un
+guasto di rete. La riga resta finche' non passa.
+
+### L'unica ambiguita' che resta, e dove sta
+
+`pending_put` + assente + spinta accettata: "la risposta e' indietro" e "l'hanno tolta prima che io
+guardassi" non sono distinguibili, perche' `sync/playback` non porta nessun indicatore di freschezza
+e l'ack della spinta restituisce solo l'`id` (verificato). Si limita **contando snapshot, non
+secondi**: `PENDING_PUT_MISSES_ALLOWED = 1`, deciso dall'utente per questa fase di prova. La
+sfasatura misurata fra i due dispositivi era di 0,5 s contro un poll da 30 s.
+
+Una costante, un posto, un commento. Al posto di sei timer in quattro file.
+
+### Cosa e' stato TOLTO
+
+- lotto 122: `resume_id == 0` come chiave di protezione
+- lotto 128: `PROGRESS_LOCAL_WRITES_PROP`, la grazia di 120 s, `note_local_progress_write`,
+  `recent_local_progress` -- spariti da `kodi_utils`
+- lotto 132: `PROGRESS_RETRY_PROP`, il budget di riprove -- sparito da `trakt_api`
+- `_unsynced_progress_rows` e `_set_bulk_progress` -- sostituiti da `_reconcile_progress`
+- `_progress_state` -- il diff prima/dopo non serve piu': la riconciliazione SA cosa ha cambiato
+- `has_progress_deletions` -- da dieci righe di esclusioni a una query sullo stato
+
+Non un criterio in piu': tre in meno.
+
+### Due perdite silenziose chiuse per conseguenza
+
+- **La DELETE remota fallita.** Prima la riga spariva subito in locale e l'errore veniva ingoiato: se
+  la chiamata falliva, Trakt conservava il segnalibro e la sincronizzazione successiva lo
+  RIMETTEVA. Il commento in `_clear_progress_on_trakt` dava la cosa per persa ("verra' ripulito alla
+  prima sincronizzazione utile") e non era vero -- la prima sincronizzazione utile faceva il
+  contrario. Ora la riga resta `pending_delete`, invisibile a chi disegna, e la cancellazione remota
+  viene ripetuta.
+- **La spinta fallita.** `_push_bookmark_to_trakt` era un `try/except: pass` muto. Per escluderla
+  come causa, il 03/09, e' servita mezza indagine. Ora scrive nel log e la riga viene rispinta.
+
+Entrambe passano da `_drain_remote_repairs`, in un thread, con un tetto di 5 riparazioni per giro.
+
+### La migrazione
+
+Scelta dell'utente, la piu' pulita: `trakt_db` si **butta e si rifa** da Trakt (con il segnalibro
+delle attivita' cancellato, o la prima sincronizzazione direbbe 'nessuna modifica' e lascerebbe
+'continua a guardare' vuoto). `watched_db` NO: sono gli indicatori locali e non esiste nessun remoto
+da cui ricostruirli, quindi li' si aggiungono le colonne e basta -- buttarla distruggerebbe
+l'avanzamento dell'utente senza recupero.
+
+### Verifica
+
+- `test_133.py` -- 21 controlli sulla macchina a stati pura: le otto celle, lo sdoppiamento della
+  quinta, i tre guasti veri ricostruiti dai log (122, 128, 03/09), venti giri senza rete, e la
+  sequenza completa pausa -> conferma -> cancellazione da un altro dispositivo.
+- `test_133b.py` -- 24 controlli sul database vero: la migrazione di entrambi i database, le due
+  scene misurate, 'azzera avanzamento' che marca invece di cancellare ed e' invisibile ai quattro
+  lettori, la cancellazione remota richiesta, e che a stato invariato non si scriva nulla.
+- `test_133c.py` -- la chiave degli episodi: il database restituisce interi, il remap tvdb produce
+  interi, `set_bookmark` scrive stringhe. Se le tre forme non si riconoscessero la riconciliazione
+  vedrebbe due righe diverse e l'episodio lampeggerebbe a ogni giro.
+- `test_128` e `test_132` RITIRATI: provavano codice che non esiste piu'.
+- Batteria completa 10 file verde, `smoke` 94 moduli 0 falliti.
+
+**Sul campo**, stick, avvio delle 04:45:
+
+```
+04:45:10.609  progress: schema del lotto 133 applicato a trakt_db (tabella rifatta)
+04:45:10.642  progress: schema del lotto 133 applicato a watched_db (colonne aggiunte)
+04:45:24.053  DIAG progress movie: da Trakt 1 | in locale 0 | scritte 1 | cambiate 1
+```
+
+Database dopo: una riga, `synced`, `misses 0`. 'Minions & Monsters' -- il film che la stick
+resuscitava a ogni giro -- non e' tornato. Nessun errore nel log.
+
+### Cosa resta da provare sul campo
+
+Il modello e' provato in laboratorio su tutte le celle, ma le due che contano nascono da una CORSA
+fra due dispositivi e in laboratorio non si riproduce. Servono i due giri veri: pausa da una parte
+e apertura dall'altra; azzera avanzamento da una parte con l'altra accesa.
+
+Il nuovo `DIAG progress` dice quale cella ha deciso: `da Trakt N | in locale N (n synced, n
+pending_put) | scritte N | TOLTE N -> id | cambiate N`.
+
+## Lotto 134 -- l'azione mancava sul percorso remoto, e per gli episodi era fatale
+
+Prova del 03/09 alle 04:52. I film funzionano; gli episodi no. Quattro sintomi, tre cause diverse.
+
+### Il bug: 'visto' non dichiarava il cambiamento di composizione
+
+```
+04:52:51  stick   episodio segnato visto (serie 330320)
+04:53:11  Mac     titoli cambiati: 1 -> ['330320'] | azioni: nessuna
+```
+
+**`azioni: nessuna`**. Segnare visto un episodio fa entrare in 'continua a guardare' l'episodio
+SUCCESSIVO -- un elemento **diverso** da quello marcato, il cui id non e' fra i cambiati e non e'
+ancora nell'elenco pubblicato dal widget. Nessuna regola per id puo' trovarlo: serve l'azione.
+
+La cosa strana e' che il ragionamento era gia' scritto, per esteso, in due posti:
+
+- `watched_status.refresh_container_for` (percorso LOCALE): *"L'AZIONE viaggia sempre (lotto 114):
+  ogni chiamante di questa funzione e' una modifica di stato visto/avanzamento, cioe' esattamente
+  cio' che cambia la COMPOSIZIONE di 'continua a guardare'"*;
+- il ramo dell'AVANZAMENTO nella sincronizzazione, che l'azione la manda.
+
+I due rami `watched_at` -- film ed episodi -- no. E' un'**asimmetria fra il percorso locale e quello
+remoto**: la stessa identica modifica produceva due segnali diversi a seconda di dove era stata
+fatta. Da qui il sintomo, esattamente: sulla stick (percorso locale, azione presente) il prossimo
+episodio compare subito; sul Mac (percorso remoto, azione assente) non compare mai.
+
+Corretti entrambi i rami. Anche quello dei film aveva lo stesso buco: funzionava per fortuna, perche'
+un film segnato visto **e' gia'** nell'elenco del widget e la regola per id lo trova comunque.
+
+`test_134.py`: ogni tipo di cambiamento di `last_activities` deve dichiarare il canale giusto, e
+nessun ramo vivo puo' uscire muto (un ramo che non dichiara ne' id ne' azione fa pubblicare '-',
+'nulla e' cambiato', e il monitor gli crede -- il difetto dei lotti 59 e 119). **Verificato che il
+test veda il bug**: rimossa la riga, 2 casi rossi; rimessa, verde.
+
+### Non bug: il badge della serie che tarda su chi marca
+
+```
+04:52:52  DIAG refresh: MIRATO finestra Video (Container.Refresh sulla lista aperta)
+04:55:10  refresh_for_ids ... ricaricati=1 altre_finestre=1
+```
+
+Marcando dentro la finestra Video, `Container.Refresh` ricarica **solo la cartella aperta**: il badge
+'visto' sull'episodio compare subito, il badge 'episodi rimanenti' sulla serie sta nella cartella
+padre e non viene toccato. Quel lavoro non si perde -- viene rimandato e consumato al rientro nella
+Home (qui 2m18s dopo, perche' l'utente e' rimasto nella serie) -- e la cartella padre ha
+`cacheToDisc=False` in finestra Video, quindi tornando indietro Kodi la rilegge comunque.
+
+E' il compromesso gia' scelto e documentato nel lotto 43. Non lo tocco: l'alternativa era ricostruire
+ogni widget della schermata a ogni marcatura.
+
+### Non bug: i 6 secondi prima del badge di avanzamento
+
+```
+04:56:16.681  BOOKMARK scritto (0 ms)
+04:56:22.763  pannello episodi della serie 278624 non ricostruito entro 6s, il refresh lo ordiniamo noi
+```
+
+La guardia del lotto 125 aspetta di vedere se Kodi ricostruisce da solo, per non fare il lavoro due
+volte. Qui Kodi non l'ha fatto e i 6 s sono stati pagati per intero.
+
+Prima di toccare la costante ho contato tutte le sue decisioni su tutti i log disponibili:
+
+```
+5  NON ordinato (Kodi aveva gia' ricostruito)     <- la guardia ha evitato un doppione
+2  non ricostruito entro 6s                       <- i 6 s pagati a vuoto
+```
+
+E fra i cinque c'e' `NON ordinato, Kodi ha gia' ricostruito da sola 7.7s dopo la chiusura`:
+**piu' lungo della finestra stessa**. Abbassarla produrrebbe ricostruzioni doppie proprio nel caso
+piu' comune. Cinque a due a favore, con un caso che sfonda il limite: si lascia com'e'. Se un giorno
+dara' fastidio, la leva non e' il numero -- e' un segnale da Kodi che dica 'sto ricostruendo', che
+oggi non c'e'.
+
+### Riepilogo dei quattro sintomi
+
+| sintomo | causa | esito |
+|---|---|---|
+| badge 'episodi rimanenti' non immediato su chi marca | Container.Refresh tocca solo la cartella aperta | compromesso del lotto 43, invariato |
+| prossimo episodio in 'continua a guardare' sulla stick | percorso locale, azione presente | corretto per costruzione |
+| ...e NON sul Mac | percorso remoto, **azione mancante** | **corretto (lotto 134)** |
+| badge di avanzamento non immediato sul Mac | i 6 s della guardia del lotto 125 | misurato 5:2 a favore, invariato |
+
+## Lotto 135 -- un elemento vuoto non deve sovrascrivere lo stato pubblicato
+
+Sintomo: aprendo il menu contestuale sul Mac, artwork e nome dell'elemento in alto spariscono.
+
+### Il log lo dice riga per riga
+
+```
+14:55:14.524  Window Init (DialogContextMenu.xml)          <- menu aperto
+14:55:15.448  Trakt: TOLTE 1084244 + 278624:1:2 | refresh MIRATO rimandato
+14:55:16.109  WidgetRefresher: rinvio consumato dopo 0.0s
+14:55:16.118  DIAG refresh: MIRATO 1 contenitori ricaricati
+14:55:16.120  CDirectoryProvider[...build_continue_watching...]: refreshing   <- RICOSTRUZIONE
+14:55:16.161  set_head key=home.501 built=7
+              (nulla per due minuti)
+14:57:22.422  Window Deinit (DialogContextMenu.xml)
+```
+
+**Un secondo e mezzo dopo l'apertura del menu, il contenitore sotto di esso si e' ricostruito.**
+Non c'entra il menu: era un refresh mirato di Trakt arrivato in quel momento.
+
+### La causa
+
+L'`onfocus` della skin (`Includes_Lists.xml`, `List_Widget_Row_HiddenButton_OnFocus`) scriveva:
+
+```xml
+<onfocus>SetProperty(base_label, $INFO[...ListItem.Label])</onfocus>              <- senza condizioni
+<onfocus condition="...Art(poster) vuoto + ...Art(tvshow.poster) vuoto">
+    ClearProperty(base_poster)</onfocus>
+```
+
+Durante una ricostruzione l'`onfocus` scatta con `ListItem` **ancora vuoto**: `base_label` finisce a
+stringa vuota e `base_poster` viene **cancellata**. Le due proprieta' sono esattamente quelle che
+`Dialog_DialogContextMenu.xml` legge per l'intestazione (`base_label`) e per lo spazio artwork
+(`base_poster`, dietro l'espressione `DialogContextMenu_HasArtwork`).
+
+### E nessuno rimedia piu'
+
+Quelle due proprieta' le riparava il ciclo a 0,3 s di `blur_service`, che le ripubblicava
+confrontandole col valore ATTUALE proprio per rimetterle se l'onfocus le aveva azzerate.
+**Ma blur_service e' spento dal lotto 48**: in `service.py` la riga che lo avvia e' commentata (era
+presente in ogni crash da avvio catturato sulla stick), e infatti `BlurService Starting` non compare
+in nessuno dei log -- zero occorrenze su entrambi i file del Mac.
+
+Da allora l'unico scrittore di `base_label`/`base_poster` e' quell'`onfocus`: se scrive una volta
+sbagliata, resta sbagliata finche' non si sposta il fuoco su un elemento vero. Col menu aperto il
+fuoco non si sposta: due minuti di intestazione vuota.
+
+### Il rimedio
+
+Tre condizioni in piu', nella skin, e nient'altro: un elemento vuoto non scrive.
+
+```xml
+<onfocus condition="... + !String.IsEmpty(...ListItem.Label)">SetProperty(base_label, ...)</onfocus>
+<onfocus condition="... + !String.IsEmpty(...ListItem.Label) + ...">ClearProperty(base_poster)</onfocus>
+```
+
+Le due `SetProperty` di `base_poster` erano gia' protette (scrivono solo se l'artwork non e' vuoto):
+il buco era la scrittura incondizionata dell'etichetta e la **cancellazione** del poster.
+
+### Un errore mio, corretto su segnalazione
+
+Avevo anche aggiunto a `blur_service` una "rete di sicurezza" che ripubblicasse le due proprieta'
+anche dentro un dialogo. **Codice morto**: il servizio non gira. L'utente lo ha fatto notare, la
+modifica e' stata ritirata (`git checkout`) e ne resta solo la nota qui. Da controllare SEMPRE se un
+servizio e' vivo prima di correggerlo -- in `service.py` gli avvii sono tutti in un punto solo, e uno
+di quelli e' commentato.
+
+Vale anche come conseguenza da tenere a mente: **spegnendo blur_service si e' persa anche la
+riparazione di base_poster/base_label**, che con quel ciclo non c'entrava niente ma ci viveva dentro.
+Se un giorno si riaccende, la riparazione torna gratis; finche' resta spento, la correttezza deve
+stare tutta nell'onfocus.
+
+### Verifica
+
+XML validato. Il resto e' verificabile solo sul campo: aprire il menu contestuale su un elemento e
+provocare una ricostruzione (basta un azzera avanzamento da un altro dispositivo mentre il menu e'
+aperto). Prima: intestazione vuota per tutta la vita del menu. Dopo: l'elemento resta quello.
+
+## Coda aperta dopo il lotto 129
 
 - Verificare sul campo il lotto 127: chiudendo un episodio dentro la serie deve comparire
   `NON ordinato, il pannello episodi ... si e' gia' ricostruito` e UNA sola `build_season_list`.
@@ -15424,7 +16429,8 @@ stato servisse dalla cache, saltare il nostro refresh lascerebbe il badge vecchi
   `trakt_official_status`: passa da letture di proprieta' di finestra, che prendono il lock della
   GUI, e il costo dipende da quanto e' occupato il thread grafico. Da misurare a fasi prima di
   correggere -- non stimare, e' gia' andata male due volte.
-- Il Mac sta ancora girando il lotto 121 rotto. Serve `deploy_local.py --apply`, che porta anche il
-  lotto 118 e la skin.
-- Il Mac sta ancora girando il lotto 121 rotto (verificato per hash: copia vera, non un symlink).
-  Serve `deploy_local.py --apply`, che porta anche il lotto 118 e la skin.
+- ~~Il Mac sta ancora girando il lotto 121 rotto~~ -- NON E' PIU' VERO. Il 02/09, indagando sul
+  lotto 130, gli md5 di `service.py`, `kodi_utils.py`, `trakt_api.py`, `trakt_cache.py` e `player.py`
+  sul Mac sono risultati IDENTICI al repo: il Mac era gia' aggiornato. La voce era rimasta in coda
+  (per giunta duplicata) dopo che il deploy era stato fatto. Prima di ripetere una nota di coda,
+  riverificarla.

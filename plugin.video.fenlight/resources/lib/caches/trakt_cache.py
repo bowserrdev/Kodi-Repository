@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+from caches import progress_sync
 from caches.base_cache import connect_database
 from modules.kodi_utils import sleep, confirm_dialog, close_all_dialog, logger
 
@@ -10,8 +11,13 @@ WATCHED_INSERT = 'INSERT OR IGNORE INTO watched VALUES (?, ?, ?, ?, ?, ?)'
 WATCHED_UPSERT = 'INSERT OR REPLACE INTO watched VALUES (?, ?, ?, ?, ?, ?)'
 WATCHED_LAST_PLAYED = 'SELECT MAX(last_played) FROM watched WHERE db_type = ?'
 WATCHED_DELETE = 'DELETE FROM watched WHERE db_type = ?'
-PROGRESS_INSERT = 'INSERT OR IGNORE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-PROGRESS_DELETE = 'DELETE FROM progress WHERE db_type = ?'
+PROGRESS_UPSERT = 'INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+PROGRESS_DELETE_ONE = 'DELETE FROM progress WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?'
+PROGRESS_SELECT_ALL = ('SELECT media_id, season, episode, resume_point, curr_time, last_played, resume_id, title, '
+						'sync_state, misses FROM progress WHERE db_type = ?')
+# I lettori che disegnano lo schermo NON devono vedere le righe che stiamo cancellando: sono gia'
+# sparite per l'utente, e restano in tabella solo finche' Trakt non conferma. Vedi progress_sync.
+PROGRESS_VISIBLE = "sync_state != 'pending_delete'"
 STATUS_INSERT = 'INSERT INTO watched_status VALUES (?, ?, ?)'
 STATUS_DELETE = 'DELETE FROM watched_status'
 BASE_DELETE = 'DELETE FROM %s'
@@ -19,6 +25,32 @@ TC_BASE_GET = 'SELECT data FROM trakt_data WHERE id = ?'
 TC_BASE_SET = 'INSERT OR REPLACE INTO trakt_data (id, data) VALUES (?, ?)'
 TC_BASE_DELETE = 'DELETE FROM trakt_data WHERE id = ?'
 DELETE_LISTS_WITH_MEDIA = 'SELECT id FROM maincache WHERE id LIKE ?'
+
+# Cancellazioni nostre che Trakt non ha ancora recepito, raccolte dalla riconciliazione perche' le
+# rilanci chi ha il diritto di fare rete (apis.trakt_api). Fino al lotto 133 una DELETE remota fallita
+# era una perdita silenziosa: la riga spariva in locale, restava su Trakt e tornava al giro dopo --
+# il commento in _clear_progress_on_trakt la dava per persa senza rimedio.
+PENDING_REMOTE_DELETES = []
+# Scritture nostre che Trakt non ha MAI confermato: la spinta non e' passata (rete assente, token,
+# eccezione ingoiata da _push_bookmark_to_trakt). Restano visibili in locale a tempo indeterminato --
+# una pausa dell'utente non si cancella per un guasto di rete -- e vanno rispinte.
+PENDING_REMOTE_PUSHES = []
+
+def _norm(v):
+	"""Stagione ed episodio come stringhe, con None e '' che diventano la stessa cosa.
+
+	La chiave di un film e' (tmdb, '', ''); quella di un episodio (tmdb, '3', '4'). Senza questa
+	normalizzazione la stessa riga letta dal database e quella costruita dallo snapshot non si
+	riconoscono, e la riconciliazione le tratta come due righe diverse: una da inserire e una da
+	cancellare.
+	"""
+	return '' if v in (None, '') else str(v)
+
+def _uid(db_type, key):
+	"""L'identita' che pubblica paginator: il tmdb nudo per i film, 'tmdb:stagione:episodio' per gli episodi."""
+	if db_type == 'movie': return key[0]
+	from modules.kodi_utils import episode_uid
+	return episode_uid(key[0], key[1], key[2])
 
 class TraktCache:
 	def get(self, string):
@@ -96,104 +128,77 @@ class TraktWatched:
 	def set_bulk_tvshow_watched(self, insert_list):
 		return self._set_bulk_watched('episode', insert_list)
 
-	def _progress_state(self, db_type):
-		"""Stato attuale dell'avanzamento: {identita' -> punto di ripresa}. None se non leggibile.
+	def _local_progress(self, db_type):
+		"""Le righe locali nella forma che vuole progress_sync: {chiave -> Local}.
 
-		L'identita' e' il tmdb per i film e la tripla 'tmdb:stagione:episodio' per gli episodi, cioe'
-		esattamente le stringhe che paginator pubblica per ogni widget. Il VALORE serve quanto la
-		chiave: riprendere un film e rimetterlo in pausa piu' avanti non cambia l'insieme dei titoli
-		in corso, cambia solo la percentuale -- ed e' comunque un aggiornamento da mostrare.
+		Ci sono TUTTE, comprese le pending_delete: la macchina a stati deve poterle vedere per
+		decidere, ed e' l'unica che le guarda. Chi disegna usa PROGRESS_VISIBLE.
 		"""
-		from modules.kodi_utils import episode_uid
 		try:
 			dbcon = connect_database('trakt_db')
-			rows = dbcon.execute('SELECT media_id, season, episode, resume_point FROM progress WHERE db_type = ?', (db_type,))
-			state = {}
-			for r in rows:
-				uid = str(r[0]) if db_type == 'movie' else episode_uid(r[0], r[1], r[2])
-				if uid: state[uid] = str(r[3])
-			return state
+			rows = dbcon.execute(PROGRESS_SELECT_ALL, (db_type,)).fetchall()
 		except: return None
+		out = {}
+		for r in rows:
+			out[(str(r[0]), _norm(r[1]), _norm(r[2]))] = progress_sync.Local(
+				str(r[3]), r[4], r[5], r[6] or 0, r[7], r[8] or progress_sync.SYNCED, r[9] or 0)
+		return out
 
-	def _unsynced_progress_rows(self, db_type):
-		"""Le righe di avanzamento che la vista di Trakt non puo' ancora contenere, e che vanno salvate.
+	def _reconcile_progress(self, db_type, insert_list):
+		"""Allinea la tabella allo snapshot di Trakt applicando la tabella delle transizioni.
 
-		Due criteri, e il secondo e' la correzione del lotto 128:
+		Sostituisce la riscrittura in blocco (DELETE di tutto + INSERT della vista di Trakt + secondo
+		INSERT delle righe da conservare). Quella aveva bisogno di una transazione per non far vedere
+		la tabella vuota (lotto 124) e di due euristiche per non distruggere le scritture locali
+		(lotti 122 e 128). Lavorando a DIFFERENZE non c'e' nessun istante in cui la riga manca, e non
+		c'e' niente da proteggere: si tocca solo cio' che cambia davvero.
 
-		1. `resume_id = 0` -- scritta da noi e non ancora confermata da Trakt (lotto 122);
-		2. **scritta da noi da poco**, qualunque sia il resume_id.
-
-		Il solo primo criterio lascia scoperta la finestra piu' insidiosa. La spinta verso Trakt e'
-		asincrona: quando torna scrive il resume_id vero, e da quell'istante la riga NON e' piu'
-		protetta -- ma Trakt puo' benissimo non elencarla ancora nel proprio `sync/playback`. In
-		quella finestra la riscrittura in blocco la cancella come se l'utente l'avesse tolta.
-		Misurato sulla stick il 02/09: film in pausa scritto alle 18:24:32,9, giro del monitor alle
-		18:24:37,0, riga sparita. L'episodio della prova gemella, con il giro caduto 13,5 s dopo, e'
-		sopravvissuto. Vedi kodi_utils.note_local_progress_write.
+		La transazione resta, e ora costa quasi niente perche' le scritture sono poche.
 		"""
-		from modules.kodi_utils import recent_local_progress
-		try:
-			dbcon = connect_database('trakt_db')
-			rows = dbcon.execute('SELECT db_type, media_id, season, episode, resume_point, curr_time, last_played, resume_id, title '
-									'FROM progress WHERE db_type = ?', (db_type,)).fetchall()
-		except: return []
-		recent = recent_local_progress(db_type)
-		def _keep(r):
-			if r[7] == 0: return True
-			return (str(r[1]), '' if r[2] in (None, '') else str(r[2]), '' if r[3] in (None, '') else str(r[3])) in recent
-		return [r for r in rows if _keep(r)]
-
-	def _set_bulk_progress(self, db_type, insert_list):
-		"""Riscrive l'avanzamento con la vista di Trakt, SENZA perdere quello appena scritto in locale.
-
-		Il difetto che questa funzione chiude (lotto 122, misurato sulla stick il 02/09): chiuso un
-		episodio a meta', set_bookmark scrive la riga locale alle 04:55:33,4; il monitor Trakt fa il
-		suo giro 621 ms dopo, e siccome la spinta verso Trakt e' asincrona quel `sync/playback` non
-		contiene ancora la pausa. La ricostruzione in blocco cancellava tutto e reinseriva la vista di
-		Trakt -- cioe' **distruggeva il segnalibro appena creato**. Niente badge, niente voce in
-		'continua a guardare', e nel log solo un innocuo `titoli cambiati: 1`.
-		Nelle due prove riuscite il giro di Trakt era caduto 3-4 s dopo la scrittura, abbastanza perche'
-		la spinta arrivasse: era una corsa, e la si vinceva per fortuna.
-
-		Le righe non confermate si rimettono DOPO l'inserimento della vista di Trakt e con
-		INSERT OR IGNORE: se Trakt ha gia' quella chiave vince la sua versione (che porta il resume_id
-		vero), altrimenti sopravvive la nostra. La cosa si chiude da sola: appena Trakt conferma, il
-		giro successivo sostituisce la riga con quella definitiva e il resume_id smette di essere 0.
-
-		Il diff si calcola sullo stato PRIMA e DOPO davvero scritti, non sulla lista in ingresso:
-		altrimenti annuncerebbe come cambiato cio' che la conservazione ha appena rimesso a posto.
-		"""
-		# Tutto dentro UNA transazione (lotto 124): la finestra fra DELETE e INSERT era visibile a
-		# chiunque leggesse, e il lotto 122 l'aveva pure allargata aggiungendo la seconda scrittura
-		# delle righe conservate. Vedi _atomic.
 		def _work():
-			keep = self._unsynced_progress_rows(db_type)
-			before = self._progress_state(db_type)
-			self._delete(PROGRESS_DELETE, (db_type,))
-			self._executemany(PROGRESS_INSERT, insert_list)
-			if keep: self._executemany(PROGRESS_INSERT, keep)
-			after = self._progress_state(db_type)
-			# LA RIGA CHE STASERA E' MANCATA (lotto 128). Il badge di un film non e' comparso, e per
-			# scoprire perche' e' servito scaricare il database dal dispositivo: nel log non c'era
-			# nessuna traccia del fatto che una riscrittura in blocco avesse tolto una riga. Ogni
-			# volta che questa classe di difetto e' tornata -- lotti 122, 124 e ora 128 -- e' costato
-			# un giro intero capire SE la riga fosse stata scritta o cancellata. Adesso lo dice qui.
-			try:
-				_b, _a = set(before or ()), set(after or ())
-				_persi = sorted(_b - _a)
-				logger('Fen Light', 'DIAG progress %s: da Trakt %s, conservate %s, prima %s -> dopo %s%s'
-						% (db_type, len(insert_list or []), len(keep or []), len(_b), len(_a),
-							(' | SPARITE: %s' % ', '.join(_persi)) if _persi else ''))
-			except: pass
-			if before is None or after is None: return None
-			return set(k for k in (set(before) | set(after)) if before.get(k) != after.get(k))
+			local = self._local_progress(db_type)
+			if local is None: return None
+			remote = {}
+			for row in insert_list or ():
+				remote[(str(row[1]), _norm(row[2]), _norm(row[3]))] = progress_sync.Remote(
+					str(row[4]), row[5], row[6], row[7], row[8])
+			plan = progress_sync.reconcile(local, remote)
+			for u in plan.upserts:
+				self._execute(PROGRESS_UPSERT, (db_type, u.key[0], u.key[1], u.key[2], u.resume_point,
+												u.curr_time, u.last_played, u.resume_id, u.title,
+												u.state, u.misses))
+			for key in plan.deletes:
+				self._execute(PROGRESS_DELETE_ONE, (db_type, key[0], key[1], key[2]))
+			self._log_plan(db_type, local, remote, plan)
+			if plan.retry_remote_delete: PENDING_REMOTE_DELETES.extend(
+					(db_type, k, rid) for k, rid in plan.retry_remote_delete)
+			if plan.retry_push: PENDING_REMOTE_PUSHES.extend((db_type, k) for k in plan.retry_push)
+			return set(_uid(db_type, key) for key in plan.changed if _uid(db_type, key))
 		return self._atomic(_work)
 
+	def _log_plan(self, db_type, local, remote, plan):
+		# UNA riga che dice cosa e' successo e PERCHE'. La vecchia DIAG diceva 'da Trakt N, conservate
+		# M, prima X -> dopo Y' e per capire una sparizione bisognava dedurla dai conteggi. Qui si
+		# leggono le transizioni, che sono la decisione vera.
+		try:
+			stati = {}
+			for l in local.values(): stati[l.state] = stati.get(l.state, 0) + 1
+			pezzi = ['da Trakt %s' % len(remote), 'in locale %s%s'
+						% (len(local), (' (%s)' % ', '.join('%s %s' % (v, k) for k, v in sorted(stati.items()))) if stati else '')]
+			if plan.upserts: pezzi.append('scritte %s' % len(plan.upserts))
+			if plan.deletes: pezzi.append('TOLTE %s -> %s' % (len(plan.deletes),
+									', '.join('%s' % (k[0] if not k[1] else '%s:%s:%s' % k) for k in plan.deletes[:6])))
+			if plan.retry_remote_delete: pezzi.append('cancellazioni remote da rifare %s' % len(plan.retry_remote_delete))
+			if plan.retry_push: pezzi.append('spinte mai confermate %s' % len(plan.retry_push))
+			if plan.changed: pezzi.append('cambiate %s' % len(plan.changed))
+			logger('Fen Light', 'DIAG progress %s: %s' % (db_type, ' | '.join(pezzi)))
+		except: pass
+
 	def set_bulk_movie_progress(self, insert_list):
-		return self._set_bulk_progress('movie', insert_list)
+		return self._reconcile_progress('movie', insert_list)
 
 	def set_bulk_tvshow_progress(self, insert_list):
-		return self._set_bulk_progress('episode', insert_list)
+		return self._reconcile_progress('episode', insert_list)
 
 	def add_tvshow_watched(self, insert_list):
 		# used by the incremental sync: keeps the existing rows and refreshes last_played on rewatches
@@ -243,28 +248,25 @@ class TraktWatched:
 	def has_any_progress(self):
 		try:
 			dbcon = connect_database('trakt_db')
-			return dbcon.execute('SELECT 1 FROM progress LIMIT 1').fetchone() is not None
+			return dbcon.execute('SELECT 1 FROM progress WHERE %s LIMIT 1' % PROGRESS_VISIBLE).fetchone() is not None
 		except: return False
 
 	def has_progress_deletions(self, db_type, trakt_ids):
-		# `resume_id != 0` ESCLUDE LE RIGHE NOSTRE NON ANCORA CONFERMATE (lotto 122). Il resume_id lo
-		# assegna Trakt: set_bookmark scrive la riga locale con 0 e l'id vero arriva al giro dopo. Una
-		# riga con 0 non puo' essere una CANCELLAZIONE, perche' Trakt non l'ha mai avuta -- ma senza
-		# questo filtro entrava in `local_ids - trakt_ids`, faceva concludere "qualcosa e' sparito da
-		# Trakt" e innescava la ricostruzione completa della tabella, che la cancellava davvero.
-		# Vedi _set_bulk_progress per l'altra meta' della stessa storia.
-		# E per lo stesso motivo del lotto 128 vanno escluse anche le righe SCRITTE DA NOI DA POCO,
-		# che un resume_id vero ce l'hanno gia' ma che Trakt puo' non elencare ancora: contarle come
-		# sparite fa concludere "cancellazione da remoto" e innesca la riscrittura che le cancella
-		# per davvero. Vedi _unsynced_progress_rows.
-		from modules.kodi_utils import recent_local_progress
+		"""Trakt ha tolto qualcosa che noi abbiamo? Una domanda sola, e la risposta e' nello stato.
+
+		Contano SOLO le righe `synced`: quelle le abbiamo viste arrivare da Trakt, quindi la loro
+		assenza dallo snapshot e' una cancellazione. Una `pending_put` non e' mai stata su Trakt per
+		quanto ne sappiamo e la sua assenza non prova niente; una `pending_delete` l'abbiamo tolta noi.
+
+		Fino al lotto 132 qui c'erano due esclusioni a tempo (resume_id != 0 del lotto 122 e la
+		finestra di grazia del 128) che provavano a ricostruire proprio questa distinzione senza
+		averla scritta da nessuna parte.
+		"""
 		try:
 			dbcon = connect_database('trakt_db')
-			rows = dbcon.execute('SELECT resume_id, media_id, season, episode FROM progress WHERE db_type = ? AND resume_id != 0', (db_type,)).fetchall()
-			recent = recent_local_progress(db_type)
-			local_ids = {r[0] for r in rows
-							if (str(r[1]), '' if r[2] in (None, '') else str(r[2]), '' if r[3] in (None, '') else str(r[3])) not in recent}
-			return bool(local_ids - trakt_ids)
+			rows = dbcon.execute("SELECT resume_id FROM progress WHERE db_type = ? AND sync_state = 'synced' AND resume_id != 0",
+									(db_type,)).fetchall()
+			return bool({r[0] for r in rows} - trakt_ids)
 		except: return False
 
 	def _atomic(self, fn):
@@ -299,6 +301,10 @@ class TraktWatched:
 			try: dbcon.execute('ROLLBACK')
 			except: pass
 			return None
+
+	def _execute(self, command, args):
+		dbcon = connect_database('trakt_db')
+		dbcon.execute(command, args)
 
 	def _executemany(self, command, insert_list):
 		dbcon = connect_database('trakt_db')

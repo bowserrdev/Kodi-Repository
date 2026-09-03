@@ -750,10 +750,22 @@
         <param name="condition">true</param>
         <definition>
             <onfocus condition="$PARAM[condition]">SetProperty(WidgetMeta.$PARAM[id].Label,$ESCINFO[$PARAM[container]ListItem.Label])</onfocus>
-            <onfocus condition="$PARAM[condition]">SetProperty(TMDbHelper.ListItem.base_label,$INFO[$PARAM[container]ListItem.Label],Home)</onfocus>
+            <!-- UN ELEMENTO VUOTO NON DEVE SOVRASCRIVERE LO STATO PUBBLICATO. Quando il contenitore si
+                 ricostruisce, l'onfocus scatta con ListItem ancora vuoto: senza questa guardia
+                 base_label finiva a stringa vuota e l'intestazione del menu contestuale restava
+                 senza nome. Misurato il 03/09: menu aperto alle 14:55:14,5 e contenitore
+                 ricostruito sotto di esso alle 14:55:16,1. -->
+            <onfocus condition="$PARAM[condition] + !String.IsEmpty($PARAM[container]ListItem.Label)">SetProperty(TMDbHelper.ListItem.base_label,$INFO[$PARAM[container]ListItem.Label],Home)</onfocus>
             <onfocus condition="$PARAM[condition] + !String.IsEmpty($PARAM[container]ListItem.Art(poster))">SetProperty(TMDbHelper.ListItem.base_poster,$INFO[$PARAM[container]ListItem.Art(poster)],Home)</onfocus>
             <onfocus condition="$PARAM[condition] + String.IsEmpty($PARAM[container]ListItem.Art(poster)) + !String.IsEmpty($PARAM[container]ListItem.Art(tvshow.poster))">SetProperty(TMDbHelper.ListItem.base_poster,$INFO[$PARAM[container]ListItem.Art(tvshow.poster)],Home)</onfocus>
-            <onfocus condition="$PARAM[condition] + String.IsEmpty($PARAM[container]ListItem.Art(poster)) + String.IsEmpty($PARAM[container]ListItem.Art(tvshow.poster))">ClearProperty(TMDbHelper.ListItem.base_poster,Home)</onfocus>
+            <!-- La CANCELLAZIONE e' il punto piu' pericoloso dei tre, per lo stesso motivo: va fatta
+                 solo quando l'elemento esiste davvero e non ha nessun poster, mai quando l'elemento
+                 non c'e' ancora.
+                 E NESSUNO RIMEDIA PIU'. Queste due proprieta' le riparava il ciclo di blur_service,
+                 che pero' e' spento dal lotto 48 (service.py: la riga che lo avvia e' commentata,
+                 per il crash da avvio sulla stick) e nei log non compare mai. Da allora l'unico
+                 scrittore e' questo onfocus: se scrive una volta sbagliata, resta sbagliata. -->
+            <onfocus condition="$PARAM[condition] + !String.IsEmpty($PARAM[container]ListItem.Label) + String.IsEmpty($PARAM[container]ListItem.Art(poster)) + String.IsEmpty($PARAM[container]ListItem.Art(tvshow.poster))">ClearProperty(TMDbHelper.ListItem.base_poster,Home)</onfocus>
             <onfocus condition="$PARAM[condition]">SetProperty(WidgetMeta.$PARAM[id].Title,$ESCINFO[$PARAM[container]ListItem.Title])</onfocus>
             <onfocus condition="$PARAM[condition]">SetProperty(WidgetMeta.$PARAM[id].TVShowTitle,$ESCINFO[$PARAM[container]ListItem.TVShowTitle])</onfocus>
             <onfocus condition="$PARAM[condition]">SetProperty(WidgetMeta.$PARAM[id].Genre,$ESCINFO[$PARAM[container]ListItem.Genre])</onfocus>
