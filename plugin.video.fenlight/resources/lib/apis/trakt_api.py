@@ -38,6 +38,14 @@ restore_activity = trakt_cache.restore_activity
 # Alzato dalle guardie self_mark quando saltano una ricostruzione: dice a trakt_sync_activities che il
 # segnalibro delle attivita' NON puo' avanzare, perche' c'e' del lavoro non fatto. Vedi lotto 58.
 _SYNC_DEFERRED = [False]
+# Qui vivevano PROGRESS_RETRY_PROP e PROGRESS_RETRY_MAX (lotto 132): la riprova quando
+# last_activities diceva 'cambiato' e sync/playback tornava identico. RIMOSSI dal lotto 133.
+# Erano l'ennesima deduzione a tempo su uno stato che non era scritto: e infatti sbagliavano da
+# soli -- 'azzera avanzamento' e' proprio il caso in cui l'attivita' cambia e la tabella no, perche'
+# il lavoro l'abbiamo gia' fatto noi in locale, e la riprova scattava a vuoto su ENTRAMBE le
+# macchine (log del 03/09, 03:29:54 e 03:30:25). Adesso una risposta vecchia non fa danni da sola:
+# la riconciliazione tocca solo cio' che cambia, e una riga `synced` assente dallo snapshot e' una
+# cancellazione qualunque sia stato il motivo dell'attivita'.
 clear_daily_cache = trakt_cache.clear_daily_cache
 clear_trakt_collection_watchlist_data, clear_trakt_hidden_data = trakt_cache.clear_trakt_collection_watchlist_data, trakt_cache.clear_trakt_hidden_data
 # LOTTO 119: qui vivevano anche clear_trakt_recommendations, clear_trakt_list_data e
@@ -1293,6 +1301,49 @@ def _publish_changed(changed_ids, changed_actions, changed_unknown):
 						_actions or 'nessuna'))
 	except: pass
 
+# Quante riparazioni remote per giro. Il tetto esiste perche' un guasto prolungato di rete puo'
+# accumularne parecchie, e ripartire con una raffica di chiamate sarebbe il modo peggiore di
+# rientrare: si smaltiscono poche per volta, e quello che resta torna al giro dopo.
+REMOTE_REPAIRS_PER_CYCLE = 5
+
+def _drain_remote_repairs():
+	"""Ripete le chiamate a Trakt che la riconciliazione ha scoperto mancanti (lotto 133).
+
+	Due code, due guasti diversi, entrambi silenziosi fino a ieri:
+	  PENDING_REMOTE_DELETES  l'utente ha azzerato l'avanzamento, la DELETE remota non e' passata e
+	                          Trakt elenca ancora il segnalibro. Senza questa ripetizione la riga
+	                          resterebbe `pending_delete` per sempre e Trakt non lo saprebbe mai.
+	  PENDING_REMOTE_PUSHES   l'utente ha messo in pausa, la spinta non e' mai stata confermata
+	                          (rete assente, token, eccezione ingoiata). La riga resta visibile in
+	                          locale -- non si cancella la pausa di qualcuno per un guasto di rete --
+	                          e va rispinta finche' non passa.
+	"""
+	deletes = [trakt_cache.PENDING_REMOTE_DELETES.pop(0) for _ in range(min(len(trakt_cache.PENDING_REMOTE_DELETES), REMOTE_REPAIRS_PER_CYCLE))]
+	pushes = [trakt_cache.PENDING_REMOTE_PUSHES.pop(0) for _ in range(min(len(trakt_cache.PENDING_REMOTE_PUSHES), REMOTE_REPAIRS_PER_CYCLE))]
+	if not deletes and not pushes: return
+	from threading import Thread
+	from caches.base_cache import connect_database
+	def _work():
+		for db_type, key, resume_id in deletes:
+			try:
+				trakt_progress('clear_progress', db_type, key[0], 0, key[1], key[2], resume_id)
+				logger('Fen Light', 'cancellazione remota ripetuta per %s %s' % (db_type, key[0]))
+			except Exception as e: logger('Fen Light', 'cancellazione remota di %s FALLITA di nuovo: %s' % (key[0], e))
+		for db_type, key in pushes:
+			try:
+				row = connect_database('trakt_db').execute(
+					'SELECT resume_point FROM progress WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?',
+					(db_type, key[0], key[1], key[2])).fetchone()
+				if not row: continue
+				resume_id = trakt_progress('set_progress', db_type, key[0], float(row[0]), key[1], key[2]) or 0
+				if resume_id:
+					connect_database('trakt_db').execute(
+						'UPDATE progress SET resume_id = ? WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?',
+						(resume_id, db_type, key[0], key[1], key[2]))
+					logger('Fen Light', 'spinta ripetuta e confermata per %s %s' % (db_type, key[0]))
+			except Exception as e: logger('Fen Light', 'spinta ripetuta di %s FALLITA: %s' % (key[0], e))
+	Thread(target=_work).start()
+
 def trakt_sync_activities(force_update=False):
 	# def clear_watched_tvshow_cache():
 	# 	from modules.watched_status import clear_cache_watched_tvshow_status
@@ -1380,11 +1431,26 @@ def trakt_sync_activities(force_update=False):
 		changed_actions.add(kodi_utils.CONTINUE_WATCHING_ACTION)
 	if _compare(latest_movies['watched_at'], cached_movies['watched_at']):
 		clear_properties('movie')
+		# L'AZIONE ACCOMPAGNA GLI ID (lotto 134). Segnare un film come visto lo fa USCIRE da 'continua
+		# a guardare': e' un cambiamento di COMPOSIZIONE, e la regola per id da sola non lo copre --
+		# per la stessa ragione, parola per parola, gia' scritta in watched_status.refresh_container_for
+		# e nel ramo dell'avanzamento qui sotto. Il percorso LOCALE l'azione la mandava da sempre;
+		# questo, che e' il percorso di cio' che arriva DA UN ALTRO DISPOSITIVO, no.
+		changed_actions.add(kodi_utils.CONTINUE_WATCHING_ACTION)
 		_ids = trakt_indicators_movies()
 		if _ids is None: changed_unknown = True
 		else: changed_ids |= _ids
 	if _compare(latest_episodes['watched_at'], cached_episodes['watched_at']):
 		clear_properties('episode')
+		# QUI IL BUCO ERA PIU' GRAVE CHE PER I FILM (lotto 134). Segnare visto un episodio fa entrare
+		# in 'continua a guardare' l'episodio SUCCESSIVO, che e' un elemento DIVERSO da quello
+		# marcato: il suo id non e' fra i cambiati e non e' ancora nell'elenco pubblicato dal widget,
+		# quindi nessuna regola per id puo' trovarlo. Serve l'azione, e mancava.
+		# Misurato il 03/09 alle 04:53: episodio segnato visto sulla stick, dove il percorso locale
+		# manda l'azione e il prossimo episodio compare subito. Sul Mac arriva da qui --
+		# 'titoli cambiati: 1 -> [330320] | azioni: nessuna' -- e il prossimo episodio non e' mai
+		# entrato in 'continua a guardare'.
+		changed_actions.add(kodi_utils.CONTINUE_WATCHING_ACTION)
 		# Livello SERIE, ed e' voluto: un episodio VISTO fa avanzare la serie, quindi si aggiornano i
 		# widget che contengono la serie -- badge, prossimo episodio, 'continua a guardare' (che
 		# pubblica anche il tmdb nudo di ogni episodio, vedi paginator._publish_ids).
@@ -1438,6 +1504,9 @@ def trakt_sync_activities(force_update=False):
 			_ids = trakt_progress_tv(progress_info)
 			if _ids is None: changed_unknown = True
 			else: changed_ids |= _ids
+	# Le richieste che la riconciliazione ha prodotto: cancellazioni remote non recepite e spinte mai
+	# confermate. Fuori dalla transazione e fuori dal percorso che disegna, in un thread.
+	_drain_remote_repairs()
 	# Qualcosa e' stato rimandato: il segnalibro torna indietro, cosi' il prossimo giro riprende il
 	# lavoro invece di trovare 'nessuna modifica'. La guardia self_mark diventa cosi' un RINVIO e non
 	# piu' un cestino: al massimo ritarda di una finestra self_mark, non perde piu' niente.

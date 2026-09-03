@@ -421,7 +421,12 @@ def routing(sys):
 	if mode == 'refresh_widgets':
 		from modules.kodi_utils import refresh_widgets
 		# user=true lo mette solo la voce di menu degli indexer, non il servizio.
-		return refresh_widgets(_get('show_notification', 'false'), _get('user', 'false') != 'true')
+		# coalesce=false lo mette WidgetRefresher quando consuma un RINVIO globale (lotto 130): e'
+		# lavoro gia' rimandato una volta, e riaccorparlo dietro la costruzione d'avvio lo perde per
+		# sempre. Due canali distinti e non sovrapponibili -- 'e' l'utente' e 'e' un rinvio maturo' --
+		# che pero' chiedono la stessa cosa: non giudicare due volte con la stessa guardia.
+		return refresh_widgets(_get('show_notification', 'false'),
+								_get('user', 'false') != 'true' and _get('coalesce', 'true') != 'false')
 	if mode == 'person_data_dialog':
 		from indexers.people import person_data_dialog
 		return person_data_dialog(params)

@@ -963,10 +963,12 @@ def refresh_containers_for_ids(ids, actions=()):
 	# Lo scope si legge UNA volta: la finestra non cambia a meta' di questo ciclo.
 	scope = ctl_scope()
 	seen_any, hit, hit_other, skipped = False, 0, 0, 0
+	identified = set()
 	for cid in WIDGET_CONTAINER_IDS:
 		key, first_url = container_head(cid, scope)
 		if not first_url or 'plugin.video.fenlight' not in first_url: continue
 		seen_any = True
+		identified.add(str(cid))
 		if key and not _action_matches(get_property(ACTION_PROP % key), wanted_actions):
 			stored = get_property(IDS_PROP % key)
 			# stored vuota = elenco mai pubblicato: non si puo' dimostrare niente, quindi si ricarica.
@@ -981,6 +983,41 @@ def refresh_containers_for_ids(ids, actions=()):
 		if not pages: pages = str(raw_pages(key, initial_batch())) if key else str(initial_batch())
 		set_property(CTL_PAGES_PROP % (scope, cid), '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
 		hit += 1
+	# --- QUESTA finestra, i contenitori che l'infolabel non ha saputo leggere -----------------------
+	# container_head interroga una infolabel VIVA, e un contenitore che Kodi non ha ancora popolato non
+	# risponde: il `continue' la' sopra lo scartava senza contarlo da nessuna parte -- ne' ricaricato,
+	# ne' saltato, ne' seen_any. Non era un contenitore dimostrato estraneo: era un contenitore mai
+	# guardato, e l'unico modo di accorgersene era sapere a memoria quanti widget ha quella schermata.
+	# Misurato sulla stick il 02/09 alle 21:53:04.698: la Home ha TRE widget, tutti e tre avevano gia'
+	# fatto set_head, e il censimento ne ha visti due (`ricaricati=1 saltati=1'). Sul Mac, dove le
+	# costruzioni durano decimi di secondo, il conto torna sempre (5 su 5). E' una corsa fra noi e la
+	# GUI, e la vince chi ha la macchina lenta -- cioe' si perde proprio dove fa piu' male.
+	# La correzione non aspetta e non riprova: NON SERVE l'infolabel. Serviva solo a rispondere
+	# 'questo contenitore e' nostro?', e il registro lo sa gia' -- e' esattamente il criterio con cui
+	# il giro qui sotto raggiunge le finestre che non sono nemmeno a schermo. Stessa regola del giro
+	# a schermo, altra fonte: si salta solo cio' che si dimostra estraneo, il resto si ricarica.
+	unresolved, recovered = 0, 0
+	for pair in registry_pairs():
+		pair_scope, _, cid = pair.partition(':')
+		if pair_scope != scope or cid in identified: continue
+		key = '%s.%s' % (scope, cid)
+		if not get_property(BUILT_PROP % key): continue
+		unresolved += 1
+		seen_any = True
+		if not _action_matches(get_property(ACTION_PROP % key), wanted_actions):
+			stored = get_property(IDS_PROP % key)
+			# Elenco vuoto = mai pubblicato: non si dimostra niente, quindi si ricarica. Qui, a
+			# differenza del giro sulle altre finestre, il contenitore E' a schermo: lasciarlo stare
+			# vorrebbe dire lasciare un widget visibile con il dato vecchio.
+			if stored and not wanted.intersection(stored.split(',')):
+				skipped += 1
+				continue
+		pages = (get_property(CTL_PAGES_PROP % (scope, cid)) or '').split('&')[0]
+		if not pages: pages = str(raw_pages(key, initial_batch()))
+		set_property(CTL_PAGES_PROP % (scope, cid), '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
+		hit += 1
+		recovered += 1
+
 	# --- le ALTRE finestre -------------------------------------------------------------------------
 	# Fin qui si e' guardata solo la finestra a schermo, perche' e' l'unica che le infolabel sanno
 	# leggere. Ma un widget della Home che contiene il film appena cambiato e' vecchio anche se in
@@ -1012,8 +1049,12 @@ def refresh_containers_for_ids(ids, actions=()):
 		hit_other += 1
 	LAST_OTHER_HITS[0] = hit_other
 	LAST_SEEN_ANY[0] = seen_any
-	log('refresh_for_ids ids=%s azioni=%s contenitori=%s ricaricati=%s altre_finestre=%s saltati=%s' %
-		(len(wanted), len(wanted_actions), 'trovati' if seen_any else 'NESSUNO', hit, hit_other, skipped))
+	# 'non_identificati' e 'recuperati' vanno nel log per una ragione precisa: senza di loro questo
+	# difetto era invisibile: si vedevano solo 'ricaricati' e 'saltati', e per accorgersi che mancava
+	# qualcuno bisognava conoscere a memoria il numero di widget della schermata.
+	log('refresh_for_ids ids=%s azioni=%s contenitori=%s ricaricati=%s altre_finestre=%s saltati=%s non_identificati=%s recuperati=%s' %
+		(len(wanted), len(wanted_actions), 'trovati' if seen_any else 'NESSUNO', hit, hit_other, skipped,
+			unresolved, recovered))
 	# Il conteggio restituito resta quello della finestra a schermo: e' cio' che decide il fallback
 	# globale del chiamante, e ricadere sul globale perche' l'unico contenitore interessato sta in
 	# un'altra finestra sarebbe esattamente il contrario di quello che si vuole.

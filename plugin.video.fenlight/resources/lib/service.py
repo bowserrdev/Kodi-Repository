@@ -51,7 +51,7 @@ def refresh_official_status():
 		except: pass
 	Thread(target=_work).start()
 
-def refresh_ids_inproc(ids, actions):
+def refresh_ids_inproc(ids, actions, coalesce=True):
 	"""kodi_refresh_ids chiamato QUI invece di ordinato con RunPlugin (lotto 125).
 
 	RunPlugin fa nascere un interprete Python nuovo che deve reimportare tutto l'albero del plugin
@@ -70,7 +70,7 @@ def refresh_ids_inproc(ids, actions):
 	from modules.kodi_utils import kodi_refresh_ids
 	_ids = [i for i in (ids or '').split(',') if i]
 	_actions = tuple(a for a in (actions or '').split(',') if a)
-	Thread(target=kodi_refresh_ids, args=(_ids, _actions)).start()
+	Thread(target=kodi_refresh_ids, args=(_ids, _actions), kwargs={'coalesce': coalesce}).start()
 # Giri dopo un cambio di finestra in cui si ripassa il censimento dei contenitori. I giri sono da
 # 0,3 s: 0 / 1,5 / 3 / 6 / 10,5 / 16,5 secondi. Copre il tempo in cui i widget si stanno ancora
 # costruendo -- sulla stick una costruzione supera spesso i 5 s -- senza sondare per sempre una
@@ -318,9 +318,28 @@ class WidgetRefresher:
 						# 'continue_watching' o 'trakt_watchlist:movie' e' un rinvio MIRATO a tutti gli
 						# effetti, e degradarlo a globale perche' l'elenco di id e' vuoto sarebbe
 						# esattamente il difetto che il canale delle azioni esiste per togliere.
+						# coalesce=False, ed e' il punto del lotto 130. Un rinvio e' per definizione lavoro
+						# NON ancora fatto: e' nato perche' in quel momento non si poteva disegnare. Qui
+						# ha gia' aspettato le sue condizioni -- niente riproduzione, nessuna costruzione
+						# in volo, widget a schermo -- e ripassarlo sotto l'accorpamento significa
+						# giudicarlo una seconda volta con la stessa guardia che l'aveva fatto rimandare.
+						# All'avvio quel secondo giudizio lo bocciava SEMPRE: stamp_startup_rebuild timbra
+						# la costruzione iniziale come globale ('*'), che copre qualunque elenco di id, e
+						# fra il timbro e il rinvio maturo passano un paio di secondi, cioe' meno dei 5
+						# di REFRESH_COALESCE_SECONDS. Nel log del Mac del 02/09 alle 21:15:44.299:
+						# 'refresh mirato accorpato: gli stessi id ricostruiti 2.04s fa'. Quei 2.04s
+						# erano la costruzione d'avvio, avvenuta PRIMA della sincronizzazione e quindi
+						# fatta sui dati vecchi: aveva davvero ricostruito quegli id, e li aveva
+						# ricostruiti sbagliati. Dopo, ogni poll dice 'not needed' -- reset_activity ha
+						# gia' fatto avanzare il segnalibro -- e l'interfaccia resta indietro finche'
+						# non la si ricostruisce a mano. Otto titoli tolti dalla stick, zero
+						# ricostruzioni nei sei minuti successivi.
+						# La protezione che stamp_startup_rebuild doveva dare non si perde: quella
+						# vietava di ordinare una ricostruzione SOPRA la costruzione d'avvio ancora in
+						# corso, e a garantirla e' _nothing_building() qui sopra, non l'accorpamento.
 						if pending_ids or pending_actions:
-							refresh_ids_inproc(pending_ids, pending_actions)
-						else: run_plugin({'mode': 'refresh_widgets'})
+							refresh_ids_inproc(pending_ids, pending_actions, coalesce=False)
+						else: run_plugin({'mode': 'refresh_widgets', 'coalesce': 'false'})
 				elif self.pending_since is not None: self.pending_since = None
 				tick += 1
 				if tick < 10: continue
