@@ -45,6 +45,21 @@ def _search_debounce_abort(sys, params, action_filtered):
 	except: pass
 	return True
 
+def _stale_token_abort(sys, params):
+	# LOTTO 160. Fratello di _search_debounce_abort: quello lascia cadere una build la cui QUERY e'
+	# gia' superata, questo una build il cui CONTEGGIO PAGINE lo e'. Entrambi chiudono la cartella
+	# a vuoto sapendo che ne arriva subito un'altra corretta.
+	# La condizione vera sta in paginator.token_is_stale, che e' anche l'unico posto che tocca lo
+	# stato; qui c'e' solo il filtro a costo zero che evita di importare il paginator per le
+	# invocazioni che non sono widget (navigator, riproduzione, dialoghi: niente pgctl nel path).
+	if 'pgctl' not in params or not params.get('pages'): return False
+	from modules import paginator
+	if not paginator.token_is_stale(params): return False
+	from modules.kodi_utils import end_directory
+	try: end_directory(int(sys.argv[1]), cacheToDisc=False)
+	except: pass
+	return True
+
 def _text_search_done(win, query, media_type, num_items):
 	if not win or win.getProperty('FenLight.TextSearch.Query') != query: return
 	win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'done')
@@ -134,6 +149,10 @@ def routing(sys):
 		from apis import mdblist_api
 		return getattr(mdblist_api, mode.split('.')[1])(params)
 	if 'build' in mode:
+		# Prima di qualunque costruzione: se il path porta il conteggio pagine di un'altra lista
+		# questa invocazione e' gia' superata. Vale per home, hub e ricerca allo stesso modo --
+		# il cambio inquilino non e' un fatto della ricerca, li' si vede soltanto piu' spesso.
+		if _stale_token_abort(sys, params): return
 		if mode == 'build_movie_list':
 			if _get('action') == 'tmdb_movies_search' and _get('search_hub'): params['action'] = 'tmdb_movies_search_filtered'
 			if _search_debounce_abort(sys, params, 'tmdb_movies_search_filtered'): return

@@ -1250,6 +1250,62 @@ def raw_pages(key, default):
 	except: value = 0
 	return value if value >= default else default
 
+def token_is_stale(params):
+	"""Questa build e' nata da un path SORPASSATO? Se si', azzera il token e dice di lasciar perdere.
+
+	LOTTO 160. Al cambio query nella ricerca partivano DUE costruzioni concorrenti. Misurato il
+	04/09 passando da "batman" (arrivata a 9 pagine) a "superman":
+
+	    19:22:54.757  provider  query=superman  &pages=9      <- il conteggio della query PRECEDENTE
+	    19:22:54.766  parte la build #1
+	    19:22:56.393  provider  query=superman  (senza pages) <- reconcile_position ha azzerato il token
+	    19:22:56.398  parte la build #2
+	    19:23:03.988  build #2 finita  7.381 ms
+	    19:23:04.564  build #1 finita  9.528 ms
+
+	Due interpreti Python insieme, su un dispositivo legato a un core, per una sola ricerca. La #1
+	e' inutile per intero: nasce con il conteggio di un'altra lista e quando finisce quel conteggio
+	e' gia' stato riazzerato dalla #1 stessa.
+
+	PERCHE' SUCCEDE. Il frammento '&pages=N' nel <content> guarda la PROPRIA proprieta', non se
+	quella proprieta' appartenga ancora al contenuto che c'e' adesso nel contenitore. Cambiando la
+	query cambia il contenuto ma il token sopravvive, e Kodi rilegge il path prima che qualcuno se
+	ne accorga: la riconciliazione, per definizione, arriva dopo che la build e' partita. E' la
+	stessa famiglia del lotto 7 -- criterio di emissione sbagliato -- in una veste nuova.
+
+	PERCHE' SI PUO' ABORTIRE SENZA LASCIARE IL CONTENITORE VUOTO. Le tre condizioni qui sotto messe
+	insieme dicono che una ricarica corretta e' GIA' in arrivo, non che potrebbe esserlo:
+	  1. il path porta un '&pages=N': Kodi ci ha chiamati leggendo il token;
+	  2. l'impronta del contenuto in questa posizione e' diversa da quella registrata: quel conteggio
+	     e' di un'altra lista;
+	  3. la proprieta' del token e' ancora valorizzata: azzerandola il path CAMBIA, e un path diverso
+	     e' esattamente cio' che fa rileggere la cartella a Kodi.
+	Se la (3) non vale il token e' gia' stato azzerato da qualcun altro, il path non cambierebbe,
+	nessuna ricarica seguirebbe e abortire lascerebbe il widget vuoto per sempre: in quel caso si
+	costruisce normalmente. E' la stessa asimmetria del lotto 111 (vedi il commento nel router):
+	nell'API dei plugin non esiste "tieni quello che hai", quindi chiudere una cartella a vuoto si
+	fa solo quando si sa che ne arriva subito un'altra.
+
+	Non aggiorna CTL_KEY_PROP: quello resta compito di reconcile_position nella build che costruira'
+	davvero. Qui si tocca solo il conteggio, ed e' idempotente.
+	"""
+	if not isinstance(params, dict):
+		params = dict(parse_qsl(params, keep_blank_values=True))
+	try: path_pages = int(params.get('pages') or 0)
+	except: path_pages = 0
+	if path_pages <= 0: return False
+	scope, cid = position_of(params)
+	if not scope: return False
+	from modules.kodi_utils import get_property, clear_property
+	if get_property(CTL_KEY_PROP % (scope, cid)) == make_key(params): return False
+	ctl_prop = CTL_PAGES_PROP % (scope, cid)
+	if not get_property(ctl_prop): return False
+	clear_property(ctl_prop)
+	clear_property(PAGES_PROP % widget_key(params))
+	log('token sorpassato %s.%s: path con pages=%s ma il contenuto e\' cambiato, '
+		'build lasciata cadere e token azzerato' % (scope, cid, path_pages))
+	return True
+
 def reconcile_position(key, params):
 	"""Azzera il conteggio se in questa posizione e' cambiata la lista. Torna il path_pages da usare.
 
