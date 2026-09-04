@@ -19092,6 +19092,71 @@ sottostringa, si confronta la riga intera.**
 - Nessun riferimento pendente al contenitore 304 nella finestra di ricerca.
 - `grep -r autocompletion` su `1080i/` e `shortcuts/`: **0**.
 
+## Lotto 157 -- un solo punto di innesto per il token di paginazione
+
+Chiuso il punto sollevato dall'utente dopo il lotto 155: *"uniformare gli innesti a uno solo e'
+importante per avere un comportamento prevedibile e codice pulito"*. Ha ragione, ed e' la causa vera
+del difetto del 155: la logica di paginazione e' **una** (`paginator.py` piu' il servizio
+`WidgetPaginator`, una chiave `(finestra, contenitore)`), ma il token doveva essere scritto dentro il
+`<content>` di ogni riga di widget, e la skin costruisce le righe in quattro modi diversi. Quattro
+copie a mano della stessa stringa.
+
+| costruzione | dove | usata da |
+|---|---|---|
+| `widgets_row.xmltemplate` | template | widget di home e hub |
+| `search_row_standard.xmltemplate` | template | ricerca a schede separate |
+| `Hub_Wall_Widget` | `Includes_Hubs.xml` | hub a parete |
+| `Hub_Combined_Widget` | `Includes_Hubs.xml` | hub combinati **e ricerca** |
+
+Due scrivevano `&pgctl=` dentro il suffisso del `$VAR` (giusto per un path condizionale), due lo
+accodavano dopo (sbagliato per la ricerca). Stessa intenzione, quattro scritture, due comportamenti.
+
+### Adesso
+
+`Defs_Widget_Content` e' l'**unico** posto in tutta la skin dove esista un `<content>` con il token.
+Spostata da `Includes_Hubs.xml` a `Includes_Widgets.xml`, che e' la sua casa: non e' piu' roba da hub.
+Tutti e quattro i costruttori la richiamano passando i pezzi:
+
+```xml
+<include content="Defs_Widget_Content">
+    <param name="content">{widget_path}</param>
+    <param name="pgctl">&amp;pgctl={window_id}.{widget_id}</param>   <!-- path letterale -->
+    <param name="pgscope">{window_id}</param>
+    <param name="id">{widget_id}</param>
+    ...
+</include>
+```
+
+e chi ha un path condizionale lascia `pgctl` vuoto, mettendolo nel suffisso del proprio `$VAR`:
+
+```xml
+<param name="content">$VAR[{widget_search_variable},{widget_path},{widget_path_end}&amp;pgctl=1105.{widget_id}]</param>
+<param name="pgctl" />
+```
+
+Verifica: `grep` di `<content` con `pgctl` su `1080i/` e sui template da **un solo risultato**,
+`Includes_Widgets.xml`. Tutto il resto sono `<param>`.
+
+### Perche' si poteva fare senza rischio
+
+Il dubbio era se un `<include>` possa espandersi in un `<content>` dentro il controllo lista, e in
+particolare dentro la regione `<nested />` di `Widget_Row`. **La risposta era gia' nel file**:
+`_Widget_NoResults` fa esattamente questo da sempre -- e' un include che produce un `<content>` con
+gli `<item>` del segnaposto "nessun risultato", iniettato nello stesso punto. Il meccanismo non era
+da provare, era da riconoscere.
+
+E' la controparte positiva della decisione del lotto 155 sull'annidamento: li' il meccanismo non
+esisteva da nessuna parte nella skin e l'ho scartato, qui esisteva gia' e l'ho usato. Stessa domanda,
+stesso criterio, risposte opposte.
+
+### Verifiche fatte
+
+- XML valido su tutti i 158 file **e** sui 13 `.xmltemplate` (controllati sostituendo i segnaposto
+  `{...}` con un valore fittizio: non erano mai stati validati prima, e non lo sono per costruzione
+  perche' contengono testo che XML non accetta).
+- Insieme degli orfani identico a HEAD.
+- `buildv` alzato a `0.2.2-innesto-unico`: entrambi i template modificati sono generati.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'

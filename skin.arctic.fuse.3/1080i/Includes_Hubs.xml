@@ -49,17 +49,6 @@
         </definition>
     </include>
 
-    <!-- Il content dei widget paginabili, in un posto solo. Tre pezzi, tre mestieri:
-         `content`  il path di base;
-         `pgctl`    l'IDENTITA' (finestra + contenitore) che la build legge con paginator.position_of;
-         il $INFO   il TOKEN DI RICARICA, valorizzato solo mentre una paginazione e' in corso.
-         Vedi Hub_Wall_Widget e Hub_Combined_Widget per il perche' pgctl sia un parametro. -->
-    <include name="Defs_Widget_Content">
-        <definition>
-            <content sortby="$PARAM[sortby]" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]$PARAM[pgctl]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
-        </definition>
-    </include>
-
     <include name="Hub_Standard_Widget">
         <param name="include">List_Landscape_Row</param>
         <param name="dynamic">false</param>

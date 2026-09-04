@@ -24,7 +24,19 @@
         <param name="id">{widget_id}</param>
     </include>
 
-    <content sortby="{widget_sortby}" sortorder="{widget_sortorder}" target="{widget_target}" limit="{widget_limit}" browse="$VAR[Defs_BrowseLimitedLists]">{widget_path}&amp;pgctl={window_id}.{widget_id}$INFO[Window(Home).Property(fenlight.pg.w{window_id}.ctl{widget_id}.pages),&amp;pages=,]</content>
+    <!-- Il <content> non si scrive piu' qui: una definizione sola, Defs_Widget_Content in
+         Includes_Widgets.xml. Il path e' un URL letterale e non puo' essere vuoto, quindi pgctl
+         si accoda normalmente. -->
+    <include content="Defs_Widget_Content">
+        <param name="content">{widget_path}</param>
+        <param name="pgctl">&amp;pgctl={window_id}.{widget_id}</param>
+        <param name="pgscope">{window_id}</param>
+        <param name="id">{widget_id}</param>
+        <param name="sortby">{widget_sortby}</param>
+        <param name="sortorder">{widget_sortorder}</param>
+        <param name="target">{widget_target}</param>
+        <param name="limit">{widget_limit}</param>
+    </include>
 
     <include content="Defs_AutoScroll" condition="{widget_isautoscroll}">
         <param name="condition">[!Control.HasFocus({widget_id}) | System.IdleTime(3)]</param>

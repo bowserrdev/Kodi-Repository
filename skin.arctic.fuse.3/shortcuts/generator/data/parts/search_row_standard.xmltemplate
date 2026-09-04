@@ -21,7 +21,19 @@
         <param name="id">{widget_id}</param>
     </include>
 
-    <content sortby="{widget_sortby}" sortorder="{widget_sortorder}" target="{widget_target}" limit="{widget_limit}" browse="$VAR[Defs_BrowseLimitedLists]">$VAR[{widget_search_variable},{widget_path},{widget_path_end}&amp;pgctl=1105.{widget_id}]$INFO[Window(Home).Property(fenlight.pg.w1105.ctl{widget_id}.pages),&amp;pages=,]</content>
+    <!-- Il <content> non si scrive piu' qui: vedi Defs_Widget_Content in Includes_Widgets.xml.
+         Qui il path di base e' vuoto a casella vuota, quindi pgctl resta vuoto e il segmento va
+         nel SUFFISSO del $VAR, dove sparisce insieme al path. -->
+    <include content="Defs_Widget_Content">
+        <param name="content">$VAR[{widget_search_variable},{widget_path},{widget_path_end}&amp;pgctl=1105.{widget_id}]</param>
+        <param name="pgctl" />
+        <param name="pgscope">1105</param>
+        <param name="id">{widget_id}</param>
+        <param name="sortby">{widget_sortby}</param>
+        <param name="sortorder">{widget_sortorder}</param>
+        <param name="target">{widget_target}</param>
+        <param name="limit">{widget_limit}</param>
+    </include>
 
     <include content="Defs_AutoScroll" condition="{widget_isautoscroll}">
         <param name="condition">[!Control.HasFocus({widget_id}) | System.IdleTime(3)]</param>
