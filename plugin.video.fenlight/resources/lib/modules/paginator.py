@@ -157,6 +157,21 @@ IDS_PROP = 'fenlight.pg.ids.%s'
 # id, quindi la regola per id lo scarterebbe proprio mentre va ricostruito. Vedi
 # refresh_containers_for_ids.
 ACTION_PROP = 'fenlight.pg.action.%s'
+# La testa dell'ULTIMA costruzione di questo widget: il path del primo elemento. Serve a rispondere a
+# una domanda che nessuno sapeva porre -- 'in questa ricostruzione la testa e' cambiata?' -- e la
+# risposta la conosce solo set_head, che vede la lista nuova avendo pubblicato la vecchia.
+FIRSTURL_PROP = 'fenlight.pg.first.%s'
+# I widget che hanno una testa NUOVA e vanno riportati a inizio riga: UNA proprieta' sola, con dentro
+# l'elenco delle chiavi separate da virgola. La riempie set_head, la svuota il watcher.
+# Perche' una coda e non una bandiera per chiave: il watcher deve poter chiedere 'c'e' qualcosa da
+# fare?' a ogni giro da 0,3 s, e con una bandiera per chiave la domanda costava una lettura per ogni
+# widget conosciuto anche quando la risposta era no. Cosi' costa una lettura sola, servita dalla
+# memoria, e l'elenco si guarda solo nei rari giri in cui c'e' davvero lavoro.
+# Perche' il lavoro lo fa il watcher e non il plugin: quando la build finisce Kodi non ha ancora
+# popolato il contenitore -- la stessa corsa gia' documentata in refresh_containers_for_ids, dove
+# container_head non riesce a leggere un contenitore appena ordinato -- quindi un comando lanciato dal
+# plugin cadrebbe sulla lista vecchia. Il watcher e' l'unico che lo guarda DOPO.
+REHEAD_PROP = 'fenlight.pg.rehead'
 # I contenitori dei widget della skin. Arctic Fuse li numera 501-504 (verificato nel file generato e
 # in Includes_Search.xml); il margine copre una riconfigurazione della home senza dover ritoccare qui.
 # Sondarli costa una getInfoLabel ciascuno e avviene UNA volta per refresh, non in un ciclo.
@@ -886,6 +901,7 @@ def set_head(key, items, action=None):
 	mark_build_end(key)
 	_publish_ids(key, items)
 	if action: set_property(ACTION_PROP % key, str(action))
+	_note_head_change(key, url, action)
 	_register(key, (headhash, headhash_one))
 	# Il censimento (registry_add) passa solo sui contenitori A SCHERMO, e all'avvio i widget spesso
 	# finiscono di costruirsi dopo che l'utente ha gia' cambiato finestra: il 28/08 alle 20:18 la Home
@@ -905,6 +921,63 @@ def set_head(key, items, action=None):
 	except: pass
 	log('set_head key=%s built=%s firma=%s first_url=%s' %
 		(short(key), count, (headhash[:8] if headhash else '-'), (url[:90] if url else '-')))
+
+def _note_head_change(key, url, action=None):
+	"""Se la testa di 'continua a guardare' e' cambiata, chiede al watcher di riportare la riga a 1.
+
+	Perche' serve, misurato sulla stick il 03/09. Alle 16:02:39 un film messo in pausa dal Mac entra
+	nel widget IN TESTA (`first_url=...media_type=movie&tmdb_id=1232569`, 7 elementi). Kodi, ricaricando
+	un contenitore, conserva l'ELEMENTO su cui eri, non la posizione: l'elemento su cui stava il fuoco
+	e' scivolato da 1 a 2 e il fuoco l'ha seguito (`current=1/6` prima, `current=2/7` dopo). La riga si
+	disegna a partire dall'elemento col fuoco, quindi il film era li' ma un posto piu' a sinistra,
+	fuori campo. Il log lo dimostra due volte con i tasti dell'utente: alle 15:59:37 un `Left` porta
+	`current` da 2 a 1 e l'elemento nuovo si vede; alle 16:03:19 `Down`+`Up` non spostano niente dentro
+	la riga e infatti resta `2/7`; alle 16:11:58 un `Back` riporta a `1/7` -- 'e' comparso'.
+
+	Vale SOLO per 'continua a guardare', per scelta dell'utente: e' la lista il cui senso e' che la cosa
+	piu' recente sta in testa, e un arrivo che atterra fuori campo non serve a niente. Su ogni altro
+	widget il fuoco resta dov'e', perche' li' l'ordine non e' una promessa e strattonare chi sta
+	scorrendo sarebbe solo un fastidio.
+
+	Alla PRIMA costruzione non si alza niente: non c'e' una testa precedente da confrontare, e un
+	contenitore appena nato parte gia' dal primo elemento.
+	"""
+	if not url: return
+	from modules.kodi_utils import set_property, get_property, CONTINUE_WATCHING_ACTION
+	precedente = get_property(FIRSTURL_PROP % key)
+	set_property(FIRSTURL_PROP % key, url)
+	if not precedente or precedente == url: return
+	# L'azione arriva dal costruttore quando la passa; se non la passa vale quella gia' pubblicata,
+	# che e' la stessa cosa scritta un attimo prima. Il confronto e' per prefisso qualificato, come
+	# ovunque: 'continue_watching' copre anche un eventuale 'continue_watching:movie'.
+	azione = str(action) if action else get_property(ACTION_PROP % key)
+	if not _action_matches(azione, {CONTINUE_WATCHING_ACTION}): return
+	rehead_queue(key)
+
+def rehead_queue(key):
+	"""Mette questo widget in coda per il riposizionamento. Idempotente.
+
+	Read-modify-write su una proprieta' condivisa, lo stesso schema del lotto 3: in contesa si puo'
+	perdere una scrittura. Il danno peggiore e' una riga che resta dov'e' fino alla prossima testa
+	nuova -- cioe' il comportamento di prima -- quindi non vale un lucchetto.
+	"""
+	from modules.kodi_utils import set_property
+	coda = rehead_pending()
+	if key in coda: return
+	coda.append(key)
+	set_property(REHEAD_PROP, ','.join(coda))
+
+def rehead_pending():
+	"""Le chiavi in attesa di essere riportate a inizio riga, in ordine di arrivo."""
+	from modules.kodi_utils import get_property
+	return [k for k in (get_property(REHEAD_PROP) or '').split(',') if k]
+
+def rehead_done(key):
+	"""Toglie una chiave dalla coda. La chiama il watcher DOPO aver agito."""
+	from modules.kodi_utils import set_property, clear_property
+	rimaste = [k for k in rehead_pending() if k != key]
+	if rimaste: set_property(REHEAD_PROP, ','.join(rimaste))
+	else: clear_property(REHEAD_PROP)
 
 def _action_matches(stored, wanted_actions):
 	"""L'azione pubblicata da un widget soddisfa una delle azioni richieste?

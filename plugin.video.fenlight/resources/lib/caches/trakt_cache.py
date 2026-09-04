@@ -251,23 +251,50 @@ class TraktWatched:
 			return dbcon.execute('SELECT 1 FROM progress WHERE %s LIMIT 1' % PROGRESS_VISIBLE).fetchone() is not None
 		except: return False
 
-	def has_progress_deletions(self, db_type, trakt_ids):
-		"""Trakt ha tolto qualcosa che noi abbiamo? Una domanda sola, e la risposta e' nello stato.
+	def progress_out_of_sync(self, db_type, trakt_ids):
+		"""Lo snapshot di Trakt e cio' che teniamo dicono cose diverse? Torna il PERCHE', o ''.
 
-		Contano SOLO le righe `synced`: quelle le abbiamo viste arrivare da Trakt, quindi la loro
-		assenza dallo snapshot e' una cancellazione. Una `pending_put` non e' mai stata su Trakt per
-		quanto ne sappiamo e la sua assenza non prova niente; una `pending_delete` l'abbiamo tolta noi.
+		Due direzioni, una domanda sola. Fino al lotto 140 se ne chiedeva una sola -- 'Trakt ha tolto
+		qualcosa che ho?' -- mentre lo snapshot che la risponde lo scarichiamo INTERO a ogni giro:
+		l'altra meta' dell'informazione era gia' in mano e la buttavamo.
 
-		Fino al lotto 132 qui c'erano due esclusioni a tempo (resume_id != 0 del lotto 122 e la
-		finestra di grazia del 128) che provavano a ricostruire proprio questa distinzione senza
-		averla scritta da nessuna parte.
+		  TOLTE     un resume_id nostro `synced` che lo snapshot non elenca. L'abbiamo visto arrivare da
+		            Trakt, quindi la sua assenza e' una cancellazione fatta altrove.
+		  AGGIUNTE  un resume_id nello snapshot che non abbiamo in NESSUNO stato. Qualcuno ha messo in
+		            pausa altrove e noi non lo sappiamo.
+
+		Le righe `pending_put` e `pending_delete` col loro resume_id contano fra i 'nostri' per la
+		seconda domanda ma non per la prima, e la distinzione non e' pedanteria:
+		  - una `pending_put` gia' spinta compare nello snapshot mentre da noi e' ancora in attesa di
+		    conferma. Contarla come AGGIUNTA farebbe ricostruire per una riga che e' nostra;
+		  - una `pending_delete` che Trakt elenca ancora e' una DELETE non passata. Contarla come
+		    aggiunta farebbe ricostruire ogni trenta secondi fino alla fine dei tempi: quel guasto lo
+		    ripara _drain_remote_repairs, non una ricostruzione a ripetizione.
+
+		PERCHE' QUESTO CHIUDE ANCHE LA CORSA SUI TIMESTAMP (punto 4 della revisione). `_compare` usa
+		`>` stretto su marche temporali al secondo: due cambiamenti nello stesso secondo, con un poll in
+		mezzo, rendevano il secondo invisibile per sempre -- `latest` e `cached` restavano uguali e il
+		giro dopo diceva 'nessuna modifica'. Ora quel giro non si fida piu' della marca: guarda il
+		contenuto e lo trova. La marca temporale torna a essere cio' che deve essere, un modo per
+		evitare lavoro inutile, non un cancello che decide la correttezza.
 		"""
 		try:
 			dbcon = connect_database('trakt_db')
-			rows = dbcon.execute("SELECT resume_id FROM progress WHERE db_type = ? AND sync_state = 'synced' AND resume_id != 0",
+			rows = dbcon.execute('SELECT resume_id, sync_state FROM progress WHERE db_type = ? AND resume_id != 0',
 									(db_type,)).fetchall()
-			return bool({r[0] for r in rows} - trakt_ids)
-		except: return False
+			nostri = {r[0] for r in rows}
+			sincronizzate = {r[0] for r in rows if r[1] == progress_sync.SYNCED}
+			tolte = sincronizzate - trakt_ids
+			aggiunte = trakt_ids - nostri
+			if not tolte and not aggiunte: return ''
+			# Il motivo torna al chiamante perche' finisca nel log: la differenza fra 'Trakt ha tolto' e
+			# 'qualcuno ha messo in pausa altrove' e' la prima cosa che si vuole sapere leggendo un log,
+			# ed e' costata due indagini quando non c'era.
+			parti = []
+			if tolte: parti.append('%s tolte da Trakt' % len(tolte))
+			if aggiunte: parti.append('%s in piu' % len(aggiunte) + "'" + ' su Trakt')
+			return ' + '.join(parti)
+		except: return ''
 
 	def _atomic(self, fn):
 		"""Esegue fn() in UNA transazione, cosi' nessun altro lettore vede lo stato intermedio.
