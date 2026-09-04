@@ -19429,6 +19429,111 @@ in un hub, e la fine della contesa fra i due. La verifica e' diretta e non ammet
 nel log, dopo un cambio query, deve comparire **una sola** riga `INVOCAZIONE###` invece di due, e la
 riga `token sorpassato` del paginator al posto della seconda.
 
+## Lotto 161 -- l'invocazione che abbandona costava 697 ms di soli import
+
+Domanda posta il 04/09, e giusta: *"in che senso 0,7 s buttati? non possiamo eliminare anche questo
+tempo?"*. Il lotto 160 ha tolto la seconda costruzione, ma il biglietto d'ingresso e' rimasto intero.
+Ecco come si legge:
+
+```
+###FenLight PERF INVOCAZIONE###: totale 697 ms | import 102 + coda 1 + nessuna cartella costruita, solo azione 595
+###FenLight PERF CPU###:         totale 284/697 ms (41%)
+###FenLight PERF IMPORT###:      35 moduli | totale 636 ms | Fen Light 135 | resto 502
+                                     93 ms  sqlite3      <- caches.base_cache
+                                     36 ms  datetime     <- sqlite3.dbapi2
+```
+
+**636 dei 697 ms sono import**, per una funzione -- `token_is_stale` -- che confronta due stringhe. Il
+controllo in se' costa microsecondi. E il rapporto CPU/orologio (41%) dice che meno della meta' di
+quel tempo e' lavoro: il resto e' attesa sul GIL, perche' in quell'istante girano insieme
+skinvariables e la costruzione buona. Vale la regola di [[misurare-lavoro-o-attesa]]: non si pota
+lavoro che non c'e'.
+
+Il punto strutturale, che va detto perche' delimita quanto si puo' ottenere: quando Kodi decide di
+aggiornare il provider **il processo Python e' gia' nato**. Da li' in poi il minimo per poter dire
+"sono obsoleto" e' caricare abbastanza di Fen Light da saper leggere lo stato. Non esiste un modo di
+rispondere prima, perche' `reuselanguageinvoker` deve restare `false` (lotto sul segfault: il flag e'
+fatale). Quindi la domanda non e' *se* pagare il biglietto, ma **quanto**.
+
+### Le due porte da cui entrava sqlite3, e perche' la seconda e' quella istruttiva
+
+**Prima porta**, evidente: `from caches.settings_cache import get_setting` in testa a `paginator.py`.
+settings_cache tira dentro `caches.base_cache` e con lui sqlite3. Serve a quattro sole letture di
+impostazioni (`interactive_enabled`, `initial_batch`, `lookahead_pages`, `max_items`), tutte gia'
+dentro una funzione, e nessuna sul percorso di abbandono. Spostato l'import dentro un guscio pigro.
+E' lo stesso ragionamento del lotto 126 per `json` in `base_cache`.
+
+**Poi la prova e' fallita lo stesso**, e questa e' la parte che vale la pena ricordare. Tracciando gli
+import invece di rileggere il file:
+
+```
+paginator.py:247  PG_DEBUG = _perf_enabled()
+perf.py:25          from caches.settings_cache import get_setting
+```
+
+Due costanti di modulo -- `PG_DEBUG` (riga 247) e `PERF` (riga 362) -- chiamano `perf.enabled()`
+**durante l'import di paginator**, e `perf.enabled()` leggeva l'interruttore dal database. Cioe':
+**spegnere la strumentazione costava esattamente quanto tenerla accesa**, e chiunque importasse
+paginator pagava sqlite3 anche senza mai scrivere una riga di log. L'interruttore che doveva rendere
+gratuita la diagnostica era diventato la voce piu' cara del percorso piu' magro.
+
+La correzione non e' rendere pigre le due costanti (sono lette da una quarantina di punti come nomi
+nudi, e cambiarli sarebbe churn per niente): e' far leggere l'interruttore **dalla proprieta' di
+finestra**. `sync_settings`, all'avvio del servizio, rispecchia OGNI impostazione in una proprieta' di
+`Window(10000)` -- e' `SettingsCache.set_memory_cache` -- e `get_setting` stesso la consulta per
+prima. La skin la legge gia' cosi': `settings_manager.xml:759` fa
+`$INFO[Window(10000).Property(fenlight.perf.instrumentation)]`. Il plugin ora legge lo stesso posto.
+Il ripiego sul database resta per l'avvio molto precoce, quando il rispecchiamento non c'e' ancora.
+
+### Misura
+
+Sul Mac, contando i moduli che il percorso di abbandono carica davvero (le due porte sono le stesse,
+i tempi no):
+
+| | moduli caricati | sqlite3 | datetime | settings_cache | base_cache |
+|---|---|---|---|---|---|
+| prima | 54 | presente | presente | presente | presente |
+| dopo | **44** | -- | -- | -- | -- |
+
+Sulla stick le due voci nominate nella tabella PERF IMPORT valgono **93 + 36 = 129 ms**, piu' la coda
+di moduli che sqlite3 e settings_cache si tirano dietro e che il profilatore attribuisce ai loro
+genitori. Attesa realistica: **da 130 a 200 ms sui 697**, cioe' un quarto abbondante. Da verificare
+sul campo leggendo la riga `INVOCAZIONE` dell'invocazione che riporta `nessuna cartella costruita`.
+
+Il beneficio non e' solo li': `perf.enabled()` la chiama chiunque tocchi `perf_log` o `perf_memory`,
+cioe' `kodi_utils`, cioe' ogni invocazione. Sui percorsi che gia' aprono un database non cambia
+niente; su quelli magri -- azioni, dialoghi, il servizio -- toglie l'apertura del database.
+
+### Provato fuori da Kodi
+
+`tests/test_161.py`, sette casi, 16 su 16 file della cartella passano. Il caso che conta e' il **D**:
+strumentazione **spenta** letta correttamente **senza** che `caches.settings_cache` finisca in
+`sys.modules`. Il caso A deve girare prima di tutti gli altri, e il file lo dice apertamente, perche'
+le due costanti si valutano all'import: la proprieta' va seminata **prima** di `import paginator`,
+esattamente come sul dispositivo il servizio la semina prima che i widget si costruiscano.
+
+### Cosa NON e' stato fatto qui, e resta aperto
+
+Eliminare i 697 ms **per intero** vuol dire non essere invocati affatto. Il path incriminato e' cucito
+da due generazioni:
+
+```
+20:06:57.455  Window Deinit (DialogKeyboard.xml)          <- chiude la tastiera
+20:06:57.457  skinvariables ...&&batman                   <- la META' FRESCA del path
+20:06:57.462  provider  query=batman ... &pages=11        <- +5 ms, con la META' VECCHIA
+```
+
+Se in quell'istante la proprieta' del token fosse vuota, `$INFO[...,&pages=,]` non emetterebbe nulla
+e l'invocazione **non nascerebbe**. Il servizio non puo' arrivarci (campiona a 0,3 s, la finestra e'
+di 5 ms). Resta `<ontextchange>` sul controllo `edit` 3000 -- che la skin oggi non usa. Il lotto 160
+aveva concluso che *"non esiste quell'istante nella skin"*: era vero di cio' che la skin **usa**, non
+di cio' che Kodi **offre**, e la distinzione va tenuta.
+
+**Non e' stato fatto perche' e' una corsa, e l'ordine va misurato, non dedotto**: fra il cambio di
+testo e la ricomposizione del path passano 5 ms e sono guidati dalla stessa notifica di Kodi. Se
+`ontextchange` viene servito dopo, il `ClearProperty` arriva tardi e non cambia niente. Costa una riga
+di skin e un giro di prova sul dispositivo, e si fa a parte.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
