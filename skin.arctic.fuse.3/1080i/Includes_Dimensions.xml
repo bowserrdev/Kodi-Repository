@@ -72,8 +72,10 @@
         <bottom>100</bottom>
     </include>
 
+    <!-- 1510 - 320: via la colonna destra della tastiera (lotto 158). L'area dei tasti non cambia,
+         cambia solo quanto e' larga la finestra; essendo centrata si ricentra da sola. -->
     <include name="Dimension_DialogKeysMenu">
-        <width>1510</width>
+        <width>1190</width>
         <include>Dimension_DialogCenter</include>
     </include>
 
