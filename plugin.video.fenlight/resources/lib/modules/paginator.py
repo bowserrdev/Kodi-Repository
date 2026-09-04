@@ -7,10 +7,22 @@
 from hashlib import md5
 from re import compile as re_compile
 from modules.kodi_utils import parse_qsl
-from caches.settings_cache import get_setting
 # Interruttore unico della strumentazione: qui in testa perche' lo usano sia PG_DEBUG sia PERF,
 # e il primo dei due sta molto piu' su del secondo.
 from modules.perf import enabled as _perf_enabled
+
+# L'import di settings_cache NON sta piu' in testa (lotto 161), ed e' la stessa ragione del lotto 126
+# per json in base_cache: settings_cache si tira dietro caches.base_cache e con lui sqlite3 -- 93 ms
+# sulla stick -- piu' datetime (36 ms) che sqlite3.dbapi2 importa a sua volta. Ma paginator lo importa
+# ANCHE chi non legge nessuna impostazione, e il caso che ha reso la cosa misurabile e' token_is_stale:
+# nell'invocazione lasciata cadere dal lotto 160, 636 dei 697 ms totali erano import, sqlite3 in testa,
+# per una funzione che confronta due stringhe. Le uniche quattro funzioni che leggono impostazioni sono
+# qui sotto e sono gia' tutte dentro una chiamata: spostare l'import dentro di loro non cambia niente
+# per le build vere (che le impostazioni le leggono comunque) e toglie l'intera catena sqlite a chi non
+# le legge. Dopo la prima volta 'from ... import' e' una lettura di sys.modules, quindi non si paga due volte.
+def get_setting(setting_id, fallback=''):
+	from caches.settings_cache import get_setting as _get_setting
+	return _get_setting(setting_id, fallback)
 
 # Window(10000) properties bridging the plugin build and the service watcher. Keyed per widget.
 PAGES_PROP = 'fenlight.pg.%s.pages'
