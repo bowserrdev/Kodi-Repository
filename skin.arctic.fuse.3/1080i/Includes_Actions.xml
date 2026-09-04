@@ -163,11 +163,28 @@
         <value condition="Window.IsVisible(videoplaylist)">videoplaylist</value>
     </variable>
 
+    <!-- Lotto A: la rigenerazione dei template partiva a OGNI ingresso in Home. Nel 99% dei casi
+         e' una guardia: skinvariables calcola un'impronta (lastbuildtime + generator.json + file
+         gia' generato + profilo) e se combacia esce senza fare niente, ma per calcolarla avvia
+         un interprete Python intero, misurato a 5,5 s all'avvio sulla stick, dentro la finestra in
+         cui si costruiscono i widget.
+         Due cambiamenti, nessuna funzione persa:
+         1) una volta per sessione (la proprieta' su Home si azzera da sola al ReloadSkin, che e'
+            proprio cio' che una rigenerazione vera esegue alla fine);
+         2) differita di 10 s, per uscire dalla contesa con la costruzione dei widget.
+         Il caso "ho modificato i collegamenti" non dipende da qui: lo coprono l'allarme di
+         Action_BuildShortcuts_OnUnLoad, il force di node.py dentro skinvariables, e il fatto che
+         uscendo dall'editor la proprieta' viene azzerata e il controllo rifatto. Il caso che
+         dipende davvero da qui e' il deploy con buildv alzato (vedi
+         shortcuts/generator/data/LEGGIMI-rigenerazione.md), e quello resta coperto una volta per
+         sessione. -->
     <include name="Action_BuildShortcuts_OnLoad">
-        <onload>runscript(script.skinvariables,"run_executebuiltin=special://skin/shortcuts/skinvariables-build-templates.json",use_rules)</onload>
+        <onload condition="String.IsEmpty(Window(Home).Property(Shortcuts.TemplatesChecked))">AlarmClock(check_templates,runscript(script.skinvariables,"run_executebuiltin=special://skin/shortcuts/skinvariables-build-templates.json",use_rules),00:10,silent)</onload>
+        <onload condition="String.IsEmpty(Window(Home).Property(Shortcuts.TemplatesChecked))">SetProperty(Shortcuts.TemplatesChecked,1,Home)</onload>
     </include>
     <include name="Action_BuildShortcuts_OnUnLoad">
         <onload>CancelAlarm(rebuild_shortcuts,true)</onload>
+        <onunload>ClearProperty(Shortcuts.TemplatesChecked,Home)</onunload>
         <onunload>AlarmClock(rebuild_shortcuts,runscript(script.skinvariables,"run_executebuiltin=special://skin/shortcuts/skinvariables-build-templates.json",use_rules),00:01,silent)</onunload>
     </include>
 

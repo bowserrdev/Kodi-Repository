@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <window>
-    <onload>RunScript(script.skinvariables,run_executebuiltin=special://skin/shortcuts/skinvariables-splash.json,use_rules=True)</onload>
+    <!-- Lotto A: questo script partiva a OGNI ingresso in Home, ritorno dal player incluso.
+         Con le impostazioni correnti (preloading degli hub spento, attesa dei widget disattivata)
+         tutte le sue regole sono false: gli restano due sleep e le due righe finali che tolgono
+         lo splash. Quelle due righe si fanno qui, senza avviare un interprete Python. Le due
+         condizioni sono complementari esatte: se una delle due impostazioni torna attiva lo
+         script riparte identico a prima. -->
+    <onload condition="Skin.HasSetting(Startup.EnableHubPreloading) | !Skin.HasSetting(Startup.DisableWaitForLoad)">RunScript(script.skinvariables,run_executebuiltin=special://skin/shortcuts/skinvariables-splash.json,use_rules=True)</onload>
+    <onload condition="!Skin.HasSetting(Startup.EnableHubPreloading) + Skin.HasSetting(Startup.DisableWaitForLoad)">ClearProperty(SplashIsVisible,1198)</onload>
+    <onload condition="!Skin.HasSetting(Startup.EnableHubPreloading) + Skin.HasSetting(Startup.DisableWaitForLoad)">CancelAlarm(SplashTimeOut,silent)</onload>
     <include>Action_BuildViews</include>
     <include>Action_ButtonMenu_Onload</include>
     <include>Action_BuildShortcuts_OnLoad</include>

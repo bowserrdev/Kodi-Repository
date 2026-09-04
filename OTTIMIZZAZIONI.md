@@ -18399,6 +18399,136 @@ generale, e le alternative -- numero assoluto, data di messa in onda -- sono eur
 esattamente la famiglia di scelte che questo rimappaggio ha gia' pagato due volte. Va deciso a mente
 fredda. **Vedi la voce aperta.**
 
+## Lotto 151 -- gli interpreti Python dell'ingresso in Home (lotto A della potatura skin)
+
+Primo lotto della sessione dedicata alla skin. Non e' una rimozione di codice morto: e' un costo
+**vivo e ricorrente** trovato leggendo il log di avvio della stick del 04/09.
+
+### Il fatto
+
+`Home.xml` avviava **due** interpreti Python a ogni `Window Init (Home.xml)`, cioe' anche al ritorno
+dal player e da ogni finestra video:
+
+```
+Home.xml:3   <onload>RunScript(script.skinvariables, ... skinvariables-splash.json ...)</onload>
+Home.xml:6   <include>Action_BuildShortcuts_OnLoad</include>  -> skinvariables-build-templates.json
+```
+
+Misurati nel log di avvio delle 13:47 (sono le invocazioni 7 e 8, che partono a 09.949 e 09.972,
+cioe' esattamente all'onload di Home): **4,4 s** e **5,5 s**, sovrapposti alla finestra 10,9-16,0 s
+in cui si costruiscono i tre widget della home. Su un dispositivo dove il lotto 117 ha misurato che
+il limite e' **un core**, sono due interpreti che rubano CPU proprio mentre serve.
+
+`Action_BuildViews`, il terzo include dell'onload, e' invece inerte: e' il fallback vuoto di
+`Includes_Fallbacks.xml` e non viene sovrascritto (verificato: `script-skinviewtypes-includes.xml`
+sulla stick e nel repo non contiene alcun `runscript`).
+
+### Cosa fa davvero `build-templates`, letto nel sorgente e non supposto
+
+`ShortcutsTemplate.update_xml` (`script.skinvariables/resources/lib/shortcuts/template.py:279`)
+calcola un'impronta di: argomenti della chiamata (fra cui `lastbuildtime`), contenuto di
+`skinvariables-generator.json`, contenuto del file **gia' generato**, nome del profilo. Se combacia
+con `Skin.String(script-skinvariables-generator-hash)` **esce senza fare nulla**. Al ritorno dal
+player e' quindi una guardia che paga un interprete intero per calcolare un hash e rispondere
+"niente da fare".
+
+I quattro innescchi di una rigenerazione vera, e chi li copre:
+
+| caso | innesco | copertura |
+|---|---|---|
+| modifica dei collegamenti | `Shortcuts.RebuildDateTime` cambia | `Custom_1115:14` (onload) e `Custom_1116:7` (onunload) |
+| salvataggio dall'editor | `action=buildtemplate&force` | `node.py:477`, **dentro l'addon**, non passa dalla skin |
+| uscita dall'editor | AlarmClock a 1 s | `Action_BuildShortcuts_OnUnLoad` su 1115 |
+| **deploy con `buildv` alzato** | cambia `generator.json` | **solo l'onload di Home** |
+
+Il quarto e' l'unico che dipendeva davvero da li', ed e' la trappola del
+`shortcuts/generator/data/LEGGIMI-rigenerazione.md` che tenne morta la paginazione sul Mac per
+undici giorni. Non si poteva quindi eliminare l'onload: andava reso raro.
+
+### Le due correzioni
+
+**A1 -- lo splash.** Con le impostazioni della stick (`Startup.EnableHubPreloading` spenta,
+`Startup.DisableWaitForLoad` accesa) tutte le regole di `skinvariables-splash.json` sono false: gli
+restano due `sleep` e le due righe finali `ClearProperty(SplashIsVisible,1198)` +
+`CancelAlarm(SplashTimeOut,silent)`, che sono cio' che **toglie lo splash di avvio**. Quelle due
+righe sono state portate nella skin come builtin, e il `RunScript` e' stato messo dietro la
+condizione complementare esatta. Se una delle due impostazioni torna attiva, lo script riparte
+identico a prima. Lo splash non e' un no-op: chi lo elimina alla cieca se lo ritrova appeso per 59 s.
+
+**A2 -- i template.** L'onload resta, ma:
+1. **una volta per sessione**, gated su `Window(Home).Property(Shortcuts.TemplatesChecked)`. La
+   proprieta' si azzera da sola al `ReloadSkin()`, che e' proprio cio' che una rigenerazione vera
+   esegue alla fine, quindi il ciclo si richiude senza codice aggiuntivo;
+2. **differita di 10 s** con `AlarmClock`, per uscire dalla contesa con la costruzione dei widget;
+3. la proprieta' viene **azzerata uscendo** dall'editor (`Action_BuildShortcuts_OnUnLoad`) e dal
+   dialogo dei collegamenti (`Custom_1116`), cosi' dopo ogni modifica il controllo si rifa' al primo
+   ingresso in Home successivo.
+
+### Il risultato, misurato sulla stick
+
+Tre avvii con `am start -n org.xbmc.kodi/.Splash` e adb staccato per tutta la durata. Bytecode caldo
+in tutti e tre (il deploy era di soli XML della skin, i `.pyc` di Fen Light non sono stati
+invalidati).
+
+| boot | parse degli include | avvio -> Home | Home -> ultimo widget | totale | interpreti skinvariables |
+|---|---|---|---|---|---|
+| prima (13:47) | 0,866 s | 7,03 s | **7,51 s** | 14,53 s | **3** |
+| dopo (14:07) | 0,646 s | 6,08 s | **4,80 s** | 10,88 s | **2** |
+| dopo (14:09) | 0,785 s | 6,26 s | **5,08 s** | 11,34 s | **2** |
+
+Il segmento che la correzione poteva toccare, `Home -> ultimo widget`, scende di **2,4-2,7 s** in
+modo riproducibile. Le invocazioni di Fen Light scendono con lui a parita' di codice:
+`build_continue_watching` da 5071 a 3186 ms, `mdblist` da 6097 a 4040 ms. E' la firma della contesa
+rimossa, non un'ottimizzazione del plugin.
+
+**Onesta' sulla misura**: il "prima" e' un campione solo, e le colonne `parse degli include` e
+`avvio -> Home` oscillano fra i due avvii "dopo" quanto basta a dire che li' siamo dentro il rumore.
+Cio' che regge e' il segmento mirato piu' il fatto meccanico verificabile nel log: due invocazioni
+sparite da quella finestra.
+
+**La conferma piu' istruttiva**: il controllo dei template differito parte a +10,4 s e dura
+**592 ms**. E' lo stesso identico lavoro che dentro la tempesta d'avvio ne costava 5500. Nove volte
+tanto, per contesa. Vale come misura indipendente della tesi dei lotti 28 e 117.
+
+### Cosa e' cambiato a schermo, dichiarato
+
+Lo splash di avvio sparisce **prima**: `Window Deinit (Custom_1198)` a 2,23 s dall'inizializzazione
+di Home invece di 6,88 s. Non e' un effetto collaterale, e' la conseguenza diretta di non aspettare
+piu' i due `sleep` dello script. Con `Startup.DisableWaitForLoad` attiva l'utente ha gia' dichiarato
+di non voler aspettare, quindi va nella direzione voluta, ma si vede: la home compare vuota per
+qualche secondo mentre i widget si costruiscono, invece di restare coperta dallo splash.
+
+### Verifiche fatte
+
+- XML valido sui tre file toccati.
+- **Simboli**: confronto delle definizioni `<include|variable|expression|constant name=>` fra
+  `HEAD` e l'albero di lavoro. `Includes_Actions.xml` 39 -> 39, nessuna persa. (La lezione di
+  [[scripted-edits-verify-symbols]]: `ast.parse` o l'XML ben formato non bastano.)
+- **Allineamento del dispositivo prima del deploy**: md5 di tutti i 207 XML della skin, stick contro
+  repo. Differivano solo i 3 file modificati piu' `script-skinvariables-generator-includes-.xml`,
+  che e' il file *generato* e deve restare diverso per dispositivo. **Non spinto.** Nessun ibrido.
+- md5 dei 3 file verificati dopo il push.
+- Nessun errore o warning nuovo nel log: l'insieme e' identico a prima, riga per riga.
+- Lo splash viene tolto (`Window Deinit (Custom_1198)` presente in entrambi gli avvii).
+- Il controllo differito non rigenera: nessun `ReloadSkin`, nessun `Unloaded skin` dopo l'avvio.
+
+### Da verificare sul dispositivo
+
+Il caso che ha originato il lotto e non e' ancora stato misurato: **entrare in una finestra video o
+in un hub e tornare in Home**. Atteso: **zero** righe `skinvariables/script.py): start processing`
+nel log per ogni ingresso in Home successivo al primo. Prima erano due.
+
+### Difetti confermati e non ancora corretti (dal log del 04/09)
+
+- `$VAR[Home_Icon_1106]`, `_1107`, `_1108` non definite: due warning ciascuna a ogni disegno del menu.
+- `LoadTimers: Could not load timers file .../1080i/Timers.xml`: file assente, warning a ogni avvio.
+- `Trying to add unsupported control type 7`, due volte.
+- `Image_SimpleBackground` ricade su `purle_blur.jpg` (manca la *p*). Mascherato perche'
+  `Background.Image` e' valorizzata.
+- Quattro resource addon referenziati e non installati: `resource.images.arctic.waves` (nel busy
+  loader di `Includes_Background.xml`), `moviecountryicons.maps`, `studios.white`,
+  `weatherfanart.multi`.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
