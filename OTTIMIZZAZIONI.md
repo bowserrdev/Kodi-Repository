@@ -19344,6 +19344,91 @@ e lo conferma il log, dove durante i 13 passi di paginazione `Settled` resta ugu
 Non corretto in questo lotto: i difetti 1 e 3 sono due modifiche indipendenti e vanno misurate
 separatamente.
 
+## Lotto 160 -- al cambio query partivano due costruzioni, e una era sprecata per intero
+
+Misurato sulla stick il 04/09, passando da "batman" (arrivata a 9 pagine) a "superman":
+
+```
+19:22:54.757  provider  query=superman  &pages=9      <- il conteggio della query PRECEDENTE
+19:22:54.766  parte la build #1
+19:22:56.393  provider  query=superman  (senza pages) <- reconcile_position ha azzerato il token
+19:22:56.398  parte la build #2
+19:23:03.988  build #2 finita  path_pages=-   7.381 ms
+19:23:04.564  build #1 finita  path_pages=9   9.528 ms
+```
+
+**Due interpreti Python concorrenti, 7,4 s e 9,5 s, per una sola ricerca**, su un dispositivo legato a
+un core dove si rallentano anche a vicenda. La #1 e' inutile per intero: nasce con il conteggio di
+un'altra lista e quando finisce quel conteggio e' gia' stato riazzerato -- da lei stessa.
+
+### La causa, che e' la solita in una veste nuova
+
+Il frammento `&pages=N` nel `<content>` guarda **la propria proprieta'**, non se quella proprieta'
+appartenga ancora al contenuto che sta adesso in quel contenitore. Cambiando la query cambia il
+contenuto, ma il token sopravvive, e Kodi rilegge il path prima che qualcuno se ne accorga: la
+riconciliazione (`reconcile_position`, lotto 92) sta **dentro** la build, quindi per definizione
+arriva dopo che la build e' partita.
+
+E' la famiglia del lotto 7 -- *"il criterio e' il path di base, non il token"* -- spostata di un
+gradino: qui il path di base c'e' ed e' giusto, ma il token che gli si accoda e' di un'altra lista.
+
+### Perche' la correzione non poteva stare nella skin
+
+La prima idea era azzerare il token nell'istante in cui cambia il testo scritto, prima che Kodi
+rilegga il path. **Non esiste quell'istante nella skin**: il controllo `edit` 3000 non ha nessun
+aggancio sul cambio testo (verificato leggendo tutto il controllo: `onfocus`, `onunfocus`, le
+direzionali, niente altro), e il testo lo scrive Kodi stesso quando la tastiera si chiude. Qualunque
+azione della skin arriverebbe dopo il provider, cioe' troppo tardi.
+
+Quindi la build #1 **partira' sempre**. Cio' che si puo' fare e' non farle fare il lavoro.
+
+### Il cancello, fratello di quello che c'era gia'
+
+`_search_debounce_abort` lascia cadere una build la cui **query** e' gia' superata. Accanto ad esso
+ora c'e' `_stale_token_abort`, che lascia cadere una build il cui **conteggio pagine** lo e'. La
+decisione sta tutta in `paginator.token_is_stale`, e vale se e solo se **tutte e tre** queste cose
+sono vere insieme:
+
+1. il path porta un `&pages=N` -- Kodi ci ha chiamati leggendo il token;
+2. l'impronta del contenuto in quella posizione e' diversa da quella registrata -- quel conteggio e'
+   di un'altra lista;
+3. **la proprieta' del token e' ancora valorizzata**.
+
+La terza e' quella che rende l'abort sicuro, ed e' la ragione per cui questo non e' una toppa:
+azzerare una proprieta' gia' vuota **non cambia il path**, quindi non seguirebbe nessuna ricarica e
+il contenitore resterebbe vuoto per sempre. E' esattamente il guasto del lotto 111, dove sta scritto
+il perche' in una riga che vale la pena ripetere: *nell'API dei plugin non esiste "chiudi la cartella
+tenendo quello che hai"*. Chiudere a vuoto si fa **solo** quando si sa che ne arriva subito un'altra,
+e qui lo si sa perche' e' questa stessa funzione a cambiare il path.
+
+Il cancello sta in `routing` sotto `if 'build' in mode`, non nel ramo della ricerca: **il cambio
+inquilino non e' un fatto della ricerca**, e' solo dove si vede piu' spesso. Un hub che cambia
+categoria porta lo stesso token addosso e ora prende la stessa strada. Il filtro a costo zero
+(`'pgctl' not in params`) evita di importare il paginator per le invocazioni che non sono widget.
+
+### Provato fuori da Kodi
+
+`tests/test_160.py`, sette casi, tutti e quindici i file della cartella passano. Quelli che contano
+non sono i due positivi ma i **cinque negativi**, perche' il modo di sbagliare qui e' abortire di
+troppo:
+
+| caso | esito atteso |
+|---|---|
+| A -- query cambiata, token vivo | **cade**, e il token viene azzerato |
+| B -- stessa query, paginazione vera | costruisce, token intatto |
+| C -- token gia' azzerato da altri | costruisce (nessuna ricarica seguirebbe) |
+| D -- prima apertura, nessun `&pages` nel path | costruisce |
+| E -- path senza `pgctl` | costruisce |
+| F -- hub che cambia categoria | **cade**; stessa categoria: costruisce |
+| G -- seconda chiamata sullo stesso path | costruisce (idempotente) |
+
+### Da misurare sul campo
+
+Il guadagno atteso e' un interprete in meno per ogni cambio di query e per ogni cambio di categoria
+in un hub, e la fine della contesa fra i due. La verifica e' diretta e non ammette interpretazioni:
+nel log, dopo un cambio query, deve comparire **una sola** riga `INVOCAZIONE###` invece di due, e la
+riga `token sorpassato` del paginator al posto della seconda.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
