@@ -18552,6 +18552,97 @@ Registrato qui solo perche' i numeri di questa sessione lo riconfermano, **non**
   loader di `Includes_Background.xml`), `moviecountryicons.maps`, `studios.white`,
   `weatherfanart.multi`.
 
+## Lotto 152 -- l'interruttore che nascondeva i widget, e la freccia giu' dell'OSD
+
+Due richieste dell'utente dopo la prova sul campo del lotto B, entrambe su cose che si vedono.
+
+### 1. `Exp_TMDbHelper_IsData` non era piu' un interruttore di TMDbHelper
+
+Segnalazione: *"nella scheda Disposizione -> Informazioni -> Widget non potevo disattivare la voce
+tmdbhelper, perche' se no non comparivano piu' alcuni widget che da TMDbHelper non dipendono"*, e
+*"su Dettagli compare ancora TMDbHelper Servizio"*.
+
+Il difetto e' reale ed e' strutturale. `Exp_TMDbHelper_IsData` = `Skin.HasSetting(TMDbHelper.EnableData)`
+governa **48 punti** della skin, e con la migrazione a Fen Light la quasi totalita' di quei punti e'
+ormai alimentata da Fen Light. L'interruttore aveva quindi conservato il nome vecchio e acquisito un
+significato nuovo: non "usa TMDbHelper" ma "mostra i metadati estesi". Spegnerlo, che il nome
+invitava a fare, nascondeva **16 voci widget** nella pagina Informazioni
+([Dialog_DialogCustom.xml:1069-1219](skin.arctic.fuse.3/1080i/Dialog_DialogCustom.xml)) piu' la
+sezione Valutazioni.
+
+**Congelata a `[true]`.** Sul dispositivo `EnableData` e' attiva, quindi tutti i 48 gate valgono gia'
+true e tutti i rami `!$EXP[...]` valgono gia' false: il cambiamento e' a comportamento identico. Ma
+toglie la possibilita' che un reset delle impostazioni o un altro dispositivo si ritrovi met&agrave;
+interfaccia sparita per un interruttore che non governa piu' cio' che il suo nome dice.
+
+Rimossi i due comandi che lo pilotavano — l'etichetta e il radiobutton *TMDbHelper Servizio* in
+Dettagli, e il radiobutton *TMDbHelper* nella pagina Informazioni -> Widget — piu'
+`Action_TMDbHelper_Toggle_Onclick`, che era il loro unico corpo.
+
+**Restano da fare, segnalati e non toccati**: 21 `<visible>$EXP[Exp_TMDbHelper_IsData]</visible>` ora
+costanti-vere (righe eliminabili) e 12 rami `!$EXP[Exp_TMDbHelper_IsData]` ora costanti-falsi (sono i
+ripieghi nativi conservati di proposito al lotto 3, la loro rimozione e' una decisione a se').
+
+### 2. La freccia giu' nell'OSD: tolta tutta la catena
+
+Richiesta: *"non voglio nessuna voce che contiene info nell'osd, le ho disattivate tutte; l'OSD deve
+essere il piu' leggero possibile perche' la riproduzione e' il punto piu' importante"*.
+
+La catena, letta prima di toccarla (`Action_OSD_Main_OnDown` e le sue tre variabili satellite):
+
+```
+livetv + EPG            -> pvrosdguide
+livetv                  -> pvrosdchannels
+playlist presente       -> 1140  (OSD Playlist)
+altrimenti              -> videobookmarks
+ultimo ripiego          -> 1141  (OSD Cast)
+```
+
+Sulla stick nessuna impostazione `OSD.OnDown.*` e' scritta, quindi **tutti i rami erano attivi**.
+
+Rimosso per intero: i **tre** `<ondown>` (due in `VideoOSD.xml`, uno in `Includes_OSD.xml` che il
+primo censimento non aveva visto), i due `<ondown>` gemelli in `VideoOSDBookmarks.xml` e
+`DialogPVRChannelGuide.xml`, le 4 variabili della catena, le 5 variabili `Label_OSD_HintText*`,
+l'espressione `Exp_OSD_HasDownTarget`, il **suggerimento disegnato sopra la barra di ricerca in
+riproduzione** (`DialogSeekBar.xml`, che era l'unico consumatore di quelle etichette), i 5
+interruttori `OSD.OnDown.*` nelle impostazioni, e `OSD_CastInfo_Details`.
+
+**Due file eliminati**: `Custom_1140_OSD_Playlist.xml` e `Custom_1141_OSD_Cast.xml`, che dopo la
+rimozione della catena non erano piu' raggiungibili da nessun punto (verificato: zero
+`ActivateWindow` verso 1140/1141 in tutto l'albero).
+
+`Includes_OSD_CastInfo.xml` **resta**, nonostante il nome: definisce `OSD_Info_Dimensions`,
+`OSD_Info_Tray`, `OSD_List_Dimensions`, `OSD_View_Line`, usate 4-5 volte ciascuna fuori di li'. Il
+nome del file non dice a cosa serve, ed e' una trappola per il prossimo che passa.
+
+### Due errori miei, entrambi fermati dai controlli
+
+1. **Lo scanner di blocchi contava male.** Una riga `<include>Nome</include>` su riga singola
+   incrementava la profondita' senza decrementarla, e tre file sono usciti con i tag sbilanciati. Li
+   ha trovati il controllo XML su tutto l'albero, non l'occhio. Ripristinati da `HEAD` e rifatti con
+   il conteggio corretto (riga auto-conclusa = neutra).
+2. **Censimento incompleto.** Avevo cercato gli `<ondown>` solo in `VideoOSD.xml`: ne restavano tre
+   altrove, che sarebbero rimasti a puntare a variabili appena cancellate. Li ha trovati il controllo
+   globale dei `$VAR` usati e non definiti. **Quel controllo va eseguito dopo ogni rimozione di
+   definizioni, non alla fine del lotto.**
+
+### Verifiche fatte
+
+- XML valido su **tutti** i 205 file dell'albero, non solo su quelli toccati.
+- Simboli: 12 definizioni rimosse, esattamente le 12 volute, zero collaterali.
+- Coerenza globale: zero include usati e non definiti oltre ai 3 preesistenti; zero `$VAR`/`$EXP`
+  orfani nuovi; zero riferimenti residui a 1140/1141; zero riferimenti alla catena `Action_OSD_*_OnDown`.
+- Deploy a Kodi fermo, md5 11 su 11, i due file cancellati anche sul dispositivo.
+- Avvio pulito: nessun errore nuovo, nessun `Skin has invalid include`.
+
+### Trovato per strada, non corretto
+
+Aprendo l'hub ricerca compaiono tre `GetDirectory - Error getting &pgctl=1105.501/502/505`. E' la
+firma gia' diagnosticata al **lotto 7**: il token di paginazione viene emesso anche quando il path di
+base e' vuoto, e il criterio giusto e' *"il path di base non e' vuoto"*, non *"il token e'
+valorizzato"*. Corretto allora per home e hub, tornato sul percorso della ricerca dopo il lotto 67.
+Innocuo (il container resta vuoto) ma va chiuso.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
