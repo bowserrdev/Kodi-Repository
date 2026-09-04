@@ -4,7 +4,11 @@
          scope 1105, che e' quello in cui il lato plugin lo scrive (paginator.ctl_scope). Senza, vale il
          default 'home' di Hub_Combined_Widget e il contenitore leggerebbe il token della Home. -->
     <param name="pgscope">1105</param>
-    <param name="content">$VAR[{widget_search_variable},{widget_path},{widget_path_end}]</param>
+    <!-- pggated: il path di base e' vuoto a casella vuota, quindi il segmento di identita' non va
+         accodato dopo ma messo nel SUFFISSO del $VAR, dove sparisce insieme al path. Senza,
+         il contenitore resta con il solo '&amp;pgctl=1105.502' e Kodi lo tenta come cartella. -->
+    <param name="pggated">true</param>
+    <param name="content">$VAR[{widget_search_variable},{widget_path},{widget_path_end}&amp;pgctl=1105.{widget_id}]</param>
     <param name="include">{widget_include}</param>
     <param name="target">{widget_target}</param>
     <param name="sortby">{widget_sortby}</param>

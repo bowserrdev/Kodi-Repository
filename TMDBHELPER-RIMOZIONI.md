@@ -598,3 +598,22 @@ Le superfici toccate che si vedono: **hub ricerca** (apertura, tasto Su dalla ba
 filtri avanzati), **scheda trama** aperta dalla scheda info, **menu contestuale** su film e serie,
 **impostazioni** (la voce TMDbHelper non c'e' piu'), **OSD cast** durante la riproduzione.
 
+## Lotto 8 -- la riga Discover di TMDbHelper nella ricerca (lotto 155)
+
+`Includes_Search.xml` teneva un `Hub_Combined_Widget` sul contenitore **501** il cui path era
+`$INFO[window(home).property(tmdbhelper.userdiscover.folderpath)]`, piu' il suo pannello
+`Hub_Combined_Info`. La proprieta' non e' scritta da nessuno da quando, nel lotto B, e' sparito il
+`RunPlugin` verso `user_discover`: il contenitore era morto e produceva due `GetDirectory` fallite
+per sessione di ricerca (`&pgctl=1105.501` all'apertura, `&with_text_query=<query>&pgctl=1105.501` a
+query conclusa). Il Discover vivo e' quello di Fen Light, contenitore **505**.
+
+Rimossi i due blocchi; spostato da 501 a 505 il valore di partenza di `TMDbHelper.WidgetContainer`
+per la finestra 1105 in `Includes_Hubs.xml`, e tolto da `Includes_Images.xml` il guard che esisteva
+solo per tenere il 501 fuori dalla finestra di ricerca.
+
+`TMDbHelper.WidgetContainer` **resta**: nonostante il nome e' una proprieta' interna della skin
+(75 riferimenti, il piu' importante e' la variabile dello sfondo), non parla con l'addon.
+Rinominarla e' un lotto a se'.
+
+Riferimenti `themoviedb.helper` in `1080i/`: **8**, invariati -- sono tutti in
+`Dialog_DialogCustom.xml` e vanno con il lotto D.

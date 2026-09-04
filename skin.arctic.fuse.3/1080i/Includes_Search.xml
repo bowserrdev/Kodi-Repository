@@ -64,7 +64,12 @@
                                          scrive come w1105: senza questo parametro qui si leggerebbe il default
                                          'home', cioe' un token che nessuno scrive mai, e il row non paginerebbe. -->
                                     <param name="pgscope">1105</param>
-                                    <param name="content">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]</param>
+                                    <param name="pggated">true</param>
+                                    <!-- Il path esiste solo dopo che Discover e' stato usato almeno una volta.
+                                         Il segmento di identita' sta nel SUFFISSO di questo $INFO, non accodato
+                                         dopo: cosi' quando la proprieta' e' vuota sparisce anche lui e il
+                                         contenitore resta senza path invece che con il solo token. -->
+                                    <param name="content">$INFO[Window(Home).Property(FenLight.Discover.ContentPath),,&amp;pgctl=1105.505]</param>
                                     <param name="include">List_Poster_Row</param>
                                     <param name="target">videos</param>
                                     <param name="visible">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</param>
@@ -75,18 +80,6 @@
                                 </include>
                                 <control type="group">
 	                                    <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
-                                <include content="Hub_Combined_Widget" condition="!Skin.HasSetting(Search.DisableDiscover) + !Skin.HasSetting(Search.DisableCombined)">
-                                    <param name="id">501</param>
-                                    <param name="pgscope">1105</param>
-                                    <param name="content">$INFO[window(home).property(tmdbhelper.userdiscover.folderpath)]$INFO[Control.GetLabel(3000).index(1),&amp;with_text_query=,]</param>
-                                    <param name="include">List_Poster_Row</param>
-                                    <param name="target">videos</param>
-                                    <param name="visible">String.IsEqual(Container(601).ListItem.Property(guid),discover)</param>
-                                    <param name="allowhiddenfocus">true</param>
-                                    <param name="hidden_button_enabled">true</param>
-                                    <param name="clear_hideartwork_onfocus">true</param>
-                                    <param name="refocus">SetFocus(3001)</param>
-                                </include>
                                 <include condition="!Skin.HasSetting(Search.DisableCombined)">skinvariables-searchwidgets-combined</include>
                                 <include condition="Skin.HasSetting(Search.DisableCombined)">skinvariables-searchwidgets-standard</include>
                                 </control>
@@ -199,9 +192,6 @@
             <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))]</visible>
             <control type="group">
                 <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
-                <include content="Hub_Combined_Info" condition="!Skin.HasSetting(Search.DisableDiscover) + !Skin.HasSetting(Search.DisableCombined)">
-                    <param name="id">501</param>
-                </include>
             </control>
             <control type="group">
                 <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</visible>

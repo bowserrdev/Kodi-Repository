@@ -18777,6 +18777,7 @@ d'avvio adesso non le nomina piu'.
 | a freddo 15:36 | 0,856 s | 0,486 s | 0,147 s | **1,489 s** |
 | **lotto C #1** | 0,763 s | 0,587 s | 0,102 s | **1,452 s** |
 | **lotto C #2** | 0,696 s | 0,690 s | 0,235 s | **1,621 s** |
+| **lotto C #3** (prova utente) | 0,696 s | 0,421 s | 0,088 s | **1,554 s** |
 
 **Meno 9,9% di righe, zero guadagno misurabile.** E il motivo e' aritmetico, non misterioso: il
 guadagno atteso era 9,9% di 0,86 s = **85 ms**, mentre la banda di rumore fra avvii a codice
@@ -18808,6 +18809,214 @@ inclusi gli 8 content path TMDbHelper dell'hub 1106 che avrebbero aperto il prom
 Gli **8** riferimenti TMDbHelper superstiti sono tutti in `Dialog_DialogCustom.xml` e sono
 `RunScript(…,blur_image=…)` del selettore di sfondo: vanno con il **lotto D**, insieme allo strato
 blur.
+
+### La prova sul campo: il log conferma, il tempo di avvio no
+
+Log `16:15:59` -> `16:17:35`, avvio + hub + rientro + due menu contestuali + dialogo opzioni.
+L'utente riferisce che la home e' rimasta identica -- coerente, non usava nessuno dei sottosistemi
+rimossi.
+
+**Quello che il log dimostra**
+
+- **Zero occorrenze della stringa `themoviedb.helper` in tutto il log.** E' la conferma piu' netta
+  di tutta la sessione: non un content path, non un `RunScript`, non un tentativo di risoluzione.
+- Zero `$VAR`/`$EXP` non definiti, zero include mancanti, zero file di skin cercati e non trovati.
+  I 49 file cancellati non lasciano richiami.
+- **Un solo errore** in 96 secondi, `CPeripheralJoystick: No button mapping add-on` -- preesistente
+  e non nostro. I warning superstiti sono i noti del lotto E (`Timers.xml` assente, due
+  `unsupported control type 7`, gli MD5 del repo).
+- Nessuna `DoWork - took` sopra i 100 ms: le texture non sono un problema in questo giro.
+- Memoria: 293 MB liberi all'inizio, 268 nel punto peggiore della home, 305 all'uscita. Nessuna
+  deriva.
+
+**Il caricamento skin resta piatto.** 1,554 s, dentro la stessa nuvola di prima (1,281-1,621 s su
+cinque avvii, tre prima del lotto e due dopo). Terza misura, stessa conclusione: il capitolo si
+chiude in negativo, come gia' scritto sopra.
+
+**Due meccaniche dei lotti precedenti si vedono funzionare qui, e vanno registrate.**
+
+Il controllo differito dei template (lotto 151) e' partito alle `16:16:13.689` ed e' finito alle
+`16:16:14.285`: **596 ms, spesi 3,4 secondi dopo che la home era gia' popolata**, cioe' nel tempo
+morto in cui l'utente sta ancora guardando. Ed e' partito **una volta sola in tutta la sessione**:
+il rientro in Home alle `16:17:07` non l'ha rifatto, perche' `Shortcuts.TemplatesChecked` era gia'
+posata. E' esattamente il comportamento per cui era stato scritto.
+
+Il rientro dall'hub in Home, alle `16:17:07.560`, **non ha ricostruito nessun widget**: fra
+`16:16:21.198` e `16:17:13.352` non parte un solo interprete, e quel `13.352` e' gia' il menu
+contestuale aperto dall'utente. Il rientro da finestra a finestra e' gratis; resta caro solo il
+rientro dal player, che e' il `Player.OnStop` di `CDirectoryProvider` (lotto 129, revocato).
+
+**Il resto della sessione, per riferimento**
+
+| momento | tempo |
+|---|---|
+| avvio Kodi -> skin caricata | 3,84 s |
+| Startup -> Home | **22 ms** (lotto 153 regge) |
+| Home init -> ultimo widget consegnato | **6,96 s** (3 interpreti) |
+| avvio Kodi -> home popolata | **10,82 s** |
+| ingresso hub 1101 -> ultimo widget | 4,33 s (5 interpreti) |
+
+I 6,96 s della home sono il collo di bottiglia noto e non toccato da questo lotto: `import 545 +
+import pigri 2256` sulla prima invocazione, cioe' il modello del lotto 74 (costo per **file**
+aperto), non righe di skin. E' li' che va guardata la prossima ottimizzazione dell'avvio, non
+nell'albero degli include.
+
+## Lotto 155 -- la paginazione della ricerca: non era rotta, e la misura lo dimostra
+
+Il lotto nasce da una convinzione mia, ripetuta per tre sessioni: *"la paginazione nella ricerca non
+funziona come in home e hub"*. **Era sbagliata.** La prima cosa fatta questa volta e' stata misurarla
+invece di dedurla, e il log dice il contrario.
+
+### Cosa fa davvero la ricerca, misurato
+
+Sessione del 04/09, query "batman", scorrimento fino in fondo alla riga Film:
+
+```
+watcher TRIGGER key=1105.502 pages 2->3   current=11/31 built=31
+watcher TRIGGER key=1105.502 pages 3->4   current=14/34 built=34
+watcher TRIGGER key=1105.502 pages 4->5   current=17/37 built=37
+watcher TRIGGER key=1105.502 pages 5->6   current=20/38 built=38
+watcher TRIGGER key=1105.502 pages 6->7   current=21/39 built=39
+watcher TRIGGER key=1105.502 pages 7->8   current=23/39 built=39
+watcher TRIGGER key=1105.502 pages 8->9   current=27/41 built=41
+```
+
+Sette paginazioni consecutive, `path_pages=8` e `path_pages=9` confermati nelle righe PERF, la
+posizione del fuoco **conservata a ogni passo** (27/41 prima della ricostruzione, 28/41 dopo),
+nessun ritorno al lotto iniziale, nessun azzeramento del token. **La ricarica mirata per (finestra,
+contenitore) funziona in ricerca esattamente come in home e negli hub.**
+
+### Perche' allora *sembra* diversa
+
+Perche' la ricerca su TMDb **si prosciuga**. Elementi resi da ciascuna pagina, nello stesso giro:
+
+| pagina | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| elementi | 20 | 18 | 12 | 5 | 3 | 1 | 1 | 2 |
+
+Dalla quarta pagina in poi ogni paginazione **aggiunge da 1 a 3 elementi**, e ognuna costa una
+ricostruzione cumulativa intera: 5,06 s alla pagina 8 (di cui **4,68 s di sola risoluzione**, cioe'
+rifare da capo le otto chiamate a TMDb) e 2,92 s alla pagina 9. In home un passo aggiunge una
+ventina di elementi; qui ne aggiunge uno e ci mette lo stesso tempo. **La sensazione di "non pagina"
+e' quella: il meccanismo gira, e' la sorgente che non ha piu' niente da dare.**
+
+Non e' un difetto da correggere in questo lotto, ed e' bene dirlo invece di inseguirlo: e' il costo
+della costruzione cumulativa, che e' anche cio' che rende la paginazione robusta al ritorno dal
+player. Se un giorno si vorra' attaccare, la leva e' la cache delle pagine gia' risolte, non il
+token.
+
+### Quello che invece era rotto: quattro path monchi
+
+Nella stessa sessione, quattro `GetDirectory` fallite:
+
+| path | quando | causa |
+|---|---|---|
+| `&pgctl=1105.501` | apertura ricerca | riga Discover di TMDbHelper, path di base **morto** |
+| `&with_text_query=batman&pgctl=1105.501` | query conclusa | idem, con la coda del testo |
+| `&pgctl=1105.502` | apertura ricerca | riga Film, casella vuota |
+| `&pgctl=1105.505` | apertura ricerca | riga Discover di Fen Light, mai aperta |
+
+E' la firma del **lotto 7**, tornata sul percorso della ricerca dopo il lotto 92: il segmento di
+identita' `&pgctl=` viene accodato al path **al buio**, e quando il path di base e' vuoto resta da
+solo. Il criterio giusto e' *"il path di base non e' vuoto"*, non *"il token e' valorizzato"*.
+
+### La correzione
+
+**1. Via la riga Discover di TMDbHelper (contenitore 501 nella finestra 1105).** Il suo path e'
+`$INFO[window(home).property(tmdbhelper.userdiscover.folderpath)]`: una proprieta' che nessuno
+scrive piu' da quando, nel lotto B, e' sparito il `RunPlugin` verso `user_discover`. Il Discover vivo
+e' quello di Fen Light, contenitore **505**. Rimossi il row e il suo pannello info in
+`Includes_Search.xml`, spostato a 505 il valore di partenza di `TMDbHelper.WidgetContainer` per la
+finestra 1105 (`Includes_Hubs.xml`) e semplificato il guard che in `Includes_Images.xml` esisteva
+solo per tenere fuori il 501 dalla ricerca.
+
+**2. Il segmento di identita' diventa un parametro, con il default sicuro.** Le due righe `<content>`
+di `Hub_Wall_Widget` e `Hub_Combined_Widget` confluiscono in una definizione sola,
+`Defs_Widget_Content`, in cui i tre pezzi hanno tre mestieri distinti:
+
+```xml
+<content ...>$PARAM[content]$PARAM[pgctl]$INFO[Window(Home).Property(fenlight.pg.w...ctl....pages),&amp;pages=,]</content>
+```
+
+e i due widget la richiamano due volte, scegliendo con una condizione di include (statica, risolta al
+caricamento) chi scrive `pgctl`:
+
+```xml
+<param name="pggated">false</param>
+...
+<include content="Defs_Widget_Content" condition="![$PARAM[pggated]]">
+    <param name="pgctl">&amp;pgctl=$PARAM[pgscope].$PARAM[id]</param>
+<include content="Defs_Widget_Content" condition="$PARAM[pggated]">
+    <param name="pgctl" />
+```
+
+**Il default e' il comportamento di sempre.** Chi ha un path letterale (home, hub) non deve sapere
+niente di questo problema e non puo' introdurlo per dimenticanza: e' l'opposto di un parametro
+obbligatorio, che si dimentica in silenzio e spegne la paginazione di un widget senza un errore.
+
+Chi ha un path condizionale passa `pggated=true` e scrive `&pgctl=` nel **suffisso del proprio
+`$VAR`/`$INFO`**, dove sparisce insieme al path:
+
+```xml
+505: $INFO[Window(Home).Property(FenLight.Discover.ContentPath),,&amp;pgctl=1105.505]
+502: $VAR[Path_SearchTerm,plugin://...&amp;query=,&amp;pgctl=1105.502]      (search_row.xmltemplate)
+```
+
+### Perche' NON e' annidato
+
+La strada apparentemente piu' pulita era mettere tutto il token dentro il suffisso, `$INFO[...]`
+compreso. **Scartata su una verifica:** in 158 file della skin non esiste **un solo** `$INFO`/`$VAR`
+annidato dentro un altro. Il parser di Kodi trova la parentesi chiusa contando l'annidamento, ma
+spezza gli argomenti su una virgola semplice: un `$INFO[prop,&amp;pages=,]` dentro il terzo argomento di
+un `$VAR[a,b,c]` diventerebbe cinque argomenti invece di tre. Costruire il lotto su un
+comportamento mai esercitato in questa skin, e non verificabile senza provarlo, non valeva il
+risparmio di un parametro.
+
+### Censimento, perche' due volte non basta
+
+Prima di toccare qualcosa: **tutti** i `<param name="content">` che possono risultare vuoti, non solo
+quelli della ricerca. Sono sei, e quattro sono innocui:
+
+| path | dove finisce | esito |
+|---|---|---|
+| `$VAR[Path_SearchTerm,...]` x2 | `Hub_Combined_Widget` | **corretto** (template) |
+| `$INFO[...FenLight.Discover.ContentPath...]` | `Hub_Combined_Widget` | **corretto** |
+| `$INFO[...tmdbhelper.userdiscover...]` | `Hub_Combined_Widget` | **rimosso** |
+| `$INFO[Window.Property(Encoded.ListItem.Artist/Album),musicdb://...]` x2 | `Object_ContentDynamic` | nessun token, innocuo |
+| `$INFO[Skin.String(HomeSwitcher....Spotlight.Path)]` | `Hub_Spotlight_List` | nessun token, innocuo |
+
+E' la regola scritta al lotto 7 dopo averla sbagliata due volte -- *"prima di aggiungere qualcosa a un
+path, elencare tutti i modi in cui quel path puo' essere vuoto"* -- applicata per la prima volta
+prima e non dopo.
+
+### Cosa resta aperto, e va detto
+
+Il frammento `&amp;pages=N` continua a essere emesso da un `$INFO` proprio, che guarda la propria
+proprieta' e non il path di base. Se si pagina e **poi** si svuota la casella di ricerca, puo'
+comparire **una** `GetDirectory - Error getting &amp;pages=N` prima che il token venga azzerato. E' il
+residuo gia' annotato al lotto 7. Chiuderlo richiederebbe l'annidamento scartato sopra, oppure che il
+watcher azzeri il token dei contenitori vuoti senza il fuoco addosso -- e quest'ultima cancellerebbe
+il conteggio anche durante una costruzione fresca, cioe' al rientro dal player. Il rimedio costa piu'
+del guasto: resta com'e', dichiarato.
+
+### Verifiche fatte
+
+- XML valido su tutti i 158 file, JSON valido sul generatore.
+- Insieme degli orfani **identico** a HEAD: `Hub_Disabled_Onload` e `Settings_InfoText` prima e dopo,
+  zero `$VAR`/`$EXP` nuovi. (Nota: `script-skinvariables-generator-includes-.xml` e' in `.gitignore`
+  e non sta in git -- il confronto con HEAD va fatto sapendolo, o si legge una differenza che non c'e'.)
+- Zero riferimenti residui a 501 in `Includes_Search.xml`.
+- `buildv` alzato a `0.2.1-ricerca-pgctl`: le due righe di ricerca combinate sono generate, e senza
+  il salto di versione il file generato resterebbe quello di prima. Quarta volta che questa catena
+  serve davvero.
+
+### Un errore di metodo, registrato
+
+Ho tenuto per tre sessioni una diagnosi -- *"la ricerca non pagina"* -- basata su un'impressione
+riferita e su tre righe di errore nel log, senza mai far scorrere una lista di ricerca fino in fondo
+e guardare i TRIGGER. Le tre righe di errore erano vere e sono state corrette qui; la diagnosi che ci
+avevo appeso sopra era falsa. **Un errore visibile nel log non e' la spiegazione del sintomo
+riferito: e' un altro fatto, che va collegato al sintomo o tenuto separato.**
 
 ## Cosa resta aperto, dichiarato
 
