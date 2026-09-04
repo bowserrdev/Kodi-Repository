@@ -18643,6 +18643,82 @@ base e' vuoto, e il criterio giusto e' *"il path di base non e' vuoto"*, non *"i
 valorizzato"*. Corretto allora per home e hub, tornato sul percorso della ricerca dopo il lotto 67.
 Innocuo (il container resta vuoto) ma va chiuso.
 
+## Lotto 153 -- via la schermata di avvio: la Home non aspetta piu' uno script inerte
+
+Proposta dell'utente: *"ormai al boot abbiamo tolto tante voci che rallentavano, non possiamo
+togliere proprio la schermata di caricamento con la montagna e caricare direttamente la home?"*.
+
+### Il numero che la giustifica
+
+```
+15:05:52.633  Window Init (Startup.xml)
+15:05:52.776  skinvariables-startup.json parte
+15:05:55.223  skinvariables-startup.json finisce
+15:05:55.263  Window Init (Home.xml)          <- 40 ms dopo la fine dello script
+```
+
+**La Home compariva 40 ms dopo la fine di quello script.** Non era un caso: `ReplaceWindow` e'
+l'ultima azione del json, quindi la schermata di avvio durava esattamente quanto lo script.
+
+### Cosa faceva lo script dopo il primo avvio in assoluto: niente
+
+Censito voce per voce:
+
+| azione | verdetto |
+|---|---|
+| blocco primo avvio | gia' guardato da `DefaultConfig.InitDone`, che sulla stick e' impostata |
+| 20 `Skin.SetString(SkinConstant.Numeric.00..19)` | **zero consumatori** in tutto l'albero (xml, json, xmltemplate). Scritte a ogni avvio, lette da nessuno |
+| 19 default condizionali | verificati **uno per uno** contro `settings.xml` della stick: tutti gia' presenti |
+| `SetProperty(ReloadDone,1)` ×2 | anello chiuso: l'unico lettore e' lo script stesso |
+| `sleep=0.5` | mezzo secondo dichiarato |
+| blocco di attesa PVR | regole che non passano (`System.HasPVRAddon` falso) |
+| `{ReplaceWindowCommand}` | l'unica azione utile |
+
+### La correzione
+
+`Startup.xml` lancia lo script **solo quando `DefaultConfig.InitDone` non c'e'**, cioe' al primo
+avvio in assoluto o dopo un azzeramento delle impostazioni. A regime la finestra esegue direttamente
+le stesse tre regole del json, tradotte riga per riga: `StartupReplaceWindow` se valorizzata,
+altrimenti `System.StartupWindow`, poi l'eventuale `Startup.VideoPath`.
+
+Tolte anche le due righe che accendevano lo splash (`SplashIsVisible` + `AlarmClock(SplashTimeOut)`)
+e le 20 `SkinConstant.Numeric` dal json. La finestra 1198 **non e' stata eliminata**: il percorso
+skin-user la riarma per conto suo in `Custom_1195_SkinUserLoginScreen.xml:8-9`, e i profili sono fra
+i sottosistemi che l'utente usa.
+
+### Il risultato, e la parte da non gonfiare
+
+| boot | Kodi -> caric. skin | **Startup -> Home** | Home -> ultimo widget |
+|---|---|---|---|
+| prima 13:47 | 2,64 s | **2,362 s** | 7,51 s |
+| lotto A 14:07 | 2,29 s | **2,122 s** | 4,80 s |
+| lotto A 14:09 | 2,29 s | **2,294 s** | 5,08 s |
+| lotto 153 15:27 | 2,30 s | **0,023 s** | 7,55 s |
+| lotto 153 15:29 | 7,43 s | **0,028 s** | 8,12 s |
+
+Il segmento che la correzione poteva toccare passa da **2,1-2,4 s a 23-28 ms**, riproducibile su due
+avvii. Lo splash non compare piu' (`Window Init (Custom_1198)` assente), e gli interpreti
+skinvariables all'avvio scendono da 2 a **1** (resta il solo controllo differito del lotto 151).
+
+**Ma il tempo totale fino alla home popolata non migliora.** `Home -> ultimo widget` sale da 4,8-5,1
+a 7,6-8,1 s, e non e' un peggioramento del codice dei widget: la Home ora si apre 2,3 s prima, quindi
+i widget partono prima e competono con l'inizializzazione di Kodi ancora in corso. Il lavoro si e'
+**spostato**, non aggiunto. In assoluto il momento in cui la home e' piena resta lo stesso.
+
+Quindi la frase corretta e': **l'interfaccia compare 2,3 secondi prima, il boot non si accorcia.**
+Per la reattivita' percepita e' il guadagno che si voleva; per il totale non lo e', e va detto.
+
+**E il totale non e' comunque misurabile in questo modo**: la colonna `Kodi -> caric. skin` va da
+2,29 a 7,43 s fra due avvii consecutivi a codice identico. E' varianza dell'init di Kodi, fuori dalla
+portata della skin, ed e' esattamente il motivo per cui il lotto 102 aveva gia' stabilito di non
+guardare piu' i totali d'avvio.
+
+### Verifiche
+
+XML e JSON validi, md5 2 su 2 dopo il push a Kodi fermo, nessun errore o warning nuovo, il warning
+`CApplication::Initialize - startup.xml taints init process` **e' sparito** (la finestra non trattiene
+piu' l'inizializzazione).
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'

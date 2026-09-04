@@ -37,26 +37,6 @@
                     ]
                 }],
 
-                "Skin.SetString(SkinConstant.Numeric.00,$NUMBER[0])",
-                "Skin.SetString(SkinConstant.Numeric.01,$NUMBER[1])",
-                "Skin.SetString(SkinConstant.Numeric.02,$NUMBER[2])",
-                "Skin.SetString(SkinConstant.Numeric.03,$NUMBER[3])",
-                "Skin.SetString(SkinConstant.Numeric.04,$NUMBER[4])",
-                "Skin.SetString(SkinConstant.Numeric.05,$NUMBER[5])",
-                "Skin.SetString(SkinConstant.Numeric.06,$NUMBER[6])",
-                "Skin.SetString(SkinConstant.Numeric.07,$NUMBER[7])",
-                "Skin.SetString(SkinConstant.Numeric.08,$NUMBER[8])",
-                "Skin.SetString(SkinConstant.Numeric.09,$NUMBER[9])",
-                "Skin.SetString(SkinConstant.Numeric.10,$NUMBER[10])",
-                "Skin.SetString(SkinConstant.Numeric.11,$NUMBER[11])",
-                "Skin.SetString(SkinConstant.Numeric.12,$NUMBER[12])",
-                "Skin.SetString(SkinConstant.Numeric.13,$NUMBER[13])",
-                "Skin.SetString(SkinConstant.Numeric.14,$NUMBER[14])",
-                "Skin.SetString(SkinConstant.Numeric.15,$NUMBER[15])",
-                "Skin.SetString(SkinConstant.Numeric.16,$NUMBER[16])",
-                "Skin.SetString(SkinConstant.Numeric.17,$NUMBER[17])",
-                "Skin.SetString(SkinConstant.Numeric.18,$NUMBER[18])",
-                "Skin.SetString(SkinConstant.Numeric.19,$NUMBER[19])",
                 [{
                     "rules": ["String.IsEmpty(Skin.String(Navigation.OnBack))"],
                     "value": "Skin.SetString(Navigation.OnBack,Parent)"
