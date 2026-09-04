@@ -17,18 +17,6 @@
         <value>SetFocus(300)</value>
     </variable>
 
-    <include name="Action_TMDbHelper_Toggle_Onclick">
-        <onclick>Skin.ToggleSetting(TMDbHelper.EnableData)</onclick>
-        <onclick>ClearProperty(TMDbHelper.ListItem.base_tvshowtitle,Home)</onclick>
-        <onclick>ClearProperty(TMDbHelper.ListItem.base_plot,Home)</onclick>
-        <onclick>ClearProperty(TMDbHelper.ListItem.base_poster,Home)</onclick>
-        <onclick>ClearProperty(TMDbHelper.ListItem.base_clearlogo,Home)</onclick>
-        <onclick>ClearProperty(TMDbHelper.ListItem.base_icon,Home)</onclick>
-        <onclick>ClearProperty(TMDbHelper.ListItem.base_title,Home)</onclick>
-        <onclick>ClearProperty(TMDbHelper.ListItem.base_folderpath,Home)</onclick>
-        <onclick>ClearProperty(TMDbHelper.ListItem.base_dbtype,Home)</onclick>
-        <onclick>ClearProperty(TMDbHelper.ListItem.base_label,Home)</onclick>
-    </include>
 
     <variable name="Action_DialogInfo_PlayMedia">
         <value condition="!String.IsEmpty(ListItem.FileNameAndPath)">PlayMedia($ESCINFO[ListItem.FileNameAndPath])</value>
@@ -82,29 +70,9 @@
         <value>ChapterOrBigStepForward</value>
     </variable>
 
-    <variable name="Action_OSD_Main_OnDown">
-        <value condition="VideoPlayer.Content(livetv) + !Skin.HasSetting(OSD.OnDown.DisablePVROSDGuide) + VideoPlayer.HasEpg">pvrosdguide</value>
-        <value condition="VideoPlayer.Content(livetv)">$VAR[Action_OSD_PVROSDGuide_OnDown]</value>
-        <value condition="$EXP[Exp_OSD_HasPlaylist] + !Skin.HasSetting(OSD.OnDown.Disable1140)">1140</value>
-        <value condition="$EXP[Exp_OSD_HasPlaylist]">$VAR[Action_OSD_1140_OnDown]</value>
-        <value condition="!Skin.HasSetting(OSD.OnDown.DisableVideoBookmarks)">videobookmarks</value>
-        <value>$VAR[Action_OSD_VideoBookmarks_OnDown]</value>
-    </variable>
 
-    <variable name="Action_OSD_PVROSDGuide_OnDown">
-        <value condition="!Skin.HasSetting(OSD.OnDown.DisablePVROSDChannels)">pvrosdchannels</value>
-    </variable>
 
-    <variable name="Action_OSD_1140_OnDown">
-        <value condition="VideoPlayer.Content(livetv) + !Skin.HasSetting(OSD.OnDown.DisablePVROSDGuide)">pvrosdguide</value>
-        <value condition="VideoPlayer.Content(livetv)">$VAR[Action_OSD_PVROSDGuide_OnDown]</value>
-        <value condition="!Skin.HasSetting(OSD.OnDown.DisableVideoBookmarks)">videobookmarks</value>
-        <value>$VAR[Action_OSD_VideoBookmarks_OnDown]</value>
-    </variable>
 
-    <variable name="Action_OSD_VideoBookmarks_OnDown">
-        <value condition="!Skin.HasSetting(OSD.OnDown.Disable1141)">1141</value>
-    </variable>
 
     <include name="Action_BlurImage_SimpleBackground_Onload">
         <!-- Lo sfondo semplice e' GIA' un'immagine sfocata: rifarne il blur costava ~5 s di

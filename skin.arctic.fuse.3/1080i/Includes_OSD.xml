@@ -1086,7 +1086,6 @@
                 <onclick condition="$PARAM[onclick_condition]">$PARAM[onclick]</onclick>
                 <onup>$PARAM[onup]</onup>
                 <onup>$PARAM[onup_02]</onup>
-                <ondown>ActivateWindow($VAR[Action_OSD_Main_OnDown])</ondown>
                 <label>$PARAM[label]</label>
             </control>
             <include content="OSD_Button_Icon_Overlay">

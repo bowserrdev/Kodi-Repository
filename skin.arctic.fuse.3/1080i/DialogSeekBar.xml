@@ -40,10 +40,6 @@
                         </control>
                     </control>
 
-                    <include content="OSD_CastInfo_HintText">
-                        <param name="label">$VAR[Label_OSD_HintText]</param>
-                        <param name="visible">[Window.IsActive(videoosd) | Window.IsVisible(1140) | Window.IsVisible(1141) | Window.IsVisible(videobookmarks)] + [!Window.IsVisible(1141) | Skin.String(VideoOSD.PersonCredits.CastCrew,cast)] + [[Window.IsVisible(1140) | Window.IsVisible(1141) | Window.IsVisible(videobookmarks)] | $EXP[Exp_OSD_HasDownTarget]]</param>
-                    </include>
 
                     <include content="OSD_CastInfo_HintText">
                         <param name="label">$LOCALIZE[31346]</param>

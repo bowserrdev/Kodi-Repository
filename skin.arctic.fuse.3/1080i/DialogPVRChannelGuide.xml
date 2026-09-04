@@ -45,7 +45,6 @@
                         <param name="id">11</param>
                         <include>OSD_List_Dimensions</include>
                         <onup>Close</onup>
-                        <ondown condition="!Window.IsMedia">ActivateWindow($VAR[Action_OSD_PVROSDGuide_OnDown])</ondown>
                         <ondown condition="Window.IsMedia">Close</ondown>
                     </include>
 
