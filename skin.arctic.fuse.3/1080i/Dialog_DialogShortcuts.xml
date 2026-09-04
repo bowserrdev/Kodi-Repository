@@ -717,15 +717,6 @@
                 <label>$LOCALIZE[31605]</label>
                 <visible>$PARAM[visible]</visible>
             </include>
-            <include content="Settings_Button" description="Next Aired">
-                <param name="id">9602</param>
-                <param name="control">radiobutton</param>
-                <label>$LOCALIZE[449]</label>
-                <onclick condition="String.IsEmpty(Skin.String(HomeSwitcher.1106.Toggle))">Skin.SetString(HomeSwitcher.1106.Toggle,true)</onclick>
-                <onclick condition="!String.IsEmpty(Skin.String(HomeSwitcher.1106.Toggle))">Skin.Reset(HomeSwitcher.1106.Toggle)</onclick>
-                <selected>!String.IsEmpty(Skin.String(HomeSwitcher.1106.Toggle))</selected>
-                <visible>$PARAM[visible]</visible>
-            </include>
 
             <!-- PVR -->
             <include content="Settings_Label">
@@ -735,66 +726,6 @@
                 <label>$LOCALIZE[31085] / PVR</label>
                 <visible>System.HasPVRAddon + PVR.HasTVChannels</visible>
                 <visible>$PARAM[visible]</visible>
-            </include>
-            <include content="Settings_Button" description="Live TV">
-                <param name="id">9611</param>
-                <param name="control">radiobutton</param>
-                <label>$LOCALIZE[449]</label>
-                <onclick condition="String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))">Skin.SetString(HomeSwitcher.1107.Toggle,true)</onclick>
-                <onclick condition="!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))">Skin.Reset(HomeSwitcher.1107.Toggle)</onclick>
-                <selected>!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))</selected>
-                <visible>System.HasPVRAddon + PVR.HasTVChannels</visible>
-                <visible>$PARAM[visible]</visible>
-            </include>
-            <include content="Settings_Button" description="Layout">
-                <param name="id">9616</param>
-                <label>$LOCALIZE[31158]</label>
-                <label2>$INFO[Skin.String(HomeSwitcher.1107.Mode)]</label2>
-                <onclick>SetProperty(Dialog.1125.Value,HomeSwitcher.1107,Home)</onclick>
-                <onclick>ActivateWindow(1125)</onclick>
-                <visible>System.HasPVRAddon + PVR.HasTVChannels</visible>
-                <visible>$PARAM[visible]</visible>
-                <visible>!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))</visible>
-            </include>
-            <include content="Settings_Button" description="Search">
-                <param name="id">9612</param>
-                <param name="control">radiobutton</param>
-                <label> - $VAR[Label_Setting_Hub_LiveTV_Search]</label>
-                <onclick>Skin.ToggleSetting(Hub.1107.DisableSearch)</onclick>
-                <selected>!Skin.HasSetting(Hub.1107.DisableSearch)</selected>
-                <visible>$PARAM[visible]</visible>
-                <visible>System.HasPVRAddon + PVR.HasTVChannels</visible>
-                <visible>!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))</visible>
-            </include>
-            <include content="Settings_Button" description="Channels">
-                <param name="id">9613</param>
-                <param name="control">radiobutton</param>
-                <label> - $LOCALIZE[14301]</label>
-                <onclick>Skin.ToggleSetting(Hub.1107.DisableChannels)</onclick>
-                <selected>!Skin.HasSetting(Hub.1107.DisableChannels)</selected>
-                <visible>$PARAM[visible]</visible>
-                <visible>System.HasPVRAddon + PVR.HasTVChannels</visible>
-                <visible>!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))</visible>
-            </include>
-            <include content="Settings_Button" description="Groups">
-                <param name="id">9614</param>
-                <param name="control">radiobutton</param>
-                <label> - $LOCALIZE[19146]</label>
-                <onclick>Skin.ToggleSetting(Hub.1107.DisableGroups)</onclick>
-                <selected>!Skin.HasSetting(Hub.1107.DisableGroups)</selected>
-                <visible>$PARAM[visible]</visible>
-                <visible>System.HasPVRAddon + PVR.HasTVChannels</visible>
-                <visible>!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))</visible>
-            </include>
-            <include content="Settings_Button" description="Recordings">
-                <param name="id">9615</param>
-                <param name="control">radiobutton</param>
-                <label> - $LOCALIZE[19017]</label>
-                <onclick>Skin.ToggleSetting(Hub.1107.DisableRecordings)</onclick>
-                <selected>!Skin.HasSetting(Hub.1107.DisableRecordings)</selected>
-                <visible>$PARAM[visible]</visible>
-                <visible>System.HasPVRAddon + PVR.HasTVChannels</visible>
-                <visible>!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))</visible>
             </include>
 
             <!-- ADDONS -->

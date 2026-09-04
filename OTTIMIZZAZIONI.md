@@ -18719,6 +18719,96 @@ XML e JSON validi, md5 2 su 2 dopo il push a Kodi fermo, nessun errore o warning
 `CApplication::Initialize - startup.xml taints init process` **e' sparito** (la finestra non trattiene
 piu' l'inizializzazione).
 
+## Lotto 154 -- lotto C: via sette sottosistemi. E il guadagno di avvio NON si misura
+
+Rimossi i sottosistemi che l'utente non usa: PVR/LiveTV, Next Aired (hub 1106), meteo, musica,
+immagini, giochi, preferiti, piu' sei finestre morte. **Conservati** profili/skin users e file
+manager, come richiesto.
+
+### Il metodo: prima il raggio d'impatto, poi la cancellazione
+
+Prima di toccare un file, per ogni sottosistema: quante definizioni contiene e **quante di quelle
+sono usate da fuori**. Su 48 file e 5.270 righe, le definizioni usate altrove erano **tre**:
+
+| definizione | consumatore esterno | esito |
+|---|---|---|
+| `PVR_GenreType` | `Layout_PVRGuide_Programs` in `Includes_Layouts.xml`, a sua volta usato solo da `List_EPGGrid` in `Includes_Lists.xml`, a sua volta usato solo da `Includes_Views_PVR.xml` | catena interamente PVR: rimossa tutta |
+| `Weather_Details_HighLow` | 5 usi in `Includes_Hubs.xml`, dentro un gruppo con `<visible>String.IsEqual(Container(601).ListItem.Property(guid),weather)</visible>` | gruppo di 73 righe **permanentemente invisibile** (nessun menu dell'utente ha quel guid): rimosso |
+| `DialogPictureInfo` | `Custom_1126_Dialog_FileProperties.xml` e `DialogPlayerProcessInfo.xml`, che **non sono foto** | `Dialog_DialogPictureInfo.xml` **conservato**; eliminate solo `MyPics`, `SlideShow`, `DialogPictureInfo` |
+
+Il terzo caso e' lo stesso tranello di `Includes_OSD_CastInfo.xml` nel lotto 152: **un file il cui
+nome dice un sottosistema ma il cui contenuto e' un layout condiviso.** Due su due, in due lotti
+consecutivi. Il censimento delle definizioni usate da fuori e' l'unica cosa che li ha distinti.
+
+### Le code, tutte trovate dal controllo globale e non a occhio
+
+Dopo le cancellazioni il controllo degli orfani ha nominato, in tre giri successivi:
+`Weather_Details_HighLow`, poi `Weather_Details_HighLow_Items` (una regola dentro
+`generator/data/setup/widgets_row.xml`), poi `Hub_Weather_Widget` (usato da
+`Custom_1109_Settings.xml`). Ripulite anche le voci di menu di 1106 e 1107 in `Includes_Home.xml`,
+i 7 blocchi di `Dialog_DialogShortcuts.xml`, i termini `Window.IsVisible(110[67])` in due finestre,
+i blocchi di preload in `skinvariables-splash.json` e i default in `skinvariables-startup.json`.
+
+**`buildv` alzato a `0.2.0-lotto-C`**, e il controllo differito del lotto 151 lo ha rilevato
+rigenerando il file: la catena regge al terzo utilizzo consecutivo.
+
+### Sparito anche un warning vecchio
+
+`$VAR[Home_Icon_1106]`, `_1107`, `_1108` non erano definite e producevano **sei warning a ogni
+disegno del menu**. Le prime due sono uscite con i rispettivi hub; per la terza (l'hub Addon, che
+resta) il `<param name="icon">` e' stato rimosso, perche' la variabile non e' mai esistita. Il log
+d'avvio adesso non le nomina piu'.
+
+### I numeri
+
+| | prima | dopo |
+|---|---|---|
+| file `.xml` in `1080i/` | 207 | **158** |
+| righe parsate da `Includes.xml` | 38.879 | **35.025** (-9,9%) |
+| righe totali in `1080i/` | 45.780 | **39.748** |
+| path `plugin://…themoviedb.helper` | 46 (a inizio sessione) | **8** |
+
+### Il risultato di avvio: NEGATIVO, e va scritto cosi'
+
+| boot | parse | font | finestre custom | caricamento skin |
+|---|---|---|---|---|
+| prima 13:47 | 0,866 s | 0,577 s | 0,142 s | **1,585 s** |
+| lotto 153 15:27 | 0,734 s | 0,429 s | 0,118 s | **1,281 s** |
+| a freddo 15:36 | 0,856 s | 0,486 s | 0,147 s | **1,489 s** |
+| **lotto C #1** | 0,763 s | 0,587 s | 0,102 s | **1,452 s** |
+| **lotto C #2** | 0,696 s | 0,690 s | 0,235 s | **1,621 s** |
+
+**Meno 9,9% di righe, zero guadagno misurabile.** E il motivo e' aritmetico, non misterioso: il
+guadagno atteso era 9,9% di 0,86 s = **85 ms**, mentre la banda di rumore fra avvii a codice
+identico e' di **±150 ms**. L'effetto, se c'e', sta sotto la risoluzione dello strumento.
+
+Questo dice due cose. La prima: **la stima andava fatta prima**, e avrebbe detto subito che la
+misura non poteva riuscire. La seconda, piu' utile: il parse degli include **non e' proporzionale
+alle righe** nella misura in cui si sperava, quindi togliere altre righe da li' non e' una strada
+per l'avvio. Il capitolo "ridurre l'albero degli include per accorciare il boot" si chiude qui, in
+negativo.
+
+Cio' che il lotto vale davvero: **49 file e 6.032 righe fuori dalla skin**, sei warning per disegno
+del menu in meno, e la sparizione di tutta la superficie PVR/meteo/musica/giochi/foto/Next Aired,
+inclusi gli 8 content path TMDbHelper dell'hub 1106 che avrebbero aperto il prompt d'installazione.
+
+### Verifiche fatte
+
+- XML valido su tutti i 158 file, JSON valido su tutti e quattro.
+- Controllo globale degli orfani ripetuto **dopo ogni gruppo** (la regola introdotta nel lotto 152):
+  zero include e zero `$VAR`/`$EXP` orfani nuovi. Restano i preesistenti.
+- Nessun file dichiarato in `Includes.xml` e assente, tranne
+  `script-skinvariables-skinusers.xml` che e' condizionale e generato.
+- Deploy a Kodi fermo: 46 file cancellati sul dispositivo con verifica del conteggio (158 = 158),
+  13 modificati con md5 verificati.
+- Due avvii: nessun errore, nessun warning nuovo, tre warning vecchi spariti.
+
+### Cosa resta
+
+Gli **8** riferimenti TMDbHelper superstiti sono tutti in `Dialog_DialogCustom.xml` e sono
+`RunScript(…,blur_image=…)` del selettore di sfondo: vanno con il **lotto D**, insieme allo strato
+blur.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'

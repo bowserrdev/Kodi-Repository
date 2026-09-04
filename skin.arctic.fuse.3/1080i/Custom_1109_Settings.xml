@@ -41,7 +41,6 @@
                     <include>Hub_Settings_Widgets</include>
                 </include>
 
-                <include>Hub_Weather_Widget</include>
 
 
                 <include content="List_SettingsWidget">
