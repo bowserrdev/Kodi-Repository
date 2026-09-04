@@ -19219,6 +19219,131 @@ glifo e il pulsante mostra "English QWERTY" dentro un quadrato da 80px. Si vede 
 d'occhio. In quel caso la via e' un'immagine sovrapposta invece del label. E' scritto anche come
 commento accanto al pulsante, cosi' chi ci torna sa cosa guardare.
 
+## Lotto 159 -- il pulsante che non poteva funzionare, e due difetti della ricerca testuale
+
+### Il cambio disposizione se ne va (e non era una perdita)
+
+Il lotto 158 aveva spostato il controllo 309 nella riga in basso. Alla prova non mostrava il glifo e
+non cambiava niente. Due cause distinte, e solo la prima era prevista:
+
+1. **Kodi scrive da se' l'etichetta di 309** e sovrascrive il `<label>` della skin. Era annotato come
+   rischio accanto al pulsante; si risolverebbe con un'immagine sovrapposta.
+2. **Non ha nulla da cambiare.** In `guisettings.xml`:
+   ```
+   locale.keyboardlayouts      = English QWERTY
+   locale.activekeyboardlayout = English QWERTY
+   ```
+   Il pulsante di Kodi **cicla fra le disposizioni abilitate**: con una sola, ciclare rimette quella.
+   Nel log, alle 19:11:17-19, il clic non produce nessuna azione e nessuna finestra.
+
+La seconda causa e' decisiva e riqualifica anche il lotto 158: quel pulsante era **inerte anche
+prima**, quando stava nel chip in alto a destra. Non e' stata spostata una funzione, e' stata spostata
+una funzione che non poteva funzionare. Rimosso.
+
+Lo spazio va alla barra spaziatrice, che era l'unico tasto stretto della riga. L'aritmetica torna
+esatta senza ritoccare niente a occhio:
+
+```
+prima:  9 x 80 + 260 + 9 x 10 = 1070
+dopo :  8 x 80 + 350 + 8 x 10 = 1070      (= keyboard_edit_w)
+```
+
+Se un giorno viene abilitata una seconda disposizione in Impostazioni -> Interfaccia -> Regionale, il
+pulsante torna: serve il controllo 309 e un'immagine al posto del label.
+
+### La paginazione: prova sul campo superata ovunque
+
+28 `TRIGGER` in una sessione, distribuiti su **tutte** le costruzioni ora unificate dal lotto 157:
+
+| chiave | passi | dove |
+|---|---|---|
+| `home.502`, `home.503` | 3 + 3 | widget della Home (`widgets_row.xmltemplate`) |
+| `1101.502` | 5 | hub (`Hub_Combined_Widget`) |
+| `1105.502` | 13 | ricerca testuale |
+| `1105.505` | 4 | Discover avanzato |
+
+Un solo errore in tutto il log, il joystick. L'innesto unico regge su tutti i percorsi.
+
+### Difetto 1: al cambio query partono DUE costruzioni, e una e' sprecata
+
+Passando da "batman" (arrivata a 9 pagine) a "superman":
+
+```
+19:22:54.757  provider  query=superman  &pages=9      <- eredita il conteggio della query PRECEDENTE
+19:22:54.766  parte la build #1
+19:22:56.393  provider  query=superman  (senza pages) <- il token viene azzerato
+19:22:56.398  parte la build #2
+19:23:03.988  build #2 finita: path_pages=-   7.381 ms
+19:23:04.564  build #1 finita: path_pages=9   9.528 ms
+```
+
+**Due interpreti Python concorrenti, 7,4 s e 9,5 s, per una sola query.** La build #1 e' interamente
+sprecata: nasce con il conteggio della query precedente e quando finisce il token e' gia' stato
+riazzerato.
+
+La causa e' la solita famiglia del lotto 7, in una veste nuova: il frammento `&pages=N` viene emesso
+guardando **la propria proprieta'**, non se quella proprieta' appartenga ancora al contenuto che c'e'
+adesso nel contenitore. Il contenuto e' cambiato (query diversa) ma il token e' sopravvissuto fino a
+quando una build l'ha riconciliato -- e la riconciliazione, per definizione, arriva dopo che la build
+e' partita.
+
+**Dove va corretto:** il token va azzerato **nell'istante in cui cambia la query**, prima che il
+provider possa rileggere il path. Quell'istante e' noto e sta in un posto solo:
+`router._text_search_start`, dove gia' oggi si riconosce il cambio (`if
+win.getProperty('FenLight.TextSearch.Query') != query`) e si azzerano `Movie.HasResults`,
+`TV.HasResults` e gli stati. Basta azzerare li' anche `fenlight.pg.w1105.ctl*.pages`. E' lo stesso
+principio del lotto 92 -- la riconciliazione appartiene a chi CONOSCE il contenuto -- applicato un
+gradino piu' a monte.
+
+### Difetto 2: il fuoco non riparte dal primo elemento, e il codice dice il contrario
+
+Log, stessa transizione:
+
+```
+19:22:33.525  batman   current=42/42     <- il fuoco era sull'ultimo
+19:23:07.325  superman current=16/16     <- prima osservazione sulla nuova lista
+19:24:21.390  superman current=1/16      <- ci torna l'utente, a mano
+```
+
+La lista nuova ha 16 elementi e il fuoco atterra sul **16esimo**: Kodi non azzera l'indice del
+contenitore, lo **limita** al nuovo conteggio.
+
+Il punto che conta per il seguito e' che in `router.py` c'e' scritto il contrario:
+
+> *"a query change hides the (stale-positioned) row and lets it rebuild fresh at item 0"*
+
+E la riga di ricerca ha davvero il `<visible>` che la nasconde al cambio query (`Settled` diverso dal
+testo scritto), e in questa sessione si e' nascosta e riapparsa. **Nascondere un contenitore non ne
+azzera il cursore.** Il commento descrive un'intenzione che la piattaforma non onora, ed e' rimasto
+li' per settimane perche' nessuno l'aveva messo alla prova: e' un caso da manuale di documentazione
+che diventa falsa senza che niente cambi intorno.
+
+Il rimedio non e' ovvio: `SetFocus(id,0,absolute)` azzera il cursore ma **sposta anche il fuoco**, e
+al cambio query il fuoco e' sulla casella di testo, dove deve restare. Serve un esperimento per
+trovare la primitiva giusta, non una toppa scritta a mente. Non corretto in questo lotto.
+
+### Difetto 3: le due scritte di attesa restano sopra i risultati
+
+"Ricerca..." e "Attendi il caricamento dei risultati." compaiono con questa condizione:
+
+```
+Search.ActivePanel vuoto + casella non vuota
++ [ Query != testo scritto  |  TextSearch.State == loading ]
+```
+
+Il secondo termine e' il difetto: **durante una paginazione lo stato torna a `loading`**, quindi le
+scritte riappaiono sopra una lista gia' a schermo e coprono i metadati dell'elemento con il fuoco.
+
+La condizione giusta esiste gia' e non va inventata: `FenLight.TextSearch.Settled`, che vale *"i
+risultati a schermo corrispondono a cio' che e' scritto adesso"*. E' esattamente la stessa che la riga
+dei risultati usa per rendersi visibile, quindi scritte e riga diventano complementari per
+costruzione: o c'e' l'una o c'e' l'altra, mai entrambe. E la paginazione non le fa riapparire perche'
+`Settled` non viene toccato da una ricostruzione in place -- lo dice il commento di `_text_search_done`
+e lo conferma il log, dove durante i 13 passi di paginazione `Settled` resta uguale alla query.
+
+Non corretto in questo lotto: i difetti 1 e 3 sono due modifiche indipendenti e vanno misurate
+separatamente.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
