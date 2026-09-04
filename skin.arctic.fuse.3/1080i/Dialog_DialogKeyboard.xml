@@ -402,7 +402,7 @@
             <param name="id">165</param>
             <include>Texture_KeyboardButton</include>
             <onup>145</onup>
-            <ondown>309</ondown>
+            <ondown>32</ondown>
         </include>
         <include content="Object_Keyboard_Button" description="Letters">
             <param name="id">166</param>
@@ -500,20 +500,11 @@
             <onup>164</onup>
         </include>
 
-        <!-- Al suo posto stava 307, l'inserimento di un indirizzo IP: inutile in una casella di
-             ricerca, e occupava l'unico slot comodo della riga. Qui c'e' ora 309, il cambio
-             disposizione, che prima viveva da solo in una colonna larga 320px a destra.
-             Il glifo e' quello di 307, tenuto come segnaposto finche' non se ne sceglie uno giusto.
-             ATTESO DA VERIFICARE: se Kodi scrive da se' l'etichetta di 309 (il chip mostrava
-             "English QWERTY") sovrascrive questo label e il bottone mostra testo invece del glifo. -->
-        <include content="Object_Keyboard_Button" description="Keyboard Layout">
-            <param name="id">309</param>
-            <include>Texture_KeyboardButton</include>
-            <font>font_midi_iconic</font>
-            <label>&#xf6ff;</label>
-            <onup>165</onup>
-        </include>
 
+        <!-- LOTTO 159. Qui accanto stavano prima 307 (indirizzo IP) e poi 309 (cambio disposizione):
+             il primo inutile in una casella di ricerca, il secondo inerte perche' Kodi ha una sola
+             disposizione abilitata e il suo pulsante cicla fra quelle abilitate. Lo spazio dei due
+             (80px di pulsante + 10 di itemgap) e' andato alla barra spaziatrice. -->
         <include content="Object_Keyboard_Button" description="Space">
             <param name="id">32</param>
             <label>20182</label>
