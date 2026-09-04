@@ -135,7 +135,6 @@
                             <param name="itemlayout_w">280</param>
                             <param name="itemlayout_include">Layout_DialogSimple</param>
                             <param name="orientation">vertical</param>
-                            <content>plugin://plugin.program.autocompletion?info=autocomplete&amp;&amp;id=$INFO[Control.GetLabel(312).index(1)]</content>
                             <visible>!Control.IsViible(313)</visible>
                             <visible>!Control.IsViible(314)</visible>
                             <onup>9000</onup>
