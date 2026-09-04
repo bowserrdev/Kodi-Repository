@@ -268,15 +268,6 @@
 	    </include>
 
     <include name="Search_Switcher_Items">
-        <item>
-            <label>$LOCALIZE[31066]</label>
-            <property name="guid">discover</property>
-            <property name="widget_id">$NUMBER[501]</property>
-            <property name="show_artwork">true</property>
-            <property name="widget_numitems">$INFO[Container(501).NumItems]</property>
-            <onclick>RunPlugin(plugin://plugin.video.themoviedb.helper/?info=user_discover$INFO[Window(Home).Property(TMDbHelper.UserDiscover.Folderpath.ParamString),&amp;,])</onclick>
-            <visible>!Integer.IsEqual(Container(501).NumItems,0)</visible>
-        </item>
         <include>skinvariables-searchwidgets-selector</include>
     </include>
 
@@ -440,7 +431,6 @@
             <onright condition="!Skin.HasSetting(HomeSwitcher.Vertical) + !String.IsEmpty(Control.GetLabel(3000).index(1))">SetFocus(3005)</onright>
             <onright condition="!Skin.HasSetting(HomeSwitcher.Vertical) + String.IsEmpty(Control.GetLabel(3000).index(1))">3004</onright>
 
-            <onup condition="!Skin.HasSetting(Search.DisableDiscover) + !Skin.HasSetting(Search.DisableCombined)">RunPlugin(plugin://plugin.video.themoviedb.helper/?info=user_discover$INFO[Window(Home).Property(TMDbHelper.UserDiscover.Folderpath.ParamString),&amp;,])</onup>
             <!-- Navigazione giù: advanced panel → 3009; testo vuoto + content path → widget 505;
                  testo presente → risultati 601/602. Box vuoto e nessun content path: sotto la barra
                  non c'e' piu' niente, giù non fa nulla. -->

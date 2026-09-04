@@ -179,14 +179,6 @@
             <selected>$EXP[Exp_TMDbHelper_IsData]</selected>
         </item>
         <item>
-            <label>$LOCALIZE[31041]</label>
-            <icon>resource://resource.images.arcticfuse/icons/fire2.png</icon>
-            <visible>[String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),tvshow) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),season) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),episode) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),movie)]</visible>
-            <onclick>Dialog.Close(contextmenu,true)</onclick>
-            <onclick>RunScript(plugin.video.themoviedb.helper,related_lists,query=$VAR[Path_ContextParams_Query],tmdb_type=$VAR[Path_ContextParams_TMDbType])</onclick>
-            <visible>$EXP[Exp_TMDbHelper_IsData]</visible>
-        </item>
-        <item>
             <label>$LOCALIZE[15019]</label>
             <icon>resource://resource.images.arcticfuse/icons/circle-plus.png</icon>
             <visible>ListItem.IsFolder</visible>
