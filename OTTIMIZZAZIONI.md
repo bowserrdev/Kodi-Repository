@@ -19157,6 +19157,68 @@ stesso criterio, risposte opposte.
 - Insieme degli orfani identico a HEAD.
 - `buildv` alzato a `0.2.2-innesto-unico`: entrambi i template modificati sono generati.
 
+## Lotto 158 -- la tastiera perde la colonna destra, e il cambio disposizione scende in riga
+
+Proposta dell'utente, e va detto che e' migliore di quella che avevo fatto io. Io avevo offerto di
+togliere la colonna destra **e** il chip del cambio disposizione, cioe' di perdere una funzione. Lui
+ha notato che nella riga in basso c'era un pulsante che non serviva a niente e ha proposto lo
+scambio: **la funzione resta, l'ingombro sparisce.**
+
+### I due pulsanti a sinistra di Spazio, identificati
+
+Erano indicati come "uno che sembra per i caratteri non latini e uno che non ho idea di cosa faccia".
+Nel file hanno la loro descrizione originale:
+
+| id | descrizione | cosa fa davvero | esito |
+|---|---|---|---|
+| 304 | Symbols | commuta la griglia su punteggiatura e simboli | **tenuto**: e' utile, e non c'entra con il cinese |
+| 307 | IP Address | apre l'inserimento di un indirizzo IP | **sacrificato**: in una casella di ricerca non serve |
+
+Il chip in alto a destra era il controllo **309**, il cambio disposizione, che Kodi etichetta da se'
+("English QWERTY"). Viveva da solo in una colonna larga **320px**.
+
+### Cosa e' cambiato
+
+- 309 prende il posto di 307 nella riga in basso, con **il glifo di 307 come segnaposto**
+  (`&#xf6ff;`): l'icona giusta si scegliera' dopo aver verificato che il pulsante funzioni.
+- Via il `Part_Button_Grouplist` che teneva il chip e il gruppo `Size_Group_Panel_Right` con la
+  lista dei suggerimenti, ormai senza contenuto dal lotto 156. **32 righe.**
+- Via l'include `DialogKeyboard_Items` (9 righe), che esisteva solo per alimentare quel chip.
+- Via le tre righe di navigazione che puntavano alla colonna sparita (`<onright>9000</onright>` sul
+  campo di testo e le due `<onright>` condizionate su `Container(3).NumItems` nella riga tasti), e
+  corretto l'`<ondown>307</ondown>` del tasto sopra, che ora punta a 309.
+- Via i due `<visible>!Control.IsViible(313)</visible>`: **refuso**, mancava una `s`. Erano li' per
+  nascondere la lista quando compariva quella dei candidati cinesi, e non hanno mai funzionato.
+
+### La larghezza: sottrarre esattamente la colonna
+
+`Dimension_DialogKeysMenu` scende da **1510 a 1190**, cioe' esattamente i 320px della colonna, e il
+gruppo di sinistra smette di usare `Size_LeftGroup_Main` (che gli riservava gli stessi 320 a destra).
+Con `constant_dialog_pad` = 40:
+
+```
+prima :  1510 - 80 - 320 = 1110
+dopo  :  1190 - 80       = 1110
+```
+
+**L'area dei tasti resta identica al pixel**, e il dialogo si ricentra da solo perche'
+`Dimension_DialogCenter` lo centra. Non c'e' nessun valore da ritoccare a occhio -- che era il rischio
+vero di questa modifica.
+
+### Il cinese non e' stato toccato
+
+Controllo fatto prima, non dopo: i controlli **313** (codice) e **314** (candidati) dell'input CJK
+non stavano nella colonna destra, stanno **dentro l'area di testo in alto**. Togliere la colonna non
+li sfiora. Se fossero stati li' dentro, questa modifica avrebbe silenziosamente spento l'inserimento
+cinese.
+
+### Da verificare alla prova
+
+**Se Kodi scrive da se' l'etichetta di 309**, come faceva nel chip, sovrascrive il `<label>` con il
+glifo e il pulsante mostra "English QWERTY" dentro un quadrato da 80px. Si vede al primo colpo
+d'occhio. In quel caso la via e' un'immagine sovrapposta invece del label. E' scritto anche come
+commento accanto al pulsante, cosi' chi ci torna sa cosa guardare.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'

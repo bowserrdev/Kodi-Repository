@@ -8,15 +8,16 @@
             <include content="Part_Background_Panel">
                 <param name="dialog_size">Dimension_DialogKeysMenu</param>
                 <param name="topline">true</param>
-                <param name="lines_right">constant_group_small_w</param>
             </include>
 
             <!-- Content -->
             <control type="group">
                 <include>Size_Dialog_Pad</include>
 
+                <!-- Niente Size_LeftGroup_Main: non c'e' piu' una colonna destra a cui lasciare
+                     i 320px. La larghezza del dialogo cala della stessa quantita' (vedi
+                     Dimension_DialogKeysMenu), quindi l'area dei tasti resta identica al pixel. -->
                 <control type="group">
-                    <include>Size_LeftGroup_Main</include>
                     <control type="group">
                         <include>Size_Group_Head</include>
                         <include content="Part_HeadText">
@@ -48,7 +49,6 @@
                                     <textoffsetx>40</textoffsetx>
                                     <width>keyboard_edit_w</width>
                                     <ondown>8001</ondown>
-                                    <onright>9000</onright>
                                     <font>font_midi</font>
                                 </control>
                                 <control type="image">
@@ -111,51 +111,10 @@
                     </control>
                 </control>
 
-                <!-- Right -->
-                <include content="Part_Button_Grouplist">
-                    <param name="items">DialogKeyboard_Items</param>
-                    <param name="onleft">8000</param>
-                    <param name="ondown">3</param>
-                </include>
-
-                <control type="group">
-                    <include>Size_Group_Panel_Right</include>
-                    <control type="group">
-                        <include>Size_Grouplist_Pad</include>
-                        <control type="image">
-                            <top>100</top>
-                            <height>1</height>
-                            <texture colordiffuse="$VAR[Color_DialogBorder]">common/white.png</texture>
-                        </control>
-                        <include content="List_DialogSelect">
-                            <param name="id">3</param>
-                            <param name="textcolor">dialog_fg</param>
-                            <param name="control">list</param>
-                            <param name="item_w">280</param>
-                            <param name="itemlayout_w">280</param>
-                            <param name="itemlayout_include">Layout_DialogSimple</param>
-                            <param name="orientation">vertical</param>
-                            <visible>!Control.IsViible(313)</visible>
-                            <visible>!Control.IsViible(314)</visible>
-                            <onup>9000</onup>
-                            <onleft>8000</onleft>
-                            <top>120</top>
-                        </include>
-                    </control>
-                </control>
             </control>
         </control>
     </include>
 
-    <include name="DialogKeyboard_Items">
-        <definition>
-            <include content="Button_Dialog">
-                <param name="id">309</param>
-                <param name="groupid">9309</param>
-                <param name="icon">resource://resource.images.arcticfuse/icons/language.png</param>
-            </include>
-        </definition>
-    </include>
 
 
     <include name="DialogKeyboard_Row_Grouplist">
@@ -163,8 +122,6 @@
             <orientation>horizontal</orientation>
             <itemgap>keyboard_pad</itemgap>
             <height>80</height>
-            <onright condition="!Integer.IsEqual(Container(3).NumItems,0)">3</onright>
-            <onright condition="Integer.IsEqual(Container(3).NumItems,0)">9000</onright>
             <nested />
         </control>
     </include>
@@ -445,7 +402,7 @@
             <param name="id">165</param>
             <include>Texture_KeyboardButton</include>
             <onup>145</onup>
-            <ondown>307</ondown>
+            <ondown>309</ondown>
         </include>
         <include content="Object_Keyboard_Button" description="Letters">
             <param name="id">166</param>
@@ -543,8 +500,14 @@
             <onup>164</onup>
         </include>
 
-        <include content="Object_Keyboard_Button" description="IP Address">
-            <param name="id">307</param>
+        <!-- Al suo posto stava 307, l'inserimento di un indirizzo IP: inutile in una casella di
+             ricerca, e occupava l'unico slot comodo della riga. Qui c'e' ora 309, il cambio
+             disposizione, che prima viveva da solo in una colonna larga 320px a destra.
+             Il glifo e' quello di 307, tenuto come segnaposto finche' non se ne sceglie uno giusto.
+             ATTESO DA VERIFICARE: se Kodi scrive da se' l'etichetta di 309 (il chip mostrava
+             "English QWERTY") sovrascrive questo label e il bottone mostra testo invece del glifo. -->
+        <include content="Object_Keyboard_Button" description="Keyboard Layout">
+            <param name="id">309</param>
             <include>Texture_KeyboardButton</include>
             <font>font_midi_iconic</font>
             <label>&#xf6ff;</label>
