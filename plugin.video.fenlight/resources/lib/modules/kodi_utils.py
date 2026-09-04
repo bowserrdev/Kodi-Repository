@@ -869,16 +869,85 @@ PG_LASTBUILD_PROP = 'fenlight.pg.%s.lastbuild'
 def playback_active():
 	return get_visibility('Player.HasVideo')
 
-def _defer_refresh_if_playing(kind):
-	if not playback_active(): return False
-	# Questo rinvio non porta id con se': gli eventuali id di un rinvio precedente vanno tolti, o
-	# WidgetRefresher ricaricherebbe i contenitori del titolo SBAGLIATO invece di ricadere sul globale.
-	clear_property(PENDING_IDS_PROP)
-	clear_property(PENDING_ACTIONS_PROP)
-	clear_property(PENDING_SCOPE_PROP)
+def modal_dialog_open():
+	# UN SOLO POSTO in cui si guarda se c'e' un dialogo modale a schermo (lotto 136). Prima la stessa
+	# domanda era scritta due volte in service.py -- WidgetPaginator e DubResolver -- e mancava proprio
+	# dove decide la correttezza, cioe' nel percorso del ridisegno.
+	# Si valuta SEMPRE dopo playback_active(): durante la riproduzione questa chiamata non si fa
+	# nemmeno, ed e' li' che prendere il lock grafico da un thread di plugin fa danno (lotto 111).
+	return get_visibility('System.HasActiveModalDialog')
+
+def queue_pending_refresh(kind, ids=(), actions=(), scope=None):
+	"""Mette in coda un rinvio sul canale che WidgetRefresher raccoglie, SOMMANDO cio' che c'e' gia'.
+
+	Unica implementazione della somma. Prima ce n'erano tre -- qui dentro due, piu' una in service.py --
+	e due delle tre SOVRASCRIVEVANO invece di sommare: due cambiamenti distinti che nessuno aveva
+	ancora mostrato, e chi arrivava secondo cancellava il primo.
+	Le regole, in ordine:
+	  - un rinvio GLOBALE gia' in coda e' un superset di qualunque elenco: aggiungerci degli id lo
+	    RESTRINGEREBBE, quindi si lascia com'e'. Si riconosce dall'assenza di ENTRAMBI i canali, non
+	    del solo elenco di id -- con la sola verifica sugli id un rinvio nato da un'azione pura
+	    (watchlist, continua a guardare) sarebbe scambiato per globale e cancellerebbe la sua azione;
+	  - un rinvio SENZA id ne' azioni vuol dire 'ricostruisci tutto', ed e' a sua volta un superset:
+	    azzera i due canali;
+	  - altrimenti id e azioni si sommano, su due canali separati -- sono criteri diversi, non due tipi
+	    di id (vedi paginator.refresh_containers_for_ids).
+	scope: None lascia la marca com'e', '' la cancella, una stringa la scrive. Vedi PENDING_SCOPE_PROP.
+	Torna True se la coda e' globale, False se e' mirata: chi chiama lo usa solo per il log.
+	"""
+	if scope is not None:
+		if scope: set_property(PENDING_SCOPE_PROP, scope)
+		else: clear_property(PENDING_SCOPE_PROP)
+	pending_global = (bool(get_property(PENDING_REFRESH_PROP))
+						and not get_property(PENDING_IDS_PROP)
+						and not get_property(PENDING_ACTIONS_PROP))
+	if pending_global: return True
+	_ids = set(str(i) for i in (ids or ()) if i)
+	_acts = set(str(a) for a in (actions or ()) if a)
+	if not _ids and not _acts:
+		clear_property(PENDING_IDS_PROP)
+		clear_property(PENDING_ACTIONS_PROP)
+		set_property(PENDING_REFRESH_PROP, kind)
+		return True
+	_ids.update(i for i in get_property(PENDING_IDS_PROP).split(',') if i)
+	_acts.update(a for a in get_property(PENDING_ACTIONS_PROP).split(',') if a)
+	set_property(PENDING_IDS_PROP, ','.join(sorted(_ids)))
+	set_property(PENDING_ACTIONS_PROP, ','.join(sorted(_acts)))
 	set_property(PENDING_REFRESH_PROP, kind)
-	logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), riproduzione in corso' % kind)
-	return True
+	return False
+
+def _defer_refresh_if_busy(kind, ids=(), actions=()):
+	"""Rimanda il ridisegno se ADESSO non si puo' disegnare. Torna True se ha rimandato.
+
+	Due motivi, un solo canale. La riproduzione in corso era gia' qui; IL DIALOGO MODALE MANCAVA, ed e'
+	il lotto 136. Conseguenza misurata sulla stick il 03/09: menu contestuale aperto alle 15:18:55 su un
+	elemento di 'continua a guardare', e alle 15:19:17 la sincronizzazione Trakt -- innescata da un
+	'segna come non visto' fatto dal Mac -- ricostruisce quel widget sotto il menu aperto. L'elemento su
+	cui il menu stava lavorando non c'era piu': il menu e' rimasto a schermo, orfano, per 85 secondi.
+	Fino al lotto 131 il guasto era mascherato: dentro un dialogo modale l'infolabel Container(N) si
+	risolve contro il DIALOGO, quindi il censimento non trovava nessun contenitore e la ricarica era un
+	colpo a vuoto -- ed e' su questo che si regge il guardiano di DubResolver (lotto 97). Il recupero
+	dal registro l'ha resa efficace anche dentro un dialogo, e cosi' ha reso reale un guasto che prima
+	era solo latente: nel log si legge 'non_identificati=3 recuperati=1'.
+	La differenza fra i due motivi sta in cosa il rinvio si porta dietro:
+	  - in RIPRODUZIONE gli id si buttano. Un film dura ore, in quel tempo cambia molto piu' del titolo
+	    che ha innescato il rinvio, e ripartire da un elenco vecchio ricaricherebbe i contenitori del
+	    titolo SBAGLIATO invece di ricadere sul globale.
+	  - con un DIALOGO aperto gli id si TENGONO. L'attesa e' quella di un dialogo -- secondi, minuti --
+	    e il cambiamento e' esattamente quello che sappiamo: degradarlo a globale sarebbe un
+	    UpdateLibrary su tutto per il solo fatto che l'utente aveva un menu aperto.
+	"""
+	if playback_active():
+		queue_pending_refresh(kind, scope='')
+		logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), riproduzione in corso' % kind)
+		return True
+	if modal_dialog_open():
+		_kind = 'kodi_refresh_ids' if (ids or actions) else kind
+		queue_pending_refresh(_kind, ids, actions, scope='')
+		logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), dialogo modale aperto | id=%s azioni=%s'
+				% (_kind, len(ids or ()), len(actions or ())))
+		return True
+	return False
 
 # Istante dell'ultima ricostruzione globale effettivamente eseguita. Serve a chi puo' innescarne una
 # per un cambiamento che potrebbe essere gia' stato mostrato: al momento il monitor Trakt, che a fine
@@ -972,7 +1041,7 @@ def kodi_refresh(coalesce=True):
 	# the initial batch (which would shrink the container and bounce the focus). The flag is held only for
 	# the short window in which the widget builds read it, then cleared. A genuine fresh open carries no
 	# flag, so it still starts from the initial batch. Mirrors the existing 'fenlight.refresh_widgets' hold.
-	if _defer_refresh_if_playing('kodi_refresh'): return
+	if _defer_refresh_if_busy('kodi_refresh'): return
 	# Si azzera comunque: la richiesta rimandata e' soddisfatta dalla ricostruzione appena avvenuta.
 	# Lasciarla accesa farebbe scattare la rete di sicurezza del WidgetRefresher, cioe' una TERZA onda.
 	clear_property(PENDING_REFRESH_PROP)
@@ -1051,7 +1120,7 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# ricostruiscono centinaia su tutti i widget della schermata.
 	# Se il sondaggio non identifica nessun contenitore (skin diversa, ids sbagliati, infolabel che non
 	# risolve fuori dal fuoco) si ricade sul globale: non puo' comportarsi peggio di prima.
-	if _defer_refresh_if_playing('kodi_refresh'): return
+	if _defer_refresh_if_busy('kodi_refresh', ids, actions): return
 	clear_property(PENDING_REFRESH_PROP)
 	clear_property(PENDING_IDS_PROP)
 	clear_property(PENDING_ACTIONS_PROP)
@@ -1095,9 +1164,7 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 		# WidgetRefresher rispondeva con refresh_widgets, cioe' UpdateLibrary globale: misurato il
 		# 24/08 alle 15:19, un refresh MIRATO su 1 titolo diventava una ricostruzione di tutto solo
 		# perche' l'utente si trovava dentro la finestra Video. L'informazione c'era, la buttavamo noi.
-		set_property(PENDING_IDS_PROP, ','.join(str(i) for i in (ids or []) if i))
-		set_property(PENDING_ACTIONS_PROP, ','.join(str(a) for a in (actions or ()) if a))
-		set_property(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
+		queue_pending_refresh('kodi_refresh_ids', ids, actions)
 		return
 	# Stesso segnale che alza refresh_widgets(): i widget 'random' lo leggono per riestrarre
 	# (random_lists.py:84 e :270). Va tenuto o cambierebbe il loro comportamento di riflesso.
@@ -1142,15 +1209,13 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# finestra mai aperta in questa sessione. Se il censimento ha risposto, un rinvio sarebbe lavoro
 	# doppio sugli stessi contenitori.
 	if window_id != 10000 and not other:
-		set_property(PENDING_IDS_PROP, ','.join(str(i) for i in (ids or []) if i))
-		set_property(PENDING_ACTIONS_PROP, ','.join(str(a) for a in (actions or ()) if a))
-		set_property(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
 		# Marca la finestra d'origine: questo riarmo serve alle ALTRE, e senza la marca verrebbe
 		# riconsumato qui ogni 10 s all'infinito. Vedi PENDING_SCOPE_PROP.
 		try:
 			from modules import paginator as _pg
-			set_property(PENDING_SCOPE_PROP, _pg.ctl_scope())
-		except: pass
+			_scope = _pg.ctl_scope()
+		except: _scope = None
+		queue_pending_refresh('kodi_refresh_ids', ids, actions, scope=_scope)
 	logger('Fen Light', 'DIAG refresh: MIRATO %s contenitori ricaricati | altre finestre %s | id=%s azioni=%s finestra=%s%s'
 			% (hit, other, len(ids or []), len(actions or ()), window_id,
 				'' if (window_id == 10000 or other) else ' | nessuna finestra censita, resto RIMANDATO alla Home'))
@@ -1160,7 +1225,7 @@ def refresh_widgets(show_notification='false', coalesce=True):
 	# sempre) e il servizio periodico (automatico, accorpabile). Al router arrivano identici, percio'
 	# la voce di menu si dichiara con user=true nell'URL. Accorpare una richiesta esplicita di
 	# aggiornamento sarebbe il caso peggiore possibile: l'utente ha chiesto proprio quello.
-	if _defer_refresh_if_playing('refresh_widgets'): return
+	if _defer_refresh_if_busy('refresh_widgets'): return
 	clear_property(PENDING_REFRESH_PROP)
 	clear_property(PENDING_IDS_PROP)
 	clear_property(PENDING_ACTIONS_PROP)

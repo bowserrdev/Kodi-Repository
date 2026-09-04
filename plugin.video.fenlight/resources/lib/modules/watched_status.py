@@ -111,11 +111,15 @@ def _map_to_tmdb_episode(tmdb_id, season, episode):
 	except: return season, episode
 	try:
 		meta = metadata.tvshow_meta('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime())
-		ep_map = meta.get('tvdb_to_tmdb_ep')
-		if ep_map is None:
-			from apis.skyhook_api import get_tvdb_to_tmdb_map
-			ep_map = get_tvdb_to_tmdb_map(meta.get('tvdb_id'), meta.get('tmdb_season_data_original', []))
-		return ep_map.get((int(season), int(episode)), (season, episode))
+		# Vedi la nota gemella in player.monitor (lotto 144): il ripiego su skyhook che stava qui non
+		# poteva produrre una mappa non vuota, perche' si attivava esattamente quando mancava anche
+		# 'tmdb_season_data_original', che e' il suo secondo argomento. Costava una lettura dell'intero
+		# JSON della serie a ogni marcatura di episodio -- qui in un thread di sfondo, ma pur sempre
+		# durante la riproduzione, dove la rete e' contesa.
+		# TRE esiti, non due (lotto 145): None vuol dire che su Trakt quell'episodio non esiste, e
+		# allora non si manda niente invece di mandare una coppia inventata.
+		from modules.utils import traduci_episodio
+		return traduci_episodio(meta.get('tvdb_to_tmdb_ep'), meta.get('ep_esclusi_tvdb'), season, episode)
 	except: return season, episode
 
 def make_batch_insert(action, media_type, media_id, season, episode, last_played, title):
@@ -303,7 +307,13 @@ def _mark_on_trakt(args, cache_media_type, ep_map_for=None):
 	from apis.trakt_api import trakt_watched_status_mark
 	try:
 		if ep_map_for is not None:
-			args = tuple(args) + _map_to_tmdb_episode(*ep_map_for)
+			_coppia = _map_to_tmdb_episode(*ep_map_for)
+			if _coppia is None:
+				# L'episodio esiste da noi (numerazione TVDB) e non su Trakt. La riga locale e' gia'
+				# scritta e resta: quello che non si fa e' inventare una coppia da spedire, che
+				# indicherebbe un altro episodio o niente. Vedi il lotto 145.
+				return notification('Episodio non presente su Trakt', 3500)
+			args = tuple(args) + _coppia
 		if not trakt_watched_status_mark(*args): return notification('Error')
 		from caches.trakt_cache import clear_trakt_collection_watchlist_data
 		clear_trakt_collection_watchlist_data('watchlist', cache_media_type)
