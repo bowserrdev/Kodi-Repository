@@ -32,7 +32,7 @@
                 <param name="window">1104</param>
             </include>
 
-            <onload condition="String.IsEmpty(Window(1105).Property(TMDbHelper.WidgetContainer))">SetProperty(TMDbHelper.WidgetContainer,501,1105)</onload>
+            <onload condition="String.IsEmpty(Window(1105).Property(TMDbHelper.WidgetContainer))">SetProperty(TMDbHelper.WidgetContainer,505,1105)</onload>
             <onload condition="String.IsEmpty(Window(1108).Property(TMDbHelper.WidgetContainer))">SetProperty(TMDbHelper.WidgetContainer,501,1108)</onload>
 
             <menucontrol>300</menucontrol>
@@ -46,6 +46,17 @@
                 <param name="always">false</param>
             </include>
 
+        </definition>
+    </include>
+
+    <!-- Il content dei widget paginabili, in un posto solo. Tre pezzi, tre mestieri:
+         `content`  il path di base;
+         `pgctl`    l'IDENTITA' (finestra + contenitore) che la build legge con paginator.position_of;
+         il $INFO   il TOKEN DI RICARICA, valorizzato solo mentre una paginazione e' in corso.
+         Vedi Hub_Wall_Widget e Hub_Combined_Widget per il perche' pgctl sia un parametro. -->
+    <include name="Defs_Widget_Content">
+        <definition>
+            <content sortby="$PARAM[sortby]" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]$PARAM[pgctl]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
         </definition>
     </include>
 
@@ -79,6 +90,7 @@
 
     <include name="Hub_Wall_Widget">
         <param name="pgscope">home</param>
+        <param name="pggated">false</param>
         <param name="target">videos</param>
         <param name="include">List_Poster_Row</param>
         <param name="visible">true</param>
@@ -120,7 +132,33 @@
                     <onfocus condition="![$PARAM[home_switcher]]">ClearProperty(HomeSwitcher.IsVisible,Home)</onfocus>
                     <onfocus condition="$PARAM[home_switcher]">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
                     <onfocus>SetProperty(InfoPanel.FullSwitch,Wall,Home)</onfocus>
-                    <content sortby="$PARAM[sortby]" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]&amp;pgctl=$PARAM[pgscope].$PARAM[id]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
+                    <!-- LOTTO 155. Il segmento di identita' NON puo' essere accodato al buio.
+                         Dove il path di base e' un URL letterale (home, hub) accodarlo va bene: e' sempre non vuoto.
+                         Dove nasce da un $VAR/$INFO condizionale (la ricerca) il path sparisce e il segmento resta da
+                         solo: Kodi tenta una GetDirectory su '&amp;pgctl=1105.502' e la registra come errore. Chi ha un
+                         path condizionale passa pggated=true e scrive '&amp;pgctl=...' dentro il SUFFISSO del proprio
+                         $VAR/$INFO, dove sparisce insieme al path. Il default e' il comportamento di sempre: chi non
+                         sa di questo problema non lo ha. -->
+                    <include content="Defs_Widget_Content" condition="![$PARAM[pggated]]">
+                        <param name="pgctl">&amp;pgctl=$PARAM[pgscope].$PARAM[id]</param>
+                        <param name="content">$PARAM[content]</param>
+                        <param name="pgscope">$PARAM[pgscope]</param>
+                        <param name="id">$PARAM[id]</param>
+                        <param name="sortby">$PARAM[sortby]</param>
+                        <param name="sortorder">$PARAM[sortorder]</param>
+                        <param name="target">$PARAM[target]</param>
+                        <param name="limit">$PARAM[limit]</param>
+                    </include>
+                    <include content="Defs_Widget_Content" condition="$PARAM[pggated]">
+                        <param name="pgctl" />
+                        <param name="content">$PARAM[content]</param>
+                        <param name="pgscope">$PARAM[pgscope]</param>
+                        <param name="id">$PARAM[id]</param>
+                        <param name="sortby">$PARAM[sortby]</param>
+                        <param name="sortorder">$PARAM[sortorder]</param>
+                        <param name="target">$PARAM[target]</param>
+                        <param name="limit">$PARAM[limit]</param>
+                    </include>
                 </include>
                 <include content="Widget_Busy">
                     <param name="visible">Container($PARAM[id]).IsUpdating + Integer.IsEqual(Container($PARAM[id]).NumItems)</param>
@@ -140,6 +178,7 @@
 
     <include name="Hub_Combined_Widget">
         <param name="pgscope">home</param>
+        <param name="pggated">false</param>
         <param name="target">videos</param>
         <param name="include">List_Poster_Row</param>
         <param name="visible">true</param>
@@ -175,7 +214,33 @@
                 <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
                 <onfocus>ClearProperty(HomeSwitcher.IsVisible,Home)</onfocus>
                 <onfocus>ClearProperty(InfoPanel.FullSwitch,Home)</onfocus>
-                <content sortby="$PARAM[sortby]" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]&amp;pgctl=$PARAM[pgscope].$PARAM[id]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
+                <!-- LOTTO 155. Il segmento di identita' NON puo' essere accodato al buio.
+                     Dove il path di base e' un URL letterale (home, hub) accodarlo va bene: e' sempre non vuoto.
+                     Dove nasce da un $VAR/$INFO condizionale (la ricerca) il path sparisce e il segmento resta da
+                     solo: Kodi tenta una GetDirectory su '&amp;pgctl=1105.502' e la registra come errore. Chi ha un
+                     path condizionale passa pggated=true e scrive '&amp;pgctl=...' dentro il SUFFISSO del proprio
+                     $VAR/$INFO, dove sparisce insieme al path. Il default e' il comportamento di sempre: chi non
+                     sa di questo problema non lo ha. -->
+                <include content="Defs_Widget_Content" condition="![$PARAM[pggated]]">
+                    <param name="pgctl">&amp;pgctl=$PARAM[pgscope].$PARAM[id]</param>
+                    <param name="content">$PARAM[content]</param>
+                    <param name="pgscope">$PARAM[pgscope]</param>
+                    <param name="id">$PARAM[id]</param>
+                    <param name="sortby">$PARAM[sortby]</param>
+                    <param name="sortorder">$PARAM[sortorder]</param>
+                    <param name="target">$PARAM[target]</param>
+                    <param name="limit">$PARAM[limit]</param>
+                </include>
+                <include content="Defs_Widget_Content" condition="$PARAM[pggated]">
+                    <param name="pgctl" />
+                    <param name="content">$PARAM[content]</param>
+                    <param name="pgscope">$PARAM[pgscope]</param>
+                    <param name="id">$PARAM[id]</param>
+                    <param name="sortby">$PARAM[sortby]</param>
+                    <param name="sortorder">$PARAM[sortorder]</param>
+                    <param name="target">$PARAM[target]</param>
+                    <param name="limit">$PARAM[limit]</param>
+                </include>
                 <visible allowhiddenfocus="$PARAM[allowhiddenfocus]">$PARAM[visible]</visible>
 
                 <include content="Defs_AutoScroll" condition="$PARAM[autoscroll]">
