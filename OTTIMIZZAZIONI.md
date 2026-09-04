@@ -18512,11 +18512,34 @@ qualche secondo mentre i widget si costruiscono, invece di restare coperta dallo
 - Lo splash viene tolto (`Window Deinit (Custom_1198)` presente in entrambi gli avvii).
 - Il controllo differito non rigenera: nessun `ReloadSkin`, nessun `Unloaded skin` dopo l'avvio.
 
-### Da verificare sul dispositivo
+### Verifica sul campo (04/09, 14:20-14:24): confermato
 
-Il caso che ha originato il lotto e non e' ancora stato misurato: **entrare in una finestra video o
-in un hub e tornare in Home**. Atteso: **zero** righe `skinvariables/script.py): start processing`
-nel log per ogni ingresso in Home successivo al primo. Prima erano due.
+Tre cicli completi Home -> riproduzione -> ritorno, fatti dall'utente col telecomando vero.
+
+| ingresso in Home | invocazioni skinvariables |
+|---|---|
+| boot 14:20:31 | 1 (`startup.json`) + 1 differita a +10 s |
+| ritorno dal player 14:21:29 | **0** |
+| ritorno dal player 14:22:31 | **0** |
+| ritorno dal player 14:23:46 | **0** |
+
+Prima erano **due per ogni ingresso**: sei interpreti risparmiati in tre ritorni, e due invocazioni
+in tutta la sessione contro le otto di prima. Nessun errore nuovo: i soli della sessione sono di
+riproduzione (`CMediaCodecVideoBuffer`, `Flush - timed out waiting for renderer`, buffer timeout),
+preesistenti.
+
+### Visto nello stesso log e NON riaperto: la doppia ondata dopo il player
+
+```
+ritorno #1:  +1,6s continue_watching | +5,5s continue_watching
+             +1,6s mdblist           | +6,8s mdblist
+             +1,7s mdblist           | +7,2s mdblist
+```
+
+Due ondate identiche a ogni uscita dal player, sei costruzioni per tre widget; al boot l'ondata e'
+una sola. E' esattamente il quadro del **lotto 129, REVOCATO**: le due ondate le ordina Kodi, che
+sveglia i `CDirectoryProvider` sia all'apertura della finestra sia sull'annuncio `Player.OnStop`.
+Registrato qui solo perche' i numeri di questa sessione lo riconfermano, **non** come fronte aperto.
 
 ### Difetti confermati e non ancora corretti (dal log del 04/09)
 
