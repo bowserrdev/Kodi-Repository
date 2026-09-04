@@ -19018,6 +19018,80 @@ e guardare i TRIGGER. Le tre righe di errore erano vere e sono state corrette qu
 avevo appeso sopra era falsa. **Un errore visibile nel log non e' la spiegazione del sintomo
 riferito: e' un altro fatto, che va collegato al sintomo o tenuto separato.**
 
+## Lotto 156 -- autocompletion: l'unico residuo che girava davvero
+
+Censimento dei residui chiesto dall'utente dopo il lotto 155. Il risultato utile non e' l'elenco: e'
+la **separazione** fra cio' che sporca il sorgente e cio' che costa a runtime. Il criterio e' il log,
+non la lettura del codice.
+
+Sessione di ricerca completa (apertura, query "batman", scorrimento, chiusura): **13 errori**.
+
+```
+   4  Unable to find plugin plugin.program.autocompletion
+   4  GetDirectory - Error getting plugin://plugin.program.autocompletion/...
+   3  GetDirectory - Error getting &pgctl=1105.501/502/505    <- chiusi dal lotto 155
+   1  GetDirectory - Error getting &with_text_query=...       <- chiuso dal lotto 155
+   1  CPeripheralJoystick: No button mapping add-on           <- non nostro
+```
+
+**Otto errori su tredici erano autocompletion**, uno ogni battuta di tasti (id vuoto, `b`, `bat`,
+`batman`), cioe' esattamente sul percorso piu' caldo che esista in questa skin: scrivere in una
+casella di ricerca. L'addon non e' installato, e l'utente l'ha anche disinstallato del tutto -- ma la
+disinstallazione **non basta**, perche' i due `<content>` partono comunque.
+
+### I tre punti, e uno solo era vivo
+
+| dove | stato |
+|---|---|
+| `Dialog_DialogKeyboard.xml` -- il `<content>` della lista a destra | **vivo**, gli 8 errori sono suoi |
+| `Includes_Search.xml` -- l'include `Search_Autocompletion_Dropdown` | **definito e mai usato**: 68 righe morte |
+| `Includes_Expressions.xml` -- `Exp_AutoCompletion_IsEnabled` | **zero lettori** |
+
+L'espressione di guardia esisteva ed era corretta (`System.HasAddon` + `System.AddonIsEnabled`), ma
+**non era applicata a nessuno dei due `<content>`**: era una guardia messa davanti a una porta che
+non c'era. E' il motivo per cui il difetto e' sopravvissuto a due letture precedenti del file: chi
+guardava trovava la guardia e si fermava li'.
+
+Rimossi tutti e tre. `autocompletion` nella skin: **0 occorrenze**.
+
+### Il resto del censimento: sporco, ma fermo
+
+Nella stessa sessione **zero** errori `resource://`, quindi i resource addon citati e non installati
+(`studios.white` 23 usi, `moviecountryicons.maps` 23, `weatherfanart.multi` 15, `arctic.waves` 14)
+non costano niente: stanno in rami che non si raggiungono. Vanno tolti per pulizia, non per
+prestazioni, e la distinzione va tenuta o si finisce a rincorrere numeri che non si muovono -- come
+gia' successo con il lotto C.
+
+Le proprieta' `TMDbHelper.*` sono state classificate **per scrittore**, non per nome. La skin scrive
+solo `base_label`, `base_poster`, `WidgetContainer`, `Blur.*`, `Enable*`; il plugin scriveva le
+`BlurImage` da `blur_service`, che in `service.py` e' commentato e nel log non compare mai. Quindi
+sono morte `SimpleBackground.BlurImage` (11 usi), `ListItem.BlurImage(.Original)` (7),
+`ListItem.Current.*` (7), `Player.CropImage` (2), `ListItem.CropImage` (1), le proprieta' del cast in
+`Includes_DialogInfo` (6), tutte le `base_*` tranne le due scritte (~20) e `EnableExtendedProperties`.
+
+**`TMDbHelper.WidgetContainer` (79 usi) NON e' morta**, nonostante il nome: e' interna alla skin, la
+scrive lei a ogni focus e la legge la variabile dello sfondo. Confonderla con un residuo sarebbe
+stato il danno peggiore di tutto il censimento.
+
+### Un errore di taglio, preso dal controllo
+
+Il primo tentativo di rimuovere `Search_Autocompletion_Dropdown` ha cercato la chiusura come
+**sottostringa** `'    </include>'`: dentro il blocco c'e' un `</include>` a 16 spazi, che la contiene,
+e il taglio si e' fermato li' lasciando orfani due `</control>`. Stessa classe dell'errore del lotto
+152. Preso dal controllo XML sull'albero intero, ripristinato con `git checkout`, rifatto **per righe
+esatte** invece che per sottostringhe, con tre asserzioni scritte prima del taglio (una definizione
+sola, una sola chiusura di primo livello, il marcatore atteso dentro il blocco).
+
+La regola che ne esce, piu' stretta di quella del lotto 152: **su testo indentato non si cerca mai una
+sottostringa, si confronta la riga intera.**
+
+### Verifiche fatte
+
+- XML valido su tutti i 158 file.
+- Insieme degli orfani identico a HEAD.
+- Nessun riferimento pendente al contenitore 304 nella finestra di ricerca.
+- `grep -r autocompletion` su `1080i/` e `shortcuts/`: **0**.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
