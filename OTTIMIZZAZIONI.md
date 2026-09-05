@@ -20252,6 +20252,43 @@ posizione per UNA linguetta (240) e si scosta con animazioni condizionate su
 L'icona resta quella dei widget della home: si riusa `View_Line_Spinner` passandogli l'etichetta
 vuota, che fa collassare il distanziatore trasparente di cui li' si serve per allinearsi dopo un testo.
 
+### E poi non si vedeva lo stesso: la diagnosi a due riquadri
+
+Anche il 170 non compariva, e di nuovo **senza una riga nei log**. A quel punto indovinare una quarta
+volta sarebbe stato solo un modo piu' lento di non sapere: si e' messo in campo un accertamento che
+separa le due domande possibili. Dentro il gruppo della rotellina, due riquadri 28x28:
+
+| | cosa dice |
+|---|---|
+| VERDE | sempre visibile, nessuna condizione, nessuna animazione. Se non si vede il problema e' la POSIZIONE |
+| ROSSO | la stessa condizione della rotellina, ma senza il ritardo di 1600 ms con cui `View_Line_Spinner` sfuma in entrata. Verde si' e rosso mai: il problema e' la CONDIZIONE |
+
+Esito: **si vedevano tutti e due, e sotto il rosso c'era anche la rotellina**. Cioe' il 170 era giusto
+da subito -- posizione giusta, condizione vera al momento giusto, icona che gira.
+
+### Perche' allora non si vedeva: il file non era sulla macchina
+
+Le date lo dicono senza margini. `kodi.old.log` -- la sessione in cui e' arrivato *"continua a non
+essere visibile alcuna rotella"* -- e' partita alle **16:01:38**. La copia installata sul Mac di
+`Includes_Hubs.xml` porta la data **16:05:27**, quattro minuti DOPO. Kodi legge gli XML della skin
+all'avvio (`Custom_1105_Search.xml` e' `KEEP_IN_MEMORY`): quel Kodi stava girando su un
+`Includes_Hubs.xml` che il gruppo della rotellina **non lo conteneva affatto**. `Includes_Search.xml`
+era aggiornato (15:43) e passava correttamente la condizione, ma la passava a un include che non aveva
+niente a cui darla -- un parametro non usato, che per Kodi non e' un errore.
+
+Il guasto quindi non era nella skin: era nel **giro di consegna**. I due file erano stati copiati a
+mano nella skin installata invece di passare da `deploy_local.py`, in due momenti diversi, e uno dei
+due e' arrivato dopo l'avvio di Kodi. Lezione, che vale piu' della rotellina: *prima* di dichiarare che
+una modifica non funziona, verificare che sia sulla macchina **e** che sia arrivata prima dell'avvio.
+Un md5 uguale fra repo e skin installata non basta se lo si guarda dopo aver ricopiato il file.
+
+### Il margine, dimezzato
+
+La cella di una linguetta e' larga 200, il nome quasi mai: appoggiare la rotellina alla fine della
+cella (`left 240`) lasciava un vuoto grande il doppio del necessario. Il left di partenza scende a
+**140**. Gli scostamenti restano di 200, perche' quella e' la larghezza vera di una voce e non e'
+negoziabile: si sposta il punto di partenza, non il passo.
+
 ### Ripulito, non lasciato a meta'
 
 `Includes_Lists.xml` e `Includes_Categories.xml` sono tornati a prima del 169. Un parametro inerte
