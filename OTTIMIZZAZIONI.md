@@ -20204,6 +20204,60 @@ di mezzo: cade il solo caso previsto. 23 su 23 file passano.
 Il default resta `false` in tutti e tre gli anelli intermedi, quindi gli altri selettori della skin
 non cambiano.
 
+## Lotto 170 -- la rotellina in fondo alla riga dei nomi, e perche' il 169 non compariva
+
+Il 169 non funzionava e nei log non c'era **niente**. Nessun errore sul Mac, nessuno sulla stick: gli
+include erano validi, la prova sulla catena passava, e la rotellina non si vedeva.
+
+### La diagnosi
+
+Il 169 ne metteva una **per linguetta**, mostrata quando il widget di quella linguetta stava
+costruendo. La condizione era:
+
+```
+String.IsEqual(ListItem.Property(widget_id),502) + Container(502).IsUpdating
+```
+
+Il generatore pero' scrive quella proprieta' come **`$NUMBER[502]`**, non come `502`
+(`skinvariables-searchwidgets-selector`). Il confronto non e' mai vero. **Una condizione falsa non e'
+un errore per Kodi**, e quindi non lascia traccia: e' la stessa classe di guasto muto del lotto 90, e
+la ragione per cui i due log non contenevano una riga utile.
+
+La prova del 169 verificava la CATENA degli include e passava. Aveva ragione: la catena era corretta,
+era il **bersaglio** a essere sbagliato. Una prova sulla copertura non puo' dire se la condizione che
+copre e' vera -- distinzione che vale la pena tenere a mente prima di fidarsi di un verde.
+
+### Cosa chiedeva davvero l'utente
+
+*"Deve comparire accanto alla riga con i nomi dei widget, quindi sempre alla destra di TV Shows su
+mac, e sulla stick ho solo il widget Film, quindi alla sua destra."* Una rotellina **sola**, in fondo
+alla riga. Che toglie di mezzo tutto il problema: se e' una sola, non deve sapere quale row sta
+costruendo.
+
+```
+Container(502).IsUpdating | Container(503).IsUpdating | ... | Container(506).IsUpdating
+```
+
+Niente `widget_id`, niente `$NUMBER`, niente contesto di voce.
+
+### La posizione, che le linguette non danno gratis
+
+Le linguette sono un CONTENITORE, non un grouplist: non c'e' un "dopo l'ultima voce" a cui agganciarsi.
+Il selettore parte a `left 40` e ogni voce e' larga 200 (`Categories_Selector` passa `itemlayout_w`
+200), quindi la fine della striscia e' `40 + 200*N`. N non e' noto a priori (due percorsi sul Mac, uno
+sulla stick) e **un `<left>` in Kodi e' statico**: non accetta un `$INFO`. Si parte percio' dalla
+posizione per UNA linguetta (240) e si scosta con animazioni condizionate su
+`Container(601).NumItems`, esclusive fra loro cosi' non si sommano.
+
+L'icona resta quella dei widget della home: si riusa `View_Line_Spinner` passandogli l'etichetta
+vuota, che fa collassare il distanziatore trasparente di cui li' si serve per allinearsi dopo un testo.
+
+### Ripulito, non lasciato a meta'
+
+`Includes_Lists.xml` e `Includes_Categories.xml` sono tornati a prima del 169. Un parametro inerte
+lasciato li' sarebbe la cosa peggiore: sembra che qualcosa faccia qualcosa, e non fa niente. Il caso
+**D** di `tests/test_170.py` lo verifica.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'

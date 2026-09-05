@@ -197,14 +197,15 @@
         </definition>
     </include>
 
-    <!-- LOTTO 169. Quale linguetta del selettore deve mostrare la rotellina: quella il cui widget sta
-         costruendo. Ogni voce porta gia' il proprio 'widget_id' (lo scrive il generatore in
-         skinvariables-searchwidgets-selector), ma Kodi non sa risolvere Container($INFO[...]): l'id
-         dentro una condizione deve essere letterale. Da qui una clausola per id invece di una sola
-         espressione; e' la stessa ragione per cui il paginatore indicizza per (finestra, contenitore).
-         L'intervallo 502-506 copre i percorsi di ricerca configurabili (il generatore li numera da
-         502) con margine per quelli che l'utente potrebbe aggiungere. -->
-    <expression name="Exp_Search_Row_Spinner">[String.IsEqual(ListItem.Property(widget_id),502) + Container(502).IsUpdating] | [String.IsEqual(ListItem.Property(widget_id),503) + Container(503).IsUpdating] | [String.IsEqual(ListItem.Property(widget_id),504) + Container(504).IsUpdating] | [String.IsEqual(ListItem.Property(widget_id),505) + Container(505).IsUpdating] | [String.IsEqual(ListItem.Property(widget_id),506) + Container(506).IsUpdating]</expression>
+    <!-- LOTTO 170. Quando mostrare la rotellina in fondo alla riga dei nomi dei percorsi: quando
+         UNO QUALUNQUE dei row della ricerca sta costruendo. Non serve sapere quale: la rotellina e'
+         una sola e sta in fondo alla riga, non su una linguetta.
+         Gli id sono letterali perche' Kodi non risolve Container($INFO[...]): l'intervallo 502-506
+         copre i percorsi di ricerca configurabili (il generatore li numera da 502) con margine.
+         Il tentativo del 169 di metterne una PER linguetta e' stato abbandonato proprio qui: richiedeva
+         di confrontare ListItem.Property(widget_id), che il generatore scrive come '$NUMBER[502]', e
+         quel confronto non e' mai risultato vero. -->
+    <expression name="Exp_Search_Row_Spinner">Container(502).IsUpdating | Container(503).IsUpdating | Container(504).IsUpdating | Container(505).IsUpdating | Container(506).IsUpdating</expression>
 
     <include name="Search_Info_Panel">
         <control type="group">
