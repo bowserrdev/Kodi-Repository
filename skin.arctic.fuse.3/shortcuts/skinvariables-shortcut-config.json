@@ -110,7 +110,6 @@
             "icon": "resource://resource.images.arcticfuse/icons/hard-drive.png",
             "link": "false"
         },
-        "grouping://shortcuts/tmdbhelper/",
         {
             "name": "Miscellaneous",
             "path": "grouping://shortcuts/links/kodi/",
@@ -451,7 +450,6 @@
             "node": "",
             "link": "false"
         }
-
     ],
     "grouping://shortcuts/addons/": [
         {
@@ -527,7 +525,6 @@
             "node": "programs",
             "link": "false"
         },
-        
         {
             "name": "File Sources",
             "path": "sources://files/",
@@ -541,55 +538,6 @@
             "icon": "resource://resource.images.arcticfuse/icons/hard-drive.png",
             "node": "games",
             "link": "false"
-        }
-    ],
-    "grouping://shortcuts/tmdbhelper/": [
-        {
-            "name": "SkinVariables Custom Filter",
-            "icon": "resource://resource.images.arcticfuse/icons/filter.png",
-            "link": "false",
-            "node": "videos",
-            "path": "plugin://script.skinvariables/?info=get_filter_files"
-        },
-        {
-            "name": "TMDbHelper Nodes",
-            "path": "plugin://plugin.video.themoviedb.helper/?info=dir_custom_node",
-            "icon": "resource://resource.images.arcticfuse/icons/plug.png",
-            "link": "false",
-            "rule": "System.HasAddon(plugin.video.themoviedb.helper)",
-            "node": "videos"
-        },
-        {
-            "name": "TMDbHelper Movies",
-            "path": "plugin://plugin.video.themoviedb.helper/?info=dir_movie",
-            "icon": "resource://resource.images.arcticfuse/icons/plug.png",
-            "link": "false",
-            "rule": "System.HasAddon(plugin.video.themoviedb.helper)",
-            "node": "videos"
-        },
-        {
-            "name": "TMDbHelper TV Shows",
-            "path": "plugin://plugin.video.themoviedb.helper/?info=dir_tv",
-            "icon": "resource://resource.images.arcticfuse/icons/plug.png",
-            "link": "false",
-            "rule": "System.HasAddon(plugin.video.themoviedb.helper)",
-            "node": "videos"
-        },
-        {
-            "name": "TMDbHelper Randomised",
-            "path": "plugin://plugin.video.themoviedb.helper/?info=dir_random",
-            "icon": "resource://resource.images.arcticfuse/icons/plug.png",
-            "link": "false",
-            "rule": "System.HasAddon(plugin.video.themoviedb.helper)",
-            "node": "videos"
-        },
-        {
-            "name": "TMDbHelper All",
-            "path": "plugin://plugin.video.themoviedb.helper/",
-            "icon": "resource://resource.images.arcticfuse/icons/plug.png",
-            "link": "false",
-            "rule": "System.HasAddon(plugin.video.themoviedb.helper)",
-            "node": "videos"
         }
     ],
     "grouping://shortcuts/default/": [
@@ -963,7 +911,7 @@
             "link": "false"
         }
     ],
-    "grouping://shortcuts/links/pvr/":[
+    "grouping://shortcuts/links/pvr/": [
         {
             "name": "TV Channels",
             "path": "ActivateWindow(TVChannels)",
@@ -1108,12 +1056,6 @@
             "name": "Event Log",
             "path": "ActivateWindow(eventlog)",
             "icon": "resource://resource.images.arcticfuse/icons/list-check.png",
-            "link": "true"
-        },
-        {
-            "icon": "resource://resource.images.arcticfuse/icons/configure.png",
-            "name": "Configure TMDbHelper",
-            "path": "RunPlugin(plugin://plugin.video.themoviedb.helper/?info=dir_settings)",
             "link": "true"
         }
     ],

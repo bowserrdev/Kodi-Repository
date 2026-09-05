@@ -207,6 +207,15 @@ _DELIVERY = [0.0, 0]
 # diventare essa stessa il carico (e' l'errore gia' fatto con DIAG in paginator).
 # Vanno spente quando avranno risposto, come PERF_SELFTEST e DIAG prima di loro.
 _PHASE = {}
+# Gemello di _PHASE con il tempo di CPU DEL THREAD (lotto 131): vedi il commento in fenlight.py.
+# Stessi nomi di fase, cosi' le due serie si sottraggono a coppie senza altra contabilita'.
+_PHASE_CPU = {}
+
+def _thread_cpu():
+	try:
+		from time import thread_time
+		return thread_time()
+	except Exception: return None
 
 def mark_phase(name):
 	# Timbro nudo: una lettura di orologio in un dizionario di processo. Serve a router.routing() per
@@ -216,11 +225,15 @@ def mark_phase(name):
 	# finestra: la diagnostica non deve diventare il carico che sta misurando.
 	from time import perf_counter
 	_PHASE[name] = perf_counter()
+	_c = _thread_cpu()
+	if _c is not None: _PHASE_CPU[name] = _c
 
 def add_items(handle, item_list):
 	from time import perf_counter as _pc
 	_t = _pc()
 	_PHASE['add_start'] = _t
+	_c = _thread_cpu()
+	if _c is not None: _PHASE_CPU['add_start'] = _c
 	addDirectoryItems(handle, item_list)
 	_DELIVERY[0] = (_pc() - _t) * 1000
 	_DELIVERY[1] = len(item_list) if item_list else 0
@@ -320,7 +333,7 @@ def end_directory(handle, cacheToDisc=True):
 					% (_n, _add, _add / _n, _eod, _eod / _n, _add + _eod))
 		except: pass
 
-def log_invocation(argv, t_start, t_import, t_end):
+def log_invocation(argv, t_start, t_import, t_end, c_start=None, c_import=None, c_end=None):
 	# LA misura del lotto 50. Il log di debug ha mostrato invocazioni widget da 21-23 s dove il PERF
 	# dichiarava 3 s: questa riga divide l'invocazione INTERA nei segmenti che PERF non vede mai.
 	#   import        -> costo di caricare i moduli (verificato piccolo: l'albero e' gia' pigro)
@@ -356,6 +369,43 @@ def log_invocation(argv, t_start, t_import, t_end):
 		# assoluto dice poco (Android tiene la libera bassa di proposito), la derivata dice tutto.
 		perf_log('FenLight PERF INVOCAZIONE', '%s | totale %.0f ms | %s ms%s'
 				% (mode or '?', _ms(t_start, t_end), ' + '.join(parts), perf_memory()))
+		_log_invocation_cpu(mode, t_start, t_import, t_end, c_start, c_import, c_end, rt_in, ix_in, add_start)
+	except: pass
+
+def _log_invocation_cpu(mode, t_start, t_import, t_end, c_start, c_import, c_end, rt_in, ix_in, add_start):
+	"""Le stesse fasi, in tempo di CPU del thread invece che di orologio (lotto 131).
+
+	Riga separata e non allungata su quella sopra: quella si legge a colpo d'occhio e serve tutti i
+	giorni, questa serve a rispondere a UNA domanda e va spenta quando avra' risposto.
+
+	Come si legge: 'cpu/orologio'. Vicini = il thread stava macinando, il tempo e' lavoro vero e
+	l'unico rimedio e' fare meno lavoro. Lontani = il thread era FERMO ad aspettare, e allora togliere
+	import non restituisce niente -- il tempo se n'e' andato altrove (GIL conteso fra sotto-interpreti,
+	letture dalla flash, il resto dell'avvio di Kodi).
+
+	Vale come PROVA sulle due fasi di import, che sono a thread singolo. Sulla fase 'indexer' NO: li'
+	il lavoro sta nei worker e questo thread e' legittimamente fermo ad aspettarli, quindi un rapporto
+	basso non significa contesa. E' scritto qui perche' e' esattamente il modo in cui questa misura
+	verrebbe letta male.
+	"""
+	if c_start is None or c_end is None: return
+	try:
+		_ms = lambda a, b: (b - a) * 1000
+		def _quota(cpu_a, cpu_b, wall_a, wall_b):
+			w = _ms(wall_a, wall_b)
+			c = _ms(cpu_a, cpu_b)
+			return '%.0f/%.0f ms (%.0f%%)' % (c, w, (c / w * 100) if w > 0 else 0)
+		parts = []
+		if c_import is not None:
+			parts.append('import %s' % _quota(c_start, c_import, t_start, t_import))
+			ci, cx = _PHASE_CPU.get('routing_in'), _PHASE_CPU.get('indexer_in')
+			ca = _PHASE_CPU.get('add_start')
+			if ci is not None and cx is not None and rt_in and ix_in:
+				parts.append('import pigri %s' % _quota(ci, cx, rt_in, ix_in))
+				if ca is not None and add_start:
+					parts.append('indexer %s' % _quota(cx, ca, ix_in, add_start))
+		perf_log('FenLight PERF CPU', '%s | totale %s | %s'
+				% (mode or '?', _quota(c_start, c_end, t_start, t_end), ' + '.join(parts) or 'nessuna fase'))
 	except: pass
 
 _FENLIGHT_PKGS = ('modules', 'indexers', 'apis', 'caches', 'windows')
@@ -417,57 +467,12 @@ def build_mark_since(prop, since_ts):
 	except: pass
 	return None
 
-# Registro delle scritture LOCALI di avanzamento (lotto 128). Serve a proteggere dalla riscrittura
-# in blocco di Trakt una riga che abbiamo appena creato noi e che il `sync/playback` di Trakt non
-# puo' ancora conoscere. Il lotto 122 lo faceva gia', ma con la chiave sbagliata -- `resume_id = 0`,
-# cioe' 'non ancora confermata da Trakt' -- e quella protezione EVAPORA nell'istante in cui la
-# spinta asincrona torna e scrive il resume_id vero. Fra quell'istante e il momento in cui Trakt
-# elenca davvero la pausa nel proprio `sync/playback` c'e' una finestra in cui la riga e' confermata
-# ma assente dalla vista di Trakt: li' viene cancellata come se l'utente l'avesse tolta.
-# Misurato sulla stick il 02/09: film messo in pausa e scritto alle 18:24:32,9, giro del monitor
-# Trakt alle 18:24:37,0 -- la riga non c'e' piu' nel database. L'episodio della prova gemella, il cui
-# giro di Trakt e' caduto 13,5 s dopo la scrittura, e' sopravvissuto. Il commento del lotto 122
-# diceva gia' la verita' senza trarne la conseguenza: "era una corsa, e la si vinceva per fortuna".
-# La chiave giusta non e' 'confermata o no', e' 'scritta da noi da poco'.
-PROGRESS_LOCAL_WRITES_PROP = 'fenlight.progress.localwrites'
-# Quanto a lungo una scrittura locale e' protetta. Copre la propagazione su Trakt (di norma
-# immediata) piu' un giro di monitor abbondante. Il prezzo di essere generosi e' minimo: se in questi
-# secondi l'utente togliesse DAVVERO il titolo da Trakt altrove, la nostra riga sopravviverebbe a un
-# giro in piu' e sparirebbe al successivo.
-PROGRESS_LOCAL_GRACE = 120
-PROGRESS_LOCAL_CAP = 12
-
-def _progress_key(db_type, media_id, season, episode):
-	return '%s|%s|%s|%s' % (db_type, media_id, '' if season in (None, '') else season, '' if episode in (None, '') else episode)
-
-def note_local_progress_write(db_type, media_id, season='', episode=''):
-	"""Annota che ABBIAMO SCRITTO NOI questa riga di avanzamento, adesso."""
-	try:
-		from time import time as _now
-		key = _progress_key(db_type, media_id, season, episode)
-		raw = get_property(PROGRESS_LOCAL_WRITES_PROP) or ''
-		rows = [r for r in raw.split('\n') if r and r.partition('|')[2] != key]
-		rows.append('%s|%s' % (_now(), key))
-		set_property(PROGRESS_LOCAL_WRITES_PROP, '\n'.join(rows[-PROGRESS_LOCAL_CAP:]))
-	except: pass
-
-def recent_local_progress(db_type, grace=None):
-	"""Le identita' di questo db_type scritte da noi entro la grazia: set di (media_id, season, episode)."""
-	out = set()
-	try:
-		from time import time as _now
-		limit = _now() - (PROGRESS_LOCAL_GRACE if grace is None else grace)
-		raw = get_property(PROGRESS_LOCAL_WRITES_PROP) or ''
-		for row in raw.split('\n'):
-			if not row: continue
-			ts, _, key = row.partition('|')
-			try:
-				if float(ts or 0) < limit: continue
-			except: continue
-			parts = key.split('|')
-			if len(parts) == 4 and parts[0] == db_type: out.add((parts[1], parts[2], parts[3]))
-	except: pass
-	return out
+# Qui viveva il registro delle scritture locali del lotto 128 (PROGRESS_LOCAL_WRITES_PROP, la grazia
+# di 120 s, note_local_progress_write, recent_local_progress). RIMOSSO dal lotto 133: era un modo di
+# ricostruire dall'orologio uno stato che adesso sta scritto sulla riga, nella colonna `sync_state`.
+# La grazia sbagliava per costruzione, perche' 'l'ho scritta io da poco' e 'Trakt ce l'ha ancora'
+# sono due domande diverse: il 03/09 la stick ha resuscitato per due giri un film cancellato dal Mac
+# trenta secondi prima. Vedi caches/progress_sync.
 
 def build_log_rows(since_ts):
 	"""Le identita' delle costruzioni registrate DOPO since_ts, dalla piu' vecchia alla piu' recente.
@@ -864,16 +869,85 @@ PG_LASTBUILD_PROP = 'fenlight.pg.%s.lastbuild'
 def playback_active():
 	return get_visibility('Player.HasVideo')
 
-def _defer_refresh_if_playing(kind):
-	if not playback_active(): return False
-	# Questo rinvio non porta id con se': gli eventuali id di un rinvio precedente vanno tolti, o
-	# WidgetRefresher ricaricherebbe i contenitori del titolo SBAGLIATO invece di ricadere sul globale.
-	clear_property(PENDING_IDS_PROP)
-	clear_property(PENDING_ACTIONS_PROP)
-	clear_property(PENDING_SCOPE_PROP)
+def modal_dialog_open():
+	# UN SOLO POSTO in cui si guarda se c'e' un dialogo modale a schermo (lotto 136). Prima la stessa
+	# domanda era scritta due volte in service.py -- WidgetPaginator e DubResolver -- e mancava proprio
+	# dove decide la correttezza, cioe' nel percorso del ridisegno.
+	# Si valuta SEMPRE dopo playback_active(): durante la riproduzione questa chiamata non si fa
+	# nemmeno, ed e' li' che prendere il lock grafico da un thread di plugin fa danno (lotto 111).
+	return get_visibility('System.HasActiveModalDialog')
+
+def queue_pending_refresh(kind, ids=(), actions=(), scope=None):
+	"""Mette in coda un rinvio sul canale che WidgetRefresher raccoglie, SOMMANDO cio' che c'e' gia'.
+
+	Unica implementazione della somma. Prima ce n'erano tre -- qui dentro due, piu' una in service.py --
+	e due delle tre SOVRASCRIVEVANO invece di sommare: due cambiamenti distinti che nessuno aveva
+	ancora mostrato, e chi arrivava secondo cancellava il primo.
+	Le regole, in ordine:
+	  - un rinvio GLOBALE gia' in coda e' un superset di qualunque elenco: aggiungerci degli id lo
+	    RESTRINGEREBBE, quindi si lascia com'e'. Si riconosce dall'assenza di ENTRAMBI i canali, non
+	    del solo elenco di id -- con la sola verifica sugli id un rinvio nato da un'azione pura
+	    (watchlist, continua a guardare) sarebbe scambiato per globale e cancellerebbe la sua azione;
+	  - un rinvio SENZA id ne' azioni vuol dire 'ricostruisci tutto', ed e' a sua volta un superset:
+	    azzera i due canali;
+	  - altrimenti id e azioni si sommano, su due canali separati -- sono criteri diversi, non due tipi
+	    di id (vedi paginator.refresh_containers_for_ids).
+	scope: None lascia la marca com'e', '' la cancella, una stringa la scrive. Vedi PENDING_SCOPE_PROP.
+	Torna True se la coda e' globale, False se e' mirata: chi chiama lo usa solo per il log.
+	"""
+	if scope is not None:
+		if scope: set_property(PENDING_SCOPE_PROP, scope)
+		else: clear_property(PENDING_SCOPE_PROP)
+	pending_global = (bool(get_property(PENDING_REFRESH_PROP))
+						and not get_property(PENDING_IDS_PROP)
+						and not get_property(PENDING_ACTIONS_PROP))
+	if pending_global: return True
+	_ids = set(str(i) for i in (ids or ()) if i)
+	_acts = set(str(a) for a in (actions or ()) if a)
+	if not _ids and not _acts:
+		clear_property(PENDING_IDS_PROP)
+		clear_property(PENDING_ACTIONS_PROP)
+		set_property(PENDING_REFRESH_PROP, kind)
+		return True
+	_ids.update(i for i in get_property(PENDING_IDS_PROP).split(',') if i)
+	_acts.update(a for a in get_property(PENDING_ACTIONS_PROP).split(',') if a)
+	set_property(PENDING_IDS_PROP, ','.join(sorted(_ids)))
+	set_property(PENDING_ACTIONS_PROP, ','.join(sorted(_acts)))
 	set_property(PENDING_REFRESH_PROP, kind)
-	logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), riproduzione in corso' % kind)
-	return True
+	return False
+
+def _defer_refresh_if_busy(kind, ids=(), actions=()):
+	"""Rimanda il ridisegno se ADESSO non si puo' disegnare. Torna True se ha rimandato.
+
+	Due motivi, un solo canale. La riproduzione in corso era gia' qui; IL DIALOGO MODALE MANCAVA, ed e'
+	il lotto 136. Conseguenza misurata sulla stick il 03/09: menu contestuale aperto alle 15:18:55 su un
+	elemento di 'continua a guardare', e alle 15:19:17 la sincronizzazione Trakt -- innescata da un
+	'segna come non visto' fatto dal Mac -- ricostruisce quel widget sotto il menu aperto. L'elemento su
+	cui il menu stava lavorando non c'era piu': il menu e' rimasto a schermo, orfano, per 85 secondi.
+	Fino al lotto 131 il guasto era mascherato: dentro un dialogo modale l'infolabel Container(N) si
+	risolve contro il DIALOGO, quindi il censimento non trovava nessun contenitore e la ricarica era un
+	colpo a vuoto -- ed e' su questo che si regge il guardiano di DubResolver (lotto 97). Il recupero
+	dal registro l'ha resa efficace anche dentro un dialogo, e cosi' ha reso reale un guasto che prima
+	era solo latente: nel log si legge 'non_identificati=3 recuperati=1'.
+	La differenza fra i due motivi sta in cosa il rinvio si porta dietro:
+	  - in RIPRODUZIONE gli id si buttano. Un film dura ore, in quel tempo cambia molto piu' del titolo
+	    che ha innescato il rinvio, e ripartire da un elenco vecchio ricaricherebbe i contenitori del
+	    titolo SBAGLIATO invece di ricadere sul globale.
+	  - con un DIALOGO aperto gli id si TENGONO. L'attesa e' quella di un dialogo -- secondi, minuti --
+	    e il cambiamento e' esattamente quello che sappiamo: degradarlo a globale sarebbe un
+	    UpdateLibrary su tutto per il solo fatto che l'utente aveva un menu aperto.
+	"""
+	if playback_active():
+		queue_pending_refresh(kind, scope='')
+		logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), riproduzione in corso' % kind)
+		return True
+	if modal_dialog_open():
+		_kind = 'kodi_refresh_ids' if (ids or actions) else kind
+		queue_pending_refresh(_kind, ids, actions, scope='')
+		logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), dialogo modale aperto | id=%s azioni=%s'
+				% (_kind, len(ids or ()), len(actions or ())))
+		return True
+	return False
 
 # Istante dell'ultima ricostruzione globale effettivamente eseguita. Serve a chi puo' innescarne una
 # per un cambiamento che potrebbe essere gia' stato mostrato: al momento il monitor Trakt, che a fine
@@ -967,7 +1041,7 @@ def kodi_refresh(coalesce=True):
 	# the initial batch (which would shrink the container and bounce the focus). The flag is held only for
 	# the short window in which the widget builds read it, then cleared. A genuine fresh open carries no
 	# flag, so it still starts from the initial batch. Mirrors the existing 'fenlight.refresh_widgets' hold.
-	if _defer_refresh_if_playing('kodi_refresh'): return
+	if _defer_refresh_if_busy('kodi_refresh'): return
 	# Si azzera comunque: la richiesta rimandata e' soddisfatta dalla ricostruzione appena avvenuta.
 	# Lasciarla accesa farebbe scattare la rete di sicurezza del WidgetRefresher, cioe' una TERZA onda.
 	clear_property(PENDING_REFRESH_PROP)
@@ -1046,7 +1120,7 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# ricostruiscono centinaia su tutti i widget della schermata.
 	# Se il sondaggio non identifica nessun contenitore (skin diversa, ids sbagliati, infolabel che non
 	# risolve fuori dal fuoco) si ricade sul globale: non puo' comportarsi peggio di prima.
-	if _defer_refresh_if_playing('kodi_refresh'): return
+	if _defer_refresh_if_busy('kodi_refresh', ids, actions): return
 	clear_property(PENDING_REFRESH_PROP)
 	clear_property(PENDING_IDS_PROP)
 	clear_property(PENDING_ACTIONS_PROP)
@@ -1090,9 +1164,7 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 		# WidgetRefresher rispondeva con refresh_widgets, cioe' UpdateLibrary globale: misurato il
 		# 24/08 alle 15:19, un refresh MIRATO su 1 titolo diventava una ricostruzione di tutto solo
 		# perche' l'utente si trovava dentro la finestra Video. L'informazione c'era, la buttavamo noi.
-		set_property(PENDING_IDS_PROP, ','.join(str(i) for i in (ids or []) if i))
-		set_property(PENDING_ACTIONS_PROP, ','.join(str(a) for a in (actions or ()) if a))
-		set_property(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
+		queue_pending_refresh('kodi_refresh_ids', ids, actions)
 		return
 	# Stesso segnale che alza refresh_widgets(): i widget 'random' lo leggono per riestrarre
 	# (random_lists.py:84 e :270). Va tenuto o cambierebbe il loro comportamento di riflesso.
@@ -1137,15 +1209,13 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# finestra mai aperta in questa sessione. Se il censimento ha risposto, un rinvio sarebbe lavoro
 	# doppio sugli stessi contenitori.
 	if window_id != 10000 and not other:
-		set_property(PENDING_IDS_PROP, ','.join(str(i) for i in (ids or []) if i))
-		set_property(PENDING_ACTIONS_PROP, ','.join(str(a) for a in (actions or ()) if a))
-		set_property(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
 		# Marca la finestra d'origine: questo riarmo serve alle ALTRE, e senza la marca verrebbe
 		# riconsumato qui ogni 10 s all'infinito. Vedi PENDING_SCOPE_PROP.
 		try:
 			from modules import paginator as _pg
-			set_property(PENDING_SCOPE_PROP, _pg.ctl_scope())
-		except: pass
+			_scope = _pg.ctl_scope()
+		except: _scope = None
+		queue_pending_refresh('kodi_refresh_ids', ids, actions, scope=_scope)
 	logger('Fen Light', 'DIAG refresh: MIRATO %s contenitori ricaricati | altre finestre %s | id=%s azioni=%s finestra=%s%s'
 			% (hit, other, len(ids or []), len(actions or ()), window_id,
 				'' if (window_id == 10000 or other) else ' | nessuna finestra censita, resto RIMANDATO alla Home'))
@@ -1155,7 +1225,7 @@ def refresh_widgets(show_notification='false', coalesce=True):
 	# sempre) e il servizio periodico (automatico, accorpabile). Al router arrivano identici, percio'
 	# la voce di menu si dichiara con user=true nell'URL. Accorpare una richiesta esplicita di
 	# aggiornamento sarebbe il caso peggiore possibile: l'utente ha chiesto proprio quello.
-	if _defer_refresh_if_playing('refresh_widgets'): return
+	if _defer_refresh_if_busy('refresh_widgets'): return
 	clear_property(PENDING_REFRESH_PROP)
 	clear_property(PENDING_IDS_PROP)
 	clear_property(PENDING_ACTIONS_PROP)

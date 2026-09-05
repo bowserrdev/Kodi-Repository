@@ -51,7 +51,50 @@ def refresh_official_status():
 		except: pass
 	Thread(target=_work).start()
 
-def refresh_ids_inproc(ids, actions):
+def decide_refresh(changed, actions, age, coalesce_seconds):
+	"""Cosa fare del risultato di una sincronizzazione Trakt. Torna (cosa, ids, azioni).
+
+	Pura: niente Kodi, niente rete, niente orologio -- l'eta' arriva da fuori. Esiste perche' questa
+	decisione ha gia' prodotto tre guasti (lotti 130, 134 e 139) e non era provabile in nessun modo:
+	stava dentro un ciclo di servizio che parla con Trakt.
+
+	I due canali, che sono canali DIVERSI e non due modi di dire la stessa cosa:
+	  changed: CHI e' cambiato. '-' = lo sappiamo, non e' cambiato nessuno. '' = non lo sappiamo.
+	  actions: QUALE widget cambia composizione. '' = nessuna. Non ha un valore 'ignoto'.
+
+	QUI NON C'E' PIU' LA GUARDIA self_mark_recent, ed e' il punto del lotto 139. Diceva: 'la modifica
+	e' nostra ed e' gia' a schermo', e lo deduceva da un timbro temporale -- abbiamo scritto qualcosa
+	negli ultimi 45 s. E' la domanda sbagliata: risponde 'ho scritto di recente?' quando quella giusta
+	e' 'questo cambiamento e' gia' a schermo?'. Sulla stick il 03/09 alle 17:17:03 le due hanno dato
+	risposte opposte: la stick aveva spinto un proprio segnalibro alle 17:16:32 (`in locale 1
+	(1 pending_put)`), poi e' arrivato da Trakt un episodio segnato visto DAL MAC
+	(`1 new plays added`, `titoli cambiati: 1 -> ['287238'] | azioni: continue_watching`) e la guardia
+	l'ha buttato: `refresh saltato, la modifica e' nostra ed e' gia' a schermo`. Non era nostra, e non
+	era a schermo -- l'episodio successivo non e' mai entrato in 'continua a guardare'. E non era
+	nemmeno un ritardo: quel ramo non leggeva ne' azzerava i due canali, che il giro dopo venivano
+	sovrascritti. Perso, non rimandato.
+
+	Si puo' togliere perche' cio' che proteggeva non esiste piu'. Proteggeva dalla ricostruzione
+	GLOBALE innescata da una nostra marcatura: trakt_indicators_movies, vedendo il proprio timbro,
+	torna None, e None significa 'non so chi e' cambiato' -> globale. Ma dal lotto 134 OGNI ramo che
+	puo' lasciare gli id ignoti dichiara comunque la propria azione (continue_watching), e un'azione
+	da sola basta per una ricarica MIRATA (lotto 119). Il globale per una nostra marcatura non e' piu'
+	raggiungibile: la guardia difendeva una porta murata, e nel farlo ne teneva chiusa una aperta.
+	"""
+	acts = actions or ''
+	# 'lo sappiamo, non e' cambiato nessuno' e nessun widget cambia composizione: non c'e' niente da
+	# mostrare. E' la versione ESATTA, basata sul contenuto, di cio' che il timbro approssimava.
+	if changed == '-' and not acts: return ('niente', '', '')
+	# Ricostruito da poco: non si giudica di nuovo qui, si RIMANDA con tutto cio' che si sa (lotto 130).
+	if age < coalesce_seconds: return ('rinvio', '' if changed == '-' else (changed or ''), acts)
+	# '-' vuol dire 'nessun id', non 'nessun lavoro': con le sole azioni si ricostruiscono comunque i
+	# widget che cambiano composizione.
+	ids = '' if changed == '-' else (changed or '')
+	if ids or acts: return ('mirato', ids, acts)
+	# Non sappiamo chi e' cambiato e nessuno ha dichiarato un'azione: l'unica rete e' il globale.
+	return ('globale', '', '')
+
+def refresh_ids_inproc(ids, actions, coalesce=True):
 	"""kodi_refresh_ids chiamato QUI invece di ordinato con RunPlugin (lotto 125).
 
 	RunPlugin fa nascere un interprete Python nuovo che deve reimportare tutto l'albero del plugin
@@ -70,7 +113,7 @@ def refresh_ids_inproc(ids, actions):
 	from modules.kodi_utils import kodi_refresh_ids
 	_ids = [i for i in (ids or '').split(',') if i]
 	_actions = tuple(a for a in (actions or '').split(',') if a)
-	Thread(target=kodi_refresh_ids, args=(_ids, _actions)).start()
+	Thread(target=kodi_refresh_ids, args=(_ids, _actions), kwargs={'coalesce': coalesce}).start()
 # Giri dopo un cambio di finestra in cui si ripassa il censimento dei contenitori. I giri sono da
 # 0,3 s: 0 / 1,5 / 3 / 6 / 10,5 / 16,5 secondi. Copre il tempo in cui i widget si stanno ancora
 # costruendo -- sulla stick una costruzione supera spesso i 5 s -- senza sondare per sempre una
@@ -139,7 +182,6 @@ class TraktMonitor:
 		logger('Fen Light', 'TraktMonitor Service Starting')
 		from apis.trakt_api import trakt_sync_activities
 		from caches.settings_cache import get_setting
-		from apis.trakt_api import self_mark_recent
 		from modules.kodi_utils import run_plugin, refresh_age
 		from modules.settings import trakt_sync_interval
 		monitor, player, window = xbmc.Monitor(), xbmc.Player(), xbmcgui.Window(10000)
@@ -163,30 +205,16 @@ class TraktMonitor:
 					# Nel log del Mac del 21/08: scan alle 23:37:44.874 (il nostro flush post-riproduzione) e
 					# di nuovo alle 23:37:51.969, 62 ms dopo 'Trakt Update Performed'. Se l'interfaccia e'
 					# stata ricostruita da poco, la ricostruzione di Trakt e' quasi certamente per il
-					# cambiamento che l'ha appena innescata. La sincronizzazione e' gia' avvenuta comunque:
-					# quello che si salta e' solo il ridisegno, e il dato compare alla prima ricostruzione
-					# successiva -- che con la navigazione arriva in pochi secondi.
-					# Se a svegliare la sincronizzazione e' stata la NOSTRA marcatura, l'interfaccia mostra
-					# gia' il dato giusto: mark_movie/mark_episode scrivono in locale e ricaricano i
-					# contenitori toccati PRIMA ancora di spingere su Trakt. Ordinare qui una
-					# ricostruzione GLOBALE vuol dire rifare da capo ogni widget della schermata per un
-					# cambiamento gia' visibile. Nel log della stick del 23/08 sono i due
-					# 'DIAG refresh: GLOBALE' delle 13:22:12 e 13:22:59: nessuno dei due aveva niente
-					# di nuovo da mostrare, e ognuno si e' portato dietro cinque ricostruzioni.
-					# La finestra dell'accorpamento qui sotto non li prendeva perche' guarda solo
-					# l'orologio, e fra la marcatura e il poll successivo passa piu' di quel tempo.
-					if status == 'success' and self_mark_recent():
-						logger('Fen Light', "TraktMonitor: refresh saltato, la modifica e' nostra ed e' gia' a schermo")
-					elif status == 'success' and get_setting('fenlight.trakt.refresh_widgets', 'false') == 'true':
+					# cambiamento che l'ha appena innescata -- e allora si RIMANDA, non si butta.
+					if status == 'success':
 						# Quali titoli sono cambiati lo pubblica trakt_sync_activities dopo la
 						# ricostruzione (lotto 59). Trakt non lo dice mai -- last_activities da solo
 						# marche temporali per categoria -- ma il confronto fra l'insieme prima e
 						# quello dopo lo sa. Tre stati: '' non lo sappiamo -> globale come prima;
 						# '-' nulla e' cambiato davvero -> non si ricostruisce niente; altrimenti
 						# ricarica MIRATA dei soli contenitori che contengono quegli id.
-						# Si legge SEMPRE, anche quando la guardia qui sotto vieta di ricostruire ADESSO:
-						# prima la lettura stava dentro il ramo 'else' e quando la guardia scattava questo
-						# elenco non veniva nemmeno guardato. Vedi _defer_widget_refresh.
+						# Si leggono SEMPRE ED ENTRAMBI, e si azzerano SEMPRE: lasciarli scritti li fa
+						# rileggere al giro dopo, quando sono gia' stati sovrascritti (lotto 139).
 						changed = window.getProperty('fenlight.trakt.changed_ids')
 						window.clearProperty('fenlight.trakt.changed_ids')
 						# Le AZIONI viaggiano accanto agli id (lotto 119) e sono un canale a se': un
@@ -196,19 +224,28 @@ class TraktMonitor:
 						# Non c'e' un valore '-' per le azioni: '' significa semplicemente 'nessuna'.
 						actions = window.getProperty('fenlight.trakt.changed_actions')
 						window.clearProperty('fenlight.trakt.changed_actions')
-						age = refresh_age()
-						if changed == '-' and not actions:
-							logger('Fen Light', 'TraktMonitor: nessun titolo cambiato davvero, nessuna ricostruzione')
-						elif age < TRAKT_REFRESH_COALESCE: self._defer_widget_refresh(window, changed, actions, age)
-						elif changed or actions:
-							# '-' vuol dire 'nessun id', non 'nessun lavoro': con le sole azioni si
-							# ricostruiscono comunque i widget che cambiano composizione.
-							ids = '' if changed == '-' else changed
-							logger('Fen Light', 'TraktMonitor: refresh MIRATO su %d titoli e %d azioni%s'
-									% (len(ids.split(',')) if ids else 0, len(actions.split(',')) if actions else 0,
-										(' [%s]' % actions) if actions else ''))
-							refresh_ids_inproc(ids, actions)
-						else: run_plugin({'mode': 'kodi_refresh'})
+						# La lettura e l'azzeramento stanno SOPRA questa condizione, non sotto (lotto 140):
+						# con la ricostruzione dei widget disattivata i due canali non venivano ne' letti
+						# ne' cancellati, e restavano scritti a tempo indeterminato. Nessun danno oggi --
+						# nessuno li legge -- ma e' esattamente la forma del guasto del lotto 139, dove un
+						# valore lasciato in una proprieta' e' stato poi sovrascritto e perso. Si azzera
+						# cio' che si e' consumato, sempre, e la decisione di disegnare viene dopo.
+						# NIENTE `continue` QUI: l'attesa del ciclo (wait_for_abort) sta FUORI dal try,
+						# in fondo al giro, quindi saltarla farebbe girare il monitor a vuoto a piena
+						# velocita' contro Trakt. Si annida, e basta.
+						if get_setting('fenlight.trakt.refresh_widgets', 'false') == 'true':
+							age = refresh_age()
+							# La decisione sta in decide_refresh, che e' pura e provata. Qui si esegue e basta.
+							cosa, ids, acts = decide_refresh(changed, actions, age, TRAKT_REFRESH_COALESCE)
+							if cosa == 'niente':
+								logger('Fen Light', 'TraktMonitor: nessun titolo cambiato davvero, nessuna ricostruzione')
+							elif cosa == 'rinvio': self._defer_widget_refresh(window, ids, acts, age)
+							elif cosa == 'mirato':
+								logger('Fen Light', 'TraktMonitor: refresh MIRATO su %d titoli e %d azioni%s'
+										% (len(ids.split(',')) if ids else 0, len(acts.split(',')) if acts else 0,
+											(' [%s]' % acts) if acts else ''))
+								refresh_ids_inproc(ids, acts)
+							else: run_plugin({'mode': 'kodi_refresh'})
 			except Exception as e: logger('Fen Light', trakt_service_string % ('Failed', 'The following Error Occured: %s' % str(e)))
 			wait_for_abort(wait_time)
 		try: del monitor
@@ -236,47 +273,31 @@ class TraktMonitor:
 		# fuori dalla tempesta: 20 s di attesa iniziale piu' 10 di ciclo, cioe' ~37 s dall'apertura
 		# contro i ~12,5 in cui la home si assesta. Margine abbondante, per ora voluto: stringerlo e'
 		# una regolazione da fare dopo aver visto il meccanismo in un log vero.
-		from modules.kodi_utils import PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP
-		# Questo rinvio nasce da un cambiamento vero su Trakt: vale in qualunque finestra mostri widget,
-		# quindi cancella l'eventuale marca lasciata dalla rete di sicurezza di kodi_refresh_ids.
-		window.clearProperty(PENDING_SCOPE_PROP)
-		# Un rinvio SENZA id vuol dire 'ricostruisci tutto' ed e' un superset di qualunque elenco: se ce
-		# n'e' gia' uno in coda, aggiungerci degli id lo RESTRINGEREBBE. E' la stessa ragione per cui
-		# _defer_refresh_if_playing cancella gli id invece di lasciarli: WidgetRefresher ricaricherebbe
-		# i contenitori del titolo sbagliato invece di ricadere sul globale.
-		# Un rinvio GLOBALE in coda e' un superset: non ha ne' id ne' azioni proprio perche' li copre
-		# tutti. Si riconosce dall'assenza di ENTRAMBI i canali, non del solo elenco di id -- con la
-		# sola verifica sugli id un rinvio nato da un'azione pura (watchlist, continua a guardare)
-		# sarebbe stato scambiato per globale e avrebbe cancellato la propria azione.
-		pending_global = (bool(window.getProperty(PENDING_REFRESH_PROP))
-							and not window.getProperty(PENDING_IDS_PROP)
-							and not window.getProperty(PENDING_ACTIONS_PROP))
-		changed = '' if changed == '-' else changed
-		if (not changed and not actions) or pending_global:
-			window.clearProperty(PENDING_IDS_PROP)
-			window.clearProperty(PENDING_ACTIONS_PROP)
-			window.setProperty(PENDING_REFRESH_PROP, 'kodi_refresh')
+		# La somma la fa queue_pending_refresh (lotto 136): un rinvio globale in coda e' un superset e
+		# non si restringe, uno senza id vuol dire 'tutto', e per il resto id e azioni si SOMMANO --
+		# sono due cambiamenti distinti che nessuno ha ancora mostrato, e chi arriva secondo non ha
+		# titolo per cancellare il primo. Quella logica era scritta qui e altre due volte in
+		# kodi_utils, dove sovrascriveva; ora ha una sola implementazione.
+		# scope='': questo rinvio nasce da un cambiamento vero su Trakt e vale in qualunque finestra
+		# mostri widget, quindi cancella l'eventuale marca lasciata dalla rete di sicurezza.
+		from modules.kodi_utils import queue_pending_refresh, PENDING_IDS_PROP, PENDING_ACTIONS_PROP
+		_ids = [i for i in changed.split(',') if i]
+		_acts = [a for a in actions.split(',') if a]
+		if queue_pending_refresh('kodi_refresh_ids' if (_ids or _acts) else 'kodi_refresh',
+									_ids, _acts, scope=''):
 			return logger('Fen Light', 'TraktMonitor: refresh GLOBALE rimandato, interfaccia ricostruita %.1fs fa' % age)
-		# Gli id di un rinvio precedente non si perdono, si sommano: sono due cambiamenti distinti che
-		# nessuno ha ancora mostrato, e chi arriva secondo non ha titolo per cancellare il primo.
-		ids = set(i for i in window.getProperty(PENDING_IDS_PROP).split(',') if i)
-		ids.update(i for i in changed.split(',') if i)
-		# Le azioni si sommano per la stessa ragione, e su un canale separato: sono un criterio
-		# diverso, non un altro tipo di id. Vedi paginator.refresh_containers_for_ids.
-		acts = set(a for a in window.getProperty(PENDING_ACTIONS_PROP).split(',') if a)
-		acts.update(a for a in actions.split(',') if a)
-		window.setProperty(PENDING_IDS_PROP, ','.join(sorted(ids)))
-		window.setProperty(PENDING_ACTIONS_PROP, ','.join(sorted(acts)))
-		window.setProperty(PENDING_REFRESH_PROP, 'kodi_refresh_ids')
+		ids = [i for i in window.getProperty(PENDING_IDS_PROP).split(',') if i]
+		acts = [a for a in window.getProperty(PENDING_ACTIONS_PROP).split(',') if a]
 		logger('Fen Light', 'TraktMonitor: refresh MIRATO rimandato su %d titoli e %d azioni%s, interfaccia ricostruita %.1fs fa'
-				% (len(ids), len(acts), (' [%s]' % ','.join(sorted(acts))) if acts else '', age))
+				% (len(ids), len(acts), (' [%s]' % ','.join(acts)) if acts else '', age))
 
 class WidgetRefresher:
 	def run(self):
 		logger('Fen Light', 'WidgetRefresher Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, refresh_flag_expired
+		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, refresh_flag_expired, modal_dialog_open
+		self.modal_dialog_open = modal_dialog_open
 		self.refresh_flag_expired = refresh_flag_expired
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, self.is_playing = monitor.waitForAbort, player.isPlayingVideo
@@ -302,7 +323,12 @@ class WidgetRefresher:
 				wait_for_abort(1)
 				if self.window.getProperty(PENDING_REFRESH_PROP):
 					if self.pending_since is None: self.pending_since = time()
-					if not self.is_playing() and self._nothing_building() and self._widgets_on_screen():
+					# modal_dialog_open() sta QUI e non solo in kodi_refresh_ids (lotto 136). Senza, il
+					# rinvio nato per il dialogo verrebbe consumato al giro dopo, ririmandato da
+					# _defer_refresh_if_busy, riconsumato... un giro al secondo per tutta la durata del
+					# dialogo, e con pending_since azzerato ogni volta. Qui si aspetta in silenzio.
+					if not self.is_playing() and not self.modal_dialog_open() \
+							and self._nothing_building() and self._widgets_on_screen():
 						pending_ids = self.window.getProperty(PENDING_IDS_PROP)
 						pending_actions = self.window.getProperty(PENDING_ACTIONS_PROP)
 						self.window.clearProperty(PENDING_REFRESH_PROP)
@@ -318,9 +344,28 @@ class WidgetRefresher:
 						# 'continue_watching' o 'trakt_watchlist:movie' e' un rinvio MIRATO a tutti gli
 						# effetti, e degradarlo a globale perche' l'elenco di id e' vuoto sarebbe
 						# esattamente il difetto che il canale delle azioni esiste per togliere.
+						# coalesce=False, ed e' il punto del lotto 130. Un rinvio e' per definizione lavoro
+						# NON ancora fatto: e' nato perche' in quel momento non si poteva disegnare. Qui
+						# ha gia' aspettato le sue condizioni -- niente riproduzione, nessuna costruzione
+						# in volo, widget a schermo -- e ripassarlo sotto l'accorpamento significa
+						# giudicarlo una seconda volta con la stessa guardia che l'aveva fatto rimandare.
+						# All'avvio quel secondo giudizio lo bocciava SEMPRE: stamp_startup_rebuild timbra
+						# la costruzione iniziale come globale ('*'), che copre qualunque elenco di id, e
+						# fra il timbro e il rinvio maturo passano un paio di secondi, cioe' meno dei 5
+						# di REFRESH_COALESCE_SECONDS. Nel log del Mac del 02/09 alle 21:15:44.299:
+						# 'refresh mirato accorpato: gli stessi id ricostruiti 2.04s fa'. Quei 2.04s
+						# erano la costruzione d'avvio, avvenuta PRIMA della sincronizzazione e quindi
+						# fatta sui dati vecchi: aveva davvero ricostruito quegli id, e li aveva
+						# ricostruiti sbagliati. Dopo, ogni poll dice 'not needed' -- reset_activity ha
+						# gia' fatto avanzare il segnalibro -- e l'interfaccia resta indietro finche'
+						# non la si ricostruisce a mano. Otto titoli tolti dalla stick, zero
+						# ricostruzioni nei sei minuti successivi.
+						# La protezione che stamp_startup_rebuild doveva dare non si perde: quella
+						# vietava di ordinare una ricostruzione SOPRA la costruzione d'avvio ancora in
+						# corso, e a garantirla e' _nothing_building() qui sopra, non l'accorpamento.
 						if pending_ids or pending_actions:
-							refresh_ids_inproc(pending_ids, pending_actions)
-						else: run_plugin({'mode': 'refresh_widgets'})
+							refresh_ids_inproc(pending_ids, pending_actions, coalesce=False)
+						else: run_plugin({'mode': 'refresh_widgets', 'coalesce': 'false'})
 				elif self.pending_since is not None: self.pending_since = None
 				tick += 1
 				if tick < 10: continue
@@ -436,6 +481,7 @@ class WidgetPaginator:
 		from caches.settings_cache import get_setting
 		from modules.settings import page_limit
 		from modules import paginator
+		from modules.kodi_utils import modal_dialog_open
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		window = xbmcgui.Window(10000)
@@ -457,6 +503,8 @@ class WidgetPaginator:
 		# lentezza. Vedi LASTBUILD_PROP in paginator.py per il caso reale che lo ha reso necessario.
 		no_build_timeout = 20
 		token_written = {}   # key -> (istante del TRIGGER, scope, id contenitore, nome proprieta')
+		# key -> (istante in cui la chiave e' comparsa in coda, movimento gia' ordinato?). Vedi lotto 166.
+		rehead_moved = {}
 		token_reported = set()  # una diagnosi per chiave per sessione: e' un guasto di configurazione, non un evento
 		last_current = {}  # key -> last observed focus index, so we load ahead on real downward movement only
 		last_log = None  # dedup: only log when the observed state actually changes
@@ -480,7 +528,7 @@ class WidgetPaginator:
 				# only widget-refresh primitive available is the GLOBAL UpdateLibrary hack -- it would rebuild
 				# every DirectoryProvider in the dialog at once and flicker the whole card. Home/hubs/search,
 				# the intended browsing contexts, all live in non-modal windows, so this never gates them.
-				if xbmc.getCondVisibility('System.HasActiveModalDialog'):
+				if modal_dialog_open():
 					log_change('idle (modal dialog open)')
 					wait_for_abort(0.5); continue
 				# Identify the focused Fen Light widget by container id (skin sets fenlight.active_widget on focus
@@ -517,6 +565,53 @@ class WidgetPaginator:
 						# un'identificazione sbagliata perche' il watcher cancellasse il token del widget
 						# giusto. Il censimento ora si limita a censire.
 						paginator.registry_add(scope, cid)
+				# LOTTO 138 -- la testa nuova si porta in cima ANCHE se il widget non e' a fuoco.
+				# Sta QUI, sopra il cancello del fuoco, e la posizione e' il punto del lotto. Nel 137 la
+				# consumazione stava dentro il ramo del widget a fuoco, quindi con il fuoco sull'icona della
+				# Home 'continua a guardare' restava scorsa sull'elemento vecchio finche' non ci si passava
+				# sopra -- e allora si riposizionava di scatto. L'utente lo ha detto meglio di cosi': una
+				# modifica fatta su Trakt compare a prescindere da dove sia il fuoco, e questo deve fare lo
+				# stesso.
+				# Il comando e' Control.Move e non SetFocus: SetFocus PORTEREBBE il fuoco sul widget, che
+				# strappando l'utente dall'icona della Home sarebbe un danno peggiore del difetto.
+				# Control.Move manda GUI_MSG_MOVE_OFFSET, che CGUIControlGroup consegna al controllo per ID
+				# senza toccare il fuoco (Kodi 21.1: `return SendControlMessage(message)`), e che
+				# CGUIBaseContainer esegue come N chiamate a MoveUp DENTRO UN SOLO messaggio -- quindi una
+				# scorsa sola, non N animazioni.
+				# L'offset e' esattamente `current-1`: MoveUp avvolge alla fine della lista SOLO se e' gia'
+				# sul primo elemento, e con questo conto l'ultimo passo ci arriva esatto senza eccedere.
+				# Un contenitore non ancora popolato (NumItems 0) resta in coda: la finestra puo' non essere
+				# a schermo, e allora si riposiziona quando ci torna.
+				# LOTTO 166 -- la chiave esce dalla coda quando il contenitore E' ARRIVATO, non quando gli
+				# si ordina di partire. Prima rehead_done() stava PRIMA di Control.Move: dal lotto 165 la
+				# skin tiene il row nascosto finche' la chiave e' in coda, quindi svuotarla li' scopriva il
+				# row nell'istante esatto in cui cominciava uno scorrimento di 400 ms (List_Core,
+				# <scrolltime>400</scrolltime>) -- cioe' il difetto che il 165 doveva togliere, intatto.
+				# Adesso: si ordina il movimento una volta sola (rehead_moved), e si consuma la chiave solo
+				# quando il cursore e' davvero in testa E lo scorrimento e' finito (Container(N).Scrolling).
+				# Il tetto di REHEAD_TIMEOUT esiste perche' con il 165 una chiave incastrata non e' piu'
+				# solo una riga fuori posto: terrebbe il row invisibile. Scaduto il tempo si molla, e il
+				# peggio che resta e' il comportamento di prima.
+				if window.getProperty(paginator.REHEAD_PROP):
+					for rkey in paginator.rehead_pending():
+						rscope, _, rcid = rkey.rpartition('.')
+						if rscope != scope or not rcid.isdigit(): continue
+						rnum = int(get_infolabel('Container(%s).NumItems' % rcid) or 0)
+						rcur = int(get_infolabel('Container(%s).CurrentItem' % rcid) or 0)
+						quando, mosso = rehead_moved.setdefault(rkey, (time(), False))
+						azione = paginator.rehead_step(rnum, rcur, xbmc.getCondVisibility('Container(%s).Scrolling' % rcid),
+														mosso, time() - quando)
+						if azione == 'aspetta': continue
+						if azione == 'muovi':
+							xbmc.executebuiltin('Control.Move(%s,%s)' % (rcid, 1 - rcur))
+							rehead_moved[rkey] = (quando, True)
+							paginator.log('watcher testa nuova key=%s: riga riportata in cima (era %s/%s)'
+											% (paginator.short(rkey), rcur, rnum))
+							continue
+						if azione == 'mollo':
+							paginator.log('watcher testa nuova key=%s: mollo dopo %s s (fermo a %s/%s)'
+											% (paginator.short(rkey), paginator.REHEAD_TIMEOUT, rcur, rnum))
+						paginator.rehead_done(rkey); rehead_moved.pop(rkey, None)
 				prop_id = window.getProperty('fenlight.active_widget')
 				widget_id = None
 				if prop_id and xbmc.getCondVisibility('Control.HasFocus(%s)' % prop_id):
@@ -654,6 +749,7 @@ class DubResolver:
 		from time import time
 		from modules.settings import dub_filter_enabled, dub_filter_country, tmdb_api_key
 		from modules import dub_queue, paginator
+		from modules.kodi_utils import modal_dialog_open
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		window = xbmcgui.Window(10000)
@@ -683,7 +779,7 @@ class DubResolver:
 				# 'contenitori ricaricati 0', e 5 titoli gia' risolti buttati via.
 				# Si ferma la sola RICARICA: interrogare la rete dentro un dialogo non da' fastidio a
 				# nessuno, non si vede.
-				modale = xbmc.getCondVisibility('System.HasActiveModalDialog')
+				modale = modal_dialog_open()
 				if to_show and not modale and now >= prossimo_tentativo \
 						and (dub_queue.pending_count() == 0 or now - held_since > self.MAX_REFRESH_HOLD) \
 						and (xbmc.getGlobalIdleTime() >= self.IDLE_BEFORE_REFRESH

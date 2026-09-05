@@ -29,7 +29,6 @@
                         <itemgap>osd_itemgap</itemgap>
                         <onleft>6008</onleft>
                         <onright>6005</onright>
-                        <ondown>ActivateWindow($VAR[Action_OSD_Main_OnDown])</ondown>
 
                         <!-- Button 1 -->
                         <control type="button" id="6001">
@@ -116,7 +115,6 @@
                         <align>right</align>
                         <onleft>6004</onleft>
                         <onright>6001</onright>
-                        <ondown>ActivateWindow($VAR[Action_OSD_Main_OnDown])</ondown>
 
                         <!-- Button 5 -->
                         <control type="button" id="6005">

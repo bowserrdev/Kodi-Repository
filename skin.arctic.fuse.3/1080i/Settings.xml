@@ -198,13 +198,6 @@
                                         <visible>System.AddonIsEnabled(service.coreelec.settings)</visible>
                                     </item>
                                     <item>
-                                        <label>TMDbHelper</label>
-                                        <label2>plugin.video.themoviedb.helper</label2>
-                                        <icon>resource://resource.images.arcticfuse/icons/tmdb.png</icon>
-                                        <onclick>Addon.OpenSettings(plugin.video.themoviedb.helper)</onclick>
-                                        <visible>System.AddonIsEnabled(plugin.video.themoviedb.helper)</visible>
-                                    </item>
-                                    <item>
                                         <label>Artist Slideshow</label>
                                         <label2>script.artistslideshow</label2>
                                         <icon>resource://resource.images.arcticfuse/icons/image.png</icon>

@@ -428,3 +428,27 @@ def copy2clip(txt):
 			p = Popen(['xsel', '-pi'], stdin=PIPE)
 			p.communicate(input=txt)
 		except: return
+def traduci_episodio(mappa, esclusi, stagione, episodio):
+	"""I TRE esiti della mappa episodi, al posto dei due di `mappa.get(chiave, chiave)`.
+
+	Finche' gli esiti erano due -- "tradotto" e, per difetto, "identita'" -- **"non lo so" e
+	"identita'" erano lo stesso valore**, ed e' per questo che il difetto del rimappaggio era
+	silenzioso: un episodio senza corrispondenza otteneva comunque una coppia, che poteva indicare un
+	altro episodio o niente.
+
+	  coppia tradotta  la giuntura per id TVDB ha trovato il corrispondente e i due si numerano
+	                   diversamente
+	  la coppia stessa la giuntura non l'ha trovato ma l'identita' e' lecita (la coppia e' libera da
+	                   entrambe le parti -- vedi la regola 3 in costruisci_mappa_episodi)
+	  None             nessuna corrispondenza: non si traduce e non si manda. Chi chiama DEVE
+	                   saltare, non ripiegare sull'identita'.
+
+	`esclusi` e' l'insieme costruito insieme alla mappa. Vale in entrambe le direzioni: passando la
+	mappa TVDB->Trakt con i suoi esclusi si traduce verso Trakt, passando l'inversa con gli esclusi
+	dell'altro lato si traduce verso le righe locali.
+	"""
+	try: chiave = (int(stagione), int(episodio))
+	except: return None
+	if esclusi and chiave in esclusi: return None
+	if not mappa: return chiave
+	return mappa.get(chiave, chiave)

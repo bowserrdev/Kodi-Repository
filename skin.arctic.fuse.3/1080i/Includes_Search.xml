@@ -64,10 +64,23 @@
                                          scrive come w1105: senza questo parametro qui si leggerebbe il default
                                          'home', cioe' un token che nessuno scrive mai, e il row non paginerebbe. -->
                                     <param name="pgscope">1105</param>
-                                    <param name="content">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]</param>
+                                    <param name="pggated">true</param>
+                                    <!-- Il path esiste solo dopo che Discover e' stato usato almeno una volta.
+                                         Il segmento di identita' sta nel SUFFISSO di questo $INFO, non accodato
+                                         dopo: cosi' quando la proprieta' e' vuota sparisce anche lui e il
+                                         contenitore resta senza path invece che con il solo token. -->
+                                    <param name="content">$INFO[Window(Home).Property(FenLight.Discover.ContentPath),,&amp;pgctl=1105.505]</param>
                                     <param name="include">List_Poster_Row</param>
                                     <param name="target">videos</param>
-                                    <param name="visible">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</param>
+                                    <!-- LOTTO 167. Il terzo termine e' il gate del lotto 165, che li' era finito
+                                         solo nei template di skinvariables (row 502 e 503) e NON qui: il row
+                                         Discover e' scritto a mano, quindi restava visibile per tutti i 400 ms in
+                                         cui la riga vecchia scorreva verso l'inizio. Da cui la sequenza che
+                                         l'utente ha descritto: "gli elementi della ricerca 1 tornano al primo,
+                                         POI scompaiono, POI compaiono quelli della ricerca 2".
+                                         Con il gate la sequenza diventa quella giusta: la riga vecchia sparisce
+                                         subito, si riposiziona da nascosta, e ricompare gia' sul primo elemento. -->
+                                    <param name="visible">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.505)</param>
                                     <param name="clear_hideartwork_onfocus">true</param>
                                     <param name="hidden_button_enabled">true</param>
                                     <param name="onup">3001</param>
@@ -75,18 +88,6 @@
                                 </include>
                                 <control type="group">
 	                                    <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
-                                <include content="Hub_Combined_Widget" condition="!Skin.HasSetting(Search.DisableDiscover) + !Skin.HasSetting(Search.DisableCombined)">
-                                    <param name="id">501</param>
-                                    <param name="pgscope">1105</param>
-                                    <param name="content">$INFO[window(home).property(tmdbhelper.userdiscover.folderpath)]$INFO[Control.GetLabel(3000).index(1),&amp;with_text_query=,]</param>
-                                    <param name="include">List_Poster_Row</param>
-                                    <param name="target">videos</param>
-                                    <param name="visible">String.IsEqual(Container(601).ListItem.Property(guid),discover)</param>
-                                    <param name="allowhiddenfocus">true</param>
-                                    <param name="hidden_button_enabled">true</param>
-                                    <param name="clear_hideartwork_onfocus">true</param>
-                                    <param name="refocus">SetFocus(3001)</param>
-                                </include>
                                 <include condition="!Skin.HasSetting(Search.DisableCombined)">skinvariables-searchwidgets-combined</include>
                                 <include condition="Skin.HasSetting(Search.DisableCombined)">skinvariables-searchwidgets-standard</include>
                                 </control>
@@ -95,6 +96,7 @@
 	                            <control type="group" id="600">
 	                                <visible>!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window.Property(Search.ActivePanel))</visible>
 	                                <include content="Hub_Widget_Switcher" condition="!Skin.HasSetting(Search.DisableCombined)">
+	                                    <param name="spinner_condition">$EXP[Exp_Search_Row_Spinner]</param>
 	                                    <param name="include_content">Search_Switcher_Items</param>
 	                                    <param name="top">520</param>
 	                                    <param name="wall">false</param>
@@ -102,6 +104,7 @@
 	                                    <param name="line_visible">!String.IsEmpty(Control.GetLabel(3000).index(1)) + !Integer.IsEqual(Container(601).NumItems,0)</param>
 	                                </include>
 	                                <include content="Hub_Widget_Switcher" condition="Skin.HasSetting(Search.DisableCombined)">
+	                                    <param name="spinner_condition">$EXP[Exp_Search_Row_Spinner]</param>
 	                                    <param name="include_content">Search_Switcher_Items</param>
 	                                    <param name="top">-520</param>
 	                                    <param name="wall">false</param>
@@ -194,14 +197,21 @@
         </definition>
     </include>
 
+    <!-- LOTTO 170. Quando mostrare la rotellina in fondo alla riga dei nomi dei percorsi: quando
+         UNO QUALUNQUE dei row della ricerca sta costruendo. Non serve sapere quale: la rotellina e'
+         una sola e sta in fondo alla riga, non su una linguetta.
+         Gli id sono letterali perche' Kodi non risolve Container($INFO[...]): l'intervallo 502-506
+         copre i percorsi di ricerca configurabili (il generatore li numera da 502) con margine.
+         Il tentativo del 169 di metterne una PER linguetta e' stato abbandonato proprio qui: richiedeva
+         di confrontare ListItem.Property(widget_id), che il generatore scrive come '$NUMBER[502]', e
+         quel confronto non e' mai risultato vero. -->
+    <expression name="Exp_Search_Row_Spinner">Container(502).IsUpdating | Container(503).IsUpdating | Container(504).IsUpdating | Container(505).IsUpdating | Container(506).IsUpdating</expression>
+
     <include name="Search_Info_Panel">
         <control type="group">
             <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + [String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) | !String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))]</visible>
             <control type="group">
                 <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
-                <include content="Hub_Combined_Info" condition="!Skin.HasSetting(Search.DisableDiscover) + !Skin.HasSetting(Search.DisableCombined)">
-                    <param name="id">501</param>
-                </include>
             </control>
             <control type="group">
                 <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
@@ -268,15 +278,6 @@
 	    </include>
 
     <include name="Search_Switcher_Items">
-        <item>
-            <label>$LOCALIZE[31066]</label>
-            <property name="guid">discover</property>
-            <property name="widget_id">$NUMBER[501]</property>
-            <property name="show_artwork">true</property>
-            <property name="widget_numitems">$INFO[Container(501).NumItems]</property>
-            <onclick>RunPlugin(plugin://plugin.video.themoviedb.helper/?info=user_discover$INFO[Window(Home).Property(TMDbHelper.UserDiscover.Folderpath.ParamString),&amp;,])</onclick>
-            <visible>!Integer.IsEqual(Container(501).NumItems,0)</visible>
-        </item>
         <include>skinvariables-searchwidgets-selector</include>
     </include>
 
@@ -304,74 +305,6 @@
             <visible>!String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEqual(Control.GetLabel(3000).index(1),Window.Property(Search.LabelAtOpen))</visible>
             <content>plugin://plugin.video.fenlight/?mode=search.close_panel&amp;source=typing&amp;q=$INFO[Control.GetLabel(3000).index(1)]</content>
         </include>
-    </include>
-
-    <include name="Search_Autocompletion_Dropdown">
-        <control type="group">
-            <include>Part_Dim_Overlay</include>
-            <control type="group">
-                <left>40</left>
-                <top>200</top>
-                <width>800</width>
-                <height>840</height>
-                <control type="group">
-                    <include>Part_Background_Panel</include>
-                    <visible>Integer.IsGreater(Container(304).NumItems,8)</visible>
-                </control>
-                <control type="group">
-                    <include>Part_Background_Panel</include>
-                    <visible>Integer.IsEqual(Container(304).NumItems,8)</visible>
-                    <bottom>80</bottom>
-                </control>
-                <control type="group">
-                    <include>Part_Background_Panel</include>
-                    <visible>Integer.IsEqual(Container(304).NumItems,7)</visible>
-                    <bottom>160</bottom>
-                </control>
-                <control type="group">
-                    <include>Part_Background_Panel</include>
-                    <visible>Integer.IsEqual(Container(304).NumItems,6)</visible>
-                    <bottom>240</bottom>
-                </control>
-                <control type="group">
-                    <include>Part_Background_Panel</include>
-                    <visible>Integer.IsEqual(Container(304).NumItems,5)</visible>
-                    <bottom>320</bottom>
-                </control>
-                <control type="group">
-                    <include>Part_Background_Panel</include>
-                    <visible>Integer.IsEqual(Container(304).NumItems,4)</visible>
-                    <bottom>400</bottom>
-                </control>
-                <control type="group">
-                    <include>Part_Background_Panel</include>
-                    <visible>Integer.IsEqual(Container(304).NumItems,3)</visible>
-                    <bottom>480</bottom>
-                </control>
-                <control type="group">
-                    <include>Part_Background_Panel</include>
-                    <visible>Integer.IsEqual(Container(304).NumItems,2)</visible>
-                    <bottom>560</bottom>
-                </control>
-                <control type="group">
-                    <include>Part_Background_Panel</include>
-                    <visible>Integer.IsEqual(Container(304).NumItems,1)</visible>
-                    <bottom>640</bottom>
-                </control>
-                <include content="List_DialogSelect">
-                    <param name="id">304</param>
-                    <param name="itemlayout_include">Layout_DialogBasic</param>
-                    <top>60</top>
-                    <bottom>60</bottom>
-                    <left>60</left>
-                    <right>60</right>
-                    <orientation>vertical</orientation>
-                    <content>plugin://plugin.program.autocompletion?info=autocomplete&amp;&amp;id=$INFO[Control.GetLabel(3000).index(1)]</content>
-                    <onclick>SetFocus(3000)</onclick>
-                    <onclick>RunScript(script.skinvariables,set_editcontrol=300,window_id=1105,setfocus=300,text=$INFO[Container(304).ListItem.Label])</onclick>
-                </include>
-            </control>
-        </control>
     </include>
 
     <include name="Search_Bar_Edit">
@@ -428,6 +361,28 @@
 	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(TMDbHelper.WidgetContainer)</onunfocus>
 	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onunfocus>
 
+	            <!-- STRADA B, meta' ricerca testuale (lotto 162). Il token di paginazione appartiene al
+	                 CONTENITORE, non alla lista: a ogni tasto Path_SearchTerm cambia e Kodi ricompone il
+	                 <content> dei row 502 e 503, ma il 'pages=N' in coda e' ancora quello della query
+	                 precedente. Il plugin viene invocato, vede l'inquilino cambiato e butta via
+	                 l'invocazione: 336 ms misurati il 04/09 (lotto 161), 697 prima. Azzerando il token
+	                 qui, la ricomposizione avviene gia' senza il token e quell'invocazione non nasce.
+	                 Perche' l'ordine tenga: Kodi esegue le azioni di ontextchange sul thread della GUI
+	                 nel momento in cui il testo cambia, mentre gli $INFO dentro il <content> del
+	                 contenitore li rivaluta al giro di rendering successivo. E' l'unico punto in cui si
+	                 puo' intervenire; la meta' Discover ha invece un punto deterministico in Python
+	                 (search.launch_discover), e li' non c'e' nessuna corsa.
+	                 Chiude anche un difetto latente: a box svuotato $VAR[Path_SearchTerm] non rende
+	                 niente, e senza questo il path resterebbe il solo token, su cui Kodi tenta una
+	                 GetDirectory e la registra come errore (la stessa trappola descritta in
+	                 Includes_Hubs.xml, riga 127).
+	                 I due id sono scritti a mano perche' il <content> che legge queste proprieta' e'
+	                 generato da skinvariables (searchwidgets-combined e -standard, entrambi 502/503) e
+	                 li' non si puo' agganciare niente. La prova test_162 verifica che i nomi coincidano
+	                 con paginator.CTL_PAGES_PROP. -->
+	            <ontextchange>ClearProperty(fenlight.pg.w1105.ctl502.pages,Home)</ontextchange>
+	            <ontextchange>ClearProperty(fenlight.pg.w1105.ctl503.pages,Home)</ontextchange>
+
 	            <onleft condition="Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(RefocusMenu,True)</onleft>
             <onleft condition="Skin.HasSetting(HomeSwitcher.Vertical)">3001</onleft>
 
@@ -440,7 +395,6 @@
             <onright condition="!Skin.HasSetting(HomeSwitcher.Vertical) + !String.IsEmpty(Control.GetLabel(3000).index(1))">SetFocus(3005)</onright>
             <onright condition="!Skin.HasSetting(HomeSwitcher.Vertical) + String.IsEmpty(Control.GetLabel(3000).index(1))">3004</onright>
 
-            <onup condition="!Skin.HasSetting(Search.DisableDiscover) + !Skin.HasSetting(Search.DisableCombined)">RunPlugin(plugin://plugin.video.themoviedb.helper/?info=user_discover$INFO[Window(Home).Property(TMDbHelper.UserDiscover.Folderpath.ParamString),&amp;,])</onup>
             <!-- Navigazione giù: advanced panel → 3009; testo vuoto + content path → widget 505;
                  testo presente → risultati 601/602. Box vuoto e nessun content path: sotto la barra
                  non c'e' piu' niente, giù non fa nulla. -->

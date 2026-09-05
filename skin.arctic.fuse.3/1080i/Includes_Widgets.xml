@@ -615,6 +615,27 @@
         </definition>
     </include>
 
+    <!-- IL content DI OGNI WIDGET PAGINABILE, IN UN POSTO SOLO.
+         Prima erano quattro righe identiche a mano (i due template del generatore e le due di
+         Includes_Hubs): quattro copie della stessa stringa, che e' esattamente da dove e' nata la
+         divergenza corretta nel lotto 155. Ora e' una.
+
+         Tre pezzi, tre mestieri:
+           content  il path di base;
+           pgctl    l'IDENTITA' (finestra + contenitore), che la build legge con paginator.position_of;
+           il $INFO il TOKEN DI RICARICA, valorizzato solo mentre una paginazione e' in corso.
+
+         pgctl e' un parametro e non testo fisso perche' NON si puo' accodare al buio: dove il path
+         di base nasce da un $VAR/$INFO condizionale (la ricerca) il path sparisce e il segmento
+         resterebbe da solo, e Kodi tenterebbe una GetDirectory su '&amp;pgctl=1105.502'. Chi ha un path
+         condizionale lascia pgctl vuoto e lo scrive nel SUFFISSO del proprio $VAR/$INFO, dove
+         sparisce insieme al path. -->
+    <include name="Defs_Widget_Content">
+        <definition>
+            <content sortby="$PARAM[sortby]" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]$PARAM[pgctl]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
+        </definition>
+    </include>
+
     <include name="_Widget_NoResults">
         <content>
             <item>
