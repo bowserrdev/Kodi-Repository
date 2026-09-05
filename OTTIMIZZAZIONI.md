@@ -19629,6 +19629,135 @@ Nel log, dopo aver digitato una ricerca e dopo aver lanciato un Discover su una 
   `set_state pages=2` e la lista cresca. Azzerare un token di troppo si vedrebbe come una lista che
   torna al lotto iniziale.
 
+## Lotto 163 -- il fuoco che restava in fondo, e una riga di Kodi che spiega tutto
+
+Cambiando query, la riga dei risultati si apriva sulla CODA della lista nuova invece che sulla testa.
+Il punto 2 della coda della ricerca, aperto dal lotto 137 e rimasto li'.
+
+### La misura, e il pezzo che non mi aspettavo
+
+```
+03:14:56.541  set_head key=1105.502 built=31        <- lista nuova pronta, 31 elementi
+03:15:01.251  HandleKey: down                       <- l'utente entra nella riga
+03:15:01.510  watcher id=502 current=31/31          <- e' sull'ULTIMO
+03:15:04.401  watcher TRIGGER pages 2->3 current=31/31
+03:15:07.917  PERF INVOCAZIONE: build_movie_list | totale 3370 ms
+```
+
+Le ultime due righe sono la parte che rende il difetto **caro** e non solo brutto: stando in fondo il
+watcher legge `remaining=0` contro `runway=20`, conclude che la lista sta per finire e fa partire un
+caricamento avanti che nessuno ha chiesto. **3370 ms**, proprio mentre l'utente aspetta i risultati.
+Il confronto interno al log isola il caso:
+
+| momento | cursore al TRIGGER | legittimo |
+|---|---|---|
+| prima build di 'star' | `11/31` | si', aveva scorso |
+| dopo il cambio query | `31/31` | **no**, non si era mosso |
+| Discover, due volte | `15/34`, `12/32` | si' |
+
+### La causa, letta nel sorgente invece che dedotta
+
+`CGUIBaseContainer::UpdateListProvider`, Kodi 21.1 (il ramo che gira sulla stick):
+
+```cpp
+int currentItem = GetSelectedItem();
+const std::string prevSelectedPath(...);
+Reset();
+m_listProvider->Fetch(m_items);
+// 1. riprova a ritrovare l'elemento per PUNTATORE
+// 2. riprova per PATH
+if (!found && currentItem >= (int)m_items.size())
+    SelectItem(m_items.size() - 1);
+```
+
+**Non esiste nessun "torna in testa".** Kodi cerca di tenerti sullo stesso ELEMENTO; se non lo ritrova
+e l'indice vecchio SFORA la lista nuova, ti mette sull'ULTIMO. Con questa riga sola tornano tutte e
+due le meta' misurate:
+
+| | indice prima | elementi dopo | sfora | esito misurato |
+|---|---|---|---|---|
+| ricerca 'star' -> 'barbie' | 50 | 31 | **si'** | `31/31` |
+| Discover 1 -> Discover 2 | 31 | 32 | no | `1/32` |
+
+E il Discover non se la cava per merito proprio: aprendo il pannello filtri la skin azzera
+`FenLight.Discover.ContentPath` (`Includes_Search.xml`, riga 421), il contenitore passa da **vuoto** e
+l'indice si azzera li'. E' la stessa cosa che il lotto 111 aveva gia' osservato dall'altro verso --
+*"qualunque cosa diversa da un elenco completo lascia il widget senza elementi. Da qui la paginazione
+persa, il fuoco al primo elemento"*.
+
+### Due strade sbagliate, tenute perche' costano
+
+**Prima**: avevo attribuito la differenza fra ricerca e Discover ad `allowhiddenfocus`, vero sui row
+della ricerca e falso su quello di Discover. Spiegava la ritenzione del FUOCO, non quella del
+CURSORE, ed era una correlazione. Il sorgente l'ha smentita: `allowhiddenfocus` non compare in
+`UpdateListProvider`. Lezione ripetuta: quando due casi differiscono su piu' di una variabile, la
+prima che si trova non e' la causa.
+
+**Seconda**: la correzione che ne era seguita accodava il riposizionamento a build FINITA e aggiungeva
+un `continue` in `service.py` per evitare il TRIGGER spurio. Funzionava, ma toccava due file, aveva
+0,3 s di latenza con salto visibile, e restava una corsa fra il `Control.Move` e gli elementi appena
+arrivati. Era l'idea giusta presa dal lato sbagliato.
+
+### Cosa offre Kodi, per intero, prima di scegliere
+
+| builtin | manda | serve |
+|---|---|---|
+| `Control.Move(id,n)` | `GUI_MSG_MOVE_OFFSET` -> `MoveUp(true)` x n | si', ma **wrapAround=true**: un offset in eccesso avvolge alla fine. Serve l'esatto `1-current` |
+| `Control.Message(id,...)` | solo `moveup`/`movedown`/`pageup`/`pagedown`/`click` | no, non salta a un indice |
+| `SetFocus(id,pos,absolute)` | `GUI_MSG_SETFOCUS` | seleziona l'elemento **ma sposta il fuoco**: mentre si digita e' inaccettabile |
+| `Control.SetHidden/SetVisible` | visibilita' | non svuota: `UpdateVisibility` esce prima |
+
+Non esiste un "porta questo contenitore all'elemento 1" senza toccare il fuoco. `Control.Move` con
+l'offset esatto -- la primitiva del lotto 137 -- resta l'unica.
+
+### La correzione: una riga
+
+Dalla riga di Kodi discende che il danno si decide **nell'istante in cui arrivano gli elementi nuovi**.
+Quindi non serve rimettere a posto il cursore dopo: **basta che valga 0 prima**. E c'e' un punto che
+sta li', con un margine enorme: `reconcile_position` gira all'INIZIO della build, quando il
+contenitore ha ancora la lista vecchia.
+
+```python
+if was: rehead_queue(key)
+```
+
+Margine misurato fra il reconcile e `set_head`: **6,9 s** sulla ricerca testuale, **3,7 s** su
+Discover, contro i 0,3 s del giro del watcher. La corsa non esiste. E il TRIGGER spurio non nasce
+nemmeno, perche' il cursore e' gia' in testa molto prima che la build finisca: il `continue` in
+`service.py` che serviva alla seconda strada qui non serve.
+
+Il consumatore non si tocca: e' quello del lotto 138, gia' generico, gia' dietro i cancelli giusti
+(riproduzione, dialogo modale) e gia' nel processo dove le chiamate grafiche sono lecite. Che il
+lavoro resti al servizio non e' pigrizia: leggere `Container(N).CurrentItem` o muovere il cursore dal
+thread di un'invocazione e' esattamente cio' che il lotto 111 ha vietato.
+
+Il commento su `REHEAD_PROP` diceva *"un comando lanciato dal plugin cadrebbe sulla lista vecchia"*.
+Resta vero per l'innesco del 138, che vuole agire sulla lista NUOVA. Per questo, cadere sulla lista
+vecchia **e' lo scopo**: e' li' che l'indice va azzerato. I due inneschi guardano a istanti opposti e
+adesso il commento lo dice.
+
+### Provato fuori da Kodi
+
+`tests/test_163.py`, sette casi, 18 su 18 file passano. Il caso che protegge di piu' non e' quello del
+lotto: e' il **B**, la stessa lista ricostruita per paginare, che NON deve accodare niente. E' il caso
+piu' frequente in assoluto -- ogni caricamento avanti ripassa di li' -- e strattonare chi sta
+scorrendo sarebbe peggio del difetto che si sta correggendo. Poi il **D**, che verifica che la chiave
+accodata sia ancora quella che il watcher sa spacchettare (`rpartition('.')`, id numerico): se
+`widget_key` cambiasse forma, l'accodamento continuerebbe a funzionare e il riposizionamento sparirebbe
+in silenzio, che e' il guasto muto del lotto 90. E il **E**, che nessuna `getCondVisibility` e nessun
+builtin partano dal processo del plugin.
+Provata rossa togliendo la riga: cade il caso C e nient'altro.
+
+### Da misurare sul dispositivo
+
+Cambiare query dopo aver scorso a fondo, e lanciare un Discover diverso dopo aver paginato:
+
+- **atteso**: la riga si apre sul primo elemento, e nel log `watcher testa nuova key=1105.502: riga
+  riportata in cima (era N/M)` con M = la lista VECCHIA (la prova che ha agito prima del cambio);
+- **atteso**: nessun `TRIGGER` con `current` uguale a `built` subito dopo un `reconcile`;
+- **da sorvegliare**: che scorrendo normalmente la riga NON venga riportata in testa. Un
+  riposizionamento di troppo si vedrebbe come la lista che salta indietro mentre si naviga.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
