@@ -503,6 +503,8 @@ class WidgetPaginator:
 		# lentezza. Vedi LASTBUILD_PROP in paginator.py per il caso reale che lo ha reso necessario.
 		no_build_timeout = 20
 		token_written = {}   # key -> (istante del TRIGGER, scope, id contenitore, nome proprieta')
+		# key -> (istante in cui la chiave e' comparsa in coda, movimento gia' ordinato?). Vedi lotto 166.
+		rehead_moved = {}
 		token_reported = set()  # una diagnosi per chiave per sessione: e' un guasto di configurazione, non un evento
 		last_current = {}  # key -> last observed focus index, so we load ahead on real downward movement only
 		last_log = None  # dedup: only log when the observed state actually changes
@@ -580,18 +582,36 @@ class WidgetPaginator:
 				# sul primo elemento, e con questo conto l'ultimo passo ci arriva esatto senza eccedere.
 				# Un contenitore non ancora popolato (NumItems 0) resta in coda: la finestra puo' non essere
 				# a schermo, e allora si riposiziona quando ci torna.
+				# LOTTO 166 -- la chiave esce dalla coda quando il contenitore E' ARRIVATO, non quando gli
+				# si ordina di partire. Prima rehead_done() stava PRIMA di Control.Move: dal lotto 165 la
+				# skin tiene il row nascosto finche' la chiave e' in coda, quindi svuotarla li' scopriva il
+				# row nell'istante esatto in cui cominciava uno scorrimento di 400 ms (List_Core,
+				# <scrolltime>400</scrolltime>) -- cioe' il difetto che il 165 doveva togliere, intatto.
+				# Adesso: si ordina il movimento una volta sola (rehead_moved), e si consuma la chiave solo
+				# quando il cursore e' davvero in testa E lo scorrimento e' finito (Container(N).Scrolling).
+				# Il tetto di REHEAD_TIMEOUT esiste perche' con il 165 una chiave incastrata non e' piu'
+				# solo una riga fuori posto: terrebbe il row invisibile. Scaduto il tempo si molla, e il
+				# peggio che resta e' il comportamento di prima.
 				if window.getProperty(paginator.REHEAD_PROP):
 					for rkey in paginator.rehead_pending():
 						rscope, _, rcid = rkey.rpartition('.')
 						if rscope != scope or not rcid.isdigit(): continue
 						rnum = int(get_infolabel('Container(%s).NumItems' % rcid) or 0)
 						rcur = int(get_infolabel('Container(%s).CurrentItem' % rcid) or 0)
-						if not rnum or not rcur: continue
-						paginator.rehead_done(rkey)
-						if rcur > 1:
+						quando, mosso = rehead_moved.setdefault(rkey, (time(), False))
+						azione = paginator.rehead_step(rnum, rcur, xbmc.getCondVisibility('Container(%s).Scrolling' % rcid),
+														mosso, time() - quando)
+						if azione == 'aspetta': continue
+						if azione == 'muovi':
 							xbmc.executebuiltin('Control.Move(%s,%s)' % (rcid, 1 - rcur))
+							rehead_moved[rkey] = (quando, True)
 							paginator.log('watcher testa nuova key=%s: riga riportata in cima (era %s/%s)'
 											% (paginator.short(rkey), rcur, rnum))
+							continue
+						if azione == 'mollo':
+							paginator.log('watcher testa nuova key=%s: mollo dopo %s s (fermo a %s/%s)'
+											% (paginator.short(rkey), paginator.REHEAD_TIMEOUT, rcur, rnum))
+						paginator.rehead_done(rkey); rehead_moved.pop(rkey, None)
 				prop_id = window.getProperty('fenlight.active_widget')
 				widget_id = None
 				if prop_id and xbmc.getCondVisibility('Control.HasFocus(%s)' % prop_id):

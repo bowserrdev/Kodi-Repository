@@ -19949,6 +19949,87 @@ arriva molto piu' di rado nella finestra di coda in cui il cursore si e' scostat
 condizione necessaria perche' lo scatto si veda. Non e' stato cambiato qui: e' un'impostazione
 dell'utente, e va provata da lui.
 
+## Lotto 166 -- il 165 non funzionava: la coda si svuotava prima del movimento
+
+L'utente lo ha rivisto subito: *"ancora mi sembra che i risultati compaiano con l'animazione che li
+rifa' ripartire da capo"*. Aveva ragione, e il motivo era di due righe.
+
+Il 165 fa tenere il row nascosto finche' la sua chiave e' in `fenlight.pg.rehead`. Ma il consumatore
+nel servizio, scritto per il lotto 138, faceva:
+
+```python
+paginator.rehead_done(rkey)                      # toglie dalla coda
+if rcur > 1:
+    xbmc.executebuiltin('Control.Move(...)')     # e SOLO ORA muove
+```
+
+Cioe' scopriva il row **nell'istante esatto in cui cominciava lo scorrimento**, che dura 400 ms
+(`List_Core`: `<scrolltime tween="quadratic">400</scrolltime>`). Il difetto che il 165 doveva chiudere
+e' rimasto intatto: il 165 aveva scelto la proprieta' giusta e il momento sbagliato.
+
+**Lezione, e vale oltre questo caso**: una condizione che si arma su uno stato va agganciata alla FINE
+dell'azione, non al suo inizio. Fino al 165 quella coda serviva solo a spostare una riga, e svuotarla
+in anticipo non si vedeva; dandole un secondo uso, l'anticipo e' diventato il difetto.
+
+### La correzione
+
+La chiave esce dalla coda quando il contenitore **e' arrivato**: cursore in testa E scorrimento
+finito (`Container(N).Scrolling`). La decisione e' estratta in `paginator.rehead_step`, **pura**, per
+la ragione del lotto 139 -- un ramo che nessuno puo' provare e' un ramo che prima o poi sbaglia in
+silenzio, e questo ramo vive dentro il ciclo del servizio, che le prove non possono importare.
+
+```
+muovi    ordina il Control.Move e aspetta
+aspetta  sta ancora arrivando
+fatto    in testa e fermo: la chiave esce dalla coda
+mollo    REHEAD_TIMEOUT scaduto: si rinuncia
+```
+
+`mollo` non e' prudenza generica: dal 165 una chiave incastrata non lascia piu' solo una riga fuori
+posto, tiene il row **invisibile**. Il tetto rende il peggio uguale al comportamento di prima invece
+che a un widget che non compare piu'.
+
+`tests/test_166.py`, 12 controlli, 20 su 20 file passano. Il caso **B** e' la descrizione del difetto:
+non si dichiara mai 'fatto' mentre la riga scorre. Provata rossa togliendo il controllo sullo
+scorrimento: cadono solo i due controlli previsti.
+
+## Lo scatto durante la paginazione: cosa dicono i numeri e cosa resta
+
+L'utente, dopo aver portato `lookahead` a 2: *"anche mettendo lookahead a 2 la paginazione rimane a
+gradini perche' la stick e' generalmente lenta"*. Il confronto fra i due log:
+
+| | runway | momenti a <=3 elementi dalla fine | di cui con la pagina ancora in volo |
+|---|---|---|---|
+| post163 (`lookahead=1`) | 20 | 61 | **37** |
+| post165 (`lookahead=2`) | 40 | 28 | **12** |
+
+Il margine ha fatto quello che doveva -- da 37 a 12 -- e non basta, esattamente come dice l'utente:
+finche' una build dura 1,5-3 s (e in rete, con filtro doppiaggio, molto di piu') si arriva in fondo
+prima che la pagina atterri.
+
+**Cosa fa scattare la riga, letto invece che dedotto.** `List_Core` non dichiara `<focusposition>`,
+quindi il fisso vale 0; e `cursorrange` **non esiste in questo binario di Kodi** (verificato sulle
+stringhe), quindi lo scostamento consentito e' 0. Con `m_fixedCursor = 0` e `m_cursorRange = 0`, tutti
+e tre i rami di `CGUIFixedListContainer::SelectItem` danno `cursor = 0`: **la posizione di riposo
+dell'elemento a fuoco E' il primo posto a sinistra.** Quello che si vede non e' un elemento spinto in
+un posto sbagliato, e' la riga che torna nella sua posizione di riposo.
+
+Perche' se ne accorge solo a volte: mentre si scorre in fretta lo scorrimento morbido (400 ms,
+quadratico) resta indietro rispetto ai tasti, quindi il poster a fuoco NON e' ancora al bordo
+sinistro. Quando arriva la pagina, `UpdateListProvider` chiama `Reset()`, che alza `m_wasReset`, e
+`ScrollToOffset` legge proprio quel flag per **saltare l'animazione**:
+
+```cpp
+if (!m_wasReset) { SetContainerMoving(...); m_scrollTimer.Start(); }
+```
+
+Cioe' il ritardo accumulato viene recuperato tutto in un fotogramma: la riga scatta invece di
+scorrere. Piu' si scorre in fretta, piu' ritardo c'e' da recuperare, piu' lo scatto e' grosso.
+
+**La leva che ne discende, non provata:** `<scrolltime>` a 400 ms e' cio' che misura il ritardo
+recuperabile. Abbassarlo riduce lo scatto in proporzione, al prezzo di uno scorrimento meno morbido.
+Non toccato: e' una scelta di aspetto, e va provata sul dispositivo.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'

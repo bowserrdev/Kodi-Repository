@@ -1000,6 +1000,34 @@ def rehead_queue(key):
 	coda.append(key)
 	set_property(REHEAD_PROP, ','.join(coda))
 
+REHEAD_TIMEOUT = 3
+
+def rehead_step(rnum, rcur, scrolling, mosso, atteso):
+	"""Cosa fare, a questo giro, per il contenitore in coda di riposizionamento. Funzione PURA.
+
+	Sta qui e non dentro il ciclo del servizio per la ragione del lotto 139: un ramo muto e' un ramo
+	che nessuno puo' provare. Le quattro risposte sono tutto cio' che il chiamante puo' fare.
+
+	  'muovi'   ordina il Control.Move e aspetta
+	  'aspetta' non fare niente: sta ancora arrivando
+	  'fatto'   e' in testa e fermo: togli la chiave dalla coda
+	  'mollo'   e' passato troppo tempo: togli la chiave e rassegnati
+
+	Perche' 'fatto' pretende ANCHE che lo scorrimento sia finito: dal lotto 165 la skin tiene il row
+	nascosto finche' la chiave e' in coda, e Control.Move non e' istantaneo -- List_Core dichiara
+	<scrolltime>400</scrolltime>. Togliere la chiave appena il cursore segna 1 scoprirebbe il row a
+	scorrimento ancora in corso, che e' esattamente il difetto che il 165 doveva chiudere (e che nel
+	lotto 166 si e' scoperto ancora vivo, perche' rehead_done stava PRIMA del movimento).
+
+	Perche' esiste 'mollo': con il 165 una chiave incastrata non lascia piu' solo una riga fuori
+	posto, tiene il row INVISIBILE. Il tetto e' cio' che rende il peggio uguale al comportamento di
+	prima invece che a un widget che non compare.
+	"""
+	if atteso > REHEAD_TIMEOUT: return 'mollo'
+	if not rnum or not rcur: return 'aspetta'
+	if rcur > 1: return 'aspetta' if mosso else 'muovi'
+	return 'aspetta' if scrolling else 'fatto'
+
 def rehead_pending():
 	"""Le chiavi in attesa di essere riportate a inizio riga, in ordine di arrivo."""
 	from modules.kodi_utils import get_property
