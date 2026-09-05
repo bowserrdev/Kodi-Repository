@@ -1330,7 +1330,21 @@ def token_is_stale(params):
 	scope, cid = position_of(params)
 	if not scope: return False
 	from modules.kodi_utils import get_property, clear_property
-	if get_property(CTL_KEY_PROP % (scope, cid)) == make_key(params): return False
+	registrato = get_property(CTL_KEY_PROP % (scope, cid))
+	# LOTTO 164. Impronta ASSENTE non vuol dire "cambiata": vuol dire che in questa posizione non ha
+	# mai riconciliato nessuno, quindi non sappiamo niente e non c'e' niente da dichiarare superato.
+	# Trattarla come un cambio era il difetto: reconcile_position la scrive solo per le QUATTRO build
+	# paginate (movies, tvshows, mdblist_lists, trakt_lists), mentre 'continua a guardare' riceve
+	# comunque il '&pages=' nel path perche' Defs_Widget_Content lo accoda a ogni widget. Risultato,
+	# misurato sulla stick il 05/09 alle 04:15:25: tornando in home dopo cinque minuti nella ricerca,
+	#     token sorpassato home.501: path con pages=2 ma il contenuto e' cambiato
+	#     INVOCAZIONE build_continue_watching 231 ms, nessuna cartella costruita
+	#     ... e subito dopo la ricostruzione INTERA, 2639 ms, con firma 705b3911: la STESSA di prima.
+	# Cioe' il cancello buttava via una build e ne ordinava un'altra identica, per un contenuto che non
+	# era cambiato affatto. Due volte in questo log, entrambe al rientro in home.
+	# E' la stessa asimmetria gia' scritta qui sotto per il token: nel dubbio si costruisce.
+	if not registrato: return False
+	if registrato == make_key(params): return False
 	ctl_prop = CTL_PAGES_PROP % (scope, cid)
 	if not get_property(ctl_prop): return False
 	clear_property(ctl_prop)
