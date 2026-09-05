@@ -19534,6 +19534,101 @@ testo e la ricomposizione del path passano 5 ms e sono guidati dalla stessa noti
 `ontextchange` viene servito dopo, il `ClearProperty` arriva tardi e non cambia niente. Costa una riga
 di skin e un giro di prova sul dispositivo, e si fa a parte.
 
+## Lotto 162 -- strada B: far si' che quell'invocazione non nasca
+
+Il 160 ha messo un cancello, il 161 ha reso l'abbandono economico (697 -> 336 ms). Restano 336 ms di
+lavoro comunque buttato, e dall'interno del plugin non si scende: quando Kodi ricompone il path, il
+processo Python esiste gia'. L'unica mossa che li toglie e' **azzerare il token prima**, cosi' che il
+path si ricomponga senza `pages=N` e la GetDirectory non parta affatto.
+
+### Il fatto che ha cambiato il piano: le due meta' non sono simmetriche
+
+Il lotto 160 e il 161 hanno trattato "il cambio inquilino" come un fenomeno solo. Guardando **chi
+pubblica il path nuovo**, sono due cose diverse:
+
+| | chi ricompone il path | aggancio | natura |
+|---|---|---|---|
+| ricerca testuale (row 502, 503) | la SKIN, da `Control.GetLabel(3000)`, a ogni tasto | `<ontextchange>` | una corsa |
+| Discover (row 505) | il PLUGIN, `search.launch_discover` | la riga prima | deterministico |
+
+La meta' Discover non ha nessuna corsa da vincere, e **e' proprio quella su cui il cancello e' scattato
+nella misura del 04/09** (`reconcile 1105.505: contenuto bd4055e3 -> 90ef63f9`). Era rimasta invisibile
+finche' si e' guardato solo il caso della ricerca testuale, che e' quello che si vede piu' spesso.
+
+```python
+	# search.py, launch_discover
+	from modules.paginator import CTL_PAGES_PROP
+	win.clearProperty(CTL_PAGES_PROP % ('1105', '505'))
+	win.setProperty('FenLight.Discover.ContentPath', content_path)
+```
+
+Due proprieta' scritte nello stesso thread a microsecondi di distanza, prima che il ciclo della GUI
+rivaluti gli `$INFO` del `<content>`. Non c'e' finestra in cui Kodi possa vedere la vecchia coppia.
+
+### La meta' testuale, e perche' `<ontextchange>` esiste davvero
+
+Il lotto 160 aveva scritto *"non esiste quell'istante nella skin"*, il 161 ha corretto in *"non esiste
+in cio' che la skin usa"*. Terza verifica, questa volta sul binario invece che sulla memoria:
+
+```
+$ strings /Applications/Kodi.app/Contents/MacOS/Kodi | grep -n ontextchange
+210175:ontextchange
+```
+
+Sta nella tabella dei tag del control factory, fra `onclick` e `onfocus`. Sul controllo `edit` 3000:
+
+```xml
+<ontextchange>ClearProperty(fenlight.pg.w1105.ctl502.pages,Home)</ontextchange>
+<ontextchange>ClearProperty(fenlight.pg.w1105.ctl503.pages,Home)</ontextchange>
+```
+
+**Resta una corsa e va misurata, non dedotta.** L'ordine atteso: Kodi esegue le azioni di
+`ontextchange` sul thread della GUI nel momento in cui il testo cambia, mentre gli `$INFO` dentro il
+`<content>` li rivaluta al giro di rendering successivo. Se e' cosi', il `ClearProperty` arriva prima.
+Se non e' cosi', questa meta' non cambia niente e si vedra' dal log; l'altra funziona comunque.
+
+### Un difetto latente che si chiude di rimbalzo
+
+A box svuotato `$VAR[Path_SearchTerm]` non rende niente, ma il token in coda resta: il `<content>`
+diventerebbe il **solo** `pages=N`, su cui Kodi tenta una `GetDirectory` e la registra come errore. E'
+la stessa trappola per cui esiste il parametro `pggated` (vedi `Includes_Hubs.xml`, riga 127). Con
+l'azzeramento a ogni tasto, quando il box si svuota si svuota anche il token.
+
+### Il cancello del 160 resta
+
+Non e' ridondanza. La strada B copre i percorsi in cui **sappiamo** che il contenuto sta cambiando;
+il token puo' sopravvivere ad altri (un ritorno dalla riproduzione, una ricomposizione che la skin fa
+senza toccare il testo). Il cancello e' la rete sotto, e il 161 l'ha reso abbastanza economico da
+poterci restare. `tests/test_162.py` ha un caso apposta che lo dichiara, cosi' che nessuno lo tolga
+credendolo superato.
+
+### Provato fuori da Kodi
+
+`tests/test_162.py`, sette casi, 17 su 17 file passano. Quello che si puo' provare sul Mac non e' il
+tempo (non direbbe niente) ne' la corsa (la decide Kodi), ma i due modi in cui questa famiglia di
+modifiche si rompe **in silenzio**:
+
+- **i nomi che divergono.** La skin non puo' importare `paginator`: il nome della proprieta' e'
+  duplicato per forza. Il caso A non elenca a mano i contenitori, li ricava dal file **generato** --
+  da chi il token lo legge davvero -- e il caso C confronta con `paginator.CTL_PAGES_PROP`. Il giorno
+  in cui skinvariables aggiunge un row alla ricerca, la prova diventa rossa da sola. E' il guasto del
+  lotto 92, che allora e' costato una misura sul campo per essere trovato.
+- **l'ordine invertito in Python.** Mettere `clearProperty` dopo `setProperty` non rompe niente di
+  visibile: rimette solo i 336 ms. Il caso E confronta i due numeri di riga.
+
+Provata rossa iniettando entrambi i guasti: quattro casi caduti, ognuno quello previsto.
+
+### Da misurare sul dispositivo
+
+Nel log, dopo aver digitato una ricerca e dopo aver lanciato un Discover su una lista gia' paginata:
+
+- **atteso**: nessuna riga `token sorpassato`, e nessuna `INVOCAZIONE` con `nessuna cartella
+  costruita, solo azione`;
+- **se resta solo per la ricerca testuale**: la corsa e' persa, la meta' Discover ha comunque reso;
+- **da sorvegliare**: che la paginazione continui a funzionare, cioe' che scorrendo in fondo compaia
+  `set_state pages=2` e la lista cresca. Azzerare un token di troppo si vedrebbe come una lista che
+  torna al lotto iniziale.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
