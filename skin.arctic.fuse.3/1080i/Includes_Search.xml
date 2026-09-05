@@ -72,7 +72,15 @@
                                     <param name="content">$INFO[Window(Home).Property(FenLight.Discover.ContentPath),,&amp;pgctl=1105.505]</param>
                                     <param name="include">List_Poster_Row</param>
                                     <param name="target">videos</param>
-                                    <param name="visible">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</param>
+                                    <!-- LOTTO 167. Il terzo termine e' il gate del lotto 165, che li' era finito
+                                         solo nei template di skinvariables (row 502 e 503) e NON qui: il row
+                                         Discover e' scritto a mano, quindi restava visibile per tutti i 400 ms in
+                                         cui la riga vecchia scorreva verso l'inizio. Da cui la sequenza che
+                                         l'utente ha descritto: "gli elementi della ricerca 1 tornano al primo,
+                                         POI scompaiono, POI compaiono quelli della ricerca 2".
+                                         Con il gate la sequenza diventa quella giusta: la riga vecchia sparisce
+                                         subito, si riposiziona da nascosta, e ricompare gia' sul primo elemento. -->
+                                    <param name="visible">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.505)</param>
                                     <param name="clear_hideartwork_onfocus">true</param>
                                     <param name="hidden_button_enabled">true</param>
                                     <param name="onup">3001</param>
