@@ -316,7 +316,7 @@
                      L'etichetta passata vuota fa collassare il distanziatore trasparente di
                      View_Line_Spinner, che li' serve solo ad allinearsi dopo un testo. -->
                 <control type="group">
-                    <left>140</left>
+                    <left>170</left>
                     <centertop>0</centertop>
                     <height>80</height>
                     <animation effect="slide" end="200,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,2)">Conditional</animation>
