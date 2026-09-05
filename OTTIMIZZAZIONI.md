@@ -20150,6 +20150,60 @@ La funzione si carica con `load_pure`, quindi la prova legge il sorgente spedito
 `router` (che tira dentro mezzo addon). Provata rossa rimettendo le due righe fuori dal cancello:
 cade il solo caso B.
 
+## Lotto 169 -- la rotellina accanto al nome del percorso, nella ricerca testuale
+
+Richiesta dell'utente, *"sia per continuita' grafica, sia per far capire all'utente di aspettare"*.
+
+I risultati della ricerca testuale sono costruiti da percorsi che l'utente configura e a cui da' un
+nome, come i widget della home: nello screenshot del 05/09 si chiamano **Movies** e **TV Shows**. Quei
+nomi sono le linguette del selettore (contenitore 601). I widget della home mostrano una rotellina
+accanto al proprio nome mentre costruiscono; le linguette no.
+
+### Cosa c'era gia', e perche' non bastava
+
+Il pezzo esisteva ma copriva solo meta' schermata: `Includes_Search.xml` ha gia' un
+`View_Line_Spinner` accanto all'etichetta **"Risultati"**, ed e' mosso da `Container(505).IsUpdating`
+-- cioe' **solo Discover**. Quel blocco e' visibile a casella vuota; la ricerca testuale non ha
+un'etichetta di titolo e quindi non aveva niente a cui appendere la rotellina.
+
+### Perche' una clausola per id e non una condizione sola
+
+Ogni voce del selettore porta gia' il proprio `widget_id` (lo scrive il generatore in
+`skinvariables-searchwidgets-selector`), ma **Kodi non sa risolvere
+`Container($INFO[ListItem.Property(widget_id)])`**: l'id dentro una condizione dev'essere letterale.
+Da qui una clausola per id:
+
+```
+[String.IsEqual(ListItem.Property(widget_id),502) + Container(502).IsUpdating] | ... fino a 506
+```
+
+E' la stessa ragione strutturale per cui il paginatore indicizza per (finestra, contenitore) invece di
+dedurre la posizione: dove l'id non puo' essere calcolato, va scritto.
+
+### Perche' NON il trucco del grouplist
+
+`View_Line_Spinner` si posiziona subito dopo il testo mettendo in un grouplist orizzontale una **copia
+trasparente dell'etichetta** come distanziatore. Qui non si puo': l'etichetta della linguetta e'
+**centrata** nei suoi 200 px, quindi un grouplist la sposterebbe di lato ogni volta che la rotellina
+compare. La rotellina e' ancorata al bordo destro della linguetta: il testo non si muove mai, e resta
+sulla stessa riga del nome. Icona e animazioni sono quelle di `View_Line_Spinner`, non riscritte.
+
+### Il modo in cui si rompe in silenzio, e la prova che lo impedisce
+
+Il parametro attraversa **quattro** include prima di arrivare al layout della linguetta:
+
+```
+Includes_Search.xml -> Hub_Widget_Switcher -> Categories_Selector -> List_ButtonMenu_Row
+```
+
+Un anello che **dichiara** il default ma non lo **inoltra** lascia `false`: la rotellina non compare
+mai e non c'e' nessun errore da nessuna parte. `tests/test_169.py` guarda percio' la CATENA e non
+l'aspetto -- come il `test_167`, e per lo stesso motivo. Provata rossa togliendo l'inoltro dall'anello
+di mezzo: cade il solo caso previsto. 23 su 23 file passano.
+
+Il default resta `false` in tutti e tre gli anelli intermedi, quindi gli altri selettori della skin
+non cambiano.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'

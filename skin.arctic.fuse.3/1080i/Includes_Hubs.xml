@@ -259,6 +259,9 @@
         <param name="onup">300</param>
         <param name="home_switcher">false</param>
         <param name="line_visible">true</param>
+        <!-- Vedi lotto 169: nella ricerca ogni linguetta e' il nome di un percorso dell'utente e
+             mostra la propria rotellina mentre quel widget carica, come i widget della home. -->
+        <param name="spinner_condition">false</param>
         <definition>
             <control type="group">
                 <top>$PARAM[top]</top>
@@ -271,6 +274,7 @@
                 </control>
                 <include content="Categories_Selector">
                     <param name="id">601</param>
+                    <param name="spinner_condition">$PARAM[spinner_condition]</param>
                     <param name="detailed">true</param>
                     <param name="hidden_button">List_ButtonMenu_Row_HiddenButton_ERow</param>
                     <param name="hidden_button_enabled">true</param>
