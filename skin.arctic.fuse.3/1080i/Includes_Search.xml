@@ -341,6 +341,28 @@
 	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(TMDbHelper.WidgetContainer)</onunfocus>
 	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onunfocus>
 
+	            <!-- STRADA B, meta' ricerca testuale (lotto 162). Il token di paginazione appartiene al
+	                 CONTENITORE, non alla lista: a ogni tasto Path_SearchTerm cambia e Kodi ricompone il
+	                 <content> dei row 502 e 503, ma il 'pages=N' in coda e' ancora quello della query
+	                 precedente. Il plugin viene invocato, vede l'inquilino cambiato e butta via
+	                 l'invocazione: 336 ms misurati il 04/09 (lotto 161), 697 prima. Azzerando il token
+	                 qui, la ricomposizione avviene gia' senza il token e quell'invocazione non nasce.
+	                 Perche' l'ordine tenga: Kodi esegue le azioni di ontextchange sul thread della GUI
+	                 nel momento in cui il testo cambia, mentre gli $INFO dentro il <content> del
+	                 contenitore li rivaluta al giro di rendering successivo. E' l'unico punto in cui si
+	                 puo' intervenire; la meta' Discover ha invece un punto deterministico in Python
+	                 (search.launch_discover), e li' non c'e' nessuna corsa.
+	                 Chiude anche un difetto latente: a box svuotato $VAR[Path_SearchTerm] non rende
+	                 niente, e senza questo il path resterebbe il solo token, su cui Kodi tenta una
+	                 GetDirectory e la registra come errore (la stessa trappola descritta in
+	                 Includes_Hubs.xml, riga 127).
+	                 I due id sono scritti a mano perche' il <content> che legge queste proprieta' e'
+	                 generato da skinvariables (searchwidgets-combined e -standard, entrambi 502/503) e
+	                 li' non si puo' agganciare niente. La prova test_162 verifica che i nomi coincidano
+	                 con paginator.CTL_PAGES_PROP. -->
+	            <ontextchange>ClearProperty(fenlight.pg.w1105.ctl502.pages,Home)</ontextchange>
+	            <ontextchange>ClearProperty(fenlight.pg.w1105.ctl503.pages,Home)</ontextchange>
+
 	            <onleft condition="Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(RefocusMenu,True)</onleft>
             <onleft condition="Skin.HasSetting(HomeSwitcher.Vertical)">3001</onleft>
 
