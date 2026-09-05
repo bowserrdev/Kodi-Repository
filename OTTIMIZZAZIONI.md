@@ -20030,6 +20030,74 @@ scorrere. Piu' si scorre in fretta, piu' ritardo c'e' da recuperare, piu' lo sca
 recuperabile. Abbassarlo riduce lo scatto in proporzione, al prezzo di uno scorrimento meno morbido.
 Non toccato: e' una scelta di aspetto, e va provata sul dispositivo.
 
+## Lotto 167 -- il gate del 165 copriva due row su tre
+
+Terza volta che l'utente rivede lo stesso difetto, e stavolta l'ha descritto come una sequenza, che e'
+il modo in cui si e' trovato il buco:
+
+> ricerca 2: elementi ricerca 1 tornano al primo elemento -> scompaiono elementi ricerca 1 -> compaiono
+> quelli di ricerca 2 dal primo. Quando dovrebbe essere: scompaiono elementi di ricerca 1 -> compaiono
+> quelli di ricerca 2 dal primo.
+
+"La riga vecchia si vede scorrere" vuol dire che il row **era visibile**, cioe' che il gate del 165 non
+stava agendo. E infatti: il 165 l'ho scritto nei TEMPLATE del generatore, che producono i row della
+ricerca testuale (502 e 503). **Il row Discover (505) e' dichiarato a mano in `Includes_Search.xml`** e
+non e' stato toccato. Nel log del 05/09 tutti i riposizionamenti osservati erano proprio su 1105.505:
+
+```
+05:01:41.596  reconcile 1105.505: contenuto eb3b277e -> 735d4838
+05:01:41.866  watcher testa nuova key=1105.505: riga riportata in cima (era 56/76)
+05:01:42.072  set_head key=1105.505 built=30      <- 206 ms dopo l'inizio di uno scorrimento da 400 ms
+```
+
+Correzione: lo stesso terzo termine nel `visible` del row 505. `tests/test_167.py` non prova il
+comportamento (e' skin) ma la **copertura**: ricava dai file quali contenitori dichiarano un
+`pgctl=1105.N` e pretende il gate su ognuno, cosi' un row nuovo o dichiarato altrove si fa notare da
+solo. E' il modo in cui questa famiglia di correzioni sbaglia: si applica dove si stava guardando e si
+dimentica il gemello scritto in un altro file.
+
+**Tre lotti per una cosa sola, e vale la pena dire perche'.** Il 165 ha scelto il momento sbagliato
+(coda svuotata prima del movimento), il 166 l'ha corretto ma sul solo percorso che stavo guardando, il
+167 ha trovato che il gate non era nemmeno applicato dove il difetto si manifestava. Ogni volta la
+verifica e' stata "la prova passa" invece di "il difetto e' sparito dal log": nessuna delle tre prove
+poteva accorgersi che il gate non fosse applicato al row giusto, finche' il 167 non ha misurato la
+copertura invece del comportamento.
+
+## Lo scatto in paginazione: perche' non si puo' avere sia liscio sia fermo
+
+Richiesta dell'utente: *"non voglio uno scorrimento meno morbido, ma non voglio nemmeno lo scatto"*.
+Le due cose sono legate da una riga di Kodi, e va detto invece di provare a girarci intorno.
+
+`<scrolltime>400</scrolltime>` vuol dire che mentre si scorre in fretta la riga **disegnata** e' fino a
+400 ms indietro rispetto al cursore logico: e' proprio quel ritardo a farla sembrare morbida. Quando
+arriva una pagina nuova, `UpdateListProvider` chiama `Reset()`, che alza `m_wasReset`, e
+`ScrollToOffset` ci legge il permesso di **saltare l'animazione**:
+
+```cpp
+if (!m_wasReset) { SetContainerMoving(...); m_scrollTimer.Start(); }
+```
+
+Il ritardo accumulato viene quindi recuperato in un fotogramma. **Lo scatto E' la morbidezza, riscossa
+tutta insieme**: piu' lungo lo `scrolltime`, piu' liscio lo scorrimento e piu' grosso lo scatto. Non
+sono due difetti indipendenti fra cui scegliere una correzione, sono la stessa grandezza vista in due
+momenti.
+
+Quello che resta da decidere non e' quindi "liscio o fermo" ma **quanto spesso una pagina atterra
+mentre si sta scorrendo**. Le leve sono tre, tutte impostazioni:
+
+| leva | oggi | effetto | costo |
+|---|---|---|---|
+| `paginate.lookahead` | 2 | la pagina parte prima | gia' provata: momenti a rischio da 37 a 12 |
+| `paginate.initial_batch` | 2 pagine (40 elementi) | meno atterraggi in tutto | la PRIMA build, quella che si aspetta, si allunga |
+| `paginate.limit_widgets` | 20 per pagina | pagine piu' grosse, meno atterraggi | ogni build costa di piu' |
+
+**Onesta' sullo stato di questa spiegazione**: il ruolo di `m_wasReset` e' letto nel sorgente di Kodi,
+non misurato sul dispositivo, e su questo difetto mi sono gia' sbagliato due volte (prima
+`allowhiddenfocus`, poi la finestra di coda del `fixedlist`, entrambe smentite leggendo il codice).
+Prima di cambiare un'impostazione conviene misurare: alzare `initial_batch` a 3 e contare di nuovo i
+momenti con `remaining<=3` e `loading=True`, che e' il campione che ha gia' mostrato l'effetto del
+lookahead.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
