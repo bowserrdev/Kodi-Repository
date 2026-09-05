@@ -269,8 +269,11 @@
         <param name="itemlayout_w">240</param>
         <param name="scrolltime">400</param>
         <param name="extended">false</param>
+        <!-- Rotellina per voce: la usa il selettore della ricerca (lotto 169), spenta altrove. -->
+        <param name="spinner_condition">false</param>
         <definition>
             <include content="List_ButtonMenu_Row">
+                <param name="spinner_condition">$PARAM[spinner_condition]</param>
                 <param name="id">$PARAM[id]</param>
                 <param name="color_fo">$PARAM[color_fo]</param>
                 <param name="color_nf">$PARAM[color_nf]</param>
