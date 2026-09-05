@@ -22,8 +22,19 @@ def _text_search_start(params, media_type):
 		if search_scope == 'standard':
 			win.setProperty('FenLight.TextSearch.Movie.State', 'loading')
 			win.setProperty('FenLight.TextSearch.TV.State', 'loading')
-	win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'loading')
-	win.setProperty('FenLight.TextSearch.State', 'loading')
+		# LOTTO 168 -- 'loading' vuol dire "sta caricando una RICERCA NUOVA", non "una build sta
+		# girando". Queste due righe stavano FUORI dal cancello, quindi le rialzava anche una
+		# ricostruzione per paginare: stessa query, risultati gia' a schermo. La skin ci appende tre
+		# cose che allora sparivano e tornavano a ogni pagina caricata --
+		#   Includes_Search.xml:250 e 263   'Ricerca in corso' / 'Attendi il caricamento dei
+		#                                    risultati', che si ristendevano sopra i risultati validi
+		#   Includes_Search.xml:211         il pannello info del risultato a fuoco, che sbatteva
+		# -- ed e' il difetto segnalato dall'utente il 05/09.
+		# Dentro il cancello il significato torna quello che i tre consumatori gia' assumevano.
+		# La paginazione ha il suo segnale ed e' un altro: Container(N).IsUpdating, usato dal
+		# Widget_Busy, che e' per contenitore e non per ricerca.
+		win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'loading')
+		win.setProperty('FenLight.TextSearch.State', 'loading')
 	return win
 
 def _search_debounce_abort(sys, params, action_filtered):

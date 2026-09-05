@@ -20098,6 +20098,58 @@ Prima di cambiare un'impostazione conviene misurare: alzare `initial_batch` a 3 
 momenti con `remaining<=3` e `loading=True`, che e' il campione che ha gia' mostrato l'effetto del
 lookahead.
 
+## Lotto 168 -- 'Ricerca in corso' si ristendeva sopra i risultati a ogni pagina
+
+Ultimo punto rimasto della coda della ricerca. Segnalato dall'utente: *"la scritta che compare nelle
+ricerche testuali quando sta caricando ulteriori risultati"*.
+
+Non e' un difetto dell'etichetta, e' del segnale che legge. `_text_search_start` alzava
+`FenLight.TextSearch.State = loading` **fuori** dal cancello che distingue una query nuova da una
+ricostruzione:
+
+```python
+	if win.getProperty('FenLight.TextSearch.Query') != query:
+		...                                                        # <- il cancello
+	win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'loading')   # <- ma queste stavano
+	win.setProperty('FenLight.TextSearch.State', 'loading')                   #    fuori
+```
+
+Ogni ricarica per paginare passa di qui con la stessa query, e rialzava il segnale. La skin ci appende
+**tre** cose, tutte sulla schermata che l'utente sta guardando:
+
+| dove | cosa | come si vedeva |
+|---|---|---|
+| `Includes_Search.xml:250` | 'Ricerca in corso' | si ristendeva sopra risultati validi |
+| `Includes_Search.xml:263` | 'Attendi il caricamento dei risultati.' | idem |
+| `Includes_Search.xml:211` | il pannello info del risultato a fuoco | sbatteva via e tornava |
+
+L'utente ne aveva notata una; le altre due hanno la stessa causa e si chiudono con lo stesso spostamento.
+
+### Perche' la correzione sta nel plugin e non nella condizione della skin
+
+La strada alternativa era condizionare le due etichette su `Settled` invece che su `State`. L'ho
+scartata: in scope **standard** i due row si costruiscono in invocazioni separate e `Settled` viene
+scritto da ciascuna, quindi l'attesa sparirebbe appena la prima delle due ha finito, mentre l'altra
+sta ancora caricando. `State` aggregato esiste proprio per rispondere a "sono finite entrambe".
+
+Il problema non era dunque la condizione ma il **significato** della proprieta': `loading` deve voler
+dire *"sta caricando una ricerca NUOVA"*, che e' cio' che tutti e tre i consumatori gia' assumevano.
+Nessuno di loro voleva sapere se una build stava girando -- e quel fatto ha gia' il suo segnale,
+`Container(N).IsUpdating`, che il `Widget_Busy` usa ed e' per contenitore invece che per ricerca.
+Spostare le due righe dentro il cancello ripristina il significato invece di aggiungere una guardia,
+che e' la regola gia' scritta in [[stato-condiviso-non-toppe]].
+
+### Provato fuori da Kodi
+
+`tests/test_168.py`, cinque casi, 22 su 22 file passano. Il caso **B** e' il lotto: `State` a `done`,
+ricostruzione con la stessa query, `State` deve restare `done`. Il caso **D** protegge cio' che si
+poteva rompere spostando le righe: in scope standard le due righe vanno marcate **insieme** dalla
+prima invocazione, perche' la seconda vede la query gia' registrata e salta il blocco -- senza,
+`_text_search_done` non saprebbe piu' quando sono finite entrambe.
+La funzione si carica con `load_pure`, quindi la prova legge il sorgente spedito senza importare
+`router` (che tira dentro mezzo addon). Provata rossa rimettendo le due righe fuori dal cancello:
+cade il solo caso B.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
