@@ -216,7 +216,8 @@
 
     <!-- Keyboard -->
     <constant name="keyboard_pad">10</constant>
-    <constant name="keyboard_spacebar_w">260</constant>
+    <!-- 260 + 80 (il pulsante tolto nel lotto 159) + 10 di itemgap: la riga resta larga uguale. -->
+    <constant name="keyboard_spacebar_w">350</constant>
     <constant name="keyboard_edit_w">1070</constant>
     <constant name="keyboard_numeric">80</constant>
     <constant name="keyboard_numeric_pad">10</constant>

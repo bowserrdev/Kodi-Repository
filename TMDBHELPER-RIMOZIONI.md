@@ -507,3 +507,113 @@ che il classificatore segnala è per scelta: 30 impostazioni skin vive da rinomi
 5 ganci `croplogo`, 1 commento.
 
 `WidgetContainer` resta a 31 scritture / 91 letture, intatto.
+
+---
+
+## Lotto 7 — i path `plugin://` di TMDbHelper (lotto B della potatura skin)
+
+Primo lotto della serie che **non** riguarda proprieta' di finestra ma **path di plugin**. La
+differenza e' di natura, non di grado: una proprieta' morta non produce nulla, un content path o un
+`RunPlugin` verso un addon assente fa aprire a Kodi il **prompt d'installazione**.
+
+Da **46** riferimenti a `plugin.video.themoviedb.helper` a **16**.
+
+### Il Discover della ricerca girava in doppio
+
+Il caso peggiore, ed era **raggiungibile adesso**: sulla stick `Search.DisableDiscover` e
+`Search.DisableCombined` sono entrambe false, quindi
+[Includes_Search.xml:443](skin.arctic.fuse.3/1080i/Includes_Search.xml#L443) eseguiva
+`RunPlugin(plugin://plugin.video.themoviedb.helper/?info=user_discover…)` **premendo semplicemente
+Su** nella barra di ricerca.
+
+Verificato prima di togliere: Fen Light ha gia' un Discover completo e funzionante —
+`search.py:223` scrive `FenLight.Discover.ContentPath`, il widget 505 della finestra 1105 lo consuma,
+e il pannello filtri avanzati (`search.select_discover_filter`, `clear_discover_filters`) e' tutto
+suo. Le chiamate a TMDbHelper erano **residui della vecchia implementazione che giravano in
+parallelo a una viva**. Rimossi: l'`onup`, la voce "Discover" dello switcher, e le due `SetProperty`
+di `Custom_1105_Search.xml` che seminavano `TMDbHelper.UserDiscover.FolderPath` a ogni apertura.
+
+### Il resto, con la regola applicata a ciascuno
+
+| dove | cosa | regola applicata |
+|---|---|---|
+| `Dialog_DialogPlot.xml` | 5 pulsanti filmografia (id 9011-9015): `<onfocus>` metteva in `ModePath` un path TMDbHelper che alimenta il container 7001 | **controllo rimosso**: togliere solo l'onfocus lasciava un pulsante inerte |
+| `Dialog_DialogPlot.xml` | 2 `RunScript(…,call_auto=1190)` | riga rimossa |
+| `Custom_1114_Dialog_CustomPlot.xml` | `<content limit="1">` con path TMDbHelper | **`Null.xsp`** (alimenta un container, regola del lotto 2) |
+| `Dialog_DialogView.xml` | `<param name="path">` della scheda crew | **stringa vuota** (alimenta un param, non un container) |
+| `Dialog_DialogContextMenu.xml` | voce "liste correlate" | **voce rimossa**: la `<visible>` dipende da `base_dbtype`, che nessuno scrive: era permanentemente nascosta |
+| `DialogVideoInfo.xml`, `Custom_1141_OSD_Cast.xml`, `Includes_Labels.xml` | onclick e un `<value>` con condizione irraggiungibile | riga rimossa |
+| `Settings.xml`, `Includes_SkinSettings.xml` | la voce impostazioni e il radiobutton che offriva di **installare** TMDbHelper | blocco rimosso |
+| `skinvariables-shortcut-config.json` | il raggruppamento `grouping://shortcuts/tmdbhelper/` (5 voci) e il link "Configure TMDbHelper" | rimossi |
+| `generator/data/setup/widgets_row.xml`, `search_path.xml` | 21 `<rule>` con path TMDbHelper | rimosse, **tutte condizionate** (verificato: zero incondizionate, quindi neutre) |
+
+**`buildv` alzato** a `0.1.9-tmdbhelper-fuori`, secondo la regola di
+`shortcuts/generator/data/LEGGIMI-rigenerazione.md`: i `.xmltemplate` non entrano nell'impronta, e
+senza l'alzata il file generato sarebbe rimasto quello vecchio, in silenzio.
+
+### Un errore mio, intercettato dall'asserzione
+
+Il primo tentativo di rimuovere i 5 pulsanti filmografia ne trovava **6**. Il sesto era il pulsante
+*info* legittimo, che contiene una sola riga TMDbHelper fra le tante: sarebbe sparito un controllo
+vivo. I due casi si distinguono perche' i pulsanti morti usano `plugin://plugin.video.themoviedb.helper`
+mentre quello vivo usa `RunScript(plugin.video.themoviedb.helper,` senza schema. **E' lo stesso
+errore del lotto 6a**, e questa volta lo ha fermato un'asserzione sul numero atteso invece di una
+verifica a posteriori. Scrivere il numero atteso prima di eseguire e' cio' che ha fatto la differenza.
+
+### Verifiche fatte
+
+- XML valido e JSON valido su tutti i 15 file.
+- **Simboli**: 13 file XML confrontati con `HEAD`, definizioni `<include|variable|expression|constant>`
+  invariate su tutti, **zero perse**.
+- **Orfani**: censimento globale degli include usati e non definiti su tutto l'albero. Restano i tre
+  preesistenti (`Hub_Disabled_Onload`, `Settings_InfoText`, `View_Furniture_Scrollbar_V`), nessuno nuovo.
+- Deploy a Kodi fermo, md5 verificati **15 su 15** dopo il push.
+- Nessun errore o warning nuovo nel log di avvio.
+
+### La prova end-to-end, che vale anche per il lotto 151
+
+L'alzata di `buildv` era un caso reale del percorso che il lotto 151 aveva deciso di **non**
+eliminare. Nel log delle 14:31:
+
+```
+14:31:38.947  Window Init (Home.xml)          <- il controllo si arma
+14:31:49.354  skinvariables (+10,4 s)         <- il controllo differito parte
+14:31:51.897  script.skinvariables - update_xml: 2.010 sec   <- rileva e RIGENERA
+14:31:52.505  Unloaded skin                   <- ReloadSkin, come previsto
+```
+
+Il file generato sulla stick e' passato a **0** riferimenti `themoviedb.helper` e **0** `TMDbHelper`.
+La rete di sicurezza contestata a inizio sessione ha fatto esattamente il suo mestiere su un caso vero.
+
+### Cosa resta, e dove va
+
+I 16 riferimenti superstiti sono tutti gia' assegnati:
+- **8** in `Includes_NextAired.xml`: muoiono con il file nel lotto C (hub 1106, eliminazione confermata).
+- **8** in `Dialog_DialogCustom.xml`: sono `RunScript(…,blur_image=…)` del selettore di sfondo, e
+  vanno con il lotto D insieme a tutto lo strato blur.
+
+### Da provare sul dispositivo
+
+Le superfici toccate che si vedono: **hub ricerca** (apertura, tasto Su dalla barra, Discover con i
+filtri avanzati), **scheda trama** aperta dalla scheda info, **menu contestuale** su film e serie,
+**impostazioni** (la voce TMDbHelper non c'e' piu'), **OSD cast** durante la riproduzione.
+
+## Lotto 8 -- la riga Discover di TMDbHelper nella ricerca (lotto 155)
+
+`Includes_Search.xml` teneva un `Hub_Combined_Widget` sul contenitore **501** il cui path era
+`$INFO[window(home).property(tmdbhelper.userdiscover.folderpath)]`, piu' il suo pannello
+`Hub_Combined_Info`. La proprieta' non e' scritta da nessuno da quando, nel lotto B, e' sparito il
+`RunPlugin` verso `user_discover`: il contenitore era morto e produceva due `GetDirectory` fallite
+per sessione di ricerca (`&pgctl=1105.501` all'apertura, `&with_text_query=<query>&pgctl=1105.501` a
+query conclusa). Il Discover vivo e' quello di Fen Light, contenitore **505**.
+
+Rimossi i due blocchi; spostato da 501 a 505 il valore di partenza di `TMDbHelper.WidgetContainer`
+per la finestra 1105 in `Includes_Hubs.xml`, e tolto da `Includes_Images.xml` il guard che esisteva
+solo per tenere il 501 fuori dalla finestra di ricerca.
+
+`TMDbHelper.WidgetContainer` **resta**: nonostante il nome e' una proprieta' interna della skin
+(75 riferimenti, il piu' importante e' la variabile dello sfondo), non parla con l'addon.
+Rinominarla e' un lotto a se'.
+
+Riferimenti `themoviedb.helper` in `1080i/`: **8**, invariati -- sono tutti in
+`Dialog_DialogCustom.xml` e vanno con il lotto D.

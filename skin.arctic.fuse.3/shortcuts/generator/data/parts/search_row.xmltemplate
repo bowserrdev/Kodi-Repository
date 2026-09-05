@@ -4,7 +4,11 @@
          scope 1105, che e' quello in cui il lato plugin lo scrive (paginator.ctl_scope). Senza, vale il
          default 'home' di Hub_Combined_Widget e il contenitore leggerebbe il token della Home. -->
     <param name="pgscope">1105</param>
-    <param name="content">$VAR[{widget_search_variable},{widget_path},{widget_path_end}]</param>
+    <!-- pggated: il path di base e' vuoto a casella vuota, quindi il segmento di identita' non va
+         accodato dopo ma messo nel SUFFISSO del $VAR, dove sparisce insieme al path. Senza,
+         il contenitore resta con il solo '&amp;pgctl=1105.502' e Kodi lo tenta come cartella. -->
+    <param name="pggated">true</param>
+    <param name="content">$VAR[{widget_search_variable},{widget_path},{widget_path_end}&amp;pgctl=1105.{widget_id}]</param>
     <param name="include">{widget_include}</param>
     <param name="target">{widget_target}</param>
     <param name="sortby">{widget_sortby}</param>
@@ -13,7 +17,17 @@
     <!-- Settled == testo vivo: il row appare solo quando i risultati pubblicati corrispondono a cio' che e'
          scritto adesso, cosi' al cambio query si nasconde e si ricostruisce da capo (posizione 0); la
          paginazione mantiene Settled==query e non viene toccata. -->
-    <param name="visible">String.IsEqual(Container(601).ListItem.Property(guid),{widget_guid}) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Settled),Control.GetLabel(3000).index(1))</param>
+    <!-- LOTTO 165. Il row resta nascosto anche finche' il riposizionamento non e' stato eseguito.
+         Perche': al cambio query reconcile_position mette il contenitore in coda (fenlight.pg.rehead) e
+         il watcher lo riporta in testa con Control.Move, che NON e' istantaneo: e' uno scorrimento
+         animato. Con le pagine gia' in cache fra il riposizionamento e la fine della build passano
+         128 ms (misurato il 05/09), il row torna visibile a scorrimento ancora in corso e si vede la
+         lista scivolare DOPO essere comparsa, invece di comparire gia' in testa.
+         La proprieta' esiste gia' e la svuota il watcher appena ha agito: nessuno stato nuovo, e
+         nessun ritardo a tempo. Se la coda non si svuota il row resta nascosto, ma e' autolimitante:
+         il watcher consuma appena quel contenitore ha elementi nella finestra a schermo, che e'
+         esattamente la condizione in cui il row avrebbe qualcosa da mostrare. -->
+    <param name="visible">String.IsEqual(Container(601).ListItem.Property(guid),{widget_guid}) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Settled),Control.GetLabel(3000).index(1)) + !String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.{widget_id})</param>
     <param name="allowhiddenfocus">true</param>
     <param name="hidden_button_enabled">true</param>
 </include>

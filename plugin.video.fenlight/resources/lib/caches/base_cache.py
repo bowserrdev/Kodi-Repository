@@ -65,15 +65,25 @@ integrity_check = {
 	'episode_groups_db': ('groups_data',),
 	'dub_db': ('dubcache',)
 }
+# LOTTO 133 -- lo stato di sincronizzazione e' una COLONNA, non piu' una deduzione.
+#   sync_state  'synced' | 'pending_put' | 'pending_delete'  (vedi caches/progress_sync)
+#   misses      quante risposte di Trakt di fila hanno omesso una riga nostra non ancora pubblicata
+# La definizione sta qui una volta sola: le tabelle `progress` sono due -- watched_db (indicatori
+# locali, nessun remoto) e trakt_db (sincronizzata) -- ed erano due stringhe copiate a mano.
+PROGRESS_CREATE = (
+	'CREATE TABLE IF NOT EXISTS progress '
+	'(db_type text not null, media_id text not null, season integer, episode integer, resume_point text, '
+	'curr_time text, last_played text, resume_id integer, title text, '
+	"sync_state text not null default 'synced', misses integer not null default 0, "
+	'unique (db_type, media_id, season, episode))')
+
 table_creators = {
 	'navigator_db': (
 		'CREATE TABLE IF NOT EXISTS navigator (list_name text, list_type text, list_contents text, unique (list_name, list_type))',),
 	'watched_db': (
 		'CREATE TABLE IF NOT EXISTS watched \
 		(db_type text not null, media_id text not null, season integer, episode integer, last_played text, title text, unique (db_type, media_id, season, episode))',
-		'CREATE TABLE IF NOT EXISTS progress \
-		(db_type text not null, media_id text not null, season integer, episode integer, resume_point text, curr_time text, \
-		last_played text, resume_id integer, title text, unique (db_type, media_id, season, episode))',
+		PROGRESS_CREATE,
 		'CREATE TABLE IF NOT EXISTS watched_status (db_type text not null, media_id text not null, status text, unique (db_type, media_id))'),
 	'favorites_db': (
 		'CREATE TABLE IF NOT EXISTS favourites (db_type text not null, tmdb_id text not null, title text not null, unique (db_type, tmdb_id))',),
@@ -83,9 +93,7 @@ table_creators = {
 		'CREATE TABLE IF NOT EXISTS trakt_data (id text unique, data text)',
 		'CREATE TABLE IF NOT EXISTS watched \
 		(db_type text not null, media_id text not null, season integer, episode integer, last_played text, title text, unique (db_type, media_id, season, episode))',
-		'CREATE TABLE IF NOT EXISTS progress \
-		(db_type text not null, media_id text not null, season integer, episode integer, resume_point text, curr_time text, \
-		last_played text, resume_id integer, title text, unique (db_type, media_id, season, episode))',
+		PROGRESS_CREATE,
 		'CREATE TABLE IF NOT EXISTS watched_status (db_type text not null, media_id text not null, status text, unique (db_type, media_id))'),
 	'maincache_db': (
 		'CREATE TABLE IF NOT EXISTS maincache (id text unique, data text, expires integer)',),
@@ -152,6 +160,40 @@ def make_databases():
 		dbcon = connect_database(database_name)
 		for command in table_creators[database_name]:
 			dbcon.execute(command)
+	migrate_progress_schema()
+
+def migrate_progress_schema():
+	"""Porta la tabella `progress` allo schema del lotto 133. Gira una volta per sessione.
+
+	Due tabelle, due trattamenti diversi, e la differenza NON e' un dettaglio:
+
+	  trakt_db    e' una copia di Trakt. Si puo' buttare e rifare, ed e' la strada piu' pulita:
+	              nessuna riga vecchia si porta dietro uno stato inventato a posteriori.
+	  watched_db  sono gli indicatori LOCALI: non esiste nessun remoto da cui ricostruirli. Buttarla
+	              distruggerebbe l'avanzamento dell'utente senza possibilita' di recupero, quindi qui
+	              si aggiungono le colonne e basta. Le righe esistenti nascono 'synced', che per un
+	              database senza remoto e' l'unico stato sensato.
+
+	Dopo aver svuotato trakt_db si cancella anche il segnalibro delle attivita': senza, la prima
+	sincronizzazione direbbe 'nessuna modifica' e lascerebbe 'continua a guardare' vuoto fino al
+	primo cambiamento su Trakt. Cancellandolo, il giro successivo riscarica tutto.
+	"""
+	for database_name, ricostruibile in (('trakt_db', True), ('watched_db', False)):
+		try:
+			dbcon = connect_database(database_name)
+			cols = {r[1] for r in dbcon.execute('PRAGMA table_info(progress)')}
+			if not cols or 'sync_state' in cols: continue
+			if ricostruibile:
+				dbcon.execute('DROP TABLE progress')
+				dbcon.execute(PROGRESS_CREATE)
+				dbcon.execute("DELETE FROM trakt_data WHERE id = 'trakt_get_activity'")
+			else:
+				dbcon.execute("ALTER TABLE progress ADD COLUMN sync_state text not null default 'synced'")
+				dbcon.execute('ALTER TABLE progress ADD COLUMN misses integer not null default 0')
+			kodi_utils.logger('Fen Light', 'progress: schema del lotto 133 applicato a %s (%s)'
+					% (database_name, 'tabella rifatta' if ricostruibile else 'colonne aggiunte'))
+		except Exception as e:
+			kodi_utils.logger('Fen Light', 'progress: migrazione di %s FALLITA: %s' % (database_name, e))
 
 def remove_old_databases():
 	try:

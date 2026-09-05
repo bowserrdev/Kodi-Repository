@@ -10,7 +10,7 @@ from caches.main_cache import cache_object
 from caches.lists_cache import lists_cache_object
 from modules import kodi_utils, settings
 from modules.metadata import movie_meta_external_id, tvshow_meta_external_id
-from modules.utils import sort_list, sort_for_article, make_thread_list, get_datetime, timedelta, replace_html_codes, copy2clip, title_key, jsondate_to_datetime as js2date
+from modules.utils import sort_list, sort_for_article, make_thread_list, get_datetime, timedelta, replace_html_codes, copy2clip, title_key, traduci_episodio, jsondate_to_datetime as js2date
 
 # 'requests' e la Session si creano alla PRIMA richiesta, non all'import (lotto 51). Erano a livello
 # di modulo, quindi chiunque importasse trakt_api pagava l'albero di requests (urllib3, certifi, ssl,
@@ -37,7 +37,22 @@ trakt_watched_cache, reset_activity, clear_trakt_list_contents_data = trakt_cach
 restore_activity = trakt_cache.restore_activity
 # Alzato dalle guardie self_mark quando saltano una ricostruzione: dice a trakt_sync_activities che il
 # segnalibro delle attivita' NON puo' avanzare, perche' c'e' del lavoro non fatto. Vedi lotto 58.
-_SYNC_DEFERRED = [False]
+# Le CATEGORIE di attivita' il cui lavoro e' stato rimandato in questo giro ('movies', 'episodes').
+# Era un booleano, e da li' veniva il difetto del lotto 141: `restore_activity(cached)` rimetteva
+# indietro il segnalibro di TUTTE le categorie, quindi il lavoro riuscito su watchlist ed episodi
+# nello stesso giro veniva buttato e rifatto trenta secondi dopo. Un insieme dice QUALE rimandare, e
+# il resto del giro resta buono.
+# Serve anche a chi decide cosa dichiarare: 'rimandato' e 'non so cosa sia cambiato' tornavano
+# entrambi None e non erano distinguibili, cosi' un lavoro NON FATTO faceva ricostruire i widget.
+_SYNC_DEFERRED = set()
+# Qui vivevano PROGRESS_RETRY_PROP e PROGRESS_RETRY_MAX (lotto 132): la riprova quando
+# last_activities diceva 'cambiato' e sync/playback tornava identico. RIMOSSI dal lotto 133.
+# Erano l'ennesima deduzione a tempo su uno stato che non era scritto: e infatti sbagliavano da
+# soli -- 'azzera avanzamento' e' proprio il caso in cui l'attivita' cambia e la tabella no, perche'
+# il lavoro l'abbiamo gia' fatto noi in locale, e la riprova scattava a vuoto su ENTRAMBE le
+# macchine (log del 03/09, 03:29:54 e 03:30:25). Adesso una risposta vecchia non fa danni da sola:
+# la riconciliazione tocca solo cio' che cambia, e una riga `synced` assente dallo snapshot e' una
+# cancellazione qualunque sia stato il motivo dell'attivita'.
 clear_daily_cache = trakt_cache.clear_daily_cache
 clear_trakt_collection_watchlist_data, clear_trakt_hidden_data = trakt_cache.clear_trakt_collection_watchlist_data, trakt_cache.clear_trakt_hidden_data
 # LOTTO 119: qui vivevano anche clear_trakt_recommendations, clear_trakt_list_data e
@@ -834,6 +849,15 @@ TRAKT_SELF_MARK_SECONDS = 45
 def self_mark_recent(cache_media_type=None):
 	"""Vero se la marcatura appena fatta da NOI e' abbastanza recente. Senza tipo: una qualsiasi.
 
+	IL LOTTO 142 L'AVEVA LASCIATA SENZA CHIAMANTI, IL 143 LE HA DATO UN RUOLO NUOVO -- e opposto.
+	Come OROLOGIO serviva a RIMANDARE il lavoro indovinando ("l'ho marcato io da poco, probabilmente
+	non c'e' niente da fare"), ed e' stata tolta tre volte perche' quella era la domanda sbagliata.
+	Come TESTIMONE serve a dire CHI ha fatto la modifica, e risponde a una domanda che nessun conteggio
+	puo' porre: `sync/last_activities` si e' mosso, quindi qualcosa e' cambiato di sicuro; se il conto
+	dice "tutto uguale" i due si contraddicono, e sapere se siamo stati noi decide se quel silenzio e'
+	credibile. Vedi decide_rebuild_episodi.
+	Non decide piu' nulla da sola e non rimanda niente: nel dubbio si verifica, mai si tace.
+
 	Con gli indicatori Trakt, watched_status_mark scrive nello stesso database che le sincronizzazioni
 	qui sotto ricostruiscono (indicators_dict: 1 -> trakt_db). Quindi ogni nostra marcatura fa
 	scattare l'attivita' remota che ci sveglia, e il rebuild integrale ricalcola un dato che in locale
@@ -852,6 +876,310 @@ def self_mark_recent(cache_media_type=None):
 		return (time.time() - stamp) < TRAKT_SELF_MARK_SECONDS
 	except: return False
 
+# -------------------------------------------------------------------------------------------------
+# LOTTO 142 -- il numero certo al posto dell'orologio, anche per gli episodi.
+#
+# `users/me/stats` NON e' paginato, pesa 457 byte e la sua dimensione non dipende da quanto e' grande
+# l'account: restituisce direttamente episodes.watched / episodes.plays / movies.watched /
+# movies.plays. Misurato il 03/09 sull'account vero: 1279 / 1291 / 598 / 614, cioe' esattamente i
+# numeri che il rebuild integrale otteneva scaricando 6 pagine e 121 KB di cronologia.
+#
+# Il dubbio da sciogliere era se quei valori fossero precalcolati e quindi in RITARDO rispetto a
+# sync/last_activities, che e' cio' che ci sveglia: leggerli vecchi significherebbe concludere 'non e'
+# cambiato niente' e perdere il dato per sempre, cioe' il guasto del lotto 88. Misurato con un
+# rilevatore in sola lettura ogni 2 s, mentre la marcatura veniva fatta a mano da Kodi:
+#     58.1s  ATTIVITA ea 18:42:53 -> 19:25:51 | STATS ew 1279 -> 1280, ep 1291 -> 1292
+#     96.8s  ATTIVITA ea 19:25:51 -> 19:26:29 | STATS ew 1280 -> 1279, ep 1292 -> 1291
+# Nello stesso campione in cui si muove l'attivita', stats e' GIA' aggiornato, in entrambe le
+# direzioni, mai indietro. La risoluzione e' 2 s: si puo' affermare che stats non e' in ritardo di
+# PIU' di 2 s, non che sia simultaneo -- ma 2 s stanno molto sotto qualunque intervallo di sondaggio.
+#
+# La riga che conta di piu' e' la seconda: togliendo il 'visto', episodes.watched CALA. Quello e' il
+# segnale che dalla cronologia non si puo' ottenere in alcun modo, perche' una rimozione non aggiunge
+# un play -- ed e' esattamente cio' che costringeva gli episodi al rebuild integrale.
+_STATS_MEMO = [0.0, None]
+_STATS_MEMO_SECONDS = 10
+
+def _stats_trakt():
+	"""I conteggi ufficiali di Trakt in una richiesta sola. None se non e' disponibile.
+
+	Memo cortissimo perche' film ed episodi vengono valutati nello STESSO giro di
+	trakt_sync_activities: senza, la stessa risposta verrebbe chiesta due volte. Il memo viene
+	azzerato esplicitamente all'inizio di ogni giro, cosi' due sondaggi ravvicinati non possono
+	condividere una lettura vecchia -- il TTL qui sotto e' solo la seconda cintura.
+	Un fallimento NON viene memorizzato: si riprova al prossimo giro.
+	"""
+	_ora = time.time()
+	if _STATS_MEMO[1] is not None and (_ora - _STATS_MEMO[0]) < _STATS_MEMO_SECONDS: return _STATS_MEMO[1]
+	try:
+		_raw = call_trakt('users/me/stats', with_auth=True) or {}
+		_ep, _mo = _raw['episodes'], _raw['movies']
+		_out = {'episodi_visti': int(_ep['watched']), 'episodi_play': int(_ep['plays']),
+				'film_visti': int(_mo['watched']), 'film_play': int(_mo['plays'])}
+	except: return None
+	_STATS_MEMO[0], _STATS_MEMO[1] = _ora, _out
+	return _out
+
+def _azzera_memo_stats():
+	_STATS_MEMO[0], _STATS_MEMO[1] = 0.0, None
+
+# La chiave porta la versione, e cambiarla e' il modo di dire "quel che sapevo non vale piu'".
+# Col lotto 145 la mappa cambia, quindi cambiano sia le righe locali sia lo scarto: lo scarto
+# memorizzato (4 sulla stick) coprirebbe ESATTAMENTE le righe perse dalla mappa vecchia, il conto
+# tornerebbe, e non si ricostruirebbe mai -- la tabella resterebbe sbagliata per sempre.
+# Con la chiave nuova _conti_noti() torna vuoto, decide_rebuild_episodi dice 'nessun conteggio
+# memorizzato', e il primo sondaggio fa un rebuild integrale che riscrive tutto con la mappa giusta.
+# _v3 col lotto 149: nella chiave _v2 e' rimasto memorizzato uno scarto di 210 NON spiegato, che
+# nasconde 210 episodi di Dragon Ball Z -- con quel valore il conto torna e non si ricostruisce mai
+# piu'. Cambiare la chiave e' il modo di dire "quel che sapevo era sbagliato".
+_CONTI_KEY = 'fenlight_conti_trakt_v3'
+# ATTENZIONE: qui `trakt_cache` e' il MODULO caches.trakt_cache (vedi l'import in testa), non
+# l'istanza. Lo store chiave/valore e' `trakt_cache.trakt_cache`, lo stesso che tiene il segnalibro
+# delle attivita'. Senza questo alias le due funzioni qui sotto sollevano AttributeError, che il
+# try/except inghiotte: _conti_noti tornerebbe sempre {} e si ricostruirebbe a ogni sondaggio.
+_kv = trakt_cache.trakt_cache
+
+def _conti_noti():
+	try: return _kv.get(_CONTI_KEY) or {}
+	except: return {}
+
+def _registra_conti(**campi):
+	_d = _conti_noti()
+	_d.update(campi)
+	try: _kv.set(_CONTI_KEY, _d)
+	except: pass
+
+def decide_rebuild_episodi(stats, locali, noti, nostra=False):
+	"""Pure. Serve ricostruire gli episodi? Torna (bool, motivo). Nessun orologio, solo numeri.
+
+	Il confronto NON puo' essere `locali == stats['episodi_visti']` come per i film: la nostra
+	tabella perde qualche riga per strada (rimappaggio TVDB non iniettivo piu' chiave unica, misurato
+	il 03/09: 1275 righe locali contro 1279 su Trakt, tutte e quattro su Hunter x Hunter). Un
+	confronto assoluto direbbe 'divergono' a ogni singolo sondaggio, per sempre, e ricostruirebbe
+	SEMPRE -- peggio di quello che facciamo oggi.
+
+	Si confronta quindi con lo SCARTO misurato all'ultimo rebuild integrale, che e' l'unico momento in
+	cui la tabella locale e' per costruzione la verita' completa. Con lo scarto:
+	  - una marcatura NOSTRA muove +1 sia il conto locale sia quello remoto: restano allineati e non
+	    si ricostruisce (e' cio' che prima faceva l'orologio self_mark_recent, indovinando);
+	  - una rimozione altrove muove SOLO il remoto: i due divergono e si ricostruisce;
+	  - una marcatura da un ALTRO dispositivo muove solo il remoto: si prosegue, e a valle e' la via
+	    incrementale a occuparsene, non il rebuild.
+	Se lo scarto cambia (un anime nuovo che collide), si ricostruisce una volta e lo scarto si
+	rimisura da solo: converge sempre, e il caso peggiore e' il comportamento di prima.
+
+	L'ORDINE DEI DUE CONTROLLI NON E' INDIFFERENTE, ed e' costato un rebuild inutile misurato sulla
+	stick il 03/09 alle 22:26. Nella prima stesura i `play` venivano guardati PRIMA del conto:
+
+	    22:26:12  marcatura fatta a mano sulla stick (riga gia' scritta in locale)
+	    22:26:20  si prosegue, i play sono cambiati (1291 memorizzati, 1292 su Trakt)
+	    22:26:23  rebuild completo, motivo: nessun play piu' recente del piu' recente locale
+	    22:26:25  titoli cambiati: 0 | azioni: nessuna        <- cinque secondi e sei pagine per niente
+
+	I conti in quel momento coincidevano perfettamente (1276 locali contro 1280 remoti con scarto 4):
+	l'insieme degli episodi visti era gia' quello giusto. A far proseguire e' stato il canale dei play,
+	che si muove anche quando la modifica e' NOSTRA e gia' applicata -- cioe' il caso piu' frequente in
+	assoluto, ed esattamente la malattia che il vecchio orologio curava.
+
+	Quindi: **se i conti coincidono non si ricostruisce, qualunque cosa facciano i play**. Il conto
+	risponde alla domanda che conta (l'insieme degli episodi visti e' allineato?); i play distinguono
+	solo il PERCHE', e servono a scriverlo nel log.
+	Il prezzo, dichiarato: una RIVISIONE fatta altrove muove i play ma non i visti, quindi da qui non
+	si aggiorna `last_played`. Non e' un dato perso -- il confine della via incrementale resta piu'
+	indietro, e al primo cambiamento vero quella strada trova qualche play in piu' da riscrivere. E'
+	l'errore nella direzione sicura: lavoro in piu' domani, mai un badge sbagliato oggi.
+	"""
+	if stats is None: return (True, 'conteggi Trakt non disponibili')
+	if locali is None: return (True, 'conteggio locale non disponibile')
+	_scarto, _play_noti = noti.get('episodi_scarto'), noti.get('episodi_play')
+	if _scarto is None or _play_noti is None: return (True, 'nessun conteggio memorizzato')
+	_atteso = stats['episodi_visti'] - _scarto
+	if locali != _atteso:
+		return (True, 'il conto NON coincide (%s in locale, attesi %s da %s su Trakt con scarto noto %s)'
+					% (locali, _atteso, stats['episodi_visti'], _scarto))
+	_come = 'il conto coincide (%s in locale, %s su Trakt, scarto noto %s)' % (locali, stats['episodi_visti'], _scarto)
+	# IL CONTO E' UNA SOMMA, E UNA SOMMA PERDE CIO' CHE L'HA COMPOSTA (lotto 143).
+	# `+1 -1` e `0` danno lo stesso numero. Se fra due sondaggi un episodio viene marcato e un ALTRO
+	# smarcato, il conto non si muove: noi salteremmo, e resteremmo con due badge sbagliati -- e per
+	# giunta con il "prossimo episodio" storto su due serie, che e' proprio cio' per cui esiste
+	# 'continua a guardare'. Non e' il caso di uno STESSO elemento marcato e poi tolto: quello torna
+	# davvero a 'mai visto' e il conto dice il vero.
+	#
+	# Ma noi qui ci siamo arrivati perche' `sync/last_activities` ha mosso `episodes.watched_at`:
+	# QUALCOSA e' cambiato di sicuro. Un conto immobile e un'attivita' che si muove si contraddicono, e
+	# la contraddizione e' un indizio -- che finora buttavamo via.
+	# Manca solo saper riconoscere il caso in cui la contraddizione e' normale, ed e' il piu' frequente
+	# di tutti: la marcatura fatta da NOI su questo dispositivo, gia' scritta in locale, per cui i conti
+	# coincidono a ragione. Lo dice il timbro `self_mark`, lasciato in piedi apposta dal lotto 142.
+	# Non e' l'orologio tornato: quello RIMANDAVA il lavoro indovinando. Questo e' lo stesso dato usato
+	# al contrario, come TESTIMONE DI CHI HA FATTO LA MODIFICA, per decidere se il silenzio del conto
+	# e' credibile. Se non siamo stati noi, il silenzio non e' credibile e si guarda davvero.
+	if not nostra:
+		return (True, '%s, ma la modifica NON e' % _come + "'" + ' nostra: un conto immobile puo'
+					+ "'" + ' nascondere due cambiamenti che si compensano -- si verifica')
+	if stats['episodi_play'] != _play_noti:
+		return (False, '%s e la modifica e' % _come + "'" + ' nostra, gia'
+					+ "'" + ' applicata in locale (play %s -> %s)' % (_play_noti, stats['episodi_play']))
+	return (False, '%s e nessun play nuovo' % _come)
+
+def scarto_da_memorizzare(misurato, spiegato, tentativi, limite=5):
+	"""Quale scarto si memorizza dopo un rebuild, e quanti tentativi si sono usati.
+
+	Lo scarto memorizzato entra in `decide_rebuild_episodi` come `atteso = visti_su_trakt - scarto`.
+	Memorizzare uno scarto NON SPIEGATO significa quindi dichiarare "questa differenza e' normale", e
+	da quel momento il conto torna e non si ricostruisce piu': la differenza sparisce dalla vista
+	invece di essere risolta.
+
+	E' successo davvero, sul Mac il 04/09 alle 03:59. Dragon Ball Z segnato visto su Trakt (291
+	episodi), il rebuild ne scrive 81 perche' la cronologia scaricata era incompleta, e i 210 mancanti
+	vengono memorizzati come scarto. Da li' in avanti `1570 - 210 = 1360` coincide con le 1360 righe
+	locali, e i 210 episodi restano invisibili PER SEMPRE.
+
+	La regola: si memorizza solo cio' che si sa spiegare. Finche' resta un residuo, si tiene lo scarto
+	SPIEGATO -- il conto continuera' a non tornare e il giro dopo si ricostruira' ancora, che e'
+	esattamente quello che serve quando la causa e' transitoria (Trakt che sta ancora propagando una
+	marcatura in blocco, una pagina persa).
+
+	Il limite esiste perche' "si ritenta per sempre" non e' gratis: sul Mi Stick un rebuild costa 3-5
+	secondi ogni 30. Dopo `limite` tentativi consecutivi si accetta il valore misurato e lo si dice
+	nel log a chiare lettere -- meglio un difetto dichiarato e rumoroso che un ciclo silenzioso.
+
+	Torna `(scarto, tentativi, esito)` con esito in 'spiegato' / 'ritento' / 'rinuncio'.
+	"""
+	try: tentativi = int(tentativi or 0)
+	except: tentativi = 0
+	# `spiegato is None` = il chiamante non e' in grado di dirlo (per esempio l'allineamento a vuoto):
+	# non e' un residuo, e' un'assenza di informazione, e non deve far scattare nessun tentativo.
+	if spiegato is None: return misurato, 0, 'spiegato'
+	if spiegato == misurato: return misurato, 0, 'spiegato'
+	if tentativi < limite: return spiegato, tentativi + 1, 'ritento'
+	return misurato, tentativi, 'rinuncio'
+
+def cronologia_completa(pagine, page_count, limite):
+	"""La cronologia scaricata e' la fotografia INTERA, o solo un pezzo?
+
+	`pagine` e' {numero_pagina: elenco} -- `None` o assente significa "quella richiesta e' fallita".
+
+	Il difetto che chiude, misurato sul Mac il 04/09 alle 03:59. Le pagine si scaricano in parallelo
+	e si concatenavano alla cieca: `history_extend(get_trakt(params) or [])`. Una pagina che tornava
+	vuota per un guasto di rete spariva senza lasciare traccia, e il rebuild proseguiva con una
+	cronologia PIU' CORTA -- scrivendo una tabella incompleta e trattandola come completa. Nel log:
+	`pagine=7`, quindi su Trakt c'erano almeno 1501 elementi, e ne sono stati assemblati 1373.
+	Poi 210 episodi mancanti sono stati memorizzati come "scarto", cioe' benedetti.
+
+	La verifica non costa una richiesta in piu': Trakt impagina a `limite` fisso, quindi TUTTE le
+	pagine tranne l'ultima devono avere esattamente `limite` elementi. Una pagina corta o assente si
+	riconosce senza sapere quanti elementi ci fossero in totale.
+
+	Torna `(completa, motivo)`. Su `False` il chiamante NON deve scrivere: rimanda, e lascia intatta
+	la tabella locale. E' la stessa regola del lotto 88 -- una richiesta fallita non e' una risposta --
+	applicata a una risposta PARZIALE, che e' il caso piu' insidioso perche' sembra valida.
+	"""
+	try: page_count = int(page_count)
+	except: return False, 'numero di pagine illeggibile'
+	if page_count < 1: return False, 'nessuna pagina'
+	mancanti, corte = [], []
+	for numero in range(1, page_count + 1):
+		elenco = (pagine or {}).get(numero)
+		if elenco is None:
+			mancanti.append(numero)
+			continue
+		# L'ultima pagina e' l'unica che puo' essere piu' corta: e' il resto della divisione.
+		if numero < page_count and len(elenco) != limite: corte.append((numero, len(elenco)))
+	if mancanti: return False, 'pagine mancanti: %s' % mancanti
+	if corte: return False, 'pagine corte (attesi %s elementi): %s' % (limite, corte)
+	if page_count > 1 and not (pagine or {}).get(page_count): return False, 'ultima pagina vuota'
+	return True, 'tutte le %s pagine intere' % page_count
+
+def serve_riallineamento(noti):
+	"""Il conto locale degli episodi non e' mai stato verificato con la mappa in uso: si ricostruisce.
+
+	`trakt_indicators_tv` viene chiamata SOLO quando `last_activities` dice che
+	`episodes.watched_at` si e' mosso, ed e' giusto: senza attivita' non c'e' niente da
+	sincronizzare. Ma quando cambia il RIMAPPAGGIO -- e col lotto 145 e' cambiato -- la tabella
+	locale e' sbagliata **senza che su Trakt sia successo niente**, e nessuna attivita' verra' mai a
+	dircelo. Misurato sul Mac il 04/09: mappa nuova e corretta in cache, e le righe di Hunter x
+	Hunter ancora quelle della mappa vecchia -- stagione 2 numerata `1,2,3,4,17..40,45,67..78,99..136`
+	e stagione 3 per niente tradotta, quindi senza badge. La correzione era pronta e aspettava un
+	evento scollegato.
+
+	`_conti_noti()` vuoto vuol dire esattamente "non ho memoria di un allineamento fatto con QUESTA
+	versione dei conti": la chiave porta la versione, e invalidarla e' il modo di dichiarare che quel
+	che sapevamo non vale piu'. La condizione e' la stessa che dentro `decide_rebuild_episodi` porta a
+	'nessun conteggio memorizzato', e le due devono restare gemelle: se una dicesse di ricostruire e
+	l'altra di no, si tornerebbe ad aspettare.
+
+	Non e' un ciclo: un rebuild riuscito chiama `_registra_conti`, e da li' in poi torna False.
+	"""
+	if not isinstance(noti, dict): return True
+	return noti.get('episodi_scarto') is None or noti.get('episodi_play') is None
+
+def _misura_scarto_episodi(stats, quando, spiegato=None):
+	"""Rimisura lo scarto fra il conto locale e quello di Trakt. Va chiamata SOLO dopo un allineamento
+	integrale, dove la tabella locale e' per costruzione la verita' completa.
+
+	Fino al lotto 145 lo scarto era un numero misurato e NON spiegato: valeva 4 sulla stick e 0 sul
+	Mac, sullo stesso account nello stesso momento, perche' dipendeva dallo stato della mappa in cache
+	su ciascun dispositivo. Erano righe che il rimappaggio posizionale faceva collidere sulla chiave
+	unica (db_type, media_id, season, episode), dove INSERT OR REPLACE tiene solo l'ultimo.
+	Adesso la mappa nasce dalla giuntura per identita' ed e' iniettiva per costruzione, quindi quelle
+	collisioni non esistono piu'. Cio' che resta e' dichiarato: gli episodi che su Trakt esistono e da
+	noi no (Detective Conan (1,1207..1210), One Piece (15,590) -- 6 su 5962 nel corpus misurato).
+	Il parametro `spiegato` porta proprio quel numero, contato dalla mappa: se coincide con lo scarto
+	misurato, il conto e' compreso fino in fondo; se non coincide, la differenza e' l'unica cosa che
+	non sappiamo, ed e' scritta nel log.
+
+	`stats` e' la lettura fatta all'INIZIO del giro, non una nuova: se nel frattempo qualcosa si e'
+	mosso, al prossimo sondaggio i play non combaceranno e si ricostruira' una volta di troppo. E' il
+	verso giusto dell'errore -- un rebuild in piu', mai un cambiamento perso.
+	"""
+	if stats is None: return
+	_dopo = trakt_watched_cache.watched_episode_count()
+	if _dopo is None: return
+	_misurato = stats['episodi_visti'] - _dopo
+	_scarto, _tentativi, _esito = scarto_da_memorizzare(_misurato, spiegato, _conti_noti().get('episodi_tentativi'))
+	_registra_conti(episodi_play=stats['episodi_play'], episodi_scarto=_scarto, episodi_tentativi=_tentativi)
+	# LO SCARTO MISURATO CONTRO QUELLO SPIEGATO (lotto 145). `spiegato` e' il numero di episodi che
+	# la mappa ha dichiarato senza corrispondenza -- calcolato PRIMA di scrivere, non dedotto dopo.
+	# Si continua a memorizzare quello MISURATO, perche' e' l'unico che garantisce la convergenza del
+	# confronto anche se ci fosse ancora una perdita che non conosciamo. Ma se i due divergono, la
+	# differenza e' esattamente cio' che non sappiamo spiegare, ed e' il dato che serve alla
+	# riparazione mirata: da qui in avanti "il conto non torna" smette di essere ambiguo.
+	# UNA riga sola, e dice sempre la stessa cosa: quanto manca e quanto di quel manco sappiamo
+	# spiegare. Prima ce n'erano due, e dal lotto 145 si contraddicevano: la seconda chiamava lo
+	# scarto "righe perse dal rimappaggio, da correggere", che era vero finche' la mappa era
+	# posizionale e non lo e' piu'. Uno scarto spiegato non e' un difetto: sono gli episodi che su
+	# Trakt esistono e da noi no, e sono dichiarati.
+	try:
+		_base = 'watched episodes: scarto locale/Trakt = %s (%s in locale, %s su Trakt) %s' \
+				% (_misurato, _dopo, stats['episodi_visti'], quando)
+		if _esito == 'spiegato':
+			if spiegato: logger('FenLight Trakt', '%s -- tutto spiegato dalla mappa (episodi che Trakt ha e noi no)' % _base)
+			else: logger('FenLight Trakt', _base)
+		elif _esito == 'ritento':
+			logger('FenLight Trakt', '%s -- la mappa ne spiega %s, restano %s SENZA spiegazione: memorizzo %s e riprovo (tentativo %s)'
+									% (_base, spiegato, _misurato - spiegato, spiegato, _tentativi))
+		else:
+			logger('FenLight Trakt', '%s -- la mappa ne spiega %s, restano %s SENZA spiegazione dopo %s tentativi: ACCETTO il valore misurato. Da qui il conto tornera e questi %s episodi non verranno piu cercati.'
+									% (_base, spiegato, _misurato - spiegato, _tentativi, _misurato - spiegato))
+	except: pass
+
+def _conta_film_su_trakt():
+	"""Quanti film Trakt considera visti. Torna None se non si sa: mai zero.
+
+	Dal lotto 142 il numero arriva da `users/me/stats`, che nello stesso giro serve anche agli
+	episodi: una richiesta invece di due. Verificato che i due valori coincidono (598 e 598).
+	Resta come riserva la sonda storica: `sync/watched/movies` con `limit=1`, dove l'intestazione
+	X-Pagination-Page-Count vale esattamente il numero di film visti perche' ogni pagina ne contiene
+	uno. Il lato locale, `watched_movie_count()`, e' DERIVATO dai dati, non un contatore tenuto a mano.
+	"""
+	_s = _stats_trakt()
+	if _s is not None: return _s['film_visti']
+	try:
+		_probe = call_trakt('sync/watched/movies', params={'limit': 1}, with_auth=True, pagination=True, page_no=1)
+		return int(_probe[1]) if _probe else None
+	except: return None
+
 def trakt_indicators_movies():
 	# I film sono stati fino al lotto 107 l'unico percorso senza via incrementale: nessun confronto con
 	# la cronologia, solo il rebuild integrale a ogni cambio di attivita'. Nel log della stick del
@@ -859,9 +1187,6 @@ def trakt_indicators_movies():
 	# 0 scartati' -- cioe' per non cambiare una riga -- e per giunta mentre la stessa CPU stava
 	# costruendo la lista stagioni. Il rebuild resta qui sotto come strada di riserva, e serve ancora:
 	# e' l'unica che si accorge delle RIMOZIONI.
-	if self_mark_recent('movie'):
-		_SYNC_DEFERRED[0] = True
-		return logger('FenLight Trakt', 'watched movies: rebuild RIMANDATO, la modifica sembra nostra -- segnalibro attivita' + "'" + ' NON avanzato')
 	# VIA INCREMENTALE (lotto 107), gemella di quella che le serie hanno gia' in trakt_indicators_tv.
 	# La cronologia arriva dal piu' recente al piu' vecchio: tutto cio' che sta sopra il play piu'
 	# recente gia' in locale e' esattamente cio' che e' cambiato. Se il confine cade DENTRO la prima
@@ -904,11 +1229,7 @@ def trakt_indicators_movies():
 				# l'intestazione X-Pagination-Page-Count vale esattamente il numero di film visti.
 				# Se i due conti non coincidono, o se la richiesta non riesce, si passa dal rebuild:
 				# il caso peggiore resta il comportamento di prima, mai un dato sbagliato.
-				_remote_count = None
-				try:
-					_probe = call_trakt('sync/watched/movies', params={'limit': 1}, with_auth=True, pagination=True, page_no=1)
-					if _probe: _remote_count = int(_probe[1])
-				except: _remote_count = None
+				_remote_count = _conta_film_su_trakt()
 				if _remote_count is not None:
 					_changed = trakt_watched_cache.add_movie_watched(_rows)
 					_local_count = trakt_watched_cache.watched_movie_count()
@@ -918,6 +1239,27 @@ def trakt_indicators_movies():
 					logger('FenLight Trakt', 'watched movies: via incrementale INSUFFICIENTE, %s in locale contro %s su Trakt -- si ricostruisce' % (_local_count, _remote_count))
 				else:
 					logger('FenLight Trakt', 'watched movies: conto remoto non disponibile, si ricostruisce per sicurezza')
+		elif _last_synced and not _new_plays:
+			# NESSUN PLAY NUOVO. Due situazioni diverse, e fino al lotto 141 le separava un OROLOGIO
+			# (`self_mark_recent('movie')`), cioe' la domanda sbagliata -- 'ho marcato di recente?'
+			# invece di 'e' gia' applicato in locale?':
+			#   - non e' cambiato niente PER NOI. Tipicamente una marcatura NOSTRA: watched_status l'ha
+			#     gia' scritta in locale, quindi il play piu' recente in tabella E' la marcatura stessa
+			#     e nessun play remoto risulta piu' recente;
+			#   - qualcosa e' stato TOLTO dai visti altrove. Le rimozioni non lasciano traccia nella
+			#     cronologia -- togliere un film non aggiunge un play -- quindi da qui sono invisibili.
+			# Il conto le distingue senza orologi, ed e' esatto in entrambe le direzioni: una marcatura
+			# nostra muove di +1 SIA il conto locale SIA quello remoto, quindi restano uguali; una
+			# rimozione altrove muove solo quello remoto, e i due divergono.
+			# Costo: una richiesta da un elemento invece di sei pagine e ~4 s di rete e CPU sulla stick.
+			# Se il conto non e' disponibile si ricostruisce, come prima: mai un dato sbagliato.
+			_remote_count = _conta_film_su_trakt()
+			_local_count = trakt_watched_cache.watched_movie_count()
+			if _remote_count is not None and _local_count == _remote_count:
+				logger('FenLight Trakt', 'watched movies: nessun play nuovo e il conto coincide (%s visti): niente da ricostruire' % _local_count)
+				return set()
+			logger('FenLight Trakt', 'watched movies: nessun play nuovo ma il conto NON coincide (%s in locale contro %s su Trakt): si ricostruisce'
+					% (_local_count, _remote_count if _remote_count is not None else '?'))
 		try:
 			if not _last_synced: _why = 'nessuna cronologia locale'
 			elif not _new_plays: _why = 'nessun play piu' + "'" + ' recente del piu' + "'" + ' recente locale (rimozioni?)'
@@ -953,7 +1295,7 @@ def trakt_indicators_movies():
 		# cambiamento non viene piu' richiesto MAI PIU'. Misurato il 25/08: cache dei film visti ferma
 		# all'8 agosto mentre Trakt dichiarava un'attivita' del 25, e 17 'No Changes Needed' di fila.
 		# Un guasto momentaneo di rete diventava una perdita permanente.
-		_SYNC_DEFERRED[0] = True
+		_SYNC_DEFERRED.add('movies')
 		logger('FenLight Trakt', 'watched movies: richiesta FALLITA, cache intatta e segnalibro NON avanzato')
 		return
 	# Vuoto CERTO (HTTP 200 con zero elementi). Sono due situazioni diverse e la cache locale le separa:
@@ -987,6 +1329,25 @@ def trakt_indicators_tv():
 	# Trakt no longer returns the seasons/episodes breakdown in sync/watched/shows, so the watched episodes
 	# are rebuilt from the play history (250 per page). The newest page is fetched first: when it only holds
 	# plays that are newer than what is already stored, those are appended and the rebuild is skipped.
+	# GUARDIANO (lotto 142). Prima di toccare la cronologia -- la cui PRIMA pagina da sola pesa 121 KB e
+	# quasi un secondo, e il rebuild integrale ne scarica sei -- si chiede a Trakt il numero certo, che
+	# costa 457 byte e non cresce con l'account. Se combacia con quello che ci aspettiamo non c'e'
+	# NIENTE da scaricare: e' qui che sparisce la proporzionalita' fra il costo del controllo e la
+	# dimensione dello storico. La decisione sta in decide_rebuild_episodi, che e' pura e provata.
+	_stats = _stats_trakt()
+	_locali_prima = trakt_watched_cache.watched_episode_count()
+	_ricostruire, _motivo = decide_rebuild_episodi(_stats, _locali_prima, _conti_noti(), self_mark_recent('tvshow'))
+	if not _ricostruire:
+		# I play si registrano ANCHE quando non si ricostruisce: il conto ci dice che l'insieme dei
+		# visti e' gia' allineato, quindi il valore nuovo e' quello buono da cui ripartire. Lo SCARTO
+		# invece non si tocca mai qui -- si misura solo dopo un rebuild integrale.
+		if _stats is not None: _registra_conti(episodi_play=_stats['episodi_play'])
+		# set() vuoto, non None: per declare_change None significa 'non so cosa e' cambiato' e fa
+		# scattare un refresh GLOBALE dell'interfaccia, mentre qui sappiamo con certezza che non e'
+		# cambiato niente.
+		logger('FenLight Trakt', 'watched episodes: %s -- niente da scaricare' % _motivo)
+		return set()
+	logger('FenLight Trakt', 'watched episodes: si prosegue, %s' % _motivo)
 	remap_cache = {}
 	def _episode_remap(tmdb_id):
 		# looked up once per show, not once per play
@@ -995,33 +1356,46 @@ def trakt_indicators_tv():
 			from modules.metadata import tvshow_meta as _tm
 			from modules.settings import mpaa_region as _mr
 			_meta = _tm('tmdb_id', tmdb_id, tmdb_api_key(), _mr(), get_datetime())
-			remap_cache[tmdb_id] = _meta.get('tmdb_to_tvdb_ep', {}) if _meta else {}
-		except: remap_cache[tmdb_id] = {}
+			# Due cose, non una (lotto 145): la mappa E gli esclusi. Un episodio che su Trakt esiste e
+			# da noi no NON ha una riga locale possibile, e prima ne otteneva comunque una per
+			# identita' -- che poteva cadere sulla riga di un altro episodio e farlo sparire per via
+			# di INSERT OR REPLACE sulla chiave unica.
+			remap_cache[tmdb_id] = ((_meta.get('tmdb_to_tvdb_ep') or {}),
+									(_meta.get('ep_esclusi_trakt') or set())) if _meta else ({}, set())
+		except: remap_cache[tmdb_id] = ({}, set())
 		return remap_cache[tmdb_id]
 	def _make_row(item, tmdb_id, title, ep_remap):
+		# Torna None quando l'episodio non ha corrispondenza da noi: chi chiama DEVE saltare.
+		# La cardinalita' di quei salti e' lo scarto -- vedi _misura_scarto_episodi.
 		season_no, episode_no = item['episode']['season'], item['episode']['number']
-		tvdb_s, tvdb_e = ep_remap.get((season_no, episode_no), (season_no, episode_no))
-		return ('episode', tmdb_id, tvdb_s, tvdb_e, item['watched_at'], title)
+		_coppia = traduci_episodio(ep_remap[0], ep_remap[1], season_no, episode_no)
+		if _coppia is None: return None
+		return ('episode', tmdb_id, _coppia[0], _coppia[1], item['watched_at'], title)
 	def _process_show(item):
 		show = item['show']
 		trakt_id = show['ids'].get('trakt')
 		tmdb_id = get_trakt_tvshow_id(show['ids'])
 		if not tmdb_id or not trakt_id: return
 		shows_info[trakt_id] = (tmdb_id, show['title'], item.get('reset_at') or None, _episode_remap(tmdb_id))
+	# Le pagine si raccolgono PER NUMERO e non si concatenano alla cieca (lotto 149): un elenco
+	# concatenato non ricorda piu' quali pezzi lo compongono, quindi una pagina persa e' invisibile.
+	pagine_cronologia = {}
 	def _get_history_page(page_no):
 		params = {'path': 'sync/history/episodes%s', 'params': {'limit': history_page_limit}, 'with_auth': True, 'pagination': True, 'page_no': page_no}
-		try: history_extend(get_trakt(params) or [])
-		except: logger('FenLight Trakt', 'watched history page %s FAILED' % page_no)
+		try: pagine_cronologia[page_no] = get_trakt(params)
+		except:
+			pagine_cronologia[page_no] = None
+			logger('FenLight Trakt', 'watched history page %s FAILED' % page_no)
 	try: first_page = call_trakt('sync/history/episodes', params={'limit': history_page_limit}, with_auth=True, pagination=True, page_no=1)
 	except: first_page = None
 	if not first_page:
 		# Vedi la nota gemella in trakt_indicators_movies (lotto 88): senza rimandare il segnalibro,
 		# questo guasto momentaneo diventa una perdita permanente. Nel log zb questa riga compare due
 		# volte, ed e' li' che gli episodi visti hanno smesso di aggiornarsi.
-		_SYNC_DEFERRED[0] = True
+		_SYNC_DEFERRED.add('episodes')
 		return logger('FenLight Trakt', 'watched history request FAILED - episodi intatti, segnalibro NON avanzato')
 	history = list(first_page[0] or [])
-	history_extend = history.extend
+	pagine_cronologia[1] = history
 	try: page_count = int(first_page[1])
 	except: page_count = 1
 	# Trakt returns the history newest first, so anything above the newest stored play is what changed.
@@ -1033,25 +1407,31 @@ def trakt_indicators_tv():
 			try:
 				tmdb_id = get_trakt_tvshow_id(item['show']['ids'])
 				if not tmdb_id: continue
-				insert_list.append(_make_row(item, tmdb_id, item['show']['title'], _episode_remap(tmdb_id)))
+				_riga = _make_row(item, tmdb_id, item['show']['title'], _episode_remap(tmdb_id))
+				if _riga is not None: insert_list.append(_riga)
 			except: pass
 		if insert_list:
 			_changed = trakt_watched_cache.add_tvshow_watched(insert_list)
+			# Via incrementale: si aggiornano SOLO i play, mai lo scarto. Lo scarto si rimisura
+			# esclusivamente dopo un rebuild integrale (vedi in fondo), perche' e' l'unico momento in
+			# cui la tabella locale e' per costruzione completa. Rimisurarlo qui, dove la tabella e'
+			# fresca solo per le righe appena scritte, permetterebbe a una rimozione avvenuta nello
+			# stesso istante di finire ASSORBITA nello scarto e non essere piu' notata.
+			if _stats is not None: _registra_conti(episodi_play=_stats['episodi_play'])
 			logger('FenLight Trakt', 'watched episodes sync: %s new plays added, no rebuild needed' % len(insert_list))
 			return _changed
-	# Con gli indicatori Trakt, watched_status_mark scrive nello STESSO database che
-	# last_watched_episode_date() legge (indicators_dict: 1 -> trakt_db). Quindi dopo una nostra
-	# marcatura il piu' recente locale E' gia' la marcatura stessa, nessun play remoto risulta piu'
-	# recente, new_plays esce vuota e si finisce sul rebuild completo. Log della stick del 22/08:
-	# 'ultimo locale=2026-08-22T11:12:54.000Z', cioe' la riga scritta due secondi dopo la chiusura
-	# del player. Ogni marcatura si autoinnescava un rebuild da 6 pagine.
-	# Il timbro dice che il cambiamento e' nostro ed e' gia' applicato in locale: non c'e' niente da
-	# ricostruire. Vale anche per le rimozioni, perche' anche quelle le scrive gia' il percorso locale.
-	# Finestra stretta: se scade, si ricostruisce come prima. Le modifiche fatte da un ALTRO
-	# dispositivo portano play piu' recenti, quindi passano dalla via incrementale qui sopra.
-	if not new_plays and last_synced and self_mark_recent('tvshow'):
-		_SYNC_DEFERRED[0] = True
-		return logger('FenLight Trakt', 'watched episodes: rebuild RIMANDATO, la modifica sembra nostra -- segnalibro attivita' + "'" + ' NON avanzato')
+	# QUI NON C'E' PIU' L'OROLOGIO self_mark_recent('tvshow'), ed e' il punto del lotto 142.
+	# Diceva: 'ho marcato qualcosa da meno di 45 secondi, quindi la modifica e' probabilmente mia ed e'
+	# gia' applicata in locale, rimando il rebuild'. Era una SCOMMESSA, resa necessaria dal fatto che
+	# per gli episodi non esisteva un numero confrontabile: watched_status_mark scrive nello stesso
+	# database che last_watched_episode_date() legge, quindi dopo ogni nostra marcatura new_plays esce
+	# vuota e si cadeva sul rebuild integrale -- ogni marcatura si autoinnescava 6 pagine.
+	# La scommessa a volte pagava (stick 20:42:36 del 03/09: rimanda, e al giro dopo trova il play
+	# dell'altro dispositivo, rebuild evitato) e a volte no (Mac 20:42:53: rimanda per 63 secondi e poi
+	# paga comunque il rebuild, che riporta 'titoli cambiati: 0').
+	# Adesso la domanda giusta viene posta PRIMA, in cima alla funzione, e ha una risposta certa invece
+	# di una probabilita': se il conto combacia non si scarica niente, se non combacia si ricostruisce
+	# subito, senza aspettare 45 secondi. Vedi decide_rebuild_episodi.
 	# full rebuild: no stored history, plays were removed, or more new plays than a single page holds
 	# PERF: il rebuild completo scarica 6 pagine di cronologia e ricostruisce 1274 episodi. Sul Mi
 	# Stick costa 2-6 s di rete e CPU, e nel log del 22/08 e' partito a OGNI marcatura mentre la via
@@ -1073,17 +1453,33 @@ def trakt_indicators_tv():
 		# Prima di questa guardia un guasto su sync/watched/shows cadeva su set_bulk_tvshow_watched([]),
 		# cioe' DELETE di tutti gli episodi visti: un errore di rete cancellava la cronologia delle serie.
 		# E' la stessa distinzione della gemella sui film, che qui mancava del tutto.
-		_SYNC_DEFERRED[0] = True
+		_SYNC_DEFERRED.add('episodes')
 		return logger('FenLight Trakt', 'watched shows: richiesta FALLITA, episodi intatti e segnalibro NON avanzato')
 	if not shows:
 		# Come per i film: riuscita con zero elementi e' un dato, non un sospetto. Il guasto e' il ramo
 		# None qui sopra, che prima non esisteva affatto e lasciava che un errore di rete cadesse qui
 		# dentro cancellando l'intera cronologia degli episodi.
 		logger('FenLight Trakt', 'watched shows: Trakt non ha serie viste, episodi allineati a vuoto (ne conteneva %s)' % trakt_watched_cache.watched_episode_count())
-		return trakt_watched_cache.set_bulk_tvshow_watched([])
+		_esito = trakt_watched_cache.set_bulk_tvshow_watched([])
+		# Anche l'allineamento a vuoto e' un allineamento riuscito: senza rimisurare qui, lo scarto
+		# resterebbe quello di una tabella piena e si ricostruirebbe a ogni sondaggio.
+		_misura_scarto_episodi(_stats, 'dopo l' + "'" + 'allineamento a vuoto')
+		return _esito
 	make_thread_list(_process_show, shows)
 	if page_count > 1: make_thread_list(_get_history_page, range(2, page_count + 1))
+	# UNA CRONOLOGIA PARZIALE NON E' UNA FOTOGRAFIA (lotto 149). Prima di qui si scriveva comunque, e
+	# una pagina persa diventava una tabella locale piu' corta -- poi benedetta dallo scarto. Adesso
+	# si rimanda: la tabella resta quella di prima, il segnalibro non avanza, e al giro dopo si rifa'.
+	_completa, _perche = cronologia_completa(pagine_cronologia, page_count, history_page_limit)
+	if not _completa:
+		_SYNC_DEFERRED.add('episodes')
+		return logger('FenLight Trakt', 'cronologia INCOMPLETA (%s) - episodi intatti, segnalibro NON avanzato' % _perche)
+	history = [voce for numero in range(1, page_count + 1) for voce in pagine_cronologia[numero]]
 	watched_episodes = {}
+	# Gli episodi VISTI su Trakt per cui non esiste una riga locale possibile. E' lo scarto, contato
+	# mentre si costruisce invece che dedotto dopo. Insieme, non lista: la cronologia ha piu' play
+	# per lo stesso episodio, e uno che manca manca una volta sola.
+	_saltati = set()
 	for item in history:
 		try:
 			info = shows_info.get(item['show']['ids'].get('trakt'))
@@ -1093,12 +1489,52 @@ def trakt_indicators_tv():
 			if reset_at and watched_at < reset_at: continue
 			key = (item['episode']['season'], item['episode']['number'], tmdb_id)
 			if key in watched_episodes and watched_episodes[key][4] >= watched_at: continue
-			watched_episodes[key] = _make_row(item, tmdb_id, title, ep_remap)
+			_riga = _make_row(item, tmdb_id, title, ep_remap)
+			if _riga is None:
+				_saltati.add(key)
+				continue
+			watched_episodes[key] = _riga
 		except: pass
 	insert_list = list(watched_episodes.values())
 	logger('FenLight Trakt', 'watched episodes rebuild: %s shows, %s history plays over %s pages, %s episodes' \
 			% (len(shows), len(history), page_count, len(insert_list)))
-	return trakt_watched_cache.set_bulk_tvshow_watched(insert_list)
+	_esito = trakt_watched_cache.set_bulk_tvshow_watched(insert_list)
+	_misura_scarto_episodi(_stats, 'dopo il rebuild integrale', spiegato=len(_saltati))
+	return _esito
+
+def trakt_episode_index(tmdb_id):
+	"""Gli episodi di una serie su Trakt come `(stagione, numero, id_tvdb, data)`.
+
+	E' il DIZIONARIO della giuntura del lotto 145, non la sua destinazione. Skyhook conosce solo
+	l'id TVDB; dal lato TMDb non esiste una chiamata che dia l'id TVDB di ogni episodio (c'e' solo
+	/tv/<id>/season/<n>/episode/<m>/external_ids, cioe' una richiesta PER EPISODIO: 1246 per
+	Detective Conan). `seasons?extended=episodes,full` porta invece `ids.tvdb` e `ids.tmdb` sulla
+	STESSA riga, in una risposta sola -- 26 KB per Hunter x Hunter.
+
+	Che la numerazione di Trakt sia quella di TMDb non e' un'assunzione: e' stato misurato il 04/09 su
+	18 serie e 4747 episodi, zero divergenze, zero episodi Trakt senza id TMDb. Quindi la mappa che
+	esce di qui e' insieme TVDB<->Trakt e TVDB<->TMDb.
+
+	Torna None se non si e' potuto sapere -- e None NON e' una lista vuota: chi chiama deve rinunciare
+	al rimappaggio, non concludere che la serie non ha episodi. E' la stessa distinzione del lotto 88.
+
+	La chiamata si paga una volta per serie, sul ramo di rete di tvshow_meta: la cache della meta e'
+	la sua cache.
+	"""
+	try:
+		trovate = call_trakt('search/tmdb/%s' % tmdb_id, params={'type': 'show'}, with_auth=False)
+		if not trovate: return None
+		slug = trovate[0]['show']['ids'].get('slug') or trovate[0]['show']['ids'].get('trakt')
+		if not slug: return None
+		stagioni = call_trakt('shows/%s/seasons' % slug, params={'extended': 'episodes,full'}, with_auth=False)
+		if not stagioni: return None
+		fuori = []
+		for stagione in stagioni:
+			for episodio in stagione.get('episodes') or ():
+				fuori.append((stagione.get('number'), episodio.get('number'),
+								(episodio.get('ids') or {}).get('tvdb'), episodio.get('first_aired')))
+		return fuori or None
+	except: return None
 
 def trakt_playback_progress():
 	params = {'path': 'sync/playback%s', 'with_auth': True, 'pagination': False}
@@ -1149,8 +1585,9 @@ def trakt_progress_tv(progress_info):
 			from modules.metadata import tvshow_meta as _tm
 			from modules.settings import mpaa_region as _mr
 			_meta = _tm('tmdb_id', tmdb_id, tmdb_api_key(), _mr(), get_datetime())
-			_ep_remap = _meta.get('tmdb_to_tvdb_ep', {}) if _meta else {}
-		except: _ep_remap = {}
+			_ep_remap = ((_meta.get('tmdb_to_tvdb_ep') or {}),
+							(_meta.get('ep_esclusi_trakt') or set())) if _meta else ({}, set())
+		except: _ep_remap = ({}, set())
 		shows_info[show['ids'].get('trakt')] = (tmdb_id, _ep_remap)
 	def _process():
 		for p_item in progress_items:
@@ -1160,7 +1597,9 @@ def trakt_progress_tv(progress_info):
 				if not info: continue
 				tmdb_id, ep_remap = info
 				season, ep_num = p_item['episode']['season'], p_item['episode']['number']
-				tvdb_s, tvdb_e = ep_remap.get((season, ep_num), (season, ep_num))
+				_coppia = traduci_episodio(ep_remap[0], ep_remap[1], season, ep_num)
+				if _coppia is None: continue
+				tvdb_s, tvdb_e = _coppia
 				if tvdb_s > 0: yield ('episode', str(tmdb_id), tvdb_s, tvdb_e, str(round(p_item['progress'], 1)),
 									0, p_item['paused_at'], p_item['id'], p_item['show']['title'])
 			except: pass
@@ -1293,6 +1732,87 @@ def _publish_changed(changed_ids, changed_actions, changed_unknown):
 						_actions or 'nessuna'))
 	except: pass
 
+# Quante riparazioni remote per giro. Il tetto esiste perche' un guasto prolungato di rete puo'
+# accumularne parecchie, e ripartire con una raffica di chiamate sarebbe il modo peggiore di
+# rientrare: si smaltiscono poche per volta, e quello che resta torna al giro dopo.
+REMOTE_REPAIRS_PER_CYCLE = 5
+
+def _drain_remote_repairs():
+	"""Ripete le chiamate a Trakt che la riconciliazione ha scoperto mancanti (lotto 133).
+
+	Due code, due guasti diversi, entrambi silenziosi fino a ieri:
+	  PENDING_REMOTE_DELETES  l'utente ha azzerato l'avanzamento, la DELETE remota non e' passata e
+	                          Trakt elenca ancora il segnalibro. Senza questa ripetizione la riga
+	                          resterebbe `pending_delete` per sempre e Trakt non lo saprebbe mai.
+	  PENDING_REMOTE_PUSHES   l'utente ha messo in pausa, la spinta non e' mai stata confermata
+	                          (rete assente, token, eccezione ingoiata). La riga resta visibile in
+	                          locale -- non si cancella la pausa di qualcuno per un guasto di rete --
+	                          e va rispinta finche' non passa.
+	"""
+	deletes = [trakt_cache.PENDING_REMOTE_DELETES.pop(0) for _ in range(min(len(trakt_cache.PENDING_REMOTE_DELETES), REMOTE_REPAIRS_PER_CYCLE))]
+	pushes = [trakt_cache.PENDING_REMOTE_PUSHES.pop(0) for _ in range(min(len(trakt_cache.PENDING_REMOTE_PUSHES), REMOTE_REPAIRS_PER_CYCLE))]
+	if not deletes and not pushes: return
+	from threading import Thread
+	from caches.base_cache import connect_database
+	def _work():
+		for db_type, key, resume_id in deletes:
+			try:
+				trakt_progress('clear_progress', db_type, key[0], 0, key[1], key[2], resume_id)
+				logger('Fen Light', 'cancellazione remota ripetuta per %s %s' % (db_type, key[0]))
+			except Exception as e: logger('Fen Light', 'cancellazione remota di %s FALLITA di nuovo: %s' % (key[0], e))
+		for db_type, key in pushes:
+			try:
+				row = connect_database('trakt_db').execute(
+					'SELECT resume_point FROM progress WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?',
+					(db_type, key[0], key[1], key[2])).fetchone()
+				if not row: continue
+				resume_id = trakt_progress('set_progress', db_type, key[0], float(row[0]), key[1], key[2]) or 0
+				if resume_id:
+					connect_database('trakt_db').execute(
+						'UPDATE progress SET resume_id = ? WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?',
+						(resume_id, db_type, key[0], key[1], key[2]))
+					logger('Fen Light', 'spinta ripetuta e confermata per %s %s' % (db_type, key[0]))
+			except Exception as e: logger('Fen Light', 'spinta ripetuta di %s FALLITA: %s' % (key[0], e))
+	Thread(target=_work).start()
+
+def declare_change(ids, rimandato):
+	"""Cosa dichiarare dopo un costruttore di indicatori. Torna (azione, ids, ignoto).
+
+	Pura, e separata proprio perche' la stessa decisione era scritta due volte -- film ed episodi --
+	e sbagliata in entrambe (lotto 141). Tre esiti, non due:
+
+	  ids = None, RIMANDATO   non e' stato applicato niente e il segnalibro torna indietro: si tace.
+	                          Il giro dopo si rifa' e allora si dichiarera' cio' che e' cambiato.
+	  ids = None, non rimandato  fallito e basta: lo stato locale e' incerto, il globale e' l'unica rete.
+	  ids = insieme VUOTO     il lavoro e' stato fatto e non e' cambiato nulla: niente da ridisegnare.
+	  ids = insieme pieno     si dichiarano azione e id.
+
+	Prima, `None` finiva sempre su 'ricostruisci tutto' e l'azione si dichiarava comunque: una
+	ricostruzione globale per un lavoro che non era stato fatto. `None` puo' voler dire una cosa sola
+	-- niente applicato -- perche' tutti i ritorni anticipati dei costruttori escono PRIMA della
+	scrittura, e la scrittura vera e' in transazione (trakt_cache._atomic), quindi non lascia mai
+	stati parziali.
+	"""
+	if ids is None: return (not rimandato, frozenset(), not rimandato)
+	if not ids: return (False, frozenset(), False)
+	return (True, ids, False)
+
+def activity_rollback(latest, cached, categorie):
+	"""Il segnalibro da riscrivere quando una parte del giro e' stata rimandata.
+
+	Solo le categorie rimandate tornano al valore VECCHIO; le altre restano al valore nuovo, cosi' il
+	lavoro riuscito in questo giro non si rifa'. Prima si rimetteva indietro il blocco INTERO, quindi
+	un rinvio sui film buttava anche watchlist ed episodi gia' allineati.
+
+	'all' torna SEMPRE indietro: e' il cancello d'ingresso di trakt_sync_activities, e senza rimettere
+	indietro anche quello il giro successivo non entrerebbe nemmeno a guardare le categorie.
+	"""
+	indietro = dict(latest)
+	indietro['all'] = cached.get('all', latest.get('all'))
+	for cat in categorie:
+		if cat in cached: indietro[cat] = cached[cat]
+	return indietro
+
 def trakt_sync_activities(force_update=False):
 	# def clear_watched_tvshow_cache():
 	# 	from modules.watched_status import clear_cache_watched_tvshow_status
@@ -1307,11 +1827,27 @@ def trakt_sync_activities(force_update=False):
 		return result
 	def _check_daily_expiry():
 		return int(time.time()) >= int(get_setting('fenlight.trakt.next_daily_clear', '0'))
+	# Il memo di users/me/stats vale UN giro solo: film ed episodi lo condividono, ma due sondaggi
+	# ravvicinati non devono mai riusare la stessa lettura, o una modifica avvenuta fra i due
+	# risulterebbe invisibile. Azzerarlo qui rende il TTL nel memo una semplice seconda cintura.
+	_azzera_memo_stats()
 	if force_update: clear_all_trakt_cache_data(silent=True, refresh=False)
 	elif _check_daily_expiry():
 		clear_daily_cache()
 		set_setting('trakt.next_daily_clear', str(int(time.time()) + (24*3600)))
 	if not trakt_user_active() and not force_update: return 'no account'
+	# LE RIPARAZIONI REMOTE SI SMALTISCONO QUI, ALL'INIZIO, e la posizione e' il punto (lotto 140).
+	# Stavano in fondo, dopo tutto il lavoro, e da li' erano IRRAGGIUNGIBILI sul percorso tranquillo:
+	# il ramo 'niente e' cambiato su Trakt' esce con `return` molto prima -- ed e' proprio il ramo in
+	# cui la riconciliazione gira per le cancellazioni, cioe' quello che le riparazioni le PRODUCE.
+	# Conseguenza misurabile su un account tranquillo: una spinta mai confermata (hai messo in pausa,
+	# la chiamata a Trakt e' fallita) restava in coda finche' non capitava un cambiamento NON
+	# CORRELATO. Un'azione dell'utente persa in silenzio, che e' la categoria che continuiamo a colpire.
+	# All'inizio invece ci passa ogni giro, qualunque strada prenda poi. Il prezzo e' che una
+	# riparazione nata in questo giro parte al prossimo, cioe' entro l'intervallo di poll: per una
+	# ripetizione di rete e' irrilevante, e in cambio non dipende piu' da quale ramo l'ha prodotta.
+	# Se le due code sono vuote la chiamata torna subito, quindi sul giro normale non costa nulla.
+	_drain_remote_repairs()
 	try: latest = trakt_get_activity()
 	except: return 'failed'
 	if not latest: return 'failed'
@@ -1321,27 +1857,47 @@ def trakt_sync_activities(force_update=False):
 	# torna mai piu': il giro dopo il confronto da 'not needed', per sempre. Misurato il 24/08 (log q1,
 	# 14:24:40 e 14:25:16): due 'success', cioe' due cambiamenti veri arrivati da Trakt, entrambi
 	# consumati e persi. Il flag viene azzerato qui e riletto in fondo. Vedi lotto 58.
-	_SYNC_DEFERRED[0] = False
-	if not _compare(latest['all'], cached['all']):
+	_SYNC_DEFERRED.clear()
+	# IL RIALLINEAMENTO SI DECIDE QUI, PRIMA DEL CANCELLO (lotto 145 quater). La prima stesura del
+	# 145 ter metteva questa domanda solo accanto al confronto su episodes.watched_at, cioe' DENTRO
+	# il ramo -- e su un account tranquillo a quel ramo non ci si arriva mai, perche' il cancello qui
+	# sotto esce con 'not needed' molto prima. Misurato sul Mac: otto minuti dopo il riavvio, zero
+	# righe 'FenLight Trakt' nel log e i conti ancora sulla chiave vecchia. La correzione era
+	# installata e continuava a non partire, per la seconda volta di fila e per un motivo diverso.
+	# La lezione, che e' la stessa del 145 ter: verificare che una correzione sia giusta non basta,
+	# bisogna verificare che il codice che la applica venga ESEGUITO.
+	_riallinea_episodi = serve_riallineamento(_conti_noti())
+	if not _compare(latest['all'], cached['all']) and not _riallinea_episodi:
+		# IL CANCELLO E' VOLUTO, e con la domanda ora simmetrica va motivato. Senza righe di
+		# avanzamento in locale l'unica cosa che potrebbe sfuggirci e' un'AGGIUNTA fatta altrove -- ma
+		# un'aggiunta muove `paused_at`, quindi non finisce qui dentro: la prende il ramo normale. Il
+		# residuo e' una finestra sotto il secondo fra la lettura dello snapshot e la memorizzazione
+		# della marca. In cambio, chi non ha nessun avanzamento non paga una richiesta ogni 30 s.
 		if trakt_watched_cache.has_any_progress():
 			progress_info = trakt_playback_progress()
 			if progress_info is not None:
 				movie_ids = {i['id'] for i in progress_info if i['type'] == 'movie'}
 				ep_ids = {i['id'] for i in progress_info if i['type'] == 'episode'}
-				movie_deleted = trakt_watched_cache.has_progress_deletions('movie', movie_ids)
-				ep_deleted = trakt_watched_cache.has_progress_deletions('episode', ep_ids)
+				# Simmetrica dal lotto 140: non piu' 'Trakt ha tolto qualcosa?' ma 'lo snapshot e noi
+				# diciamo cose diverse?'. Lo snapshot lo scarichiamo intero comunque, quindi l'altra
+				# meta' dell'informazione era gia' in mano. Vedi trakt_cache.progress_out_of_sync.
+				movie_differs = trakt_watched_cache.progress_out_of_sync('movie', movie_ids)
+				ep_differs = trakt_watched_cache.progress_out_of_sync('episode', ep_ids)
+				if movie_differs or ep_differs:
+					logger('FenLight Trakt', 'avanzamento fuori sincrono senza cambio di attivita\': film [%s] | episodi [%s]'
+							% (movie_differs or '-', ep_differs or '-'))
 				changed_ids, changed_unknown = set(), False
-				if movie_deleted:
+				if movie_differs:
 					clear_properties('movie')
 					_ids = trakt_progress_movies(progress_info)
 					if _ids is None: changed_unknown = True
 					else: changed_ids |= _ids
-				if ep_deleted:
+				if ep_differs:
 					clear_properties('episode')
 					_ids = trakt_progress_tv(progress_info)
 					if _ids is None: changed_unknown = True
 					else: changed_ids |= _ids
-				if movie_deleted or ep_deleted:
+				if movie_differs or ep_differs:
 					# Un titolo USCITO dall'avanzamento cambia la composizione di 'continua a guardare':
 					# l'id da solo non basta, perche' il widget lo mostra ancora e la regola per id lo
 					# troverebbe -- ma solo finche' non e' stato ricostruito da qualcun altro. L'azione
@@ -1380,17 +1936,59 @@ def trakt_sync_activities(force_update=False):
 		changed_actions.add(kodi_utils.CONTINUE_WATCHING_ACTION)
 	if _compare(latest_movies['watched_at'], cached_movies['watched_at']):
 		clear_properties('movie')
-		_ids = trakt_indicators_movies()
-		if _ids is None: changed_unknown = True
-		else: changed_ids |= _ids
-	if _compare(latest_episodes['watched_at'], cached_episodes['watched_at']):
+		# L'AZIONE ACCOMPAGNA GLI ID (lotto 134). Segnare un film come visto lo fa USCIRE da 'continua
+		# a guardare': e' un cambiamento di COMPOSIZIONE, e la regola per id da sola non lo copre --
+		# per la stessa ragione, parola per parola, gia' scritta in watched_status.refresh_container_for
+		# e nel ramo dell'avanzamento qui sotto. Il percorso LOCALE l'azione la mandava da sempre;
+		# questo, che e' il percorso di cio' che arriva DA UN ALTRO DISPOSITIVO, no.
+		# NON SI DICHIARA LAVORO CHE NON E' STATO FATTO (lotto 141). `None` da un costruttore vuol
+		# dire una cosa sola -- non e' stato applicato NIENTE -- perche' tutti i suoi ritorni anticipati
+		# escono PRIMA della scrittura e la scrittura vera e' in transazione, quindi non lascia stati
+		# parziali. Prima quel None diventava `changed_unknown`, cioe' 'ricostruisci tutto', per un
+		# lavoro che non c'era stato: niente da mostrare e una ricostruzione globale per mostrarlo.
+		#   - RIMANDATO (il segnalibro torna indietro): si tace. Il giro dopo si rifa' e allora si
+		#     dichiarera' cio' che e' cambiato davvero.
+		#   - fallito SENZA rinvio: resta `changed_unknown`, perche' li' lo stato locale e' incerto e
+		#     il globale e' l'unica rete.
+		# Un insieme VUOTO e' un'altra cosa ancora: il lavoro e' stato fatto e non e' cambiato nulla.
+		# Anche li' non c'e' niente da ridisegnare, quindi non si dichiara nessuna azione.
+		_azione, _nuovi, _ignoto = declare_change(trakt_indicators_movies(), 'movies' in _SYNC_DEFERRED)
+		if _azione: changed_actions.add(kodi_utils.CONTINUE_WATCHING_ACTION)
+		changed_ids |= _nuovi
+		changed_unknown = changed_unknown or _ignoto
+	# L'OR NON E' UNA SCORCIATOIA (lotto 145 ter). Senza, una correzione del rimappaggio resta in
+	# attesa di un'attivita' su Trakt che non ha nessun motivo di arrivare. Vedi serve_riallineamento.
+	# La stessa bandiera apre ANCHE il cancello su latest['all'], piu' sopra: le due condizioni vanno
+	# tenute insieme, perche' aprirne una sola lascia la correzione irraggiungibile -- ed e'
+	# esattamente l'errore del 145 ter. Lo sorveglia tests/test_145ter.py, caso E.
+	if _compare(latest_episodes['watched_at'], cached_episodes['watched_at']) or _riallinea_episodi:
 		clear_properties('episode')
+		# QUI IL BUCO ERA PIU' GRAVE CHE PER I FILM (lotto 134). Segnare visto un episodio fa entrare
+		# in 'continua a guardare' l'episodio SUCCESSIVO, che e' un elemento DIVERSO da quello
+		# marcato: il suo id non e' fra i cambiati e non e' ancora nell'elenco pubblicato dal widget,
+		# quindi nessuna regola per id puo' trovarlo. Serve l'azione, e mancava.
+		# Misurato il 03/09 alle 04:53: episodio segnato visto sulla stick, dove il percorso locale
+		# manda l'azione e il prossimo episodio compare subito. Sul Mac arriva da qui --
+		# 'titoli cambiati: 1 -> [330320] | azioni: nessuna' -- e il prossimo episodio non e' mai
+		# entrato in 'continua a guardare'.
 		# Livello SERIE, ed e' voluto: un episodio VISTO fa avanzare la serie, quindi si aggiornano i
 		# widget che contengono la serie -- badge, prossimo episodio, 'continua a guardare' (che
 		# pubblica anche il tmdb nudo di ogni episodio, vedi paginator._publish_ids).
-		_ids = trakt_indicators_tv()
-		if _ids is None: changed_unknown = True
-		else: changed_ids |= _ids
+		# NON SI DICHIARA LAVORO CHE NON E' STATO FATTO (lotto 141). `None` da un costruttore vuol
+		# dire una cosa sola -- non e' stato applicato NIENTE -- perche' tutti i suoi ritorni anticipati
+		# escono PRIMA della scrittura e la scrittura vera e' in transazione, quindi non lascia stati
+		# parziali. Prima quel None diventava `changed_unknown`, cioe' 'ricostruisci tutto', per un
+		# lavoro che non c'era stato: niente da mostrare e una ricostruzione globale per mostrarlo.
+		#   - RIMANDATO (il segnalibro torna indietro): si tace. Il giro dopo si rifa' e allora si
+		#     dichiarera' cio' che e' cambiato davvero.
+		#   - fallito SENZA rinvio: resta `changed_unknown`, perche' li' lo stato locale e' incerto e
+		#     il globale e' l'unica rete.
+		# Un insieme VUOTO e' un'altra cosa ancora: il lavoro e' stato fatto e non e' cambiato nulla.
+		# Anche li' non c'e' niente da ridisegnare, quindi non si dichiara nessuna azione.
+		_azione, _nuovi, _ignoto = declare_change(trakt_indicators_tv(), 'episodes' in _SYNC_DEFERRED)
+		if _azione: changed_actions.add(kodi_utils.CONTINUE_WATCHING_ACTION)
+		changed_ids |= _nuovi
+		changed_unknown = changed_unknown or _ignoto
 	# La WATCHLIST sono DUE widget, non uno: quello dei film e quello delle serie, costruiti dalla
 	# stessa azione 'trakt_watchlist' da due classi diverse. Trakt li distingue gia' con due
 	# timestamp separati, e fin qui la distinzione si perdeva: aggiungere un film da un altro
@@ -1409,12 +2007,21 @@ def trakt_sync_activities(force_update=False):
 	if not (refresh_movies_progress and refresh_shows_progress):
 		progress_info = trakt_playback_progress()
 		if progress_info is not None:
+			# Stessa domanda simmetrica del ramo tranquillo: la marca `paused_at` dice se qualcosa e'
+			# cambiato, il contenuto dice se e' cambiato QUALCOSA CHE NOI NON ABBIAMO. La seconda non
+			# dipende dalla prima, ed e' per questo che una marca mancata o ambigua non fa piu' danno.
 			if not refresh_movies_progress:
 				trakt_ids = {i['id'] for i in progress_info if i['type'] == 'movie'}
-				if trakt_watched_cache.has_progress_deletions('movie', trakt_ids): refresh_movies_progress = True
+				_perche = trakt_watched_cache.progress_out_of_sync('movie', trakt_ids)
+				if _perche:
+					refresh_movies_progress = True
+					logger('FenLight Trakt', 'avanzamento film fuori sincrono: %s' % _perche)
 			if not refresh_shows_progress:
 				trakt_ids = {i['id'] for i in progress_info if i['type'] == 'episode'}
-				if trakt_watched_cache.has_progress_deletions('episode', trakt_ids): refresh_shows_progress = True
+				_perche = trakt_watched_cache.progress_out_of_sync('episode', trakt_ids)
+				if _perche:
+					refresh_shows_progress = True
+					logger('FenLight Trakt', 'avanzamento episodi fuori sincrono: %s' % _perche)
 	if refresh_movies_progress or refresh_shows_progress:
 		if progress_info is None: progress_info = trakt_playback_progress()
 		# L'AVANZAMENTO era il buco: questi due rami ricostruivano la tabella progress e non
@@ -1441,8 +2048,13 @@ def trakt_sync_activities(force_update=False):
 	# Qualcosa e' stato rimandato: il segnalibro torna indietro, cosi' il prossimo giro riprende il
 	# lavoro invece di trovare 'nessuna modifica'. La guardia self_mark diventa cosi' un RINVIO e non
 	# piu' un cestino: al massimo ritarda di una finestra self_mark, non perde piu' niente.
-	if _SYNC_DEFERRED[0]:
-		_SYNC_DEFERRED[0] = False
-		restore_activity(cached)
+	if _SYNC_DEFERRED:
+		# SOLO le categorie rimandate, piu' 'all' che e' il cancello d'ingresso: senza rimettere
+		# indietro anche quello il giro successivo non entrerebbe nemmeno. Le altre categorie restano
+		# al valore NUOVO, quindi il lavoro riuscito in questo giro non si rifa'.
+		_indietro = activity_rollback(latest, cached, _SYNC_DEFERRED)
+		logger('FenLight Trakt', 'segnalibro attivita\' riportato indietro per: %s' % ', '.join(sorted(_SYNC_DEFERRED)))
+		_SYNC_DEFERRED.clear()
+		restore_activity(_indietro)
 	_publish_changed(changed_ids, changed_actions, changed_unknown)
 	return 'success'

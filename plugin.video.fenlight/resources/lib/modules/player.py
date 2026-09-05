@@ -150,13 +150,28 @@ class FenLightPlayer(xbmc_player):
 				if disable_autoplay_next_episode: notification('Scrape with Custom Values - Autoplay Next Episode Cancelled', 4500)
 				if any((play_random_continual, play_random, disable_autoplay_next_episode)): self.autoplay_nextep, self.autoscrape_nextep = False, False
 				else: self.autoplay_nextep, self.autoscrape_nextep = self.sources_object.autoplay_nextep, self.sources_object.autoscrape_nextep
-				_ep_map = self.meta.get('tvdb_to_tmdb_ep')
-				if _ep_map is None:
-					from apis.skyhook_api import get_tvdb_to_tmdb_map
-					_ep_map = get_tvdb_to_tmdb_map(self.meta.get('tvdb_id'), self.meta.get('tmdb_season_data_original', []))
-				self._trakt_season, self._trakt_episode = _ep_map.get((self.season, self.episode), (self.season, self.episode))
+				# LA MAPPA STA NELLA META, O NON ESISTE (lotto 144). Qui c'era un ripiego che, quando la
+				# meta non aveva 'tvdb_to_tmdb_ep', importava skyhook_api e chiamava get_tvdb_to_tmdb_map.
+				# Non poteva funzionare, e non funzionava mai: le due chiavi 'tvdb_to_tmdb_ep' e
+				# 'tmdb_season_data_original' si scrivono nello STESSO blocco di tvshow_meta (metadata.py,
+				# righe 935 e 939), quindi se manca la prima manca anche la seconda -- e il ripiego riceveva
+				# una lista vuota, da cui la mappa esce vuota per costruzione. Codice morto in ogni ramo.
+				# Il prezzo non era zero: si pagava a OGNI riproduzione di episodio, anime o no, ed era
+				# _fetch_raw sull'intero JSON skyhook della serie (105 KB per Hunter x Hunter) per ottenere
+				# {} -- rete a cache fredda, e comunque una lettura di metacache piu' un json.loads sul
+				# percorso caldo. Per una serie NON anime la chiave non c'e' mai, quindi il ripiego scattava
+				# sempre.
+				# TRE esiti, non due (lotto 145). None vuol dire che questo episodio su Trakt non
+				# esiste: si riproduce normalmente, ma non si scrobbla -- mandare una coppia
+				# inventata segnerebbe come visto un altro episodio.
+				from modules.utils import traduci_episodio
+				_coppia = traduci_episodio(self.meta.get('tvdb_to_tmdb_ep'), self.meta.get('ep_esclusi_tvdb'),
+											self.season, self.episode)
+				self._trakt_mappabile = _coppia is not None
+				self._trakt_season, self._trakt_episode = _coppia if _coppia else (self.season, self.episode)
 			else:
 				play_random_continual, self.autoplay_nextep, self.autoscrape_nextep = False, False, False
+				self._trakt_mappabile = True
 				self._trakt_season, self._trakt_episode = self.season, self.episode
 			while total_check_time <= 30 and not get_visibility(video_fullscreen_check):
 				sleep(200)
@@ -182,7 +197,7 @@ class FenLightPlayer(xbmc_player):
 					if not ensure_dialog_dead:
 						ensure_dialog_dead = True
 						self.playback_close_dialogs()
-						if st.trakt_user_active() and trakt_official_status(self.media_type):
+						if st.trakt_user_active() and trakt_official_status(self.media_type) and self._trakt_mappabile:
 							Thread(target=trakt_scrobble_start, args=(self.media_type, self.tmdb_id, self._trakt_season, self._trakt_episode)).start()
 							self.scrobble_started = True
 						from modules.auto_subtitles import auto_subtitle_check
@@ -653,6 +668,14 @@ class FenLightPlayer(xbmc_player):
 			self.current_point = 0.0
 			self.scrobble_started = False
 			self.playback_successful, self.cancel_all_playback = None, False
+			# Prudente per difetto: se monitor() non arriva a calcolarla, non si scrobbla.
+			# La bandiera dice se questo episodio ha una coppia valida su Trakt (lotto 145).
+			# NON si puo' leggere self.media_type qui: set_constants gira per PRIMA in play_video,
+			# mentre media_type nasce in make_listing, dopo. La prima stesura lo faceva, e siccome
+			# play_video sta dentro il try di run(), l'AttributeError avrebbe fatto fallire OGNI
+			# riproduzione con 'run_error'. Entrambi i rami di monitor() la assegnano prima dell'uso:
+			# questo e' solo il valore di partenza, e il verso giusto e' il piu' prudente.
+			self._trakt_mappabile = False
 			self.playing_item = self.sources_object.playing_item
 			self._av_started = False
 

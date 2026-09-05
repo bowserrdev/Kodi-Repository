@@ -15415,7 +15415,4939 @@ E resta una verifica da fare prima, non da assumere: che la rilettura di Kodi al
 finestra interroghi DAVVERO il plugin ogni volta e non serva mai dalla propria cache. Se in qualche
 stato servisse dalla cache, saltare il nostro refresh lascerebbe il badge vecchio.
 
-## Coda aperta dopo il lotto 128
+## Lotto 129 -- la ricostruzione doppia dei widget, tolta senza aspettare nessuno
+
+**Il difetto.** Alla chiusura del player, tornando a Home o a un hub, i widget si ricostruiscono
+DUE volte: una la ordina Kodi (rilegge i DirectoryProvider quando la finestra torna a schermo) e una
+la ordiniamo noi. Misurato sulla stick il 02/09:
+
+```
+18:34:19,412  scrittura dello stato locale
+18:34:19,952  CDirectoryProvider[...]: refreshing..   <- Kodi, DOPO la scrittura
+18:34:20,165  DIAG refresh: MIRATO 1 contenitori
+18:34:20,188  CDirectoryProvider[...]: refreshing..   <- e ripartono da capo
+18:34:22,4-23,2  1101.501..504 costruiti              <- il giro di Kodi
+18:34:24,9-26,8  1101.501..504 costruiti di nuovo     <- il nostro
+```
+
+La rilettura di Kodi era partita **dopo** la scrittura: conteneva gia' il badge. Il nostro refresh ha
+rifatto lo stesso lavoro e ha spostato il contenuto definitivo da **~+3 s a ~+7,3 s** dalla chiusura.
+
+**La premessa che rende la correzione sicura**, verificata e non assunta: i widget escono da
+`end_directory` con `cacheToDisc=False` (vale per ogni indexer costruibile come widget, `False if
+is_external`), quindi Kodi non li serve mai dalla propria cache. Controprova nel log: 24
+`CDirectoryProvider[...]: refreshing..` e 24 `CScriptRunner: running add-on script Fen Light`, uno
+a uno. Ogni rilettura e' una invocazione vera, che legge il database.
+
+**Il criterio: l'INIZIO della costruzione, non la fine.** Una costruzione FINITA dopo la scrittura
+puo' essere COMINCIATA prima, e in quel caso ha letto il dato vecchio: saltare il nostro refresh su
+quella prova lascerebbe il badge vecchio a schermo -- il modo peggiore di sbagliare, e quello che
+inseguiamo da sei lotti.
+
+**E l'istante d'inizio c'era gia'.** `_stamp_build` scrive `LASTBUILD_PROP % key` con l'orologio a
+muro all'avvio di ogni costruzione, **uno scrittore per chiave**, quindi senza la contesa che un
+registro condiviso avrebbe avuto proprio nel momento peggiore (cinque widget che partono insieme).
+Non e' servito ne' un registro nuovo, ne' un timbro di inizio da inventare, ne' -- soprattutto --
+alcuna ATTESA: la decisione si prende subito, alle 20,165, con informazione gia' disponibile.
+
+Era la parte che nella considerazione precedente avevo dato per mancante. C'era.
+
+**La correzione.** `refresh_containers_for_ids(ids, actions, fresh_since=None)`: se `fresh_since` e'
+passato, un contenitore la cui ultima costruzione e' cominciata dopo quell'istante non viene
+ricaricato. Vale per la finestra a schermo e per le altre. `kodi_refresh_ids` inoltra il parametro e
+conta i saltati in `LAST_FRESH_SKIPS`; `player._order_refresh_after_write` passa l'istante della
+scrittura. Chi non timbra l'inizio torna 0 e viene ricaricato come sempre: il predefinito e' prudente.
+
+Il fallback globale ora considera anche i "gia' freschi": un contenitore saltato perche' qualcun
+altro lo sta gia' ricostruendo con il dato nuovo **e' una risposta**, e ricadere sul globale per
+quello sarebbe il contrario di cio' che serve.
+
+### Verifica
+
+Dodici casi sul comportamento del paginatore, fra cui la scena esatta delle 18:34 (due contenitori
+ricostruiti da Kodi dopo la scrittura -> nessuno ricaricato, due contati come freschi) e **la
+trappola**: costruzione cominciata prima della scrittura e finita dopo -> ricaricata, non contata
+come fresca. Piu' il misto (uno fresco, uno vecchio), il contenitore che non timbra (ricaricato), il
+filtro per id che resta prioritario, e il widget che corrisponde per AZIONE ma e' fresco.
+
+Quattro casi sull'integrazione in `kodi_refresh_ids`: tutto fresco -> nessun `UpdateLibrary` e
+nessuna ricarica; contenitore vecchio -> ricaricato e ancora mirato; **nessun contenitore nostro ->
+il globale scatta ancora**; e senza `fresh_since` il comportamento e' identico a prima.
+
+Rieseguite le batterie dei lotti 124-128 e l'import di tutti i 93 moduli: nessuna regressione.
+Confronto dei simboli su paginator: 59 funzioni, nessuna persa, nessuna nuova.
+
+## Lotto 129 bis -- il segnale c'era, ma arrivava tre secondi dopo la decisione
+
+**La verifica sul campo del lotto 129 non ha cambiato niente**, e il log dice esattamente perche':
+
+```
+18:55:49,599  scrittura finita
+18:55:50,373  CDirectoryProvider[home.501]: refreshing..           <- Kodi ordina la rilettura
+18:55:50,380  CScriptRunner: running add-on script Fen Light
+18:55:50,564  refresh_for_ids ... ricaricati=2 saltati=1 gia_freschi=0   <- decidevamo QUI
+18:55:53,654  get_pages key=home.502                                <- il timbro arrivava QUI
+```
+
+**Tre secondi di scarto.** `_stamp_build` scrive `LASTBUILD_PROP` da dentro `get_pages`, cioe' dentro
+il lavoro dell'indexer, dopo l'avvio dell'interprete e gli import (`import 314 + import pigri 1840`).
+Al momento della nostra decisione -- 190 ms dopo il cambio finestra -- nessuna invocazione si era
+ancora dichiarata, quindi nessun contenitore risultava fresco e li abbiamo ricaricati tutti.
+
+L'errore non e' nel criterio: e' nell'aver dato per scontato che un timbro esistente fosse anche
+DISPONIBILE nel momento in cui serve. Sono due proprieta' diverse di un segnale, e avevo verificato
+solo la prima.
+
+### Le due correzioni
+
+**1. Il timbro si anticipa.** `PG_STARTED_PROP`, scritto in `router.routing()` appena i parametri sono
+letti, prima di qualunque import pigro. La chiave e' gia' nel path (`pgctl=home.501`), quindi uno
+scrittore per chiave e nessuna contesa. `build_declared(key)` prende il piu' recente fra il timbro
+precoce e quello di `get_pages`: chi non passa dal router con `pgctl` resta coperto dal secondo, e
+chi non dichiara niente vale 0 e viene ricaricato -- il verso prudente.
+
+**2. La decisione aspetta l'informazione.** `_wait_widgets_declare` attende che i contenitori a
+schermo da ricaricare abbiano dichiarato, fino a **3 secondi**, uscendo appena lo hanno fatto tutti.
+L'attesa non costa nulla di visibile: in quei millisecondi i widget mostrano il contenuto precedente
+e si stanno gia' ricostruendo per conto loro.
+
+Per sapere COSA aspettare serviva l'elenco dei contenitori interessati senza toccarli:
+`paginator.onscreen_targets(ids, actions)`, funzione pura estratta da `refresh_containers_for_ids` --
+una sola definizione della regola, usata da chi fa il lavoro e da chi decide se farlo.
+
+### Cosa vale, in secondi
+
+Nel giro misurato l'ondata di Kodi finisce alle 55,8 e la nostra alle 58,3. Saltare la nostra porta
+il contenuto definitivo da **+8,7 s a +6,2 s** dalla scrittura, e dimezza il lavoro di CPU nel
+momento in cui il dispositivo e' piu' carico. Non e' "gia' pronta all'uscita" -- quella meta' della
+differenza sta in Kodi (vedi la sezione precedente) -- ma e' la meta' che ci appartiene.
+
+### Verifica
+
+Diciotto casi sul paginatore, fra cui i nuovi: il timbro precoce basta da solo quando `get_pages` non
+e' ancora arrivato; il timbro precoce anteriore alla scrittura fa ricaricare; `build_declared` prende
+il piu' recente dei due in tutte le combinazioni; `onscreen_targets` e' davvero pura (trova i
+contenitori giusti e non scrive niente).
+
+Cinque casi sull'attesa: esce appena tutti hanno dichiarato (0,9 s quando la dichiarazione arriva a
+0,8); esce allo scadere se nessuno dichiara, senza restare appesa; **non si accontenta di uno su
+due**; nessun contenitore nostro -> nessuna attesa; gia' dichiarati -> nessuna attesa.
+
+Rieseguite le batterie dei lotti 124-129 e l'import dei 93 moduli: nessuna regressione.
+
+## Lotto 129 -- REVOCATO. La seconda ricostruzione non era mai nostra
+
+Il meccanismo del lotto 129 bis ha funzionato: nel log del 02/09 alle 19:03 si legge
+`ricaricati=0 gia_freschi=2` e `DIAG refresh: NON ordinato`. La nostra ricarica non e' partita.
+
+**E non e' cambiato niente.**
+
+```
+PRIMA (la nostra ricarica partiva)   DOPO (la nostra ricarica e' saltata)
+  18:55:54,433  continue_watching      19:03:49,673  continue_watching
+  18:55:55,363  mdblist                19:03:50,662  mdblist
+  18:55:55,846  mdblist                19:03:50,817  mdblist
+  18:55:56,685  continue_watching      19:03:52,353  continue_watching
+  18:55:58,101  mdblist                19:03:53,262  mdblist
+  18:55:58,303  mdblist                19:03:53,420  mdblist
+```
+
+Sei costruzioni prima, sei dopo.
+
+### La seconda ondata la ordina Kodi
+
+```
+19:03:45,641  CDirectoryProvider[...]: refreshing..   <- ondata 1: apertura finestra
+19:03:45,870  void CXBMCApp::OnPlayBackStopped()      <- l'annuncio di Kodi
+19:03:45,914  CDirectoryProvider[...]: refreshing..   <- ondata 2, 44 ms dopo
+```
+
+I `CDirectoryProvider` si risvegliano sugli ANNUNCI di Kodi, e `Player.OnStop` e' uno di quelli.
+Kodi li sveglia due volte da solo: all'apertura della finestra e all'annuncio di fine riproduzione.
+Nessuna delle due e' nostra, e nessuna delle due e' evitabile dal nostro lato.
+
+E nel giro precedente:
+
+```
+18:55:50,560  void CXBMCApp::OnPlayBackStopped()      <- l'annuncio di Kodi
+18:55:50,565  DIAG refresh: MIRATO 2 contenitori      <- la nostra ricarica, 5 ms dopo
+18:55:50,593  CDirectoryProvider[...]: refreshing..
+```
+
+**Cinque millisecondi.** La nostra ricarica cadeva addosso all'annuncio di Kodi e le due venivano
+accorpate in un'unica ondata. Non era mai una terza ondata: viaggiava gratis dentro una che Kodi
+faceva comunque.
+
+### L'errore di metodo
+
+Ho attribuito la causa per ADIACENZA NEL LOG: il risveglio dei provider seguiva la nostra riga DIAG,
+quindi l'ho letto come sua conseguenza. Seguiva altrettanto da vicino l'annuncio di Kodi, che nel
+log stava cinque righe piu' su. Due lotti costruiti sopra una correlazione letta come causa.
+
+E' la stessa lezione del lotto 124 in un'altra forma: li' era "non si e' ripresentato, quindi e'
+risolto", qui e' "e' successo dopo, quindi l'ho causato io". In entrambi i casi la prova mancante e'
+la stessa -- un controllo che distingua le due spiegazioni.
+
+### Cosa e' stato revocato
+
+`fresh_since`, `LAST_FRESH_SKIPS`, `build_declared`, `PG_STARTED_PROP` (il timbro precoce nel
+router), `_wait_widgets_declare` e l'estrazione `onscreen_targets` che esisteva solo per servirli.
+Il codice torna esattamente al commit 705c450, cioe' ai lotti fino al 128 compreso. Rieseguite le
+batterie dei lotti 124-128 e l'import dei 93 moduli: nessuna regressione.
+
+Motivo della revoca, e va scritto perche' non e' "non funzionava": funzionava ed era testato, ma
+sull'unico percorso che lo usava -- la chiusura del player -- era **inerte per costruzione**,
+perche' li' l'annuncio `Player.OnStop` di Kodi arriva sempre. In cambio portava un'attesa fino a 3 s
+nel caso in cui la dichiarazione non arrivasse. Macchina senza guadagno, con un caso peggiore.
+
+Durante la revoca ho anche cancellato per errore il blocco del lotto 127 (`_wait_window_settled`),
+perche' l'inserimento del 129 bis era finito PRIMA di quello del 127 nel file e ho tagliato per
+posizione invece che per contenuto. Se ne e' accorto il controllo dei simboli, non la compilazione:
+il file restava sintatticamente valido. E' la stessa trappola gia' annotata in memoria.
+
+### Dove stanno davvero i secondi
+
+```
+mdblist.list.build_mdblist_list | totale 6799 ms | import 1349 + import pigri 3877 + indexer 1498
+mdblist.list.build_mdblist_list | totale 6914 ms | import 1250 + import pigri 3991 + indexer 1637
+```
+
+**5,2 secondi di import su 6,8.** Sei costruzioni per ogni uscita dal player, ognuna che ricarica il
+proprio albero da zero perche' ogni widget e' un interprete nuovo. Il numero di ondate non e' il
+problema: il costo di UNA costruzione lo e'. E' lo stesso lavoro del lotto 126, spostato dal percorso
+delle azioni brevi a quello dei widget -- con la differenza che li' si trattava di 46 moduli, qui di
+un albero molto piu' grande.
+
+## Lotto 130 -- il dispositivo che apre per secondo resta indietro per sempre
+
+Sintomo riferito: azzerato l'avanzamento di molti titoli dalla stick, aprendo Kodi sul Mac il widget
+'continua a guardare' mostrava ancora la lista vecchia e non dava "cenni di aggiornamento".
+L'aspettativa e' giusta: ogni dispositivo deve allinearsi a Trakt appena viene aperto.
+
+### Il dato era gia' arrivato. E' lo schermo che non e' mai stato ridisegnato
+
+Le due meta' della diagnosi, provate separatamente sul log del Mac del 02/09 (avvio alle 21:15:41):
+
+```
+21:15:42.996  DIAG progress movie:   da Trakt 0, conservate 0, prima 4 -> dopo 0 | SPARITE: 1084244, ...
+21:15:42.996  DIAG progress episode: da Trakt 0, conservate 0, prima 4 -> dopo 0 | SPARITE: 283297:1:2, ...
+21:15:42.996  titoli cambiati: 8 | azioni: continue_watching,trakt_watchlist:movie
+21:15:42.996  TraktMonitor Service Update Success. Trakt Update Performed
+```
+
+`select count(*) from progress` sul database del Mac: **0**. Il database era allineato dal primo
+secondo. Nei sei minuti successivi di log: **zero** ricostruzioni, nessun `refreshing..`, nessun
+`FENLIGHT_PG ... BUILD`. Dato giusto, schermo fermo.
+
+### Dove si perde
+
+```
+21:15:42.25?  stamp_startup_rebuild()      -> LAST_REFRESH_SCOPE_PROP = '*'
+21:15:42.78   i widget si costruiscono     -> leggono il database PRIMA del sync
+21:15:42.996  il sync trova gli 8 titoli   -> age 0.7s < TRAKT_REFRESH_COALESCE (30) -> RINVIATO
+21:15:44.288  WidgetRefresher: rinvio consumato dopo 1.0s, nessuna costruzione in volo
+21:15:44.299  refresh mirato accorpato: gli stessi id ricostruiti 2.04s fa      <-- QUI
+```
+
+Il rinvio ha funzionato: e' nato, ha atteso le sue condizioni, ed e' stato consumato al momento
+giusto. Poi `kodi_refresh_ids` lo ha giudicato una seconda volta con la propria guardia
+d'accorpamento e lo ha buttato, perche' `_refresh_covered_by_last` ha trovato lo scope `'*'` --
+il timbro di `stamp_startup_rebuild`, che per costruzione copre qualunque elenco di id.
+
+Quei "2.04 secondi fa" erano la costruzione d'avvio. Aveva davvero ricostruito quegli otto id.
+Li aveva ricostruiti **sbagliati**, perche' e' avvenuta prima della sincronizzazione.
+
+L'accorpamento sa rispondere a "questi id sono stati ricostruiti di recente?" e non a
+"la ricostruzione ha mostrato il dato NUOVO?". Sono la stessa domanda soltanto quando le due
+ricostruzioni nascono dallo stesso evento -- ed e' il caso per cui la guardia e' stata scritta
+(fine riproduzione + monitor Trakt, vedi il commento sopra `kodi_refresh`). All'avvio i due eventi
+sono distinti e l'ordine e' garantito nel verso peggiore: la costruzione viene sempre prima del sync.
+
+**E non torna piu'.** `reset_activity` ha gia' fatto avanzare il segnalibro "visto fino a qui", e
+infatti da li' in poi ogni poll dice `No Changes Needed`. E' la stessa forma del guasto del lotto 58
+-- un cambiamento consumato e perso -- entrata pero' da un'altra porta: li' si perdeva nel sync,
+qui nel ridisegno.
+
+Il difetto e' **deterministico all'avvio**: fra il timbro d'avvio e la maturazione del rinvio passano
+un paio di secondi, sempre meno dei 5 di `REFRESH_COALESCE_SECONDS`. Ogni apertura di Kodi con
+modifiche fatte altrove perdeva il ridisegno -- cioe' esattamente il caso che l'utente descrive come
+quello che dovrebbe funzionare per definizione.
+
+### Il rimedio
+
+Un rinvio e' per definizione lavoro **non ancora fatto**: e' nato perche' in quel momento non si
+poteva disegnare. Quando WidgetRefresher lo consuma ha gia' verificato le sue condizioni -- niente
+riproduzione, nessuna costruzione in volo, widget a schermo -- e ripassarlo sotto l'accorpamento
+significa giudicarlo due volte con la stessa guardia che l'aveva fatto rimandare.
+
+`kodi_refresh_ids` e `kodi_refresh` avevano gia' il parametro `coalesce`, usato per i comandi
+espliciti dell'utente ("mai accorpato"). Il rinvio maturo e' il secondo caso che merita la stessa
+esenzione, per una ragione diversa ma con la stessa conclusione:
+
+- `service.refresh_ids_inproc(ids, actions, coalesce=True)` -- il parametro arriva fino a
+  `kodi_refresh_ids`.
+- `WidgetRefresher`, e **solo** li', consuma il rinvio con `coalesce=False`, su entrambi i rami:
+  quello mirato e quello globale (`refresh_widgets`).
+- `router` traduce `coalesce` anche per `refresh_widgets`, che era l'unica delle tre rotte a non
+  averlo. Canale separato da `user`: due motivi diversi per non accorpare, che non vanno confusi.
+
+Il ramo GLOBALE aveva lo stesso identico buco (`kodi_refresh` accorpa dietro uno scope `'*'`), e
+sarebbe scattato appena un rinvio d'avvio fosse nato senza id -- p.es. da un cambiamento di natura
+ignota. Corretto insieme, non dopo.
+
+**Quello che NON si perde.** `stamp_startup_rebuild` resta e continua a fare il suo lavoro: il
+doppione che preveniva era una ricostruzione ordinata SOPRA la costruzione d'avvio ancora in corso.
+A garantirlo e' `_nothing_building()` in WidgetRefresher, che aspetta che l'ultima costruzione si
+spenga -- non l'accorpamento. La guardia dei 30 s del monitor resta intatta: continua a trasformare
+il refresh immediato in un rinvio, che e' cio' che deve fare. Verificato nel test (caso C): il timbro
+d'avvio copre ancora tutto e la finestra dei 5 s e' ancora aperta.
+
+### Verifica
+
+`test_130.py`, nove casi, tutti passati. Il **caso A riproduce il difetto**: con `coalesce=True` e
+lo stato esatto del log del Mac, il refresh viene ancora buttato -- cioe' il test avrebbe preso
+questo bug. Il caso B mostra il rimedio, il C che la guardia d'avvio non e' stata smontata, il D il
+buco gemello sul ramo globale, il E la traduzione nel router (servizio periodico accorpabile, rinvio
+e comando utente no). Batteria esistente 124-128 rieseguita: tutta verde. `smoke` 93 moduli, 0
+falliti.
+
+### Cosa si vedra' adesso
+
+All'apertura di un dispositivo con modifiche fatte altrove, la Home si ricostruira' una seconda
+volta un paio di secondi dopo, e quella sara' allineata. Non e' il comportamento ideale -- l'ideale
+sarebbe che la PRIMA costruzione fosse gia' giusta -- ma non e' ottenibile senza ritardare l'avvio:
+i widget partono a 21:15:42.78 e il sync finisce a 21:15:42.996, in pratica insieme, e il sync deve
+fare una chiamata di rete. Fra una ricostruzione visibile e uno schermo sbagliato a tempo
+indeterminato, vince la correttezza. Se la seconda ondata dara' fastidio, la leva e' l'ordine
+d'avvio, non la guardia.
+
+## Lotto 130 -- verifica sul campo, e una conclusione da ritirare
+
+Prova incrociata dell'utente: cambiare stato dal Mac e aprire la stick, e viceversa. Funziona in
+entrambi i sensi. I due log lo confermano riga per riga.
+
+**Mac** (avvio 21:52:05):
+```
+21:52:06.183  titoli cambiati: 1 -> ['1084244'] | azioni: continue_watching
+21:52:06.183  refresh MIRATO rimandato su 1 titoli e 1 azioni, interfaccia ricostruita 0.6s fa
+21:52:07.580  WidgetRefresher: rinvio consumato dopo 1.0s di attesa
+21:52:07.610  DIAG refresh: MIRATO 3 contenitori ricaricati
+```
+**Stick** (avvio 21:52:51):
+```
+21:53:03.101  refresh MIRATO rimandato su 1 titoli e 1 azioni, interfaccia ricostruita 5.3s fa
+21:53:04.599  WidgetRefresher: rinvio consumato dopo 1.0s di attesa
+21:53:04.699  DIAG refresh: MIRATO 1 contenitori ricaricati
+```
+Nessun `accorpato`. Il ridisegno arriva ~1,5 s dopo che la modifica e' stata vista, ~2 s dopo
+l'apertura. Nessun errore su nessuna delle due macchine (sul Mac restano tre righe `error` che non ci
+riguardano: permessi dei tasti multimediali, un fuoco negato in una finestra di sistema, e la texture
+di cui sotto).
+
+Nota sulla stick: `interfaccia ricostruita 5.3s fa`, cioe' **gia' oltre** i 5 s di
+`REFRESH_COALESCE_SECONDS`. Li' il difetto del lotto 130 era una corsa, non una certezza: la
+costruzione d'avvio e' cosi' lenta che spesso usciva da sola dalla finestra d'accorpamento. Sul Mac,
+dove la costruzione dura decimi di secondo, cadeva *sempre* dentro. E' il motivo per cui il sintomo
+si e' visto sul Mac e non sulla stick, ed e' anche il motivo per cui e' rimasto nascosto a lungo:
+sulla macchina su cui si prova tutto, il bug era intermittente.
+
+### RITIRATA la conclusione "5,2 secondi di import su 6,8"
+
+In coda dopo il lotto 129 avevo scritto che il costo di una costruzione widget e' fatto di import, e
+che il rimedio e' "lo stesso lavoro del lotto 126 spostato sul percorso dei widget". **Non regge.**
+Il controllo sta nello stesso log della stick, a 1,4 secondi di distanza:
+
+```
+21:53:03.525  build_continue_watching | totale 4396 ms | import 679 + import pigri 2546 + indexer 1154
+21:53:05.551  build_continue_watching |  totale 783 ms | import  53 + import pigri  310 + indexer  408
+```
+
+Stesso widget, stesso codice, stessa sessione, stesso dispositivo. Gli import passano da **3 225 ms a
+363 ms**: un fattore nove. La differenza non e' nell'albero degli import -- e' identico -- ma nel
+contesto: le tre costruzioni d'avvio partono insieme (invocatori 4, 5 e 6 alle 21:52:59.118, .199 e
+.385) mentre Kodi sta ancora finendo di avviarsi, la quarta gira da sola a macchina quieta.
+
+Quel numero misurava l'avvio, non gli import. Rendere pigri altri moduli lavorerebbe su 363 ms, non
+su 3 225.
+
+**E la strada apparentemente ovvia e' gia' chiusa.** Il tetto alla concorrenza degli interpreti era
+stato scritto e misurato il 01/09 (commit `b6d747d`) e **revocato mezz'ora dopo** (`6c63401`): il
+cancello funzionava -- un'invocazione ha atteso 2 453 ms -- ma gli import sono rimasti dove erano,
+2 507/2 559 ms contro 2 391/2 526/2 553 senza cancello. Serializzare non ha restituito il tempo.
+
+Quindi: il costo esiste, e' misurato, ma **non se ne conosce ancora la causa**. Non era gli import e
+non era la sola contesa fra interpreti. Prima di toccare qualcosa serve una misura a fasi dentro
+l'avvio -- e' la terza volta in questa sessione che una stima fatta da un solo numero si rivela
+sbagliata, e stavolta il controllo c'era nello stesso file.
+
+### Un contenitore che sfugge al censimento
+
+Sulla stick, al momento del refresh mirato:
+```
+21:53:04.373  set_head key=home.503        <- il terzo widget pubblica il suo elenco
+21:53:04.424  invocatore 6 termina         <- il plugin ha finito di consegnare
+21:53:04.698  refresh_for_ids ... ricaricati=1 altre_finestre=0 saltati=1
+```
+La Home della stick ha **tre** widget (home.501, .502, .503: tutti e tre hanno fatto `set_head`), ma
+il censimento ne ha visti **due**. Sul Mac, dove ce ne sono cinque, il conto torna sempre:
+`ricaricati=3 saltati=2` e piu' tardi `ricaricati=2 saltati=3`.
+
+Il motivo e' nel ciclo di `refresh_containers_for_ids`: `container_head(cid)` legge un'infolabel
+viva, e un contenitore che Kodi non ha ancora popolato non risponde. La riga `continue` che segue
+lo scarta **senza contarlo da nessuna parte** -- ne' fra i ricaricati, ne' fra i saltati, ne' come
+`seen_any` per se'. E i due conteggi che finiscono nel log non permettono di accorgersene, a meno di
+sapere a memoria quanti widget ci sono in quella schermata: e' cosi' che e' passato inosservato.
+
+`_nothing_building()` dimostra che il **plugin** ha finito, non che **Kodi** ha popolato i
+contenitori. Fra le due cose, sulla stick, passano centinaia di millisecondi.
+
+Conseguenza: se il titolo cambiato si trova in quel widget, quel widget resta vecchio finche' non lo
+si ricostruisce per altro motivo. Non e' un difetto introdotto dal lotto 130 -- e' una corsa che
+c'e' sempre stata -- ma il 130 la rende piu' probabile, perche' adesso il rinvio d'avvio *parte
+davvero*, e parte nel momento in cui la GUI e' piu' occupata.
+
+Non correggo alla cieca. Il primo passo giusto e' **rendere visibile il buco**: contare i
+contenitori non identificati e stamparli accanto a `ricaricati` e `saltati`. Costa una variabile,
+non cambia comportamento, e dice quanto spesso succede davvero -- che e' l'unico modo di decidere
+se serve un secondo giro di censimento o no.
+
+### Tre texture rimaste indietro dal partizionamento della skin
+
+`DoWork - Direct texture file loading failed for special://skin/extras/icons/power.png` (Mac,
+21:52:18). Non e' un caso isolato: dei 32 riferimenti `special://skin/extras/...` della skin, tre
+puntano a file che **non stanno piu' li'**, perche' il partizionamento statico li ha spostati in
+`resource.images.arcticfuse`:
+
+| riferimento nella skin | dove sta il file adesso |
+|---|---|
+| `special://skin/extras/icons/power.png` | `resource.images.arcticfuse/resources/icons/power.png` |
+| `special://skin/extras/icons/film.png`  | `resource.images.arcticfuse/resources/icons/film.png` |
+| `special://skin/extras/icons/tv.png`    | `resource.images.arcticfuse/resources/icons/tv.png` |
+
+Tutti e tre in `1080i/script-skinvariables-generator-includes-.xml` (righe 532, 650, 660): l'icona
+del menu di spegnimento e le due del selettore di ricerca (Movies / TV Shows). Gli altri 29
+riferimenti `extras/` -- pulsanti, modes, playlist -- sono rimasti nella skin e risolvono ancora.
+
+La convenzione giusta e' gia' in uso ovunque nella skin
+(`resource://resource.images.arcticfuse/icons/<nome>.png`, 25 occorrenze per `circle-plus.png` da
+sola).
+
+> **SBAGLIATO, corretto nel lotto 131.** Qui avevo scritto: "nessun `.xmltemplate` genera quelle
+> righe, il file e' l'unico posto dove compaiono, quindi si correggono li'". Falso su tutta la linea.
+> Quel file e' GENERATO da `script.skinvariables` e per giunta e' **gitignorato**
+> (`.gitignore` riga 1). Modificarlo a mano non sarebbe finito in git e sarebbe stato sovrascritto
+> alla prima rigenerazione. Avevo cercato la sorgente fra i `.xmltemplate` e, non trovandola, ho
+> concluso che non esistesse -- invece stava nei JSON accanto. Vedi il lotto 131.
+
+## Lotto 131 -- i tre punti aperti
+
+### 1. Il costo d'avvio: e' ATTESA, non lavoro. Domanda chiusa
+
+Il lotto 130 aveva ritirato la spiegazione ("sono import") senza saper dire quale fosse quella
+giusta. Mancava un solo taglio: **tempo di CPU del thread accanto al tempo di orologio**. Vicini =
+il thread macinava, e allora si toglie lavoro. Lontani = il thread era fermo, e togliere lavoro non
+restituisce niente.
+
+Aggiunto in `fenlight.py` (`time.thread_time` ai tre marcatori) e in `mark_phase`/`add_items`, con
+una riga di log a parte, `FenLight PERF CPU`. Misura sulla stick, avvio del 02/09 alle 22:0x:
+
+```
+INVOCAZIONE  build_continue_watching | totale 4533 ms | import 731 + import pigri 2572 + indexer 1196
+CPU          build_continue_watching | totale 593/4533 ms (13%) | import 61/731 (8%) + import pigri 391/2572 (15%) + indexer 131/1196 (11%)
+```
+
+**Il thread ha consumato 593 ms di CPU in 4 533 ms di orologio: il 13%.** Per l'87% del tempo non
+stava eseguendo nulla.
+
+E il dato che chiude la questione e' la colonna della CPU su sei costruzioni della stessa sessione,
+prima e seconda ondata:
+
+| costruzione | orologio `import pigri` | **CPU `import pigri`** |
+|---|---|---|
+| continue_watching | 2 572 ms | **391 ms** |
+| mdblist 1 | 2 923 ms | **439 ms** |
+| mdblist 2 | 2 904 ms | **445 ms** |
+| continue_watching (2a ondata) | 1 670 ms | **380 ms** |
+| mdblist 1 (2a ondata) | 1 878 ms | **421 ms** |
+| mdblist 2 (2a ondata) | 1 918 ms | **425 ms** |
+
+L'orologio varia da 1 670 a 2 923 ms. La CPU sta fra 380 e 445 ms, **sempre**. Il lavoro degli
+import e' una costante; a variare e' quanto si aspetta. Lo stesso vale per il totale: ~600-680 ms di
+CPU sia in una costruzione da 2 836 ms sia in una da 5 500 ms.
+
+Quindi, definitivamente: gli import "pigri" costano **~400 ms di lavoro vero**, non 2,5 s. Il lotto
+126 su questo percorso avrebbe raccolto una frazione di 400 ms, non di 2 500 -- il ritiro fatto nel
+lotto 130 era giusto, e ora si sa anche perche'.
+
+Resta da capire su COSA aspetta (GIL fra sotto-interpreti, letture dalla flash, il resto dell'avvio
+di Kodi). Ma la fase `import` in cima -- 61 ms di CPU su 731 di orologio, l'8% -- ha la forma
+dell'I/O: leggere i moduli dalla flash. E' la prossima cosa da guardare, con una misura, non con
+un'ipotesi.
+
+Nota di metodo: il tetto alla concorrenza (commit `b6d747d`, revocato con `6c63401`) era una risposta
+plausibile alla domanda sbagliata. Si era misurato *quanto* costava, mai *se* fosse lavoro.
+
+### 2. Il contenitore che sfuggiva al censimento
+
+`container_head` interroga un'infolabel viva, e un contenitore che Kodi non ha ancora popolato non
+risponde: il `continue` lo scartava senza contarlo da nessuna parte -- ne' ricaricato, ne' saltato,
+ne' `seen_any`. Non era un contenitore dimostrato estraneo: era un contenitore mai guardato.
+
+**La correzione non aspetta e non riprova: l'infolabel non serve.** Serviva solo a rispondere
+"questo contenitore e' nostro?", e il registro lo sa gia' -- e' esattamente il criterio con cui il
+giro sulle ALTRE finestre raggiunge contenitori che non sono nemmeno a schermo. Aggiunto un secondo
+giro sulla finestra corrente che applica la stessa regola del primo (si salta solo cio' che si
+dimostra estraneo) leggendo dalle proprieta' invece che dalla GUI.
+
+Il log adesso dichiara `non_identificati=N recuperati=N`. Senza quei due numeri il difetto era
+invisibile: si vedevano solo `ricaricati` e `saltati`, e per accorgersi che ne mancava uno bisognava
+sapere a memoria quanti widget ha quella schermata.
+
+`test_131.py`, sei scenari, 14 controlli. Il caso A e' quello della stick (il terzo widget non ancora
+popolato CONTIENE il titolo cambiato); B verifica che non si ricarichi cio' che si dimostra estraneo
+neanche per questa via; C che un elenco mai pubblicato porti a ricaricare; D che l'azione raggiunga
+il non identificato ('continua a guardare'); E che non cambi nulla quando la GUI risponde per tutti;
+F che un contenitore mai costruito non venga inventato.
+
+Da verificare sul campo: serve un cambiamento Trakt vero da un dispositivo all'altro, con la Home
+della stick aperta. In laboratorio non si riproduce la corsa.
+
+### 3. Le tre icone: era `buildv`, non il file
+
+La diagnosi del lotto 130 era giusta nel sintomo e **sbagliata nel rimedio**. Le sorgenti erano gia'
+corrette da tempo -- `skinvariables-shortcut-powermenu.json` e `skinvariables-shortcut-searchwidgets.json`
+puntano tutte e tre a `resource://resource.images.arcticfuse/icons/...`. A essere vecchio era il file
+GENERATO, che non si rigenera se non cambia l'impronta.
+
+E' la stessa identica trappola del 24-25/08 gia' scritta in `generator/data/LEGGIMI-rigenerazione.md`,
+compresa l'asimmetria fra le due macchine:
+
+```
+riferimenti 'special://skin/extras/icons' nel file generato
+  Mac    3     <- fermo al 31/08, mai rigenerato
+  stick  0     <- rigenerato per conto suo (lastbuildtime cambiato)
+```
+
+Sulla stick i widget erano stati spostati, quindi `lastbuildtime` e' cambiato e il file si e'
+rifatto; sul Mac non e' stato toccato nulla e il file e' rimasto quello vecchio. Nel 2024 questo
+aveva ucciso la paginazione sul Mac per giorni; stavolta si vedono tre icone mancanti.
+
+Rimedio: `buildv` da `0.1.7-fenlight-pgctl` a `0.1.8-icone-resource`. Non lo legge nessuno, esiste
+solo per entrare nell'impronta e forzare la rigenerazione su tutte le installazioni.
+
+**Da verificare al prossimo avvio di Kodi sul Mac**: il file deve rigenerarsi e i tre riferimenti
+`special://skin/extras/icons` devono sparire.
+
+### Manutenzione
+
+`test_stamp.py` era rotto da prima di questo lotto: chiamava `directory_built_since(0, want)`, firma
+intermedia del lotto 125 poi sostituita da `build_mark_param`. Riallineato all'API attuale, e gli si
+e' aggiunto il controllo che `tmdb_id=2872` non corrisponda a `tmdb_id=287238` -- che e' il motivo
+per cui quella funzione esiste. Un test che non gira e' peggio di nessun test: sembra copertura.
+
+Batteria completa: 9 file di test, tutti verdi. `smoke` 93 moduli, 0 falliti.
+
+## Lotto 132 -- i due endpoint di Trakt non rispondono dalla stessa fotografia
+
+Sintomo: film messo in pausa dalla stick, sul Mac non compare **mai** in 'continua a guardare'.
+Il verso opposto (Mac -> stick) funziona.
+
+### La prova, minuto per minuto
+
+```
+03:13:34.0  stick   set_bookmark -> push a Trakt. Trakt CONFERMA: resume_id 1838793482
+03:13:39.05 Mac     last_activities dice 'cambiato' -> "Trakt Update Performed"
+03:13:39.05 Mac     DIAG progress movie: da Trakt 2, conservate 1, prima 2 -> dopo 2
+03:13:39.05 Mac     titoli cambiati: 0
+03:13:39.58 stick   DIAG progress movie: da Trakt 3, ...
+03:14:09 -> 03:15:41  Mac: "No Changes Needed" x4
+```
+
+Mezzo secondo separa le due interrogazioni dello **stesso** endpoint `sync/playback` sullo **stesso**
+account: la stick riceve tre film, il Mac due. Non c'e' nessuna cache di mezzo -- `call_trakt` fa una
+GET diretta.
+
+Verifica finale sui database, due minuti dopo:
+
+```
+stick  movie|1084244  Toy Story 5        stessa ora, stesso account
+       movie|11542    Altered States
+       movie|1315772  Minions & Monsters   <- resume_id 1838793482, confermato da Trakt
+Mac    movie|1084244  Toy Story 5
+       movie|11542    Altered States       <- e basta
+```
+
+### Perche' non si recupera mai piu'
+
+`reset_activity` fa avanzare il segnalibro delle attivita' **subito**, appena `last_activities`
+risponde -- prima che `sync/playback` sia stato letto. Quando la seconda risposta arriva vecchia, il
+cambiamento risulta gia' consumato: da li' in poi ogni confronto da 'nessuna modifica', per sempre.
+
+E' esattamente il guasto del lotto 58, che ha gia' il suo rimedio in casa (`restore_activity`,
+attivato da `_SYNC_DEFERRED`). Mancava solo che questo caso lo accendesse: finora lo alzavano le
+guardie `self_mark`, cioe' 'sappiamo noi di non aver fatto il lavoro'. Qui il lavoro e' stato fatto
+e non ha trovato niente, che e' un'informazione diversa e altrettanto valida.
+
+### La firma, e perche' e' affidabile
+
+**`Trakt Update Performed` seguito da `titoli cambiati: 0`.** Ci e' stato detto che l'avanzamento e'
+cambiato e la tabella non e' cambiata di una riga: una delle due risposte e' vecchia.
+
+Due esclusioni la rendono sicura:
+- `self_mark_recent()` -- se la modifica e' NOSTRA, `titoli cambiati: 0` e' legittimo (la riga e' gia'
+  in locale, conservata dal lotto 128). Finestra 45 s; nel caso misurato erano passati 94 s, quindi
+  la condizione sarebbe scattata correttamente.
+- un budget di **3 tentativi** legato alla coppia di `paused_at`. Senza tetto, un cambiamento per noi
+  legittimamente vuoto -- una categoria che non guardiamo -- si ritenterebbe ogni 30 s all'infinito.
+  Tre giri = 90 s, contro il mezzo secondo che e' bastato alla stick. Un `paused_at` nuovo azzera il
+  budget; un arrivo riuscito lo cancella.
+
+`test_132.py`, cinque scenari, 14 controlli, sul vero `trakt_sync_activities`: la risposta vecchia
+fa tornare indietro il segnalibro; il tetto regge al quarto giro; un cambiamento nuovo riparte pieno;
+la modifica nostra non innesca niente; l'arrivo vero pulisce il budget e pubblica l'id.
+
+**Nota**: il film gia' perso sul Mac non torna da solo -- il segnalibro e' avanzato. Arrivera' al
+prossimo cambiamento Trakt vero, o subito con 'svuota cache Trakt'.
+
+### Rimasto scoperto
+
+`_push_bookmark_to_trakt` e' un `try/except: pass` muto: se la spinta fallisce non lo sa nessuno, e
+la riga resta con `resume_id = 0` in locale per sempre. Stavolta non e' stato il colpevole -- il
+resume_id c'era -- ma la prima mezz'ora dell'indagine e' servita a escluderlo, e sarebbe bastata una
+riga di log. Da fare.
+
+## Lotto 131 bis -- il punto 3 non era dove pensavo: i nodi utente
+
+`buildv` alzato, file generato **riscritto** (mtime 03/09 03:06)... e ancora i tre percorsi vecchi.
+
+Il generatore non rilegge i default della skin quando esistono le copie utente in
+`userdata/addon_data/script.skinvariables/nodes/skin.arctic.fuse.3/`. Quelle nascono appena si
+personalizza un collegamento, e da quel momento vincono loro. I JSON della skin erano corretti da
+tempo; i nodi utente del Mac erano fermi al 26/08 e al 21/06, cioe' prima dello spostamento delle
+immagini. Sulla stick gli stessi nodi erano stati risalvati il 31/08 ed erano gia' giusti -- ecco
+perche' il difetto si vedeva su una macchina sola.
+
+Corretti i tre percorsi nei due file del Mac (copia di sicurezza in scratchpad, JSON validato prima e
+dopo). `buildv` resta alzato: serve comunque a forzare la rigenerazione, che ora legge i nodi giusti.
+Le due meta' lavorano insieme.
+
+Regola aggiornata in memoria: quando un percorso non si aggiorna, cercarlo con `grep -rl` **anche in
+userdata**, non solo nel repo.
+
+## Revisione della sincronizzazione dell'avanzamento -- la falla e' una sola, ed e' strutturale
+
+Domanda posta il 03/09: "e' il nostro codice scritto da cani o c'e' solo un bug da chiudere?"
+Ne' l'uno ne' l'altro. C'e' **una domanda a cui i dati che teniamo non sanno rispondere**, e sei
+lotti hanno provato a indovinarla dal tempo.
+
+### La domanda
+
+La riconciliazione e' distruttiva: `DELETE` di tutte le righe del tipo, poi `INSERT` della vista di
+Trakt. Ma anche il dispositivo scrive, e spinge in modo asincrono. Quindi a ogni giro serve decidere:
+
+> questa riga e' in locale e non nella risposta di Trakt. E' **mia e non ancora pubblicata**, oppure
+> **e' stata cancellata altrove**?
+
+**I due stati sono indistinguibili con quello che salviamo.** Schema della tabella:
+
+```
+db_type, media_id, season, episode, resume_point, curr_time, last_played, resume_id, title
+```
+
+Nessuna colonna dice se quella riga l'abbiamo mai VISTA arrivare da Trakt. `resume_id` e' il
+surrogato usato dal lotto 122, e non risponde a nessuna delle due domande: diventa diverso da zero
+appena la spinta ritorna -- cioe' *prima* che Trakt la elenchi -- e resta diverso da zero *dopo* che
+Trakt l'ha cancellata.
+
+Da li' in poi, tutto e' stato tempo:
+
+| lotto | criterio aggiunto |
+|---|---|
+| 122 | `resume_id == 0` |
+| 128 | + finestra di grazia di 120 s sulle scritture locali |
+| 132 | + 3 tentativi quando il payload contraddice l'attivita' |
+
+### Il guasto di stanotte e' esattamente quella falla
+
+```
+03:29:00  stick   pausa 1315772, push OK (resume_id 1838801442, confermato)
+03:29:24  Mac     lo riceve
+~03:29:30 Mac     azzera avanzamento -> cancellato da Trakt
+03:30:02  stick   da Trakt 1, conservate 1 -> dopo 2     <- lo RIMETTE
+03:30:33  stick   da Trakt 1, conservate 1 -> dopo 2     <- ancora
+```
+
+La grazia dei 120 s dice "e' mia, non ancora pubblicata". La verita' era "era pubblicata, e poi e'
+stata cancellata". La stick resuscita a ogni giro il film appena tolto.
+
+Quanto sarebbe durata non lo sappiamo: la grazia scadeva alle 03:31:00 e Kodi e' stato chiuso alle
+03:30:47, **tredici secondi prima**. Dopo la scadenza `has_progress_deletions` avrebbe visto la
+riga mancante e l'avrebbe tolta, quindi con ogni probabilita' si sarebbe curata da sola verso le
+03:31:30 -- circa 90 s di film resuscitato a schermo. Non permanente, ma non e' una scusa.
+
+### Un difetto e' mio, del lotto 132
+
+Nello stesso log, su ENTRAMBE le macchine: `risposta vecchia, si riprova al giro 1 di 3` quando non
+c'era nessuna risposta vecchia. La causa e' un'asimmetria che non avevo controllato:
+
+```
+set_bookmark    -> kodi_utils.note_local_progress_write(...)   (2 punti)
+erase_bookmark  -> niente
+```
+
+Una cancellazione locale non lascia traccia. Quindi "l'attivita' e' cambiata + non e' cambiato
+niente" -- che dopo un azzera avanzamento e' la condizione NORMALE, perche' il lavoro l'abbiamo gia'
+fatto noi in locale -- viene letta come endpoint vecchio, e il segnalibro torna indietro per tre
+giri. Non perde dati (il tetto c'e'), ma sono tre ricostruzioni inutili e una diagnosi falsa nel log.
+Colpa mia, e si chiude con una riga.
+
+### Numeri della sezione
+
+```
+trakt_sync_activities     175 righe (117 codice, 58 commento)   41 rami if/try
+kodi_refresh_ids          111 righe ( 50 codice, 61 commento)    8 rami
+_SYNC_DEFERRED alzato in   6 punti
+```
+
+Dieci meccanismi distinti, a tempo, decidono "il cambiamento e' vero / vado a ridisegnare":
+`_compare(all)`, `has_progress_deletions`, la grazia dei 120 s, `self_mark_recent` (45 s, in due
+file), `restore_activity`/`_SYNC_DEFERRED`, il budget del 132, `TRAKT_REFRESH_COALESCE` (30 s),
+`REFRESH_COALESCE_SECONDS` (5 s) con `LAST_REFRESH_SCOPE_PROP`, `stamp_startup_rebuild`, il rinvio
+`PENDING_*` con `_nothing_building` e `_widgets_on_screen`.
+
+Presi uno per uno sono difendibili e ognuno ha il suo perche' scritto accanto. Il problema e' che
+**nessuno possiede la loro interazione**, e gli ultimi tre guasti sono stati interazioni, non errori
+isolati: il 130 era due guardie che giudicavano lo stesso rinvio, il 132 due endpoint incoerenti, e
+questo e' la grazia che combatte contro una cancellazione remota.
+
+### Come si chiude la classe, invece di aggiungere l'undicesimo criterio
+
+**Una colonna: `seen_on_trakt`.** Si scrive quando una riga arriva dentro una risposta
+`sync/playback`. La regola diventa esatta, e non guarda piu' l'orologio:
+
+- in locale, assente da Trakt, **mai vista** su Trakt -> e' mia, spinta in corso: si conserva
+- in locale, assente da Trakt, **gia' vista** -> cancellata altrove: si toglie
+
+Sostituisce `resume_id == 0`, la grazia dei 120 s e meta' di `has_progress_deletions`. Niente
+finestre, niente budget.
+
+**E, subito, la riga mancante:** `erase_bookmark` deve chiamare `note_local_progress_write` come fa
+`set_bookmark`, cosi' una cancellazione nostra e' riconoscibile come nostra.
+
+### Giudizio
+
+Il codice non e' scritto male: i commenti portano la misura e il ragionamento, le guardie falliscono
+dal lato prudente, i test esistono. Ma `trakt_sync_activities` fa troppe cose in una funzione
+(scarica, confronta sei categorie, ricostruisce, pubblica, decide la riprova) e la logica di
+riconciliazione e' sparsa su quattro file. La sincronizzazione continua a rompersi nello stesso
+punto perche' li' manca un dato, non perche' manchi attenzione.
+
+## Lotto 133 -- lo stato di sincronizzazione diventa un dato
+
+Nasce dalla revisione richiesta il 03/09 e dalla diagnosi dell'utente, che era giusta: *"il problema
+e' stato scrivere per ogni problema una piccola soluzione specifica, portando a una chimera di
+toppe che comunicano male fra loro, anziche' agire in maniera strutturata sullo stato condiviso"*.
+
+### La domanda che nessuna toppa poteva risolvere
+
+La riconciliazione era distruttiva -- `DELETE` di tutte le righe, poi `INSERT` della vista di Trakt --
+e a ogni giro doveva decidere:
+
+> questa riga e' in locale e non nella risposta di Trakt. E' MIA e non ancora pubblicata, oppure e'
+> stata CANCELLATA altrove?
+
+Con le colonne che c'erano, **i due stati erano indistinguibili**. `resume_id` non risponde: diventa
+diverso da zero appena la spinta ritorna (prima che Trakt elenchi la riga) e resta diverso da zero
+dopo che Trakt l'ha cancellata. Da qui tre lotti di deduzioni a tempo -- 122 (`resume_id == 0`),
+128 (grazia di 120 s), 132 (budget di riprove) -- e tre guasti diversi con la stessa radice.
+
+### Il modello
+
+Una colonna, `sync_state`, con tre valori, piu' `misses`. La logica sta in `caches/progress_sync.py`,
+che non importa ne' database ne' Kodi ne' rete: si prova per intero senza accendere niente.
+
+| locale | su Trakt | azione |
+|---|---|---|
+| assente | presente | INSERT -> `synced` |
+| `synced` | presente | UPDATE solo se qualcosa e' diverso |
+| **`synced`** | **assente** | **cancellata altrove -> DELETE** |
+| `pending_put` | presente | la spinta e' arrivata -> `synced`, con il resume_id vero |
+| `pending_put` | assente, spinta MAI confermata | si conserva a tempo indeterminato, e si rispinge |
+| `pending_put` | assente, spinta confermata | si conserva per `PENDING_PUT_MISSES_ALLOWED` giri |
+| `pending_delete` | assente | cancellazione confermata -> la riga sparisce |
+| **`pending_delete`** | **presente** | **non si reinserisce, e si ripete la DELETE remota** |
+
+Le due celle in grassetto sono i due guasti delle ultime sere. La quinta riga -- spinta mai
+confermata -- e' una correzione al modello che avevo proposto: contare le omissioni anche quando
+Trakt non ha *mai* accettato la scrittura avrebbe cancellato in silenzio la pausa dell'utente per un
+guasto di rete. La riga resta finche' non passa.
+
+### L'unica ambiguita' che resta, e dove sta
+
+`pending_put` + assente + spinta accettata: "la risposta e' indietro" e "l'hanno tolta prima che io
+guardassi" non sono distinguibili, perche' `sync/playback` non porta nessun indicatore di freschezza
+e l'ack della spinta restituisce solo l'`id` (verificato). Si limita **contando snapshot, non
+secondi**: `PENDING_PUT_MISSES_ALLOWED = 1`, deciso dall'utente per questa fase di prova. La
+sfasatura misurata fra i due dispositivi era di 0,5 s contro un poll da 30 s.
+
+Una costante, un posto, un commento. Al posto di sei timer in quattro file.
+
+### Cosa e' stato TOLTO
+
+- lotto 122: `resume_id == 0` come chiave di protezione
+- lotto 128: `PROGRESS_LOCAL_WRITES_PROP`, la grazia di 120 s, `note_local_progress_write`,
+  `recent_local_progress` -- spariti da `kodi_utils`
+- lotto 132: `PROGRESS_RETRY_PROP`, il budget di riprove -- sparito da `trakt_api`
+- `_unsynced_progress_rows` e `_set_bulk_progress` -- sostituiti da `_reconcile_progress`
+- `_progress_state` -- il diff prima/dopo non serve piu': la riconciliazione SA cosa ha cambiato
+- `has_progress_deletions` -- da dieci righe di esclusioni a una query sullo stato
+
+Non un criterio in piu': tre in meno.
+
+### Due perdite silenziose chiuse per conseguenza
+
+- **La DELETE remota fallita.** Prima la riga spariva subito in locale e l'errore veniva ingoiato: se
+  la chiamata falliva, Trakt conservava il segnalibro e la sincronizzazione successiva lo
+  RIMETTEVA. Il commento in `_clear_progress_on_trakt` dava la cosa per persa ("verra' ripulito alla
+  prima sincronizzazione utile") e non era vero -- la prima sincronizzazione utile faceva il
+  contrario. Ora la riga resta `pending_delete`, invisibile a chi disegna, e la cancellazione remota
+  viene ripetuta.
+- **La spinta fallita.** `_push_bookmark_to_trakt` era un `try/except: pass` muto. Per escluderla
+  come causa, il 03/09, e' servita mezza indagine. Ora scrive nel log e la riga viene rispinta.
+
+Entrambe passano da `_drain_remote_repairs`, in un thread, con un tetto di 5 riparazioni per giro.
+
+### La migrazione
+
+Scelta dell'utente, la piu' pulita: `trakt_db` si **butta e si rifa** da Trakt (con il segnalibro
+delle attivita' cancellato, o la prima sincronizzazione direbbe 'nessuna modifica' e lascerebbe
+'continua a guardare' vuoto). `watched_db` NO: sono gli indicatori locali e non esiste nessun remoto
+da cui ricostruirli, quindi li' si aggiungono le colonne e basta -- buttarla distruggerebbe
+l'avanzamento dell'utente senza recupero.
+
+### Verifica
+
+- `test_133.py` -- 21 controlli sulla macchina a stati pura: le otto celle, lo sdoppiamento della
+  quinta, i tre guasti veri ricostruiti dai log (122, 128, 03/09), venti giri senza rete, e la
+  sequenza completa pausa -> conferma -> cancellazione da un altro dispositivo.
+- `test_133b.py` -- 24 controlli sul database vero: la migrazione di entrambi i database, le due
+  scene misurate, 'azzera avanzamento' che marca invece di cancellare ed e' invisibile ai quattro
+  lettori, la cancellazione remota richiesta, e che a stato invariato non si scriva nulla.
+- `test_133c.py` -- la chiave degli episodi: il database restituisce interi, il remap tvdb produce
+  interi, `set_bookmark` scrive stringhe. Se le tre forme non si riconoscessero la riconciliazione
+  vedrebbe due righe diverse e l'episodio lampeggerebbe a ogni giro.
+- `test_128` e `test_132` RITIRATI: provavano codice che non esiste piu'.
+- Batteria completa 10 file verde, `smoke` 94 moduli 0 falliti.
+
+**Sul campo**, stick, avvio delle 04:45:
+
+```
+04:45:10.609  progress: schema del lotto 133 applicato a trakt_db (tabella rifatta)
+04:45:10.642  progress: schema del lotto 133 applicato a watched_db (colonne aggiunte)
+04:45:24.053  DIAG progress movie: da Trakt 1 | in locale 0 | scritte 1 | cambiate 1
+```
+
+Database dopo: una riga, `synced`, `misses 0`. 'Minions & Monsters' -- il film che la stick
+resuscitava a ogni giro -- non e' tornato. Nessun errore nel log.
+
+### Cosa resta da provare sul campo
+
+Il modello e' provato in laboratorio su tutte le celle, ma le due che contano nascono da una CORSA
+fra due dispositivi e in laboratorio non si riproduce. Servono i due giri veri: pausa da una parte
+e apertura dall'altra; azzera avanzamento da una parte con l'altra accesa.
+
+Il nuovo `DIAG progress` dice quale cella ha deciso: `da Trakt N | in locale N (n synced, n
+pending_put) | scritte N | TOLTE N -> id | cambiate N`.
+
+## Lotto 134 -- l'azione mancava sul percorso remoto, e per gli episodi era fatale
+
+Prova del 03/09 alle 04:52. I film funzionano; gli episodi no. Quattro sintomi, tre cause diverse.
+
+### Il bug: 'visto' non dichiarava il cambiamento di composizione
+
+```
+04:52:51  stick   episodio segnato visto (serie 330320)
+04:53:11  Mac     titoli cambiati: 1 -> ['330320'] | azioni: nessuna
+```
+
+**`azioni: nessuna`**. Segnare visto un episodio fa entrare in 'continua a guardare' l'episodio
+SUCCESSIVO -- un elemento **diverso** da quello marcato, il cui id non e' fra i cambiati e non e'
+ancora nell'elenco pubblicato dal widget. Nessuna regola per id puo' trovarlo: serve l'azione.
+
+La cosa strana e' che il ragionamento era gia' scritto, per esteso, in due posti:
+
+- `watched_status.refresh_container_for` (percorso LOCALE): *"L'AZIONE viaggia sempre (lotto 114):
+  ogni chiamante di questa funzione e' una modifica di stato visto/avanzamento, cioe' esattamente
+  cio' che cambia la COMPOSIZIONE di 'continua a guardare'"*;
+- il ramo dell'AVANZAMENTO nella sincronizzazione, che l'azione la manda.
+
+I due rami `watched_at` -- film ed episodi -- no. E' un'**asimmetria fra il percorso locale e quello
+remoto**: la stessa identica modifica produceva due segnali diversi a seconda di dove era stata
+fatta. Da qui il sintomo, esattamente: sulla stick (percorso locale, azione presente) il prossimo
+episodio compare subito; sul Mac (percorso remoto, azione assente) non compare mai.
+
+Corretti entrambi i rami. Anche quello dei film aveva lo stesso buco: funzionava per fortuna, perche'
+un film segnato visto **e' gia'** nell'elenco del widget e la regola per id lo trova comunque.
+
+`test_134.py`: ogni tipo di cambiamento di `last_activities` deve dichiarare il canale giusto, e
+nessun ramo vivo puo' uscire muto (un ramo che non dichiara ne' id ne' azione fa pubblicare '-',
+'nulla e' cambiato', e il monitor gli crede -- il difetto dei lotti 59 e 119). **Verificato che il
+test veda il bug**: rimossa la riga, 2 casi rossi; rimessa, verde.
+
+### Non bug: il badge della serie che tarda su chi marca
+
+```
+04:52:52  DIAG refresh: MIRATO finestra Video (Container.Refresh sulla lista aperta)
+04:55:10  refresh_for_ids ... ricaricati=1 altre_finestre=1
+```
+
+Marcando dentro la finestra Video, `Container.Refresh` ricarica **solo la cartella aperta**: il badge
+'visto' sull'episodio compare subito, il badge 'episodi rimanenti' sulla serie sta nella cartella
+padre e non viene toccato. Quel lavoro non si perde -- viene rimandato e consumato al rientro nella
+Home (qui 2m18s dopo, perche' l'utente e' rimasto nella serie) -- e la cartella padre ha
+`cacheToDisc=False` in finestra Video, quindi tornando indietro Kodi la rilegge comunque.
+
+E' il compromesso gia' scelto e documentato nel lotto 43. Non lo tocco: l'alternativa era ricostruire
+ogni widget della schermata a ogni marcatura.
+
+### Non bug: i 6 secondi prima del badge di avanzamento
+
+```
+04:56:16.681  BOOKMARK scritto (0 ms)
+04:56:22.763  pannello episodi della serie 278624 non ricostruito entro 6s, il refresh lo ordiniamo noi
+```
+
+La guardia del lotto 125 aspetta di vedere se Kodi ricostruisce da solo, per non fare il lavoro due
+volte. Qui Kodi non l'ha fatto e i 6 s sono stati pagati per intero.
+
+Prima di toccare la costante ho contato tutte le sue decisioni su tutti i log disponibili:
+
+```
+5  NON ordinato (Kodi aveva gia' ricostruito)     <- la guardia ha evitato un doppione
+2  non ricostruito entro 6s                       <- i 6 s pagati a vuoto
+```
+
+E fra i cinque c'e' `NON ordinato, Kodi ha gia' ricostruito da sola 7.7s dopo la chiusura`:
+**piu' lungo della finestra stessa**. Abbassarla produrrebbe ricostruzioni doppie proprio nel caso
+piu' comune. Cinque a due a favore, con un caso che sfonda il limite: si lascia com'e'. Se un giorno
+dara' fastidio, la leva non e' il numero -- e' un segnale da Kodi che dica 'sto ricostruendo', che
+oggi non c'e'.
+
+### Riepilogo dei quattro sintomi
+
+| sintomo | causa | esito |
+|---|---|---|
+| badge 'episodi rimanenti' non immediato su chi marca | Container.Refresh tocca solo la cartella aperta | compromesso del lotto 43, invariato |
+| prossimo episodio in 'continua a guardare' sulla stick | percorso locale, azione presente | corretto per costruzione |
+| ...e NON sul Mac | percorso remoto, **azione mancante** | **corretto (lotto 134)** |
+| badge di avanzamento non immediato sul Mac | i 6 s della guardia del lotto 125 | misurato 5:2 a favore, invariato |
+
+## Lotto 135 -- un elemento vuoto non deve sovrascrivere lo stato pubblicato
+
+Sintomo: aprendo il menu contestuale sul Mac, artwork e nome dell'elemento in alto spariscono.
+
+### Il log lo dice riga per riga
+
+```
+14:55:14.524  Window Init (DialogContextMenu.xml)          <- menu aperto
+14:55:15.448  Trakt: TOLTE 1084244 + 278624:1:2 | refresh MIRATO rimandato
+14:55:16.109  WidgetRefresher: rinvio consumato dopo 0.0s
+14:55:16.118  DIAG refresh: MIRATO 1 contenitori ricaricati
+14:55:16.120  CDirectoryProvider[...build_continue_watching...]: refreshing   <- RICOSTRUZIONE
+14:55:16.161  set_head key=home.501 built=7
+              (nulla per due minuti)
+14:57:22.422  Window Deinit (DialogContextMenu.xml)
+```
+
+**Un secondo e mezzo dopo l'apertura del menu, il contenitore sotto di esso si e' ricostruito.**
+Non c'entra il menu: era un refresh mirato di Trakt arrivato in quel momento.
+
+### La causa
+
+L'`onfocus` della skin (`Includes_Lists.xml`, `List_Widget_Row_HiddenButton_OnFocus`) scriveva:
+
+```xml
+<onfocus>SetProperty(base_label, $INFO[...ListItem.Label])</onfocus>              <- senza condizioni
+<onfocus condition="...Art(poster) vuoto + ...Art(tvshow.poster) vuoto">
+    ClearProperty(base_poster)</onfocus>
+```
+
+Durante una ricostruzione l'`onfocus` scatta con `ListItem` **ancora vuoto**: `base_label` finisce a
+stringa vuota e `base_poster` viene **cancellata**. Le due proprieta' sono esattamente quelle che
+`Dialog_DialogContextMenu.xml` legge per l'intestazione (`base_label`) e per lo spazio artwork
+(`base_poster`, dietro l'espressione `DialogContextMenu_HasArtwork`).
+
+### E nessuno rimedia piu'
+
+Quelle due proprieta' le riparava il ciclo a 0,3 s di `blur_service`, che le ripubblicava
+confrontandole col valore ATTUALE proprio per rimetterle se l'onfocus le aveva azzerate.
+**Ma blur_service e' spento dal lotto 48**: in `service.py` la riga che lo avvia e' commentata (era
+presente in ogni crash da avvio catturato sulla stick), e infatti `BlurService Starting` non compare
+in nessuno dei log -- zero occorrenze su entrambi i file del Mac.
+
+Da allora l'unico scrittore di `base_label`/`base_poster` e' quell'`onfocus`: se scrive una volta
+sbagliata, resta sbagliata finche' non si sposta il fuoco su un elemento vero. Col menu aperto il
+fuoco non si sposta: due minuti di intestazione vuota.
+
+### Il rimedio
+
+Tre condizioni in piu', nella skin, e nient'altro: un elemento vuoto non scrive.
+
+```xml
+<onfocus condition="... + !String.IsEmpty(...ListItem.Label)">SetProperty(base_label, ...)</onfocus>
+<onfocus condition="... + !String.IsEmpty(...ListItem.Label) + ...">ClearProperty(base_poster)</onfocus>
+```
+
+Le due `SetProperty` di `base_poster` erano gia' protette (scrivono solo se l'artwork non e' vuoto):
+il buco era la scrittura incondizionata dell'etichetta e la **cancellazione** del poster.
+
+### Un errore mio, corretto su segnalazione
+
+Avevo anche aggiunto a `blur_service` una "rete di sicurezza" che ripubblicasse le due proprieta'
+anche dentro un dialogo. **Codice morto**: il servizio non gira. L'utente lo ha fatto notare, la
+modifica e' stata ritirata (`git checkout`) e ne resta solo la nota qui. Da controllare SEMPRE se un
+servizio e' vivo prima di correggerlo -- in `service.py` gli avvii sono tutti in un punto solo, e uno
+di quelli e' commentato.
+
+Vale anche come conseguenza da tenere a mente: **spegnendo blur_service si e' persa anche la
+riparazione di base_poster/base_label**, che con quel ciclo non c'entrava niente ma ci viveva dentro.
+Se un giorno si riaccende, la riparazione torna gratis; finche' resta spento, la correttezza deve
+stare tutta nell'onfocus.
+
+### Verifica
+
+XML validato. Il resto e' verificabile solo sul campo: aprire il menu contestuale su un elemento e
+provocare una ricostruzione (basta un azzera avanzamento da un altro dispositivo mentre il menu e'
+aperto). Prima: intestazione vuota per tutta la vita del menu. Dopo: l'elemento resta quello.
+
+## Lotto 136 -- un dialogo modale aperto non e' il momento di ridisegnare
+
+Sintomo (stick, 03/09): menu contestuale aperto su un elemento di 'continua a guardare'; nel
+frattempo dal Mac si toglie quell'episodio dai visti. L'elemento sparisce dal widget e il menu resta
+a schermo, orfano, agganciato a un elemento che non esiste piu'.
+
+### Il log lo dice riga per riga
+
+```
+15:18:55.777  Loading skin file: DialogContextMenu.xml
+15:18:55.821  ------ Window Init (DialogContextMenu.xml) ------
+15:18:55.827  ### FENLIGHT_PG ### watcher idle (modal dialog open)      <- il paginatore lo sa
+15:19:12.539  Trakt: rebuild completo, motivo: nessun play piu' recente (rimozioni?)
+15:19:17.164  Trakt: titoli cambiati: 1 -> ['330320'] | azioni: continue_watching
+15:19:17.166  TraktMonitor: refresh MIRATO su 1 titoli e 1 azioni      <- NESSUNA guardia
+15:19:17.194  refresh_for_ids ... ricaricati=1 ... non_identificati=3 recuperati=1
+15:19:17.205  CDirectoryProvider[...build_continue_watching...]: refreshing
+15:19:18.326  set_head key=home.501 built=6                            <- era 7
+              (il menu resta aperto per altri 85 secondi)
+15:20:42.671  ------ Window Deinit (DialogContextMenu.xml) ------
+```
+
+Ventidue secondi dopo l'apertura del menu, il contenitore sotto di esso si e' ricostruito e ha
+perso l'elemento su cui il menu stava lavorando. Il menu e' rimasto aperto su nulla.
+
+### La causa, e perche' e' comparsa solo ora
+
+La domanda "c'e' un dialogo modale a schermo?" era scritta **due volte** in `service.py` --
+`WidgetPaginator` (riga 493) e `DubResolver` (riga 697, lotto 97) -- e mancava **esattamente dove
+decide la correttezza**, cioe' nel percorso del ridisegno: `kodi_refresh_ids` non l'ha mai posta.
+
+Il guasto era pero' **mascherato**, e la maschera l'abbiamo tolta noi. Dentro un dialogo modale
+l'infolabel `Container(N)` si risolve contro il DIALOGO, non contro la finestra sotto: il censimento
+non trovava nessun contenitore e la ricarica era un colpo a vuoto. E' precisamente su questo che si
+regge la motivazione scritta nel lotto 97 ("torna 0 e non ricarica niente"). Il **recupero dal
+registro del lotto 131** ha reso la ricarica efficace anche dentro un dialogo, e cosi' ha reso reale
+un guasto che prima era solo latente. Nel log si legge in chiaro: `non_identificati=3 recuperati=1`.
+
+E' il caso didattico della regola che ci siamo dati: *se un guasto torna nello stesso punto manca un
+dato, non una guardia*. Qui il dato c'era, ma era scritto due volte in periferia e mai al centro.
+
+### Il rimedio: un solo datum, una sola coda
+
+1. **`kodi_utils.modal_dialog_open()`** -- unica definizione. Le due copie in `service.py` ora la
+   leggono da qui. Si valuta SEMPRE dopo `playback_active()`: durante la riproduzione questa chiamata
+   non si fa nemmeno, ed e' li' che prendere il lock grafico da un thread di plugin fa danno (lotto 111).
+
+2. **`_defer_refresh_if_playing` -> `_defer_refresh_if_busy(kind, ids, actions)`** -- due motivi per
+   rimandare, un solo canale. La differenza sta in cosa il rinvio si porta dietro:
+   - in RIPRODUZIONE gli id si **buttano** (comportamento invariato): un film dura ore, in quel tempo
+     cambia molto piu' del titolo che ha innescato il rinvio;
+   - con un DIALOGO aperto gli id si **tengono**: l'attesa e' di secondi o minuti e il cambiamento e'
+     esattamente quello che sappiamo. Degradarlo a globale sarebbe un `UpdateLibrary` su tutto per il
+     solo fatto che l'utente aveva un menu aperto.
+
+3. **`kodi_utils.queue_pending_refresh(kind, ids, actions, scope)`** -- unica implementazione della
+   somma dei rinvii. Ce n'erano **tre**: due in `kodi_utils` (ramo finestra Video e rete di sicurezza)
+   che **SOVRASCRIVEVANO** invece di sommare, e una in `service._defer_widget_refresh` che sommava
+   correttamente. Le prime due erano una perdita latente: due cambiamenti distinti che nessuno ha
+   ancora mostrato, e chi arriva secondo cancellava il primo.
+
+4. **Il cancello di `WidgetRefresher`** guadagna `not modal_dialog_open()`. Senza, il rinvio nato per
+   il dialogo verrebbe consumato al giro dopo, ririmandato, riconsumato: un giro al secondo per tutta
+   la durata del dialogo, con `pending_since` azzerato ogni volta.
+
+Esito: alle 15:19:17 il refresh si mette in coda MIRATO su `330320` + `continue_watching`; alle
+15:20:42, chiuso il menu, `WidgetRefresher` lo consuma entro un secondo e il widget si allinea
+mentre l'utente lo sta guardando.
+
+### Cosa il guardiano NON deve inghiottire, verificato
+
+Il rinvio vale ora anche per `refresh_widgets`, che ha due padroni: il servizio periodico e la voce
+"Aggiorna widget". Rimandare la seconda sarebbe un comando esplicito dell'utente che non fa niente, e
+andava controllato invece che dato per scontato. **Non succede**: quella voce e' una riga di
+directory (`URL_REFRESH_WIDGETS = ...mode=refresh_widgets&user=true`, in movies/tvshows/seasons/
+episodes.py), quindi si preme da una finestra normale, dove `System.HasActiveModalDialog` e' falsa. Il
+guardiano non la vede mai. Restano coperti gli altri percorsi -- servizio periodico, fine
+riproduzione -- che sono proprio quelli da rimandare.
+
+### La batteria di prove, e dove sta adesso
+
+La batteria precedente viveva in una cartella temporanea di sistema ed e' stata **cancellata fra due
+sessioni**: dodici file piu' lo stub di Kodi, persi. Da qui in poi sta in `tests/`, accanto al codice.
+
+**Fuori da git, di proposito** -- `/tests` e' in `.gitignore` insieme a `deploy_local.py`,
+`generate_repo.py` e `*.md`: questa cartella e' anche il repository Kodi che viene pubblicato, e la
+roba di sviluppo non ci va. Che non sia versionata non e' un problema per il guasto che aveva
+distrutto la batteria precedente: la cartella e' dentro OneDrive, quindi sincronizzata, mentre
+`/private/tmp` viene ripulito senza preavviso.
+
+```
+tests/kodistub/             xbmc, xbmcgui, xbmcplugin, xbmcvfs, xbmcaddon -- il minimo per importare
+tests/harness.py            sys.path + reset() del mondo + check/equals/done
+tests/run.py                esegue ogni test_*.py in un processo separato
+tests/README.md             cosa sono gli stub e la regola della prova rossa
+tests/test_136.py           questo lotto: 26 verifiche in 10 casi
+tests/test_133_progress.py  le otto celle di progress_sync: 39 verifiche
+```
+
+Gli stub non simulano Kodi: simulano i **canali su cui il codice si scambia stato** -- proprieta' di
+finestra, infolabel, condizioni di visibilita', consegna della cartella -- perche' e' su quelli che
+si sbaglia.
+
+**`test_136` verificato ROSSO, non dedotto.** Con `modal_dialog_open` forzata a False -- il
+comportamento di prima di questo lotto -- **14 verifiche su 26 cadono**, e nel log dello stub compare
+`UpdateLibrary(video,...)` con il dialogo aperto. Cadono in tre gruppi: il ridisegno che parte sotto
+il dialogo (casi A e H), gli id perduti (A, D, E bis) e la somma dei rinvii che non avviene affatto,
+perche' senza rinvio non c'e' niente da sommare.
+
+Una trappola incontrata scrivendo la prova, e vale come regola: il primo tentativo controllava
+"e' stato ordinato qualcosa?" cercando `DIAG refresh` nel log, e passava sempre -- perche' **il rinvio
+stesso scrive una riga di DIAG**, che e' l'esito opposto a quello cercato. Un test che non si e' visto
+fallire non dimostra niente.
+
+Diff dei simboli su `kodi_utils.py` e `service.py`: una rinomina
+(`_defer_refresh_if_playing` -> `_defer_refresh_if_busy`) e due aggiunte, nessuna cancellazione.
+Schierato su entrambi i dispositivi: 96 file `.py` con md5 identici sulla stick.
+
+### Cosa resta da provare sul campo
+
+Rifare esattamente il test dell'utente: menu contestuale aperto sulla stick, 'azzera avanzamento' o
+'segna come non visto' dal Mac sullo stesso elemento. Atteso nel log della stick:
+`DIAG refresh: RIMANDATO (kodi_refresh_ids), dialogo modale aperto | id=1 azioni=1`, e la
+ricostruzione solo dopo il `Window Deinit` del menu.
+
+## Lotto 137 -- l'elemento nuovo arrivava a sinistra del cursore
+
+Sintomo, riferito cosi': "ho messo in pausa un film su mac, su stick non e' mai comparso su continua a
+guardare". E poi, poco dopo: "premendo indietro e' comparso, mi sa che e' una regressione dell'ultima
+modifica".
+
+**Non era una regressione, e la sincronizzazione aveva funzionato.** Ma il difetto era vero.
+
+### Il log dice che il film c'era
+
+```
+16:02:39.041  DIAG progress movie: da Trakt 1 | in locale 0 | scritte 1 | cambiate 1
+16:02:39.042  titoli cambiati: 1 -> ['1232569'] | azioni: continue_watching
+16:02:39.067  refresh_for_ids ... ricaricati=1
+16:02:39.607  FenLight CW: film in pausa 1 | ... | 7 elementi finali
+16:02:39.808  set_head built=7 first_url=...media_type=movie&tmdb_id=1232569   <- il film e' il PRIMO
+16:02:39.965  watcher current=2/7                                             <- ma il fuoco e' sul 2o
+```
+
+`current` e `numitems` non sono nostri: sono `Container(501).CurrentItem` e `.NumItems`, letti VIVI da
+Kodi. Quindi il contenitore a schermo aveva davvero 7 elementi e il film era davvero il primo.
+
+### La causa
+
+**Kodi, ricaricando un contenitore, conserva l'ELEMENTO su cui eri, non la posizione.** L'utente era
+sul primo (`current=1/6` alle 16:02:19); il film si e' inserito PRIMA di lui, quindi quell'elemento e'
+scivolato in posizione 2 e il fuoco l'ha seguito. La riga si disegna a partire dall'elemento col
+fuoco: il film stava un posto piu' a sinistra, fuori campo.
+
+Lo stesso log lo dimostra due volte, con i tasti dell'utente:
+
+```
+15:59:35.059  current=2/7                                 <- stesso caso, un episodio in testa
+15:59:37.472  HandleKey: left pressed, action is Left     <- preme SINISTRA
+15:59:37.629  current=1/7                                 <- e lo trova (ci apre pure il menu)
+
+16:03:19.147  action is Down ... 16:03:19.832 action is Up  <- Giu'/Su non muovono dentro la riga
+16:03:19.939  current=2/7                                   <- infatti resta sul 2o
+16:11:58.998  action is Back
+16:11:59.190  current=1/7                                   <- "e' comparso"
+```
+
+Tre input, tre esiti, tutti coerenti con una sola spiegazione.
+
+### Perche' sembrava nuovo
+
+Il refresh delle 16:02:39 non e' MAI passato dal guardiano del lotto 136: nessun dialogo era aperto, il
+rinvio non e' stato consultato, il percorso e' identico a prima. Quel lotto nello stesso log lavora
+correttamente (`RIMANDATO ... dialogo modale aperto` alle 16:00:06, `rinvio consumato dopo 54.8s` alle
+16:01:02, contenitore ricaricato 180 ms dopo).
+
+L'ipotesi -- non dimostrabile da questi log, e va detto: nessuno dei due contiene un inserimento in
+testa da PRIMA delle modifiche -- e' che prima il refresh spesso non atterrasse affatto mentre si stava
+sulla Home, e il cambiamento si vedesse solo uscendo e rientrando, cioe' con una ricostruzione da zero
+e il fuoco sul primo. Adesso atterra davvero, e atterra dietro al cursore. **La terza volta di fila che
+un meccanismo riparato scopre un difetto che c'era gia'** (lotto 131 -> 136, e ora questo).
+
+### La scelta, che e' dell'utente
+
+> "se il widget e' continue watching preferisco che il focus vada immediatamente sul primo elemento, a
+> prescindere da dove sia; se e' qualunque altro widget preferisco che il focus rimanga dov'e'"
+
+Ed e' la regola giusta per il motivo giusto: 'continua a guardare' e' la lista il cui SENSO e' che la
+cosa piu' recente sta in testa, quindi un arrivo fuori campo non serve a niente. Su ogni altro widget
+l'ordine non e' una promessa, e strattonare chi sta scorrendo sarebbe solo un fastidio.
+
+### La struttura
+
+Due pezzi, ciascuno dove l'informazione esiste davvero.
+
+1. **`paginator.set_head` -> `_note_head_change`.** E' l'unico punto che vede la lista NUOVA avendo
+   pubblicato la VECCHIA, quindi e' l'unico che sa rispondere a "la testa e' cambiata?". Registra il
+   path del primo elemento (`FIRSTURL_PROP`) e, se e' cambiato e il widget e' 'continua a guardare',
+   alza `REHEAD_PROP`. Alla prima costruzione non alza niente: non c'e' un prima, e un contenitore
+   appena nato parte gia' dal primo elemento.
+
+2. **Il watcher del paginatore la consuma.** Non e' un differimento per comodita', e' l'unico modo:
+   quando la build finisce **Kodi non ha ancora popolato il contenitore** -- la stessa corsa gia'
+   documentata in `refresh_containers_for_ids`, dove `container_head` non riesce a leggere un
+   contenitore appena ordinato -- quindi un `SetFocus` lanciato dal plugin cadrebbe sulla lista
+   vecchia. Il watcher e' l'unico che lo guarda DOPO, gira gia' a 0,3 s e ha gia' `CurrentItem` in
+   mano.
+
+Si riposiziona **solo un contenitore che ha gia' il fuoco**: e' la condizione del ramo in cui la
+consumazione vive, quindi `SetFocus` non puo' rubare il fuoco a un altro widget. Se il widget non e' a
+fuoco la bandiera resta alzata e si consuma appena l'utente ci entra -- che e' esattamente il "a
+prescindere da dove sia" richiesto, senza effetti collaterali. Un dialogo modale o una riproduzione non
+arrivano mai qui: il ciclo esce prima (lotto 97 e lotto 136).
+
+### Verifica
+
+`tests/test_137.py`, 13 verifiche in 8 casi: A prima costruzione, niente; B testa invariata, niente;
+C il caso del 03/09, bandiera alzata; D non si rialza da sola dopo il consumo; E su un altro widget non
+si tocca niente; F senza azione dichiarata niente; G l'azione vale anche se pubblicata a una
+costruzione precedente; H lista vuota.
+
+**Verificato rosso**: neutralizzando `_note_head_change` cadono 5 verifiche su 13, fra cui il caso C.
+Diff dei simboli su `paginator.py` rispetto a HEAD: una sola aggiunta, niente perso.
+
+Schierato su entrambi i dispositivi, 96 file `.py` con md5 identici sulla stick.
+
+### 137 bis -- il builtin mancava di una parola, e il log l'ha detto subito
+
+Prima prova sul campo: il meccanismo scatta due volte su due, e non sposta niente.
+
+```
+16:54:41.084  set_head built=7 first_url=...media_type=movie&tmdb_id=1432706
+16:54:41.246  watcher testa nuova key=home.501: riga riportata in cima (era 2/7)
+16:54:41.246  watcher ... current=2/7        <- invariato
+              (tre secondi e mezzo di niente)
+16:54:44.523  HandleKey: left pressed        <- si sposta l'UTENTE, non noi
+16:54:44.726  watcher ... current=1/7
+```
+
+La bandiera, il consumo, il momento: tutto giusto. Il comando era sbagliato. **Non l'ho dedotto: sono
+andato a leggere il sorgente di Kodi 21.1**, `CGUIBaseContainer::OnMessage`, ramo `GUI_MSG_SETFOCUS`:
+
+```cpp
+int offset = GetOffset();
+if (message.GetParam2() && message.GetParam2() == 1) offset = 0;
+int item = std::min(offset + message.GetParam1() - 1, (int)m_items.size() - 1);
+SelectItem(item);
+```
+
+`Param2` vale 1 solo se il builtin riceve un TERZO parametro, `absolute` (`GUIControlBuiltins.cpp`:
+`if (params.size() > 2 && StringUtils::EqualsNoCase(params[2].c_str(), "absolute")) absID = 1;`).
+Senza, l'indice e' **relativo allo scorrimento corrente**: `SetFocus(id,0)` seleziona il primo
+elemento VISIBILE. E siccome la riga era gia' scorsa di uno, quel calcolo restituiva esattamente
+l'elemento che aveva gia' il fuoco. Un colpo a vuoto, silenzioso.
+
+Correzione: `SetFocus(%s,0,absolute)`. Il valore resta 0-based -- il builtin ci somma 1 prima di
+spedire il messaggio -- mentre `CurrentItem` e' 1-based, quindi dopo il comando `current` deve
+leggersi 1.
+
+**E quel `GetOffset()` e' una conferma indipendente della diagnosi.** Perche' il comando fosse un
+no-op, l'offset di scorrimento doveva valere 1: cioe' la riga era davvero scorsa di un posto e
+l'elemento nuovo stava davvero fuori campo a sinistra. Il sorgente di Kodi e il log dicono la stessa
+cosa per due strade diverse.
+
+### Cosa resta da provare sul campo
+
+Mettere in pausa un film dal Mac stando sulla Home della stick col fuoco su 'continua a guardare'.
+Atteso: `watcher testa nuova key=home.501: riga riportata in cima (era N/M)` e, al giro successivo,
+`current=1`.
+
+La morale, che e' la stessa del lotto 135 e del 136 in altra forma: **un comando che non torna un
+errore non e' un comando che ha funzionato.** `executebuiltin` non risponde niente, quindi l'unico
+modo di sapere se ha morso e' misurare l'effetto al giro dopo -- ed e' esattamente quello che il log
+del watcher fa gratis, perche' rilegge `CurrentItem` ogni 0,3 s.
+
+## Lotto 138 -- il riposizionamento non deve aspettare che ci passi sopra
+
+Sintomo, e la formulazione e' dell'utente perche' e' migliore della mia:
+
+> "qualunque modifica faccio lato trakt, quando viene applicata nell'interfaccia compare a prescindere
+> da dove sia il focus e dal fatto che l'elemento sia parte del widget che sto scorrendo o meno. Questo
+> comportamento e' quello che voglio. Qua avevo il focus sull'icona della home e 'continua a guardare'
+> mi mostrava come primo elemento sempre quello vecchio. Quando ci sono passato sopra si e' aggiornato
+> subito, ma avrebbe dovuto farlo a prescindere."
+
+Ha ragione, ed e' un difetto che ho messo io nel lotto 137: la consumazione della coda stava **dentro
+il ramo del widget a fuoco**. Con il fuoco altrove -- l'icona della Home -- la riga restava scorsa
+sull'elemento vecchio finche' non ci si entrava, e allora si riposizionava di scatto. Il refresh dei
+dati e' sempre stato indipendente dal fuoco; il riposizionamento no, e la differenza si vedeva.
+
+### Due modifiche, non una
+
+**1. La consumazione sale sopra il cancello del fuoco.** Il watcher, prima di chiedersi quale widget
+sia a fuoco, guarda se c'e' qualcosa da riposizionare in QUESTA finestra e lo fa.
+
+**2. Il comando cambia: `Control.Move`, non `SetFocus`.** Ed e' obbligato. `SetFocus` porterebbe il
+fuoco sul widget: strappare l'utente dall'icona della Home per mostrargli un poster sarebbe un danno
+peggiore del difetto. `Control.Move` manda `GUI_MSG_MOVE_OFFSET`, che (Kodi 21.1):
+
+- `CGUIControlGroup::OnMessage` consegna al controllo **per ID, senza toccare il fuoco**
+  (`return SendControlMessage(message)`, e la ricerca scende nei gruppi annidati);
+- `CGUIBaseContainer::OnMessage` esegue come N chiamate a `MoveUp` **dentro un solo messaggio**
+  (`while (count < 0) { MoveUp(true); count++; }`), quindi una scorsa sola e non N animazioni;
+- `CGUIListContainer::MoveUp` sposta **cursore e scorrimento**, e avvolge alla fine della lista SOLO
+  se e' gia' sul primo elemento.
+
+Da quest'ultimo punto viene l'offset: **`1 - current`, esatto**. L'ultimo passo arriva sul primo
+elemento e non ne chiede altri. Un offset grande "a occhio" avvolgerebbe in fondo alla lista.
+
+### La coda al posto della bandiera
+
+`REHEAD_PROP` era `fenlight.pg.rehead.%s`, una bandiera per widget. Ora e' `fenlight.pg.rehead`, UNA
+proprieta' con dentro le chiavi separate da virgola (`rehead_queue` / `rehead_pending` /
+`rehead_done`).
+
+Non e' estetica: il watcher deve poter chiedere "c'e' lavoro?" a ogni giro da 0,3 s, e con una
+bandiera per chiave la domanda costava una lettura per ogni widget conosciuto anche quando la risposta
+era no. Cosi' costa **una lettura sola**, servita dalla memoria, e l'elenco si guarda solo nei rari
+giri in cui c'e' davvero qualcosa.
+
+Le chiavi di ALTRE finestre restano in coda: non si puo' riposizionare un contenitore che non e' a
+schermo, e quando quella finestra torna il watcher lo trova li'. Stesso principio del censimento del
+lotto 69 -- nessuna finestra resta indietro, e nessuna paga per finestre che non si guardano.
+
+### Verifica
+
+`tests/test_138.py`, 5 casi: A una sola proprieta' per tutti; B due widget in coda in ordine di
+arrivo; C si toglie solo quello agito e la proprieta' viene cancellata, non lasciata vuota; D accodare
+due volte lo stesso widget non lo duplica; E togliere una chiave assente non rompe niente.
+**Verificato rosso**: neutralizzando `rehead_queue` cadono 4 verifiche.
+
+`tests/test_137.py` adattato alla coda, 13 verifiche, sempre verde.
+
+Una prova l'ho scritta e poi **tolta**: asseriva `1 - 2 == -1`, cioe' un'identita' aritmetica che non
+puo' fallire. Quella regola e' provata dal sorgente di Kodi citato sopra e dal log del dispositivo,
+non da un test che si autoconferma. Sta scritto anche nel file, cosi' nessuno la rimette.
+
+Diff dei simboli rispetto a HEAD: quattro aggiunte in `paginator.py`, zero cambiamenti in
+`service.py`, niente perso.
+
+### Cosa resta da provare sul campo
+
+Fuoco sull'icona della Home, film messo in pausa dal Mac. Atteso nel log della stick, **senza aver
+toccato niente**:
+
+```
+watcher testa nuova key=home.501: riga riportata in cima (era N/M)
+```
+
+E la riga deve mostrare il film nuovo mentre il fuoco resta dov'era.
+
+## Lotto 139 -- l'ultima guardia a orologio, e perche' difendeva una porta murata
+
+Sintomo: episodio segnato visto dal Mac, e su 'continua a guardare' della stick l'episodio successivo
+non compare mai. Nel log sta scritto per esteso, con tanto di confessione:
+
+```
+17:16:32.205  DIAG progress episode: da Trakt 1 | in locale 1 (1 pending_put) | scritte 1
+17:17:03.464  watched episodes sync: 1 new plays added, no rebuild needed
+17:17:03.704  titoli cambiati: 1 -> ['287238'] | azioni: continue_watching
+17:17:03.705  TraktMonitor: refresh saltato, la modifica e' nostra ed e' gia' a schermo
+```
+
+**Non era nostra, e non era a schermo.** Alle 17:16:32 la stick aveva spinto un PROPRIO segnalibro
+(`1 pending_put`). Trentun secondi dopo e' arrivato da Trakt un episodio segnato visto dal Mac. La
+guardia `self_mark_recent()` -- 45 secondi -- ha visto il timbro della prima cosa e ha buttato la
+seconda.
+
+Ed e' stata una PERDITA, non un ritardo: quel ramo non leggeva ne' azzerava `changed_ids` e
+`changed_actions`, che al giro successivo venivano sovrascritti dalla nuova sincronizzazione.
+
+### La domanda sbagliata
+
+La guardia rispondeva a *"ho scritto qualcosa negli ultimi 45 secondi?"*. La domanda vera e'
+*"questo cambiamento e' gia' a schermo?"*. Sono diverse, e qui hanno dato risposte opposte. E' lo
+stesso difetto del lotto 132 (superato dal 133) e del lotto 130: **un timbro temporale al posto di un
+dato.** Ne restava una, ed era questa.
+
+### Perche' si puo' togliere: cio' che proteggeva non esiste piu'
+
+La guardia difendeva da una ricostruzione **GLOBALE** innescata da una nostra marcatura.
+`trakt_indicators_movies`, vedendo il proprio timbro, torna `None`; `None` significa *"non so chi e'
+cambiato"* e faceva ricadere sul globale -- nel log della stick del 23/08 due `DIAG refresh: GLOBALE`
+con cinque ricostruzioni ciascuno, per niente.
+
+Ma **dal lotto 134 ogni ramo che puo' lasciare gli id ignoti dichiara comunque la propria azione**
+(`continue_watching`), e dal lotto 119 **un'azione da sola basta per una ricarica MIRATA**. Verificato
+ramo per ramo in `trakt_sync_activities`: tutti e sei i punti che possono impostare `changed_unknown`
+aggiungono l'azione prima di chiamare il costruttore, oppure la passano a `_publish_changed`.
+
+Quindi il globale per una nostra marcatura **non e' piu' raggiungibile**: nel caso peggiore si
+ricostruisce un contenitore solo, per un dato identico, ed e' un'operazione idempotente che non si
+vede nemmeno (il lotto 137 non riposiziona niente, perche' la testa non cambia).
+
+La guardia difendeva una porta murata, e nel farlo ne teneva chiusa una aperta.
+
+### La decisione ora e' una funzione pura, e provata
+
+Questa decisione ha prodotto **tre guasti** -- lotto 130 (il rinvio ri-giudicato), lotto 134 (l'azione
+mancante sul ramo remoto) e questo -- e non era provabile in nessun modo: stava dentro il ciclo di un
+servizio che parla con Trakt. Ora e' `service.decide_refresh(changed, actions, age, coalesce)`, che
+non tocca Kodi, non tocca la rete e riceve l'eta' da fuori. Torna `(cosa, ids, azioni)` con `cosa` fra
+`niente` / `rinvio` / `mirato` / `globale`. Il monitor esegue e basta.
+
+Nello stesso passaggio i due canali si leggono e si **azzerano SEMPRE**: era proprio il non farlo che
+trasformava il salto in una perdita.
+
+### Verifica
+
+`tests/test_139.py`, 14 verifiche in 8 casi, fra cui A che e' il caso del 03/09 alla lettera. Le altre
+fissano il resto della tabella: `'-'` senza azioni non fa niente; `'-'` CON un'azione ricostruisce lo
+stesso (il difetto del lotto 119); ignoto e muto ricade sul globale; dentro la finestra si rimanda
+portandosi dietro id e azioni (lotto 130); il confine dell'accorpamento e' esatto a 30 s; `None` si
+comporta come ignoto.
+
+**Verificato rosso**: rimettendo davanti alla decisione la guardia a orologio cadono 7 verifiche su 14,
+a partire dal caso del 03/09.
+
+Nota di metodo: `service.py` all'ultima riga avvia tutti i servizi, quindi importarlo in una prova
+farebbe partire il monitor Trakt e la manutenzione del database. `harness.load_pure` estrae la
+funzione dal **sorgente spedito** con `ast` e la esegue da sola. Il vincolo che impone e' voluto: se un
+giorno `decide_refresh` iniziasse a leggere una proprieta' di finestra o l'orologio, quella riga
+smetterebbe di funzionare, ed e' il momento giusto per accorgersene.
+
+Diff dei simboli su `service.py` rispetto a HEAD: una sola aggiunta (`decide_refresh`), niente perso.
+Schierato su entrambi i dispositivi, 96 file `.py` con md5 identici sulla stick.
+
+### Il rischio che resta, dichiarato
+
+La rimozione poggia su un presupposto: *ogni ramo che lascia gli id ignoti dichiara un'azione*. Oggi e'
+vero in tutti e sei i punti. Se qualcuno aggiungesse un ramo muto, una nostra marcatura tornerebbe a
+innescare un globale. Ho valutato una prova statica che lo verificasse sull'albero sintattico e l'ho
+**scartata**: sarebbe stata grossolana -- non avrebbe visto un ramo muto aggiunto dentro una funzione
+gia' esistente -- e una prova che copre meta' del rischio dando l'impressione di coprirlo tutto e'
+peggio di nessuna prova. Il presupposto sta scritto nella docstring di `decide_refresh`, dove lo legge
+chi tocca quel codice.
+
+## Revisione del percorso di allineamento a Trakt (03/09) -- lotti 140 e 141
+
+Richiesta dell'utente: *"mi sembra che ci siamo tornati diverse volte, e ancora ogni tanto qualcosa
+sfugge, quindi sii critico... voglio chiudere questo capitolo definitivamente"*.
+
+### La diagnosi, prima delle correzioni
+
+Mettendo in fila i lotti, **ogni guasto ha la stessa forma**: una fase della catena dice "non c'e'
+niente da fare" per una ragione che non e' il contenuto.
+
+| lotto | chi diceva "salta" | in base a cosa |
+|---|---|---|
+| 58  | `reset_activity` | segnalibro avanzato prima del lavoro |
+| 119 | `_publish_changed` | `'-'` pubblicato da rami che non alimentavano il canale |
+| 130 | l'accorpamento | orologio |
+| 132 | euristica sulle rimozioni | orologio + finestra di grazia |
+| 134 | ramo remoto `watched_at` | azione non dichiarata |
+| 139 | `self_mark_recent()` nel monitor | orologio |
+| 141 | `self_mark_recent('movie')` | orologio |
+
+Non e' sfortuna: la catena ha **sette punti che possono decidere di non fare niente**, e storicamente
+solo alcuni decidevano guardando il contenuto. Ogni lotto ne ha convertito uno.
+
+---
+
+## Lotto 140 -- allo snapshot chiediamo tutta la domanda, e le riparazioni le raggiunge ogni giro
+
+### 140.1 -- `_drain_remote_repairs()` era irraggiungibile sul percorso tranquillo
+
+Stava in fondo a `trakt_sync_activities`. Il ramo "niente e' cambiato su Trakt" esce con `return`
+molto prima -- ed e' proprio il ramo in cui la riconciliazione gira per le cancellazioni, cioe' quello
+che le riparazioni le PRODUCE.
+
+Conseguenza su un account tranquillo: una spinta mai confermata (hai messo in pausa, la chiamata e'
+fallita) restava in coda finche' non capitava un cambiamento **non correlato**. Un'azione dell'utente
+persa in silenzio.
+
+Ora la chiamata sta **all'inizio** del giro, dove ci passa ogni percorso. Prezzo: una riparazione nata
+in questo giro parte al prossimo, entro l'intervallo di poll -- per una ripetizione di rete e'
+irrilevante, e in cambio non dipende piu' da quale ramo l'ha prodotta. Con le code vuote torna subito.
+
+### 140.2 -- allo snapshot chiedevamo meta' della domanda
+
+`sync/playback` lo scarichiamo INTERO a ogni giro tranquillo. Misurato sulla stick: **mediana 0,47 s
+di lavoro per poll** (17 campioni, da 30,40 a 33,08 s fra i log di due poll consecutivi contro un
+intervallo nominale di 30), cioe' due round trip HTTPS ogni 30 secondi, circa 5700 richieste al giorno.
+
+Di quello snapshot chiedevamo solo *"Trakt ha tolto qualcosa che ho?"*. Mai *"Trakt ha qualcosa che io
+non ho?"* -- che e' la domanda fallita il 01/09.
+
+`has_progress_deletions` diventa `progress_out_of_sync` e risponde in **due direzioni**:
+
+  TOLTE     un resume_id nostro `synced` che lo snapshot non elenca.
+  AGGIUNTE  un resume_id nello snapshot che non abbiamo in NESSUNO stato.
+
+Le `pending_put` gia' spinte e le `pending_delete` contano fra i "nostri" per la seconda domanda ma
+non per la prima. La seconda esclusione e' una trappola vera: una DELETE non passata che Trakt elenca
+ancora, contata come aggiunta, farebbe ricostruire ogni trenta secondi fino alla fine dei tempi.
+Quel guasto lo ripara `_drain_remote_repairs`, non una ricostruzione a ripetizione.
+
+**Il valore di ritorno e' il MOTIVO, non un booleano**: nel log si legge `2 tolte da Trakt` oppure
+`1 in piu' su Trakt`. La differenza fra le due e' la prima cosa che si vuole sapere leggendo un log,
+ed e' costata due indagini quando non c'era.
+
+### 140.3 -- e cosi' cade anche la corsa sui timestamp
+
+`_compare` usa `>` STRETTO su marche temporali **al secondo** (`.000Z`). Due cambiamenti nello stesso
+secondo con un poll in mezzo: il primo viene visto, `reset_activity` memorizza quel secondo, il secondo
+diventa invisibile **per sempre** -- il giro dopo `latest == cached` e si dice 'nessuna modifica'.
+Improbabile nell'uso normale; non improbabile agendo in raffica da due dispositivi, che e' esattamente
+come si collauda.
+
+Non serve toccare `_compare`: il giro "tranquillo" ora non si fida piu' della marca, guarda il
+contenuto e lo trova. **La marca temporale torna a essere cio' che deve essere -- un modo per evitare
+lavoro inutile, non un cancello che decide la correttezza.**
+
+Il cancello `has_any_progress()` resta, ed e' motivato nel codice: senza righe locali l'unica cosa che
+potrebbe sfuggire e' un'aggiunta, e un'aggiunta muove `paused_at`, quindi la prende il ramo normale.
+
+### 140.4 -- i due canali si azzerano sempre
+
+Con `fenlight.trakt.refresh_widgets` a `false`, `changed_ids` e `changed_actions` non venivano ne'
+letti ne' cancellati. Nessun danno oggi, ma e' la forma esatta del guasto del lotto 139. La lettura e
+l'azzeramento salgono sopra la condizione; la decisione di disegnare viene dopo.
+
+**Errore mio, colto rileggendo.** La prima stesura usava `continue` per saltare il ramo del disegno.
+`wait_for_abort(wait_time)` sta FUORI dal `try`, in fondo al giro: quel `continue` avrebbe fatto girare
+il monitor **a piena velocita' contro Trakt**. Sostituito con un annidamento, e la ragione e' scritta
+sul posto perche' non torni.
+
+### Verifica
+
+`tests/test_140.py`, 12 verifiche in 10 casi, su un database SQLite vero con lo schema spedito
+(`base_cache.PROGRESS_CREATE`, non una copia): allineati; tolta; aggiunta; una nostra `pending_put`
+non e' un arrivo; una nostra `pending_put` assente non e' una cancellazione; una `pending_delete`
+ancora su Trakt non innesca un ciclo; le due direzioni insieme; film ed episodi sono conti separati;
+tabella vuota e snapshot pieno; `resume_id` 0 resta fuori.
+
+**Verificato rosso**: rimettendo la domanda a meta' cadono 3 verifiche, fra cui il caso dell'arrivo.
+
+Un caso l'ho scritto sbagliato io e l'ho corretto invece di adeguare il codice: passava il `resume_id`
+di un film come se fosse di un episodio, cosa che il chiamante non fa mai. Il codice aveva ragione.
+
+---
+
+## Lotto 141 -- l'ultima guardia a orologio sui film, e due difetti che si portava dietro
+
+### 141.1 -- il conto al posto dell'orologio
+
+`trakt_indicators_movies` si apriva con `self_mark_recent('movie')`: se avevamo marcato negli ultimi
+45 s, rinvio e via. Serviva a evitare il rebuild completo (6 pagine, ~4 s di rete e CPU sulla stick),
+che scattava perche' dopo una nostra marcatura `new_plays` esce VUOTA -- il play piu' recente in
+tabella e' la marcatura stessa.
+
+**Il disambiguatore basato sul contenuto era gia' in quel file, venti righe piu' sotto** (lotto 108):
+
+```python
+_probe = call_trakt('sync/watched/movies', params={'limit': 1}, ...)
+_remote_count = int(_probe[1])      # con limit=1, X-Pagination-Page-Count E' il conto
+if _local_count == _remote_count: return _changed
+```
+
+Viveva pero' solo dentro il ramo incrementale, cioe' proprio dove `new_plays` NON e' vuota. Ora e' una
+funzione a se' (`_conta_film_su_trakt`) usata anche nel caso ambiguo:
+
+| situazione | conto locale | conto remoto | esito |
+|---|---|---|---|
+| marcatura nostra | +1 (la scrive watched_status) | +1 | uguali -> **niente rebuild, e nessun orologio** |
+| rimozione altrove | invariato | -1 | diversi -> rebuild, che e' giusto |
+| aggiunta altrove | invariato | +1 | ma li' `new_plays` non e' vuota: via incrementale |
+
+Costo: una richiesta da UN elemento invece di sei pagine.
+
+**Perche' i film si' e gli episodi no.** Non e' pigrizia, e' che il conto confrontabile non esiste:
+
+| | la nostra tabella | cosa offre Trakt | confrontabile |
+|---|---|---|---|
+| film | una riga per film | `sync/watched/movies`: una voce per film | **si', 1:1** |
+| episodi | una riga per episodio | `sync/watched/shows`: una voce per SERIE (Trakt non restituisce piu' il dettaglio stagioni/episodi) | no |
+| | | `sync/history/episodes`: una voce per PLAY (le riviste contano doppio) | no |
+
+E c'e' una ragione piu' forte del conteggio: per i film il lato locale e' **derivato dai dati**
+(`watched_movie_count()` conta le righe), quindi non puo' andare alla deriva. Per gli episodi
+servirebbe un contatore separato che ogni percorso di marcatura -- singola, di stagione, batch,
+smarcatura -- deve tenere aggiornato. **Un solo incremento mancato e il numero resta sbagliato per
+sempre**: o un rebuild ogni 30 s, o una rimozione che non si vede mai piu'. E' lo stesso stato
+condiviso fragile che ci ha morso finora, e non lo si costruisce.
+
+**Sugli episodi la guardia a orologio resta**, ed e' un limite noto dichiarato, non un dimenticato.
+
+### 141.2 -- non si dichiara lavoro che non e' stato fatto
+
+`None` da un costruttore voleva dire due cose: *"ho rimandato, non ho fatto niente"* e *"ho fallito"*.
+Entrambe finivano su `changed_unknown = True` con l'azione dichiarata: **una ricostruzione globale per
+un lavoro che non c'era stato.** Nel caso del rinvio e' anche inutile due volte, perche' il giro dopo
+si rifa' tutto.
+
+`declare_change(ids, rimandato)` distingue quattro esiti dove ce n'erano due, ed e' una funzione pura:
+
+  None + RIMANDATO      -> si tace. Il segnalibro torna indietro, il giro dopo si dichiarera' il vero.
+  None senza rinvio     -> azione + globale: lo stato e' incerto e non c'e' un rinvio a rimediare.
+  insieme VUOTO         -> il lavoro c'e' stato e non e' cambiato nulla: niente da ridisegnare.
+  insieme pieno         -> azione + id.
+
+`None` puo' voler dire una cosa sola -- niente applicato -- perche' tutti i ritorni anticipati dei
+costruttori escono PRIMA della scrittura, e la scrittura vera e' in transazione
+(`trakt_cache._atomic`), quindi non lascia mai stati parziali. Verificato ramo per ramo.
+
+Chiude anche il costo che il lotto 139 aveva introdotto e che avevo sottovalutato dicendo "una
+ricostruzione idempotente": erano due, e una su un database deliberatamente non aggiornato.
+
+### 141.3 -- il ripristino del segnalibro non butta piu' il lavoro riuscito
+
+`_SYNC_DEFERRED` era un booleano e `restore_activity(cached)` rimetteva indietro il blocco **intero**.
+Un rinvio sui film buttava anche watchlist ed episodi allineati nello stesso giro, che venivano rifatti
+trenta secondi dopo.
+
+Ora `_SYNC_DEFERRED` e' un insieme di CATEGORIE e `activity_rollback(latest, cached, categorie)` --
+pura -- rimette indietro solo quelle, piu' `'all'` che e' il cancello d'ingresso: senza quello il giro
+successivo non entrerebbe nemmeno a guardare. Nel log si legge quali:
+`segnalibro attivita' riportato indietro per: episodes`.
+
+### Verifica
+
+`tests/test_141.py`, 16 verifiche in 9 casi sulle due funzioni pure, caricate dal **sorgente spedito**
+con `harness.load_pure` (trakt_api.py non si puo' importare in una prova: si porta dietro mezzo addon).
+
+**Verificato rosso due volte**, una per difetto:
+- con `declare_change` di prima (None -> sempre azione + globale) cadono 3 verifiche;
+- con il ripristino totale (`dict(cached)`) ne cadono 4 e la nona **esplode con KeyError**, che e'
+  esattamente cio' che succedeva scrivendo un blocco di attivita' incompleto.
+
+Diff dei simboli su `trakt_api.py` rispetto a HEAD: tre aggiunte (`_conta_film_su_trakt`,
+`declare_change`, `activity_rollback`), niente perso. Schierato su entrambi i dispositivi, 96 file
+`.py` con md5 identici sulla stick.
+
+---
+
+## Lotto 142 -- il numero certo al posto dell'orologio, anche per gli episodi
+
+Il limite dichiarato dopo il lotto 141 era: per i film esiste un conto confrontabile, per gli episodi
+no, quindi gli episodi devono tenersi la guardia a orologio e pagare il rebuild integrale. La
+premessa era **falsa**, e a smentirla e' bastato leggere la documentazione nuova di Trakt.
+
+### `users/me/stats`
+
+Non paginato, **457 byte, ~0,5 s**, dimensione costante qualunque sia la grandezza dell'account:
+
+```
+"movies":   { "plays": 614,  "watched": 598,  ... }
+"episodes": { "plays": 1291, "watched": 1279, ... }
+```
+
+Quelli sono esattamente i numeri che il rebuild integrale otteneva scaricando **6 pagine e 121 KB**
+di cronologia. La prima pagina da sola, quella che si pagava anche sui giri tranquilli, pesa 121 KB e
+quasi un secondo. Misurato il 03/09 sull'account vero.
+
+Misurato anche l'altro candidato, `sync/progress/watched`: da' il `completed` per SERIE -- direbbe
+anche *quale* serie e' cambiata -- ma pesa **61 KB**, 134 volte tanto. Non e' il guardiano giusto;
+semmai un secondo stadio, dopo che stats ha detto che qualcosa si e' mosso.
+
+### Il dubbio da sciogliere, e come e' stato sciolto
+
+Se stats fosse un valore precalcolato in RITARDO rispetto a `sync/last_activities` -- che e' cio' che
+ci sveglia -- leggerlo vecchio significherebbe concludere "non e' cambiato niente" e perdere il dato
+per sempre: il guasto del lotto 88. Non era deducibile dalla documentazione, e la sonda dei film non
+risponde alla domanda perche' `sync/watched/movies?limit=1` e' una query dal vivo.
+
+Misurato con un rilevatore in **sola lettura** ogni 2 s, mentre la marcatura veniva fatta a mano da
+Kodi (percorso vero del plugin, non una chiamata all'API):
+
+```
+  58.1s  ATTIVITA ea 18:42:53 -> 19:25:51 | STATS ew 1279 -> 1280, ep 1291 -> 1292
+  96.8s  ATTIVITA ea 19:25:51 -> 19:26:29 | STATS ew 1280 -> 1279, ep 1292 -> 1291
+```
+
+Nello stesso campione in cui si muove l'attivita', stats e' **gia' aggiornato**, in entrambe le
+direzioni, mai indietro. Risoluzione 2 s: si puo' affermare che stats non e' in ritardo di PIU' di
+2 s, non che sia simultaneo -- ma 2 s stanno molto sotto qualunque intervallo di sondaggio, ed e'
+un'osservazione per direzione, non una statistica.
+
+La riga che conta di piu' e' la seconda: togliendo il "visto", `episodes.watched` **cala**. Quello e'
+il segnale che dalla cronologia non si puo' ottenere in alcun modo, perche' una rimozione non aggiunge
+un play -- ed e' l'unica ragione per cui gli episodi erano condannati al rebuild integrale.
+
+### Perche' il confronto NON e' quello dei film
+
+Il primo istinto e' `locali == stats['episodi_visti']`, come per i film. **Non funziona**: la tabella
+locale ha 1275 righe, Trakt ne dichiara 1279. Un confronto assoluto direbbe "divergono" a ogni singolo
+sondaggio, per sempre, e ricostruirebbe SEMPRE -- peggio del comportamento che sostituisce.
+
+Si confronta quindi con lo **scarto** misurato all'ultimo rebuild integrale, che e' l'unico momento in
+cui la tabella locale e' per costruzione la verita' completa (`_misura_scarto_episodi`). Con lo scarto:
+
+- una marcatura NOSTRA muove +1 sia il conto locale sia quello remoto: restano allineati e non si
+  ricostruisce. E' cio' che l'orologio `self_mark_recent` prima **indovinava**;
+- una rimozione altrove muove SOLO il remoto: i due divergono e si ricostruisce **subito**, senza
+  aspettare 45 s;
+- una marcatura da un ALTRO dispositivo muove solo il remoto: si prosegue, e a valle e' la via
+  incrementale a occuparsene, non il rebuild;
+- una RIVISIONE muove i `play` ma non i `watched`, e la nostra tabella accorpa le riviste su una riga
+  sola: si prosegue lo stesso, perche' `last_played` decide il confine della via incrementale al giro
+  dopo.
+
+Se lo scarto cambia (un anime nuovo che collide), si ricostruisce una volta e lo scarto si rimisura da
+solo: **converge sempre**, e il caso peggiore resta il comportamento di prima. Lo scarto si rimisura
+**solo** dopo un rebuild integrale: farlo anche sulla via incrementale, dove la tabella e' fresca solo
+per le righe appena scritte, permetterebbe a una rimozione avvenuta nello stesso istante di finire
+assorbita nello scarto e non essere piu' notata.
+
+### Cosa e' sparito
+
+`self_mark_recent('tvshow')` era **l'ultimo lettore** del timbro: i film l'avevano perso col lotto
+141, il monitor col 139. La funzione e il timbro restano scritti finche' il guardiano non e' provato
+sul campo -- se andasse rimesso, il dato che gli serve c'e' ancora. Se il 142 tiene, vanno via
+insieme: `self_mark_recent`, `TRAKT_SELF_MARK_SECONDS` e le due scritture in `watched_status.py` e
+`player.py`.
+
+Sparisce anche una richiesta per giro sui film: `_conta_film_su_trakt()` legge da stats, con la sonda
+storica come riserva. Verificato che i due valori coincidono (598 e 598).
+
+### Un difetto trovato per strada, da correggere a parte
+
+Lo scarto di 4 non e' rumore. E' tutto su **una serie sola**:
+
+```
+Hunter x Hunter    Trakt 148    locale 144
+Trakt ha, locale NON ha:  (1,59) (1,60) (1,61) (1,62) (2,63) (2,64) (2,65) (2,66)
+locale ha, Trakt NON ha:  (2,1)  (2,2)  (2,3)  (2,4)
+```
+
+Otto episodi remoti finiscono su **quattro** righe locali: il rimappaggio TVDB in `_make_row` non e'
+iniettivo, manda sia `(1,59..62)` sia `(2,63..66)` su `(2,1..4)`, e la chiave unica
+`(db_type, media_id, season, episode)` con `INSERT OR REPLACE` scarta i perdenti **in silenzio**, senza
+una riga di log. Otto episodi hanno l'indicatore "visto" sbagliato.
+
+Qui viene solo **misurato, non nascosto**: uno scarto diverso da zero si scrive nel log a ogni
+rebuild. Quando il rimappaggio sara' corretto lo scarto andra' a zero da solo, al primo rebuild, e il
+confronto degli episodi diventera' identico a quello dei film -- che e' piu' forte, perche' sorveglia
+anche l'integrita' del nostro database.
+
+### 142 bis -- l'ordine dei due controlli, misurato sul campo
+
+La prima stesura guardava i `play` PRIMA del conto, e la stick l'ha smentita in dieci minuti:
+
+```
+22:26:12  marcatura fatta a mano SULLA STICK (riga gia' scritta in locale)
+22:26:20  si prosegue, i play sono cambiati (1291 memorizzati, 1292 su Trakt)
+22:26:23  rebuild completo, motivo: nessun play piu' recente del piu' recente locale
+22:26:25  titoli cambiati: 0 | azioni: nessuna
+```
+
+Cinque secondi e sei pagine per scrivere zero righe. E i conti in quel momento **coincidevano**
+(1276 locali contro 1280 remoti con scarto noto 4): l'insieme degli episodi visti era gia' quello
+giusto. A far proseguire e' stato il canale dei play, che si muove anche quando la modifica e' NOSTRA
+e gia' applicata -- cioe' il caso piu' frequente in assoluto, ed esattamente la malattia che
+l'orologio curava. Il 142 l'aveva fatta rientrare da un'altra porta.
+
+Regola corretta: **se i conti coincidono non si ricostruisce, qualunque cosa facciano i play.** Il
+conto risponde alla domanda che conta; i play distinguono solo il perche', e servono a scriverlo nel
+log. Prezzo dichiarato: una rivisione fatta altrove non aggiorna piu' `last_played` da qui, quindi il
+confine della via incrementale resta indietro -- lavoro in piu' domani, mai un badge sbagliato oggi.
+
+Sul percorso che salta si registrano i play (il valore nuovo e' quello buono da cui ripartire) ma
+**mai** lo scarto, che continua a misurarsi solo dopo un rebuild integrale.
+
+### Lo scarto e' diverso fra i due dispositivi
+
+Misurato la sera del 03/09, stesso account, stesso momento:
+
+| | righe locali | Trakt | scarto |
+|---|---|---|---|
+| Mac | 1279 | 1279 | **0** |
+| stick | 1275 | 1279 | **4** |
+
+Il rimappaggio di Hunter x Hunter collide **sulla stick e non sul Mac**, perche' `_episode_remap`
+dipende dai metadati TMDb in cache su ciascun dispositivo. In questo momento la stick ha quattro
+episodi senza il badge "visto" che sul Mac ce l'hanno. Il meccanismo dello scarto si e' adattato da
+solo a entrambi -- conferma che misurarlo per dispositivo, invece di scriverlo come costante, era la
+scelta giusta.
+
+### Prove
+
+`tests/test_142.py`, 11 casi. Ogni guardia e' stata vista ROSSA iniettando il guasto corrispondente:
+scarto ignorato (accende A e F), stats assente trattato come "tutto fermo" (accende H), memoria
+mancante ignorata (accende G), conto ignorato del tutto (accende C, D, F).
+
+Il caso **B2** e' la regressione del 142 bis, scritto con i numeri veri del log della stick:
+rimettendo i play davanti al conto si accendono B2 ed E. E' la prova che sorveglia l'ORDINE, ed e'
+l'unica ragione per cui quel difetto non puo' tornare una terza volta.
+
+Il rilevatore di ritardo di `users/me/stats` non e' una prova di questa batteria: tocca la rete, e la
+misura sta qui sopra.
+
+### Conferma sul campo (03/09, 22:49-22:53, Mac e stick insieme)
+
+Zero errori, zero eccezioni. E la riga che in tutte le sessioni precedenti non era MAI comparsa:
+
+```
+Mac 22:51:44  il conto coincide (1280 in locale, 1280 su Trakt, scarto noto 0)
+              ma i play sono cambiati (1291 memorizzati, 1292 su Trakt) -- niente da scaricare
+Mac 22:51:44  titoli cambiati: 0 | azioni: nessuna -> nessuna ricostruzione
+```
+
+E' lo STESSO caso che alle 22:26, prima del 142 bis, costava 5 secondi e 6 pagine per scrivere zero
+righe. Si ripete alle 22:52:47 con una smarcatura locale (1281 -> 1279 in locale, 1279 su Trakt).
+**Le marcature fatte sul dispositivo che le compie sono diventate gratis**, che era il punto del lotto.
+
+Sei chiamate al guardiano in tre minuti e mezzo di marcature e smarcature fitte:
+
+| | salti | incrementale | rebuild |
+|---|---|---|---|
+| Mac | 2 | 0 | 1 |
+| stick | 1 | 1 | 1 |
+
+**Quattro su sei hanno evitato il rebuild**; prima della correzione lo avrebbero pagato tutte e sei.
+Costi misurati: salto **0,5 s**, rebuild 1,5 s sul Mac e **3,1 s sulla stick**. I due rebuild rimasti
+erano entrambi legittimi -- i conti divergevano davvero, e in un caso la stick aveva due righe che su
+Trakt non c'erano piu'.
+
+Il guardiano si e' visto lavorare in tutte e tre le direzioni: salta quando deve, prosegue quando i
+conti divergono, e riconosce le rimozioni che prima erano invisibili. Le due inefficienze rimaste
+sono entrambe PREESISTENTI e ora finalmente visibili: sono i lavori residui A e B piu' sotto.
+
+Da provare sul campo: su un giro tranquillo deve comparire
+`watched episodes: il conto coincide (... ) e nessun play nuovo -- niente da scaricare`, **senza**
+nessuna riga di rebuild e senza il fetch della cronologia. Togliendo un "visto" da un altro
+dispositivo deve comparire `i play sono cambiati` seguito dal rebuild. Se invece compare
+`nessun conteggio memorizzato` a ogni giro, lo store chiave/valore non sta scrivendo e va guardato
+prima di fidarsi.
+
+## Lotto 143 -- il timbro come TESTIMONE, non come orologio
+
+Il buco che il 142 non copriva. **Il conto e' una somma, e una somma perde cio' che l'ha composta**:
+`+1 -1` e `0` danno lo stesso numero. Se fra due sondaggi un episodio viene marcato e un ALTRO
+smarcato, il conto non si muove, si salta, e restano due badge sbagliati -- con il "prossimo episodio"
+storto su due serie, che e' proprio cio' per cui esiste 'continua a guardare'.
+
+Non e' il caso di uno STESSO elemento marcato e poi tolto: quello torna davvero a "mai visto", il
+conto torna al valore di partenza e dice il vero. Ci vogliono due elementi diversi.
+
+### L'indizio che si buttava via
+
+A `decide_rebuild_episodi` ci si arriva **solo** perche' `sync/last_activities` ha mosso
+`episodes.watched_at`. E quell'endpoint da' un timestamp per categoria -- non un elenco, non un
+contatore -- quindi dice "qualcosa e' cambiato" senza dire cosa ne' quanto. Il campanello suona
+sempre; e' la nostra RISPOSTA a essere sbagliata, non il trigger.
+
+Un conto immobile e un'attivita' che si muove **si contraddicono**, e la contraddizione e' un indizio.
+Restava da riconoscere il caso in cui e' normale, ed e' il piu' frequente di tutti: la marcatura fatta
+da NOI su questo dispositivo, gia' scritta in locale, per cui i conti coincidono a ragione. Lo dice il
+timbro `self_mark`, che il 142 aveva lasciato in piedi senza chiamanti.
+
+### Non e' l'orologio che torna
+
+Come OROLOGIO il timbro serviva a RIMANDARE il lavoro indovinando, ed e' stato tolto tre volte (lotti
+139, 141, 142) perche' era la domanda sbagliata. Come TESTIMONE dice solo **chi** ha fatto la
+modifica, e non rimanda niente: se non siamo stati noi, il silenzio del conto non e' credibile e si
+verifica. Puo' solo far lavorare di PIU', mai di meno -- ed e' questa la proprieta' che la prova E
+sorveglia.
+
+### Il prezzo, dichiarato
+
+Una rivisione fatta altrove (play +1, visti invariati, non nostra) costa una verifica che quasi sempre
+non trovera' nulla. Da qui non si puo' distinguere da una coppia compensata. Si paga solo quando la
+modifica viene da fuori, mai sulle proprie.
+
+Va anche detto che il **142 bis aveva allargato** questo buco: da quando il conto vince sui play,
+veniva saltata anche la coppia compensata con i play sbilanciati (episodio smarcato con due
+riproduzioni, netto -1). Il testimone richiude anche quella.
+
+### Prove
+
+`tests/test_143.py`, 7 casi. Il cuore e' la coppia **A/B**: gli stessi identici numeri, distinti solo
+dal testimone -- se venisse ignorato, uno dei due morirebbe. Viste ROSSE iniettando: testimone
+ignorato (accende A, C, G), default permissivo (accende G), testimone messo DAVANTI al confronto dei
+conti (accende E, che controlla anche il motivo e non solo l'esito).
+
+## Revisione del rimappaggio TVDB (04/09) -- canovaccio per il LAVORO RESIDUO A
+
+Nessuna correzione in questa sezione: e' la lettura del blocco `skyhook_api.py` +
+`metadata.py` (mappe) + i tre punti di consumo, con le misure fatte il 04/09 sui dati veri del
+Mac e sulle API in diretta. Serve da traccia per l'implementazione.
+
+### Le tre numerazioni, misurate
+
+Hunter x Hunter (2011), tmdb 46298 / tvdb 252322:
+
+| sorgente | stagione 1 | stagione 2 | stagione 3 | totale |
+|---|---|---|---|---|
+| TVDB (skyhook) | 58 (1..58) | 78 (1..78) | 12 (1..12) | 148 + 2 speciali |
+| TMDb | 62 (**1..62**) | 74 (**63..136**) | 12 (**137..148**) | 148 |
+| Trakt | 62 (1..62) | 74 (**63..136**) | 12 (137..148) | 148 |
+
+Il fatto che rovescia il tavolo e' nella colonna TMDb: **TMDb non fa ripartire la numerazione da 1
+a ogni stagione.** Per questa serie gli episodi sono numerati di seguito, 1..148, distribuiti su tre
+stagioni. Verificato chiamando `/tv/46298/season/{1,2,3}`: i numeri vanno da 1 a 62, da 63 a 136,
+da 137 a 148.
+
+Verificato anche che **Trakt usa la numerazione di TMDb**, non quella di TVDB
+(`/shows/hunter-x-hunter-2011/seasons` -> 62/74/12; gli episodi della stagione 2 sono numerati
+63..136).
+
+La prima stesura di questa sezione aggiungeva "non e' una regola, e' cio' che vale per questa serie".
+**Era un'illazione, non un fatto, ed e' stata smentita.** Misura del 04/09 su 18 serie e 4747
+episodi (confronto fatto agganciando ogni episodio Trakt al suo `ids.tmdb` e verificando che la
+coppia `(stagione, numero)` combaci):
+
+```
+divergenze fra numerazione Trakt e numerazione TMDb:  0
+episodi Trakt senza id tmdb:                          0
+episodi Trakt senza id tvdb:                         55
+```
+
+Zero divergenze su One Piece (1220 episodi), Detective Conan (1246), Naruto Shippuden (503), Bleach,
+JoJo, Sailor Moon, Demon Slayer, Jujutsu Kaisen e le altre. **Trakt e TMDb sono la stessa
+numerazione**, e il legame TMDb e' per giunta piu' forte di quello TVDB: zero episodi senza id TMDb
+contro 55 senza id TVDB.
+
+Conseguenza per il progetto: la mappa da costruire resta **TVDB <-> TMDb**, come adesso. Non si
+toglie TMDb dall'equazione. Cambia solo COME si trova la corrispondenza.
+
+### Difetto 1 -- `get_tvdb_to_tmdb_map` INVENTA la numerazione TMDb
+
+```python
+for ep in range(1, s.get('episode_count', 0) + 1):
+    tmdb_eps.append((snum, ep))
+```
+
+Costruisce il lato TMDb come se ogni stagione ripartisse da 1. Per HxH la lista giusta e'
+`(1,1..62) (2,63..136) (3,137..148)`; quella costruita e' `(1,1..62) (2,1..74) (3,1..12)`.
+
+Due conseguenze, non una:
+
+1. tutte le voci delle stagioni 2 e 3 hanno il valore sbagliato;
+2. **le voci della stagione 3 spariscono del tutto.** Il filtro finale e' `if tvdb_key != tmdb_val`,
+   e `(3,1) != (3,1)` e' falso: sembra un'identita' da non registrare, mentre il valore vero e'
+   `(3,137)`. Dodici voci mancanti per omissione, non per errore di calcolo.
+
+Il numero giusto non va cercato: `season_episodes_details()` lo restituisce gia', e `episodes_meta`
+lo chiama comunque una trentina di righe piu' sotto.
+
+### Difetto 2 -- la mappa inversa perde voci in silenzio
+
+`metadata.py:940` e `:1114` costruiscono entrambe la direzione opposta cosi':
+
+```python
+meta['tmdb_to_tvdb_ep'] = {v: k for k, v in meta['tvdb_to_tmdb_ep'].items()}
+```
+
+Se la diretta non e' iniettiva, l'inversa perde una voce per ogni valore ripetuto, senza un errore.
+Misurato **adesso** sul `metacache.db` del Mac, serie 46298: **78 voci nella diretta, 66 nell'inversa,
+12 perse.** I dodici valori contesi sono `(2,63)` .. `(2,74)`, ciascuno immagine di due chiavi TVDB
+diverse -- una corretta dalla passata sulle date, una rimasta posizionale.
+
+E' esattamente il meccanismo che produce lo scarto: l'inversa e' cio' che `_make_row` usa per
+scrivere le righe, e due episodi Trakt che finiscono sulla stessa coppia `(stagione, episodio)`
+diventano una riga sola per via di `INSERT OR REPLACE` sulla chiave unica.
+
+### Difetto 3 -- la correzione per data e' parziale, e viene CONGELATA
+
+`episodes_meta` (metadata.py:1103-1115) ripara la mappa confrontando le date di messa in onda, poi
+riscrive la meta della serie con `EXPIRES_182_DAYS`. Stato attuale della mappa in cache sul Mac,
+confrontata con la verita' ricalcolata:
+
+- **41 voci giuste** (riparate dalla passata sulle date)
+- **37 voci sbagliate** (rimaste posizionali)
+- **12 voci mancanti** (la stagione 3, per il difetto 1)
+
+Non e' uno stato transitorio che si sistema al prossimo giro. La correzione gira solo quando la cache
+della STAGIONE e' fredda, e quando gira riscrive sia la mappa sia l'elenco episodi con sei mesi di
+scadenza. **Una mappa mezza corretta e' un punto fisso**, non un passaggio.
+
+Da qui la nota gia' scritta al LAVORO RESIDUO A -- il difetto e' per dispositivo e non per account --
+trova la sua spiegazione: Mac e stick hanno percorsi di navigazione diversi, quindi hanno riparato
+sottoinsiemi diversi della stessa mappa.
+
+### Difetto 4 -- l'arricchimento sovrascrive dati GIUSTI con dati SBAGLIATI
+
+Sempre in `episodes_meta`, dopo aver preso da skyhook titolo, trama e immagine (che sono corretti),
+il codice li sostituisce con quelli di TMDb letti ATTRAVERSO la mappa:
+
+```python
+if _te.get('name'): _ep['title'] = _te['name']
+if _te.get('overview'): _ep['plot'] = _te['overview']
+```
+
+Con la mappa rotta, il risultato e' visibile a schermo. Misurato sulla cache del Mac:
+
+| episodio TVDB | titolo vero (skyhook) | titolo mostrato (TMDb via mappa) |
+|---|---|---|
+| S02E73 | Anger x And x Light -- 2014-05-28 | A x Heated x Showdown -- 2013-03-03 |
+| S02E78 | Homecoming x And x True Name -- 2014-07-02 | Victor x And x Loser -- 2013-04-07 |
+| S02E41 | Combination x And x Evolution | (nessuno: la mappa punta fuori) |
+
+Non e' un badge sbagliato: e' il titolo, la trama, la locandina e la data dell'episodio sbagliato.
+E vale anche per chi non usa Trakt.
+
+### Difetto 5 -- da `episodes_meta` si riscrive l'INTERA meta della serie, e non e' detto che sia la sua
+
+```python
+metacache_set('tvshow', 'tmdb_id', _pack_ep_maps(meta), EXPIRES_182_DAYS, None)
+```
+
+`meta` e' il dizionario che il chiamante ha passato. Su un percorso reale non e' la meta della serie:
+
+`player.run_next_ep` -> `EpisodeTools(self.meta)` -> `next_episode_info` -> `episodes_meta(season, self.meta)`
+
+e `self.meta` del player e' `sources_object.meta`, che `Sources.get_meta` ha gia' aggiornato con i
+campi dell'EPISODIO (`plot` = trama dell'episodio, `premiered` = data dell'episodio, piu' `season`,
+`episode`, `ep_name`, `ep_thumb`, `custom_season`, `custom_episode`). Se in quel momento la mappa
+riceve una correzione, quella riga finisce nella cache della SERIE per 182 giorni: da li' in poi la
+trama della serie e' la trama di un episodio.
+
+Sullo stesso punto c'e' una corsa: `all_episodes_meta` lancia un thread per stagione e ogni thread
+riscrive la meta INTERA a partire dalla propria copia. L'ultimo che scrive cancella le correzioni
+degli altri.
+
+### Difetto 6 -- ogni riproduzione di un episodio NON anime paga una lettura skyhook per ottenere `{}`
+
+Due punti identici, `player.py:153-156` (dentro `monitor()`, cioe' a ogni riproduzione) e
+`watched_status.py:114-117` (a ogni marcatura):
+
+```python
+_ep_map = self.meta.get('tvdb_to_tmdb_ep')
+if _ep_map is None:
+    from apis.skyhook_api import get_tvdb_to_tmdb_map
+    _ep_map = get_tvdb_to_tmdb_map(self.meta.get('tvdb_id'), self.meta.get('tmdb_season_data_original', []))
+```
+
+`tvdb_to_tmdb_ep` viene scritta SOLO nel ramo anime, quindi per qualunque serie non anime e' `None`
+**sempre**, e `tmdb_season_data_original` e' assente per lo stesso motivo. Il ripiego riceve quindi
+una lista vuota, `tmdb_eps` resta vuota, il ciclo esce alla prima iterazione e la mappa e' `{}`
+garantita -- ma solo DOPO aver eseguito `_fetch_raw(tvdb_id)`, cioe' la lettura dell'intero JSON
+della serie da skyhook (105 KB per HxH), rete a cache fredda e comunque una lettura di metacache piu'
+un `json.loads` sul percorso caldo della riproduzione.
+
+La condizione giusta non e' "la mappa manca" ma "questa serie ha una mappa": la sentinella e'
+`tmdb_season_data_original`, che esiste se e solo se il ramo anime e' stato preso.
+
+### Difetto 7 -- "anime" e' definito come "lingua ja / ko / zh"
+
+`_is_anime = data_get('original_language', '') in ('ja', 'ko', 'zh')`. Sotto questa definizione
+ricade qualunque serie asiatica. Caso verificato oggi: *Palace* (2011), dramma cinese, tvdb 248500,
+tmdb 37709, lingua `zh`. Il suo payload skyhook **non contiene un solo `absoluteEpisodeNumber`**
+(139 episodi, zero), quindi `get_tvdb_to_tmdb_map` torna `{}` -- ma
+`get_skyhook_season_data` funziona lo stesso e le stagioni TVDB vengono adottate ugualmente:
+
+- TVDB: 39 / 37 / 63
+- TMDb: 40 / 37 / 63
+
+Layout TVDB adottato + mappa identita' = disallineamento garantito, senza nemmeno un sintomo che
+distingua "non serviva mappare" da "non sono riuscito a mappare". L'adozione del layout TVDB e la
+disponibilita' della mappa sono due decisioni indipendenti, e oggi la prima non aspetta la seconda.
+
+**Criterio deciso (04/09): animazione E lingua ja/ko/zh**, non la lingua da sola. Verificato sui due
+falsi positivi presenti nella libreria: *Squid Game* (ko, generi Action & Adventure / Mystery /
+Drama) e *Palace* (zh, Drama) escono entrambi; Hunter x Hunter, Death Note, L'attacco dei giganti,
+Dan Da Dan ed Evangelion hanno tutti Animation e restano.
+Nota implementativa che evita un bug: `meta['genre']` contiene i nomi **tradotti** (nella cache del
+Mac c'e' scritto `'Animazione'`). Il controllo va fatto sull'**id** TMDb `16` = Animation, che e'
+disponibile in `data['genres']` al momento della costruzione della meta, non sui nomi.
+
+### Difetto 8 -- `episode_count` conta anche gli episodi non ancora andati in onda
+
+```python
+season_eps = [e for e in all_episodes if e.get('seasonNumber') == snum]
+'episode_count': len(season_eps)
+```
+
+Nessun filtro sulla data. Poi `metadata.py:938` ne fa la somma e la chiama `total_aired_eps`, che e'
+il denominatore dei badge e di `get_watched_status_tvshow`. Il percorso TMDb quel numero lo calcola
+con cura (usa `last_episode_to_air` quando la serie e' in corso); il percorso skyhook lo sostituisce
+con "tutti gli episodi conosciuti". Per un anime in corso il denominatore e' gonfio, e la serie non
+risulta mai completata.
+
+### Difetto 9 (minore) -- la data della stagione e' presa senza ordinare
+
+`first_ep = season_eps[0]`, dove `season_eps` conserva l'ordine dell'array skyhook. Basta
+`min(season_eps, key=episodeNumber)`. Costa niente e toglie una dipendenza da un ordine non promesso.
+
+### Difetto 10 -- codice morto in `sources.py:94-98`
+
+```python
+self.get_meta()                       # riga 93: scrive self.meta['custom_episode'] = self.custom_episode  (None)
+if self.media_type == 'episode' and not any([self.custom_season, self.custom_episode]):
+    ...
+    self.custom_episode = _tmdb_val[1]   # aggiorna l'ATTRIBUTO
+```
+
+`get_episode()` legge `self.meta.get('custom_episode')`, che e' stato scritto una riga PRIMA con il
+valore vecchio. Il numero calcolato qui non raggiunge mai la ricerca. Prima di correggerlo va deciso
+cosa si vuole davvero cercare: le release degli anime usano la numerazione TVDB (o quella assoluta),
+che e' gia' quella con cui l'interfaccia chiama l'episodio -- quindi il ripiego su TMDb potrebbe
+essere non solo morto ma anche indesiderato.
+
+### La strada: la giuntura si fa sull'IDENTITA', non sulla posizione
+
+Tutto quanto sopra discende da una scelta sola: **appaiare due elenchi per posizione**, e poi
+rattoppare l'appaiamento con le date. Le posizioni non sono un'identita' -- bastano un episodio
+doppio, uno speciale contato da una parte sola, o una stagione ridivisa, e l'allineamento salta da
+li' in avanti.
+
+L'identita' c'e' ed e' gratis: **entrambi i lati portano il `tvdbId` dell'episodio.**
+
+- skyhook: ogni episodio ha `tvdbId` (e `tvdbShowId`)
+- Trakt: `/shows/<id>/seasons?extended=episodes` restituisce ogni episodio con `ids.tvdb`
+  -- **una chiamata, non paginata, 26 KB** per HxH
+
+Misurato oggi facendo la giuntura sui due payload veri:
+
+```
+episodi Trakt 148 | agganciati per tvdbId 148 | non agganciati 0
+voci con numerazione diversa: 90
+```
+
+**148 su 148**, contro le 41 giuste su 78 (piu' 12 mancanti) della mappa attuale. Zero euristiche,
+zero assunzioni su come TMDb numera le stagioni, zero conteggi posizionali.
+
+**Perche' Trakt e non TMDb, se la numerazione che vogliamo e' quella di TMDb.** Non e' una
+contraddizione: Trakt qui fa il DIZIONARIO, non la destinazione. Skyhook conosce solo il `tvdbId`, e
+dal lato TMDb non esiste una chiamata che dia l'id TVDB di ogni episodio -- c'e' solo
+`/tv/<id>/season/<n>/episode/<m>/external_ids`, cioe' una richiesta PER EPISODIO (1246 per Detective
+Conan). `/shows/<id>/seasons?extended=episodes` porta invece **le due identita' sulla stessa riga**,
+in una risposta sola. La mappa che ne esce e' insieme TVDB<->TMDb e TVDB<->Trakt, perche' quelle due
+coincidono (misurato sopra). Chi fornisce i metadati resta TMDb, chi fornisce la sincronizzazione
+resta Trakt: non cambia niente di tutto questo.
+
+La mappa cosi' costruita e' **iniettiva per costruzione** (il `tvdbId` e' unico da entrambe le parti),
+quindi l'inversa non perde niente e lo scarto va a zero da solo al primo rebuild -- che e' la
+condizione con cui il LAVORO RESIDUO B smette di aver bisogno di una mappa di scarti per serie.
+
+E si perde una dipendenza: la giuntura per identita' non usa `absoluteEpisodeNumber`, che oggi e' il
+filtro d'ingresso di `get_tvdb_to_tmdb_map` e che per certe serie non esiste affatto (vedi difetto 7).
+
+### Chi resta fuori dalla giuntura
+
+Misurato in entrambe le direzioni: vedi **Le tre regole dei casi limite** piu' sotto, che riporta i
+numeri sul corpus verificato. In sintesi: al centro i due cataloghi combaciano al 100%, e chi resta
+fuori sono gli **speciali** (stagione 0) e gli **ultimissimi episodi**, dove uno dei due e' avanti
+sull'altro o l'aggancio incrociato non e' ancora stato fatto.
+
+### Cosa vuol dire "la giuntura fallisce", con i casi veri
+
+Non e' il caso "questo episodio non si riesce a mappare": al centro non capita mai. Sono tre
+situazioni in cui la mappa **non esiste proprio**, e vanno riconosciute come tali:
+
+1. **Skyhook non ha la serie a quel `tvdbId` -- ma e' RISOLVIBILE.** *Palace* (2011), tmdb 37709:
+   Trakt e TMDb dichiarano entrambi tvdb `258761`, e skyhook per quell'id risponde **0 episodi**. La
+   stessa serie esiste su skyhook sotto tvdb `248500` con 139 episodi. Che sia la stessa serie e'
+   certo, non dedotto: **l'IMDb id e' `tt2475280` su tutti e tre** (TMDb external_ids, Trakt ids, e
+   il payload skyhook di 248500, che dichiara anche `tmdbId: 37709`). Sono due schede TVDB per la
+   stessa serie, e i due cataloghi ne indicano una ciascuno.
+   La soluzione non richiede un servizio nuovo: **skyhook risolve da solo**, il suo endpoint di
+   ricerca accetta i prefissi `imdb:` e `tmdb:`.
+   ```
+   skyhook /v1/tvdb/search/en/?term=imdb:tt2475280  ->  tvdb 248500  Palace (2011)
+   skyhook /v1/tvdb/search/en/?term=tmdb:37709      ->  tvdb 248500  Palace (2011)
+   ```
+   Regola possibile: se `shows/en/<tvdb_id>` torna vuoto, ripiego su `search/en/?term=tmdb:<id>`.
+   **Ma non serve**, e la misura lo dice: Palace non e' un anime (genere Drama), quindi con il
+   criterio nuovo non entra mai nel ramo, e su 29 anime verificati skyhook risponde SEMPRE all'id
+   TVDB dichiarato da TMDb. Resta una nota difensiva, non un lavoro da fare.
+2. **Skyhook ha la serie ma senza numeri assoluti.** Sempre Palace sotto 248500: 139 episodi,
+   **zero** `absoluteEpisodeNumber`. Con la giuntura per identita' questo smette di essere un
+   ostacolo; con quella posizionale di oggi produce una mappa vuota.
+3. ~~**La serie non e' su Trakt.**~~ **RITIRATO.** La prima stesura citava Fairy Tail e Gintama come
+   serie che Trakt non trova. Non era vero: **gli id TMDb li avevo inventati io** (`6741` non esiste,
+   `34914` e' "Kara Bakery"). Con gli id veri -- Fairy Tail `46261`, Gintama `57041` -- Trakt li
+   trova entrambi e si mappano **328 su 328** e **367 su 367**. Non ho nessun caso di serie assente
+   da Trakt. Lezione, la stessa del punto 1 di "cosa resta aperto": un id ricordato a memoria non e'
+   un dato misurato.
+
+Nei casi 1 e 2 non c'e' mappa (o non ci sarebbe senza il ripiego). La domanda da decidere non e'
+"come mappo lo stesso" ma **"senza mappa, si adotta comunque il layout TVDB?"**. Oggi le due
+decisioni sono indipendenti e la risposta di fatto e' si': e' il difetto 7.
+
+### Le tre regole dei casi limite, misurate (29 anime verificati, 5941 episodi, 04/09)
+
+**Avvertenza sul corpus.** La prima stesura di questa sezione girava su una lista di id TMDb scritti
+a memoria, e **tre erano sbagliati**: `1447` non e' JoJo ma *Psych* (serie americana), e anche gli id
+di Sailor Moon e Boruto erano di altre schede. I numeri qui sotto vengono da un corpus ricostruito
+verificando **nome e anno** di ogni serie, e tenendo solo quelle che passano la regola anime
+(genere 16 + lingua ja/ko/zh). E' il terzo errore della stessa famiglia in questa indagine: un id
+ricordato non e' un id misurato.
+
+I casi limite non vanno trattati uno per uno: obbediscono a tre regole.
+
+#### Regola 1 -- la stagione 0 NON e' un sistema di coordinate condiviso
+
+L'ipotesi da verificare era "uno dei due cataloghi non mette gli speciali nella serie". **Nessuna
+delle due direzioni regge.**
+
+```
+speciali su TVDB: 525    speciali su Trakt: 324    agganciati per tvdbId: 275  (52%)
+```
+
+Serie in cui **Trakt non ha nessuno speciale** mentre TVDB ne ha: Hunter x Hunter, Death Note,
+Dan Da Dan, Evangelion, Dragon Ball Super. Serie in cui accade l'opposto (Trakt ne ha piu' di TVDB, e
+quasi tutti senza `tvdbId`): Demon Slayer, Jujutsu Kaisen. Detective Conan: TVDB 84 contro Trakt 24.
+
+Non esiste una regola su CHI li ha; esiste una regola su COSA sono: la stagione 0 non e' numerata in
+un modo che qualcuno garantisca, e quasi meta' degli speciali TVDB non ha corrispondente su Trakt.
+**Escludere la stagione 0 dalla mappa toglie la stragrande maggioranza dei casi limite e non perde
+niente.** E' anche una convenzione che il codice applica gia' a meta': `get_tvdb_to_tmdb_map` filtra
+gia' `seasonNumber > 0`, e `trakt_progress_tv` ha `if tvdb_s > 0`. Va resa esplicita e coerente.
+
+#### Regola 2 -- gli episodi non ancora usciti restano fuori dalla mappa
+
+L'ipotesi era "TMDb elenca gli episodi futuri, TVDB no". **Sbagliata: li elencano entrambi.** TVDB ha
+Bleach `(17,48..50)` e Detective Conan `(34,26)` non ancora usciti; Trakt ha One Piece
+`(23,1178..1181)`, Bleach `(2,48..50)` e Detective Conan `(1,1211)`.
+
+**Ma l'azione resta giusta, per il motivo per cui era stata proposta:** un episodio non uscito non e'
+riproducibile, quindi escluderlo non costa niente -- e sono proprio quelli la parte piu' volatile,
+dove i due cataloghi non si sono ancora scambiati gli identificativi.
+
+Effetto delle due regole insieme, sul corpus verificato:
+
+```
+episodi Trakt usciti, stagione >0:  5941
+mappati per tvdbId:                 5935
+NON mappati:                           6      (0,10%)
+serie con residuo:                     2 su 29   (Attack on Titan, Detective Conan)
+serie in cui skyhook non risponde al tvdb_id dichiarato da TMDb:  0
+```
+
+Le altre 27 serie mappano **tutti** gli episodi usciti. Detective Conan e' il caso estremo utile da
+tenere nelle prove: **TVDB lo divide in 34 stagioni, TMDb e Trakt lo tengono in UNA sola** con oltre
+1200 episodi, e la sua mappa ha 1178 voci diverse su 1206.
+
+Nota che cade con questa misura: il ripiego `search/en/?term=imdb:` studiato per il caso Palace **non
+serve**. Palace non e' un anime (genere Drama), quindi con la regola nuova non entra nel ramo, e su
+29 anime veri skyhook risponde sempre all'id TVDB che TMDb dichiara. Resta una nota difensiva, non un
+lavoro da fare.
+
+#### Regola 3 -- l'identita' e' lecita se e solo se la coppia ESISTE dall'altra parte
+
+Per i residui la domanda e': tradurre con l'identita' o non tradurre? Verificato caso per caso se la
+coppia identica esiste davvero su Trakt:
+
+```
+residuo lato TVDB:  identita' valida 0 | punta a coppia INESISTENTE 7 | cadrebbe su riga occupata 0
+```
+
+**Sul corpus anime l'identita' non e' MAI lecita.** Attack on Titan `(4,29)`/`(4,30)` e Detective
+Conan `(34,21..25)` puntano tutti a coppie che su Trakt non esistono -- per Conan e' ovvio, Trakt ha
+una stagione sola. (La prima stesura riportava sette casi di "identita' valida": erano Psych e la
+Sailor Moon sbagliata.)
+
+La regola resta formulata cosi' anche se oggi il ramo "lecita" non si prende mai, perche' e' la
+formulazione che resta corretta se il caso si presenta -- e nella popolazione generale si presenta:
+
+> **L'identita' e' lecita se e solo se quella coppia esiste dall'altra parte e non e' gia' occupata
+> da una traduzione vera.**
+
+Funzione pura, deterministica, identica su Mac e stick, provabile. Non costa niente perche' l'elenco
+completo degli episodi Trakt e' gia' in mano mentre si costruisce la mappa.
+
+#### Il residuo si divide in due famiglie
+
+1. **Frontiera non ancora collegata** -- Detective Conan: TVDB `(34,21..25)` da una parte, Trakt
+   `(1,1207..1210,1212)` **senza `tvdbId`** dall'altra. Sono gli stessi cinque episodi: entrambi i
+   cataloghi li hanno, manca solo l'aggancio incrociato. **Guarisce da sola**, e nel frattempo la
+   regola 3 impedisce di sparare una coppia sbagliata.
+2. **Disaccordo genuino sul conteggio** -- Attack on Titan `(4,29)` e `(4,30)`: TVDB spezza in due
+   cio' che TMDb tiene unito. **Non guarisce**, e va accettato come tale.
+
+### Cosa si fa di un episodio che non forma coppia
+
+Il fatto che decide tutto sta in `trakt_cache._set_bulk_watched`:
+
+```python
+self._delete(WATCHED_DELETE, (db_type,))    # DELETE FROM watched WHERE db_type='episode'
+self._executemany(WATCHED_INSERT, insert_list)
+```
+
+**La tabella locale e' una fotografia di Trakt, non un archivio nostro.** Qualunque riga che non
+arrivi da Trakt viene cancellata al primo rebuild integrale. Quindi "scriviamo lo stesso la riga
+locale" non e' un'opzione: sarebbe un badge che compare e sparisce, peggio dell'assenza.
+
+Le due direzioni non sono simmetriche.
+
+**Direzione A -- l'episodio c'e' su TVDB, non su Trakt.** (AoT `(4,29)`, `(4,30)`; Conan `(34,21..25)`)
+
+- **Non si elimina niente.** L'episodio si vede e si riproduce: TVDB e' la nostra struttura e i
+  torrent usano quella numerazione. Toglierlo renderebbe non riproducibile qualcosa che esiste: fra i
+  tre danni possibili e' il peggiore.
+- **Non si manda niente a Trakt.** Non si inventa una coppia.
+- Conseguenza da accettare e da DICHIARARE: quell'episodio non avra' mai un badge con gli indicatori
+  Trakt. Non e' una nostra scelta, e' che Trakt non sa che esiste. L'alternativa -- inventare la
+  coppia -- darebbe il badge all'episodio SBAGLIATO: sette episodi senza badge contro sette badge
+  sull'episodio sbagliato.
+
+**Direzione B -- l'episodio c'e' su Trakt, non su TVDB.** (Conan `(1,1207..1210,1212)`)
+
+- Non c'e' niente da mostrare: l'interfaccia elenca le stagioni TVDB e quell'episodio non e' fra le
+  voci.
+- La riga locale non si scrive. Oggi l'identita' gliene scrive una che puo' collidere con un
+  episodio vero -- e' il difetto 2.
+- **Ma conta nel conteggio di `stats`**, ed e' qui che si chiude il cerchio col lotto 142.
+
+#### Il guadagno strutturale: lo scarto smette di essere una toppa
+
+Oggi `episodi_scarto` e' un numero MISURATO dopo un rebuild e non spiegato (4 sulla stick, 0 sul Mac,
+senza sapere perche'). Con le regole diventa **calcolabile in anticipo**: e' il numero di episodi in
+direzione B sommato sulle serie, noto mentre si costruisce la mappa, prima di scaricare qualunque
+cronologia. Il confronto del lotto 142 diventa:
+
+> conto locale **+ esclusi dichiarati** == conto di Trakt
+
+Se quell'uguaglianza si rompe non e' piu' ambiguo: non e' il rimappaggio, e' un dato che manca
+davvero. Ed e' la condizione con cui il LAVORO RESIDUO B diventa semplice -- la mappa di scarti per
+serie non serve piu', perche' lo scarto per serie e' un sottoprodotto della mappa.
+
+#### Quindi la mappa deve saper dire TRE cose, non due
+
+Oggi `ep_map.get(k, k)` distingue solo "tradotto" da "identita'", e **"non so" e "identita'" sono
+indistinguibili**: e' questa la ragione per cui il difetto e' silenzioso. La struttura nuova deve
+distinguere:
+
+| esito | quando | cosa si fa |
+|---|---|---|
+| **tradotto in (s,e)** | la giuntura ha trovato il `tvdbId` da entrambe le parti | si traduce |
+| **identita' lecita** | nessuna giuntura, ma la coppia esiste dall'altra parte e non e' occupata | si usa l'identita' |
+| **nessuna corrispondenza** | tutto il resto | non si traduce, non si manda, **si conta fra gli esclusi** |
+
+**La direzione in una riga: non si elimina nessun episodio, si elimina l'INVENZIONE.** Chi non ha
+coppia resta visibile e riproducibile, non viene sincronizzato, e viene contato -- cosi' il conto
+torna e il silenzio smette di essere ambiguo.
+
+### Cosa va deciso prima di scrivere
+
+1. **Gli episodi che stanno da un lato solo -- RISOLTO dalle tre regole qui sopra.** Restano fuori
+   la stagione 0 e i non ancora usciti; per i 14 residui su 5342 decide la regola 3 (identita' solo
+   se la coppia esiste dall'altra parte). Quel che segue e' il ragionamento che ci ha portati li',
+   e resta valido: ESCLUDERE vuol dire NON TRADURRE, non nascondere. L'episodio resta visibile e riproducibile: non si toglie niente
+   dall'interfaccia. Si esclude l'invenzione di una coppia che non esiste.
+   Nella direzione locale -> Trakt (marcatura, scrobble) l'identita' manda a Trakt `(34,21)` per
+   Detective Conan, che li' indica un altro episodio o nessuno: meglio non mandare e dirlo.
+   Nella direzione Trakt -> locale (rebuild) un episodio Trakt senza `tvdbId` non puo' avere una riga
+   giusta, e l'identita' gliene da' una che puo' COLLIDERE con un episodio vero -- e' il difetto 2.
+   Il guadagno non e' solo di correttezza: lo **scarto smette di essere un mistero**. Oggi e' un
+   numero misurato dopo il rebuild e non spiegato; con la mappa esatta diventa "quanti episodi Trakt
+   abbiamo deciso di non rappresentare", calcolabile in anticipo, identico su Mac e stick,
+   sorvegliabile da una prova.
+   L'identita' -- cioe' il comportamento di oggi -- non e' la scelta permissiva ma la piu' RISCHIOSA:
+   una coppia inventata non e' un buco, e' un dato sbagliato che sembra giusto. Stessa distinzione
+   del lotto 88 (una richiesta fallita non e' una risposta).
+2. **Quando NON adottare il layout TVDB.** Se non c'e' mappa, adottare le stagioni TVDB e' peggio
+   che restare su TMDb: e' il difetto 7. La regola proposta e' legare le due decisioni -- niente
+   mappa, niente layout TVDB -- come funzione pura, provabile.
+   La soglia resta l'unico numero da scegliere, e ora si sa dove metterlo: con le regole 1 e 2
+   applicate, **21 serie su 22 mappano il 100% degli episodi usciti**, e la peggiore (Sailor Moon)
+   sta al 94%. Una soglia bassa -- rinunciare solo quando la mappa e' vuota o quasi -- non taglia
+   fuori nessuna serie sana. Va scelta guardando il caso Palace, che a mappa vuota (prima del
+   ripiego su `search`) e' esattamente lo scenario da riconoscere.
+3. **Dove vive la mappa e quando scade.** Oggi sta nella meta della serie, con la scadenza della
+   serie, e viene riscritta da `episodes_meta`. Se la mappa diventa esatta e non piu' rattoppabile,
+   quella riscrittura sparisce -- e con lei il difetto 5.
+4. **Il costo.** Una chiamata Trakt in piu' per serie anime, alla prima costruzione della meta,
+   cacheata come gia' lo e' skyhook. Da misurare sulla stick, non da stimare.
+
+### Ordine di lavoro proposto
+
+| # | intervento | chiude |
+|---|---|---|
+| 1 | la giuntura per `tvdbId` fra skyhook e Trakt | 1, 2, 3, 4 |
+| 2 | la sentinella del ripiego: `tmdb_season_data_original`, non `ep_map is None` | 6 |
+| 3 | togliere la riscrittura della meta serie da `episodes_meta` | 5 |
+| 4 | contare solo gli episodi andati in onda | 8 |
+| 5 | adottare il layout TVDB solo se la mappa esiste | 7 |
+| 6 | `sources.py:94-98`: decidere l'intento, poi correggere o togliere | 10 |
+
+Il 2 e' indipendente da tutti gli altri e si paga su OGNI riproduzione di episodio, anime o no:
+si puo' fare per primo.
+
+## Lotto 144 -- la mappa sta nella meta, o non esiste
+
+Primo pezzo del rimappaggio, e l'unico che con gli anime non c'entra niente: si pagava a OGNI
+riproduzione di episodio.
+
+In due punti -- `player.monitor` e `watched_status._map_to_tmdb_episode` -- c'era lo stesso ripiego:
+
+```python
+_ep_map = self.meta.get('tvdb_to_tmdb_ep')
+if _ep_map is None:
+    from apis.skyhook_api import get_tvdb_to_tmdb_map
+    _ep_map = get_tvdb_to_tmdb_map(self.meta.get('tvdb_id'), self.meta.get('tmdb_season_data_original', []))
+```
+
+La revisione lo aveva classificato come "da sorvegliare con una sentinella migliore". Guardandolo
+meglio prima di scrivere, **non serve una sentinella: e' codice morto in ogni ramo.** Le due chiavi
+`tvdb_to_tmdb_ep` e `tmdb_season_data_original` si scrivono nello STESSO blocco di `tvshow_meta`
+(metadata.py, righe 935 e 939, dentro `if _is_anime and _skyhook_seasons`). Quindi quando manca la
+prima manca anche la seconda, il ripiego riceve una lista vuota, e da una lista vuota
+`get_tvdb_to_tmdb_map` esce con `{}` per costruzione: il ciclo si ferma alla prima iterazione.
+
+Non era gratis. Prima di arrivare a quel `{}` si eseguiva `_fetch_raw(tvdb_id)`, cioe' la lettura
+dell'intero JSON skyhook della serie -- 105 KB per Hunter x Hunter -- rete a cache fredda, e
+comunque una lettura di metacache piu' un `json.loads` sul percorso caldo. E siccome per una serie
+NON anime quella chiave non c'e' MAI, il ripiego scattava **a ogni riproduzione di episodio, anime o
+no**: in `player.monitor` sull'interfaccia, in `_map_to_tmdb_episode` a ogni marcatura.
+
+Tolto in entrambi i punti, sostituito da `meta.get('tvdb_to_tmdb_ep') or {}`. Il `or {}` non e'
+cosmetico: senza, la mappa assente tornerebbe `None` e la riga dopo alzerebbe AttributeError -- un
+guasto nuovo introdotto dalla correzione.
+
+Dopo il lotto, `get_tvdb_to_tmdb_map` ha **un solo chiamante**: `tvshow_meta`, cioe' il punto in cui
+la mappa nasce. E' come deve restare.
+
+### Le prove (`tests/test_144.py`)
+
+La prova che conta non e' "il ripiego e' sparito" -- quello si vede a occhio. E' il **presupposto**
+che rende sicura la rimozione:
+
+- **A** -- le due chiavi si scrivono nello stesso blocco. Non "da qualche parte nel file": si cerca
+  l'assegnazione a `meta['tvdb_to_tmdb_ep']` e si verifica che fra le istruzioni SORELLE ci sia anche
+  `meta['tmdb_season_data_original']`. Se un giorno qualcuno le separasse, togliere il ripiego
+  diventerebbe un difetto vero, e questa riga e' il posto dove accorgersene.
+- **B** -- nessun blocco scrive `tmdb_season_data_original` da sola.
+- **C** -- `get_tvdb_to_tmdb_map` non e' importata da player, watched_status, sources, trakt_api,
+  episode_tools; ed **e'** importata da metadata. La seconda meta' non e' pignoleria: se un giorno
+  sparisse anche da li', la mappa non nascerebbe piu' e il resto tacerebbe.
+- **D** -- entrambi i punti normalizzano a `{}`.
+
+Verifica in ROSSO, tre guasti iniettati:
+
+| guasto | prove che cadono |
+|---|---|
+| `tmdb_season_data_original` spostata fuori dal blocco | A, B |
+| il ripiego rimesso in `player.py` | C, D |
+| tolto il ` or {}` in `watched_status.py` | D |
+
+Suite: **10 su 10**. Simboli confrontati con HEAD su player, watched_status e metadata: **nessuno
+sparito, nessuno nuovo**.
+
+## Lotto 145 -- la giuntura per identita', e i TRE esiti al posto di due
+
+Il cuore del rimappaggio. La revisione del 04/09 e le sue misure sono qui sopra: questa sezione
+registra cosa e' stato scritto.
+
+### La funzione pura
+
+`skyhook_api.costruisci_mappa_episodi(episodi_tvdb, episodi_trakt, oggi)` appaia i due elenchi per
+l'id TVDB invece che per posizione, e torna TRE cose:
+
+| voce | cosa contiene | cosa se ne fa |
+|---|---|---|
+| `mappa` | `{(s,e) TVDB: (s,e) Trakt}`, solo le coppie che si numerano diversamente | si traduce |
+| `esclusi_tvdb` | esistono da noi e non su Trakt | non si traduce e **non si manda** |
+| `esclusi_trakt` | esistono su Trakt e non da noi | nessuna riga locale: la loro cardinalita' **e' lo scarto** |
+
+Chi non e' in nessuna delle tre va per identita'. Le tre regole (stagione 0 fuori, i non usciti non
+contano come scarto, identita' lecita solo se la coppia e' libera da entrambe le parti) sono nella
+docstring, con i numeri che le hanno decise.
+
+Gli adattatori stanno dai chiamanti: `skyhook_api.episodi_per_giuntura(tvdb_id)` e
+`trakt_api.trakt_episode_index(tmdb_id)`. La funzione che decide resta pura e provabile.
+
+**`get_tvdb_to_tmdb_map` non esiste piu'.** Era il rimappaggio posizionale.
+
+### Trakt come DIZIONARIO, non come destinazione
+
+La mappa resta TVDB<->TMDb, come prima. Cambia solo come si trova la corrispondenza. Trakt serve
+perche' e' l'unico posto che porta l'id TVDB e l'id TMDb **sulla stessa riga**, in una risposta sola
+(`seasons?extended=episodes,full`, 26 KB per Hunter x Hunter): dal lato TMDb l'id TVDB per episodio
+si otterrebbe solo con una richiesta PER EPISODIO -- 1246 per Detective Conan.
+
+### I tre esiti, e perche' erano due
+
+`utils.traduci_episodio(mappa, esclusi, stagione, episodio)`. Finche' la lettura era
+`mappa.get(chiave, chiave)`, **"non lo so" e "identita'" erano lo stesso valore**: e' questa la
+ragione per cui il difetto era silenzioso. Un episodio senza corrispondenza otteneva comunque una
+coppia, che poteva indicare un altro episodio o niente.
+
+I quattro punti collegati:
+
+| punto | direzione | cosa fa ora su `None` |
+|---|---|---|
+| `trakt_api._make_row` | Trakt -> riga locale | torna `None`, i due chiamanti saltano |
+| `trakt_api.trakt_progress_tv` | Trakt -> riga locale | `continue` |
+| `watched_status._map_to_tmdb_episode` | locale -> Trakt | `_mark_on_trakt` non manda e avvisa |
+| `player.monitor` | locale -> Trakt | non si scrobbla (bandiera `_trakt_mappabile`) |
+
+La riga locale resta scritta in ogni caso, e l'episodio resta visibile e riproducibile: **si esclude
+la traduzione, non l'episodio.**
+
+### Il layout TVDB e la mappa si decidono insieme
+
+Prima erano due decisioni indipendenti: si adottavano le stagioni TVDB anche a mappa vuota. Adesso o
+si hanno entrambe o si resta su TMDb. Se l'indice Trakt non si e' potuto leggere -- `None`, che non
+e' una lista vuota -- si rinuncia al rimappaggio **e si accorcia la scadenza a 24 ore**, cosi' un
+guasto di rete momentaneo non congela la serie sul layout sbagliato per sei mesi.
+
+### Lo scarto: misurato E spiegato
+
+`_misura_scarto_episodi` prende ora anche `spiegato`, cioe' quanti episodi visti su Trakt il rebuild
+ha saltato perche' la mappa li ha dichiarati senza corrispondenza -- contato mentre si costruisce,
+non dedotto dopo.
+
+Si continua a **memorizzare quello misurato**, perche' e' l'unico che garantisce la convergenza del
+confronto anche se restasse una perdita che non conosciamo. Ma i due si confrontano nel log: se
+coincidono, il conto e' compreso fino in fondo; se non coincidono, **la differenza e' esattamente
+cio' che non sappiamo spiegare**, ed e' il dato che serve al LAVORO RESIDUO B. Da qui in avanti "il
+conto non torna" smette di essere ambiguo.
+
+### Due invalidazioni, senza le quali la correzione non arriverebbe
+
+1. **Le meta anime gia' in cache** portano la mappa posizionale, e Hunter x Hunter scade fra 182
+   giorni. In `tvshow_meta`, una meta anime **senza** `ep_esclusi_tvdb` e' per forza vecchia e si
+   butta. Il discriminante regge perche' dal 145 le due chiavi si scrivono insieme.
+2. **Lo scarto memorizzato copre esattamente le righe perse dalla mappa vecchia** (4 sulla stick):
+   il conto tornerebbe, non si ricostruirebbe mai, e la tabella locale resterebbe sbagliata per
+   sempre. `_CONTI_KEY` porta ora `_v2`: `_conti_noti()` torna vuoto, `decide_rebuild_episodi` dice
+   "nessun conteggio memorizzato", e il primo sondaggio ricostruisce con la mappa giusta.
+
+### Serializzazione: il guasto del lotto 53 su un tipo nuovo
+
+`json.dumps` non sa scrivere ne' una tupla come elemento ne' un `set`, **nemmeno vuoto** -- e un
+insieme vuoto qui e' il caso normale. Se `_pack_ep_maps` saltasse il caso vuoto come fa per le mappe,
+`json.dumps` alzerebbe TypeError dentro `MetaCache.set`, il cui `except` lo ingoierebbe, e la serie
+verrebbe riscaricata a ogni avvio senza lasciare traccia. Gli insiemi si convertono **sempre**.
+
+### Le prove (`tests/test_145.py`)
+
+Dieci casi. Il piu' importante non e' Hunter x Hunter ma il caso G, e per una ragione che vale la
+pena registrare: **la prima stesura della regola 3 conteneva codice morto, e l'ha trovato la verifica
+in rosso.** Sottraevo le coordinate gia' occupate (`- (set(mappa) | set(mappa.values()))`) per paura
+della collisione; il guasto iniettato che la toglieva non faceva cadere niente. Il motivo: un
+elemento di `liberi_tvdb & liberi_trakt` e' libero da entrambe le parti, quindi non e' ne' chiave ne'
+valore della mappa. **E' l'intersezione stessa a impedire la collisione.**
+
+Tolta la sottrazione, il caso G e' stato riscritto per provare **la proprieta'** -- *due episodi
+Trakt non finiscono mai sulla stessa riga locale* -- invece della formula. Una prova legata alla
+formula sarebbe morta insieme a lei.
+
+Verifica in ROSSO, sei guasti:
+
+| guasto | prove che cadono |
+|---|---|
+| giuntura per posizione invece che per identita' | A, G, I |
+| la stagione 0 rientra | C |
+| i non usciti contano come scarto | D |
+| identita' sempre lecita | D, F, G, H |
+| identita' mai lecita | E |
+| identita' allentata a "esiste dall'altra parte" (senza "ed e' libera") | D, G, G2, H |
+
+E in `test_144` il caso D e' stato riscritto: cercava la stringa `or {}` nei sorgenti, che dal 145
+non c'e' piu' perche' la lettura passa da `traduci_episodio`. Ora prova il COMPORTAMENTO (una serie
+senza mappa deve dare l'identita', mai un guasto). Una prova legata al testo muore al primo
+rifacimento: e' successo entro un lotto.
+
+### Verifiche fatte prima del deploy
+
+- suite **11 su 11**
+- **prova di fumo contro le API vere**, con le funzioni spedite e solo `call_trakt`/`_fetch_raw`
+  sostituite da curl: Hunter x Hunter mappa 90 / esclusi 0 / scarto 0, `(2,5) -> (2,63)` e ritorno
+  `(2,63) -> (2,5)`; Detective Conan mappa 1178 / esclusi 6 / scarto 5, `(34,21) -> None` e
+  `(1,1207) -> None`
+- **import circolare escluso** provando entrambi gli ordini (`trakt_api` prima, `metadata` prima):
+  `metadata` importa `trakt_api` dentro la funzione, e non e' solo per il costo -- in testa sarebbe
+  circolare, perche' `trakt_api` importa `metadata` a livello di modulo
+- andata e ritorno della serializzazione, insieme vuoto compreso, con l'originale lasciato intatto
+
+## Lotto 145 bis -- quattro cose che ha trovato solo la prova sul percorso collegato
+
+Le prove unitarie erano verdi, la prova di fumo contro le API pure, gli import a posto. Poi ho fatto
+girare il percorso VERO -- `trakt_progress_tv` e il rebuild di `trakt_indicators_tv` con le loro
+funzioni annidate, sostituendo solo le dipendenze esterne -- e sono usciti quattro problemi, di cui
+uno grave. Registrarli serve piu' della correzione: **la prova unitaria di una funzione pura non dice
+niente sul collegamento.**
+
+### 1. Il guasto grave: ogni riproduzione sarebbe fallita
+
+In `set_constants` avevo scritto `self._trakt_mappabile = self.media_type != 'episode'`.
+`set_constants` e' la PRIMA cosa che fa `play_video`, mentre `self.media_type` nasce dopo, in
+`make_listing`. Quindi `AttributeError` -- dentro il `try` di `run()`, che lo avrebbe trasformato in
+`run_error()`: **nessun video sarebbe piu' partito**, con un messaggio generico e nessuna traccia.
+Corretto con `self._trakt_mappabile = False`, che e' anche il verso prudente: entrambi i rami di
+`monitor()` la assegnano prima dell'uso, quindi quel valore e' solo il punto di partenza.
+
+Da tenere a mente: in questa classe l'ordine di inizializzazione non e' quello in cui i campi
+compaiono nel file.
+
+### 2. La riparazione per date non era inerte: CORROMPEVA la mappa nuova
+
+Era in programma come lotto 146, quindi l'avevo lasciata. Sbagliato: accanto a una mappa esatta non
+sta ferma. La sua euristica ("stessa stagione e scarto >= 2, allora aggiusto con la data") su una
+mappa corretta descrive un caso LEGITTIMO, non un errore -- e quando scattava riscriveva l'intera
+meta della serie con 182 giorni di scadenza. Portata avanti e tolta subito. Con lei spariscono anche:
+
+- la mappa riparata a META' e congelata per sei mesi (era un punto fisso, non un passaggio);
+- la riscrittura della meta della SERIE con un dizionario che sul percorso
+  `player -> EpisodeTools -> next_episode_info -> episodes_meta` e' quello dell'EPISODIO;
+- la corsa fra i thread di `all_episodes_meta`, ognuno dei quali riscriveva la meta intera dalla
+  propria copia.
+
+### 3. La cache delle STAGIONI non era invalidata
+
+Avevo invalidato la meta della serie, non le stagioni: stanno in righe separate di
+`season_metadata`, con una chiave che non dipende dalla mappa, e contengono gli episodi ARRICCHITI
+attraverso la mappa vecchia -- per Hunter x Hunter la stagione 2 con titoli, trame, immagini e date
+di altri episodi, per 182 giorni. `season_prop_string` porta ora un suffisso `_v2`.
+
+Vale per tutte le serie e non solo per gli anime, perche' la chiave si calcola anche dal prefetch,
+che la meta non ce l'ha: due formule diverse per lo stesso dato sono due formule che divergono (e' la
+ragione per cui quella funzione esiste). Prezzo misurato sulla cache del Mac: **36 righe stagione**
+da riscaricare una volta, una richiesta TMDb per stagione effettivamente aperta.
+
+### 4. Il log si contraddiceva
+
+Due righe: la nuova diceva quanto della differenza la mappa sa spiegare, la vecchia chiamava lo
+scarto "righe perse dal rimappaggio, da correggere" -- vero finche' la mappa era posizionale, falso
+adesso. Uno scarto spiegato NON e' un difetto: sono gli episodi che su Trakt esistono e da noi no, ed
+e' dichiarato. Una riga sola:
+
+```
+watched episodes: scarto locale/Trakt = 5 (1206 in locale, 1211 su Trakt) dopo il rebuild integrale
+                  -- tutto spiegato dalla mappa (episodi che Trakt ha e noi no)
+```
+
+e quando NON torna:
+
+```
+                  -- la mappa ne spiega 5, restano 2 SENZA spiegazione
+```
+
+### Verifica dell'invalidazione sulla cache VERA del Mac
+
+Non a parole: eseguendo il criterio su `metacache.db`.
+
+```
+serie in cache: 503 | con rimappaggio anime: 39 | invalidate: 39 | serie NON anime toccate: 0
+righe stagione in cache: 36 -> tutte da riscaricare una volta
+```
+
+Il criterio colpisce esattamente le serie che devono essere ricostruite e nessun'altra. Fra le 39
+compaiono pero' anche *D.P.*, *I segugi*, *Previsioni d'amore* -- drammi coreani, non anime: entrano
+ancora nel ramo perche' il criterio "lingua ja/ko/zh" e' ancora quello vecchio. Lo chiude il 147.
+
+### Il percorso collegato, fatto girare davvero
+
+`trakt_progress_tv` e il rebuild integrale di `trakt_indicators_tv`, con le loro funzioni annidate e
+la mappa vera di Detective Conan:
+
+```
+trakt_progress_tv:  (1,33) -> (2,5) tradotto | (1,1207) SALTATO (escluso) | (1,999) identita'
+rebuild:            5 play -> 3 righe: (2,5), (34,20), (1,500); (1,1207) e (1,1208) saltati
+                    e il conteggio dei saltati arriva a _misura_scarto_episodi
+```
+
+E' questa la prova che mancava: dimostra le FORME (`ep_remap` e' una tupla in tutti i punti) oltre al
+comportamento.
+
+## Lotto 145 ter -- la correzione era pronta e aspettava un evento che non sarebbe mai arrivato
+
+Segnalato dall'utente subito dopo il deploy: **su Hunter x Hunter la stagione 3 non aveva i badge**,
+pur avendo tutti gli episodi visti su Trakt.
+
+### La diagnosi, per esclusione e non per ipotesi
+
+1. **Il codice installato e' quello giusto** -- md5 dei tre file confrontati con il repo: uguali.
+2. **La mappa in cache e' giusta** -- 90 voci, `3|137 -> [3,1]`, `3|148 -> [3,12]`, esclusi vuoti da
+   entrambe le parti. Letta con `_unpack_ep_maps` vera: chiavi tuple, non stringhe.
+3. **Il rebuild con quella mappa produce le righe giuste** -- fatto girare per davvero, con la meta
+   VERA presa da `metacache.db` dentro `trakt_indicators_tv`:
+   `(1,1)->(1,1)  (1,59)->(2,1)  (2,63)->(2,5)  (3,137)->(3,1)  (3,148)->(3,12)`.
+4. **Le righe locali sono vecchie**, e lo dice la loro forma:
+   ```
+   stagione 2:  1,2,3,4,17..40,45,67..78,99..136     <- la firma della mappa IBRIDA
+   stagione 3:  137..148                             <- non tradotta: nessun badge
+   ```
+   Non e' la mappa nuova (darebbe `2|1..78` e `3|1..12`) e non e' quella posizionale pura: e' lo
+   stato semi-riparato dalle date, 41 voci giuste su 78.
+5. **Nel log non c'e' una sola riga `FenLight Trakt`** in due sessioni. Non e' un guasto: senza
+   attivita' su Trakt il ramo episodi non viene percorso, e non c'e' niente da scrivere.
+
+### Il buco
+
+`trakt_indicators_tv()` viene chiamata SOLO quando `last_activities` dice che `episodes.watched_at`
+si e' mosso. E' giusto in generale -- senza attivita' non c'e' niente da sincronizzare.
+
+Ma quando cambia il **rimappaggio**, la tabella locale diventa sbagliata **senza che su Trakt sia
+successo niente**, e nessuna attivita' verra' mai a dircelo. Invalidare `_CONTI_KEY` garantiva il
+rebuild *quando si entra* nel ramo episodi -- ma non faceva entrare nel ramo. La correzione era
+pronta, giusta, installata, e aspettava un evento scollegato: per giorni, se l'utente non guardava
+niente.
+
+E' un errore di ragionamento che vale la pena nominare: **avevo verificato che la correzione fosse
+corretta, non che potesse ARRIVARE.**
+
+### La correzione
+
+`serve_riallineamento(noti)`: i conti memorizzati vuoti vogliono dire "non ho memoria di un
+allineamento fatto con QUESTA versione", e finche' e' cosi' si entra nel ramo episodi anche senza
+attivita'. Non e' un ciclo: un rebuild riuscito chiama `_registra_conti` e da li' in poi torna False.
+
+### Le prove (`tests/test_145ter.py`)
+
+Il caso che conta e' il **C**: le due domande devono essere GEMELLE. `serve_riallineamento` decide se
+ENTRARE nel ramo, `decide_rebuild_episodi` decide, una volta dentro, se ricostruire. Se la prima
+dicesse di entrare e la seconda di no, si tornerebbe ad aspettare -- stesso difetto, ma piu' difficile
+da vedere perche' il ramo viene percorso. Il caso prova che sugli stessi conti non si contraddicono
+mai, e che quando entrambe dicono di si' e' per la stessa ragione (`nessun conteggio memorizzato`).
+
+Verifica in ROSSO, quattro guasti:
+
+| guasto | prove che cadono |
+|---|---|
+| non si forza mai | A (3 righe) |
+| si forza sempre | B, C, D (5 righe) -- e' il ciclo infinito |
+| guarda solo i play e non lo scarto | C -- le due domande divergono |
+| `not noti.get(...)` invece di `is None` | B, C (4 righe) -- **lo scarto sul Mac vale 0**, quindi questo guasto ricostruirebbe ogni 30 secondi |
+
+Suite: **12 su 12**.
+
+## Lotto 147 -- un anime e' una serie ANIMATA asiatica, non una serie asiatica
+
+### Il criterio
+
+`e_anime(lingua, generi_id)`: animazione **E** lingua `ja/ko/zh`, in AND. Nessuna delle due basta:
+l'animazione occidentale non ha numerazioni TVDB divergenti da rimappare, e il dramma coreano non e'
+animato.
+
+Effetto misurato sulla `metacache.db` del Mac: **46 serie trattate come anime, di cui 10 non lo
+sono.** Tutte fiction dal vero coreane o giapponesi:
+
+```
+D.P. | I segugi | Previsioni d'amore | S Line | Human Vapor | City Hunter
+1 Litre no Namida | Squid Game | Sarangui Bulsichak | Non siamo piu' vivi
+```
+
+Prendevano il layout stagioni di TVDB senza averne motivo. Il caso peggiore resta *Palace* (2011),
+dramma cinese: skyhook non ha **un solo** `absoluteEpisodeNumber` per quella serie, e TVDB la divide
+39/37/63 contro il 40/37/63 di TMDb.
+
+Si confronta l'**ID** del genere (`16`), non il nome: `meta['genre']` porta i nomi TRADOTTI -- nella
+cache del Mac c'e' scritto `'Animazione'` -- quindi un confronto sul nome funzionerebbe in una lingua
+sola e tacerebbe in tutte le altre.
+
+Le costanti stanno DENTRO la funzione, non a livello di modulo: la prima stesura le aveva fuori e
+`harness.load_pure` non le vedeva (`NameError` alla prima prova). Non e' un inconveniente da
+aggirare: e' il vincolo che quel caricatore impone di proposito a cio' che deve restare puro.
+
+### L'invalidazione diventa un NUMERO DI VERSIONE
+
+Il 145 riconosceva le meta vecchie dall'assenza di `ep_esclusi_tvdb`. Funzionava, ma era un
+discriminante ad hoc che non sarebbe servito la volta dopo -- e la volta dopo e' arrivata subito, col
+147, dove il difetto non e' la mappa ma la CLASSIFICAZIONE della serie.
+Adesso c'e' `_RIMAPPAGGIO_V`, scritto nella meta insieme al resto: una serie col layout TVDB e una
+versione diversa da quella corrente si butta. Copre anche le prossime volte.
+Sulla cache del Mac: **46 invalidate su 46**, nessuna serie non-anime toccata.
+
+### Un buco del 145 che si chiude qui
+
+`episodes_meta` decideva col criterio della lingua:
+
+```python
+if _skyhook_eps is not None and meta.get('original_language', '') in ('ja','ko','zh'):
+```
+
+Col 145 questo era diventato SBAGLIATO: se l'indice Trakt non si era potuto leggere, `tvshow_meta`
+rinuncia al rimappaggio e lascia `season_data` di TMDb -- ma `original_language` resta `'ja'`, quindi
+quel ramo scattava lo stesso e mostrava **gli episodi TVDB dentro le stagioni TMDb**.
+La condizione giusta non e' la lingua ma `tmdb_season_data_original is not None`, che esiste se e solo
+se il layout TVDB e' stato adottato davvero. Cosi' non va nemmeno piu' tenuta in accordo con il
+criterio anime: e' lo stesso dato.
+
+### Difetto 8 -- `episode_count` contava anche gli episodi non usciti
+
+Quel numero diventa `total_aired_eps`, cioe' il **denominatore dei badge** e di
+`get_watched_status_tvshow`. Per un anime in corso era gonfio e la serie non risultava mai completata.
+Il percorso TMDb quel numero lo calcola con cura (usa `last_episode_to_air`); il percorso skyhook lo
+sostituiva con "tutti gli episodi conosciuti", cioe' regrediva.
+Una stagione interamente futura ora conta **zero**, ed e' proprio cosi' che `indexers/seasons.py` la
+riconosce come non uscita.
+
+### Difetto 9 -- la data della stagione dal primo elemento dell'array
+
+Ora e' quella del primo episodio **per numero**. L'ordine di `episodes` non e' promesso da nessuno, e
+nel payload vero di Hunter x Hunter la stagione 0 arriva prima della 1.
+
+### Le prove (`tests/test_147.py`)
+
+Il pezzo estratto e' `stagioni_da_skyhook`, la parte pura di `get_skyhook_season_data`: la lettura di
+rete resta nel guscio, la trasformazione si prova.
+
+Verifica in ROSSO, cinque guasti:
+
+| guasto | prove che cadono |
+|---|---|
+| torna il criterio della sola lingua | B (i due casi veri), D |
+| solo il genere, lingua ignorata | C (animazione occidentale) |
+| si confronta il NOME invece dell'ID | A, D (5 righe) |
+| si contano anche gli episodi non usciti | E, F |
+| la data dal primo elemento dell'array | G |
+
+Suite: **13 su 13**.
+
+## Lotto 145 quater -- la stessa lezione, due volte di fila
+
+Segnalato dall'utente: Hunter x Hunter continua a mostrare la stagione 3 come vista mentre i singoli
+episodi non hanno il badge. E' coerente con la tabella locale vecchia: le 12 righe ci sono (quindi il
+conteggio della stagione torna) ma sono numerate `137..148`, mentre l'elenco episodi chiede
+`(3,1)..(3,12)`.
+
+### Lo stato misurato
+
+Kodi riavviato alle 03:47, otto minuti dopo: **zero righe `FenLight Trakt` nel log**, conti ancora
+sulla chiave vecchia `fenlight_conti_trakt` (senza `_v2`), righe di HxH invariate.
+`trakt_indicators_tv` non era mai stata chiamata, con la correzione del 145 ter installata.
+
+### L'errore
+
+Il 145 ter metteva `serve_riallineamento` accanto al confronto su `episodes.watched_at`. Ma in
+`trakt_sync_activities` c'e' PRIMA un cancello:
+
+```python
+if not _compare(latest['all'], cached['all']):
+    ...
+    return 'not needed'
+```
+
+Su un account tranquillo si esce li', molto prima del ramo episodi. La bandiera apriva la porta
+interna e lasciava chiusa quella esterna.
+
+**E' la stessa lezione del 145 ter, sbagliata una seconda volta:** avevo verificato che la correzione
+fosse giusta, non che il codice che la applica venisse ESEGUITO. La prima volta mancava l'ingresso
+nel ramo, la seconda l'ingresso nella funzione.
+
+### La correzione
+
+La bandiera si calcola UNA volta, prima del cancello, e apre entrambe le porte:
+
+```python
+_riallinea_episodi = serve_riallineamento(_conti_noti())
+if not _compare(latest['all'], cached['all']) and not _riallinea_episodi:
+    ...
+    return 'not needed'
+...
+if _compare(latest_episodes['watched_at'], cached_episodes['watched_at']) or _riallinea_episodi:
+```
+
+### Le prove
+
+Al `test_145ter` si aggiunge il caso **E**, che non prova un valore ma una FORMA -- perche' era la
+forma a essere sbagliata. Con l'AST: la stessa bandiera deve comparire in **due** condizioni distinte
+dentro `trakt_sync_activities`, una delle quali e' proprio il cancello su `latest['all']`, e deve
+essere **assegnata una volta sola** (calcolarla due volte permetterebbe alle due porte di divergere).
+
+| guasto | prove che cadono |
+|---|---|
+| la bandiera non apre il cancello (**l'errore vero**) | E, 2 righe |
+| la bandiera non apre il ramo episodi | E |
+| calcolata due volte | E |
+
+E soprattutto una **prova di esecuzione**, che e' quella che mancava tutte e due le volte:
+`trakt_sync_activities` vera, con uno snapshot di attivita' COMPLETAMENTE IMMOBILE (`cached` identico
+a `latest`, il caso del Mac):
+
+```
+conti VUOTI    -> esito success     | chiamate: ['trakt_indicators_tv']
+conti COMPLETI -> esito not needed  | chiamate: nessuna
+```
+
+La seconda riga conta quanto la prima: il giro tranquillo deve restare tranquillo, altrimenti si
+ricostruisce ogni 30 secondi.
+
+Suite: **13 su 13**.
+
+## Lotto 149 -- una cronologia parziale non e' una fotografia, e uno scarto non spiegato non si scrive
+
+Segnalato dall'utente: Dragon Ball Z segnato visto su Trakt, e Kodi dice che ne mancano 210. Il log
+del Mac raccontava tutto:
+
+```
+03:58:00  watched episodes: si prosegue, nessun conteggio memorizzato        <- il 145 quater funziona
+03:58:01  rebuild: 34 shows, 1291 history plays over 6 pages, 1279 episodes
+03:58:01  scarto locale/Trakt = 0 (1279 in locale, 1279 su Trakt)            <- Hunter x Hunter a posto
+03:59:03  il conto NON coincide (1279 in locale, attesi 1570 ...)
+03:59:04  rebuild: 35 shows, 1373 history plays over 7 pages, 1360 episodes
+03:59:04  scarto = 210 -- la mappa ne spiega 0, restano 210 SENZA spiegazione
+```
+
+### La diagnosi
+
+`pagine=7` significa che su Trakt c'erano **almeno 1501 elementi** (sei pagine piene da 250 piu' una),
+e ne sono stati assemblati **1373**. Verificato subito dopo interrogando l'account: la cronologia ha
+1582 play su 7 pagine, tutte intere, e le stesse 7 pagine scaricate in parallelo tornano complete
+(1332 per le pagine 2-7). Quindi Trakt aveva il dato: **e' il plugin che ha perso una o piu' pagine**.
+
+Perche' in silenzio: le pagine si concatenavano alla cieca.
+
+```python
+history_extend(get_trakt(params) or [])
+```
+
+Un `None` -- guasto di rete, 429, timeout -- diventa `[]` e sparisce. Un elenco concatenato non
+ricorda piu' quali pezzi lo compongono, quindi non c'e' modo di accorgersene a valle.
+
+### E il colpo di grazia: lo scarto benedetto
+
+I 210 episodi mancanti sono stati **memorizzati come scarto**. Lo scarto entra in
+`decide_rebuild_episodi` come `atteso = visti_su_trakt - scarto`, quindi da quel momento
+`1570 - 210 = 1360` coincide con le 1360 righe locali: il conto torna, non si ricostruisce piu', e i
+210 episodi restano invisibili **per sempre**. Verificato nel database: `episodi_scarto: 210` e
+Dragon Ball Z con 81 righe locali su 291.
+
+La differenza non era stata risolta: era stata dichiarata normale.
+
+### Le due correzioni
+
+**1. `cronologia_completa(pagine, page_count, limite)`.** Le pagine si raccolgono per NUMERO in un
+dizionario, non si concatenano. La verifica non costa una richiesta in piu': Trakt impagina a
+`limite` fisso, quindi tutte le pagine tranne l'ultima devono avere esattamente `limite` elementi --
+una pagina assente o corta si riconosce senza sapere il totale. Se la fotografia non e' intera si
+RIMANDA (`_SYNC_DEFERRED`), la tabella locale resta intatta e il segnalibro non avanza. E' la regola
+del lotto 88 applicata a una risposta **parziale**, che e' il caso piu' insidioso perche' sembra
+valida.
+
+**2. `scarto_da_memorizzare(misurato, spiegato, tentativi, limite=5)`.** Si memorizza solo cio' che
+si sa spiegare. Finche' resta un residuo si tiene lo scarto SPIEGATO: il conto continua a non
+tornare e il giro dopo si ricostruisce ancora -- che e' esattamente cio' che serve quando la causa e'
+transitoria. Il limite esiste perche' riprovare non e' gratis (3-5 secondi ogni 30 sulla stick): dopo
+cinque tentativi si accetta il misurato e lo si dice nel log a chiare lettere. Meglio un difetto
+dichiarato e rumoroso che un ciclo silenzioso.
+
+Chiave dei conti a `_v3`: nella `_v2` e' rimasto il 210 memorizzato, che con qualunque codice
+bloccherebbe la ricostruzione.
+
+### Le prove (`tests/test_149.py`)
+
+Il caso **I** e' quello che lega le due funzioni: memorizzando lo scarto SPIEGATO,
+`decide_rebuild_episodi` al giro dopo dice ancora di ricostruire; memorizzando il MISURATO dice di
+no. Se qualcuno rimettesse il misurato, quella riga muore.
+
+Verifica in ROSSO, cinque guasti:
+
+| guasto | prove che cadono |
+|---|---|
+| non si controlla che le pagine ci siano tutte | B, C, F (5 righe) |
+| non si controlla che le pagine siano PIENE | D -- **il caso insidioso** |
+| si memorizza il misurato invece dello spiegato | H |
+| nessun limite ai tentativi | K -- il ciclo infinito sulla stick |
+| "non lo so" scambiato per un residuo | L |
+
+Suite: **14 su 14**.
+
+## Lotto 150 -- gli anime non avevano regista, sceneggiatori, voti ne' guest star
+
+Segnalato insieme al resto: sulle serie anime non compaiono regista e voto, a differenza di quelle
+normali.
+
+`get_skyhook_episodes` restituisce `'writer': []`, `'director': []`, `'rating': 0`, `'votes': 0`
+fissi -- skyhook quei campi non li ha. L'arricchimento da TMDb in `episodes_meta` copiava solo
+`still_path`, `name` e `overview`. Ma la chiamata che lo alimenta e'
+`season_episodes_details(...&append_to_response=credits)`, e il suo payload contiene gia'
+`crew`, `vote_average`, `vote_count` e `guest_stars`: verificato su Hunter x Hunter stagione 2,
+episodio 63 -- regista, sceneggiatore, 7.9 con 30 voti, 4 guest star. **Si stavano buttando via.**
+Ora si copiano. Chiave della cache stagioni a `_v3`.
+
+### Il voto IMDb e' un problema diverso, ed e' MISURATO ma non ancora chiuso
+
+`imdb_episode_ratings(imdb_id, season)` riceve la stagione che mostriamo, cioe' quella di TVDB. Ma
+IMDb usa una **terza numerazione**, e per Hunter x Hunter e' questa:
+
+```
+TVDB:  st1=58        st2=78          st3=12
+TMDb:  st1=1..62     st2=63..136     st3=137..148
+IMDb:  UNA stagione sola, episodi 1..148
+```
+
+Chiedendo a IMDb la stagione 2 o 3 la risposta e' vuota: **zero episodi**. Per questo i voti IMDb
+compaiono solo sulla prima stagione degli anime (dove TVDB e IMDb si sovrappongono per caso) e mai
+sulle altre.
+
+Non lo chiudo di corsa: una corrispondenza per `(stagione, episodio)` con IMDb non e' possibile in
+generale, e le alternative -- numero assoluto, data di messa in onda -- sono euristiche, cioe'
+esattamente la famiglia di scelte che questo rimappaggio ha gia' pagato due volte. Va deciso a mente
+fredda. **Vedi la voce aperta.**
+
+## Lotto 151 -- gli interpreti Python dell'ingresso in Home (lotto A della potatura skin)
+
+Primo lotto della sessione dedicata alla skin. Non e' una rimozione di codice morto: e' un costo
+**vivo e ricorrente** trovato leggendo il log di avvio della stick del 04/09.
+
+### Il fatto
+
+`Home.xml` avviava **due** interpreti Python a ogni `Window Init (Home.xml)`, cioe' anche al ritorno
+dal player e da ogni finestra video:
+
+```
+Home.xml:3   <onload>RunScript(script.skinvariables, ... skinvariables-splash.json ...)</onload>
+Home.xml:6   <include>Action_BuildShortcuts_OnLoad</include>  -> skinvariables-build-templates.json
+```
+
+Misurati nel log di avvio delle 13:47 (sono le invocazioni 7 e 8, che partono a 09.949 e 09.972,
+cioe' esattamente all'onload di Home): **4,4 s** e **5,5 s**, sovrapposti alla finestra 10,9-16,0 s
+in cui si costruiscono i tre widget della home. Su un dispositivo dove il lotto 117 ha misurato che
+il limite e' **un core**, sono due interpreti che rubano CPU proprio mentre serve.
+
+`Action_BuildViews`, il terzo include dell'onload, e' invece inerte: e' il fallback vuoto di
+`Includes_Fallbacks.xml` e non viene sovrascritto (verificato: `script-skinviewtypes-includes.xml`
+sulla stick e nel repo non contiene alcun `runscript`).
+
+### Cosa fa davvero `build-templates`, letto nel sorgente e non supposto
+
+`ShortcutsTemplate.update_xml` (`script.skinvariables/resources/lib/shortcuts/template.py:279`)
+calcola un'impronta di: argomenti della chiamata (fra cui `lastbuildtime`), contenuto di
+`skinvariables-generator.json`, contenuto del file **gia' generato**, nome del profilo. Se combacia
+con `Skin.String(script-skinvariables-generator-hash)` **esce senza fare nulla**. Al ritorno dal
+player e' quindi una guardia che paga un interprete intero per calcolare un hash e rispondere
+"niente da fare".
+
+I quattro innescchi di una rigenerazione vera, e chi li copre:
+
+| caso | innesco | copertura |
+|---|---|---|
+| modifica dei collegamenti | `Shortcuts.RebuildDateTime` cambia | `Custom_1115:14` (onload) e `Custom_1116:7` (onunload) |
+| salvataggio dall'editor | `action=buildtemplate&force` | `node.py:477`, **dentro l'addon**, non passa dalla skin |
+| uscita dall'editor | AlarmClock a 1 s | `Action_BuildShortcuts_OnUnLoad` su 1115 |
+| **deploy con `buildv` alzato** | cambia `generator.json` | **solo l'onload di Home** |
+
+Il quarto e' l'unico che dipendeva davvero da li', ed e' la trappola del
+`shortcuts/generator/data/LEGGIMI-rigenerazione.md` che tenne morta la paginazione sul Mac per
+undici giorni. Non si poteva quindi eliminare l'onload: andava reso raro.
+
+### Le due correzioni
+
+**A1 -- lo splash.** Con le impostazioni della stick (`Startup.EnableHubPreloading` spenta,
+`Startup.DisableWaitForLoad` accesa) tutte le regole di `skinvariables-splash.json` sono false: gli
+restano due `sleep` e le due righe finali `ClearProperty(SplashIsVisible,1198)` +
+`CancelAlarm(SplashTimeOut,silent)`, che sono cio' che **toglie lo splash di avvio**. Quelle due
+righe sono state portate nella skin come builtin, e il `RunScript` e' stato messo dietro la
+condizione complementare esatta. Se una delle due impostazioni torna attiva, lo script riparte
+identico a prima. Lo splash non e' un no-op: chi lo elimina alla cieca se lo ritrova appeso per 59 s.
+
+**A2 -- i template.** L'onload resta, ma:
+1. **una volta per sessione**, gated su `Window(Home).Property(Shortcuts.TemplatesChecked)`. La
+   proprieta' si azzera da sola al `ReloadSkin()`, che e' proprio cio' che una rigenerazione vera
+   esegue alla fine, quindi il ciclo si richiude senza codice aggiuntivo;
+2. **differita di 10 s** con `AlarmClock`, per uscire dalla contesa con la costruzione dei widget;
+3. la proprieta' viene **azzerata uscendo** dall'editor (`Action_BuildShortcuts_OnUnLoad`) e dal
+   dialogo dei collegamenti (`Custom_1116`), cosi' dopo ogni modifica il controllo si rifa' al primo
+   ingresso in Home successivo.
+
+### Il risultato, misurato sulla stick
+
+Tre avvii con `am start -n org.xbmc.kodi/.Splash` e adb staccato per tutta la durata. Bytecode caldo
+in tutti e tre (il deploy era di soli XML della skin, i `.pyc` di Fen Light non sono stati
+invalidati).
+
+| boot | parse degli include | avvio -> Home | Home -> ultimo widget | totale | interpreti skinvariables |
+|---|---|---|---|---|---|
+| prima (13:47) | 0,866 s | 7,03 s | **7,51 s** | 14,53 s | **3** |
+| dopo (14:07) | 0,646 s | 6,08 s | **4,80 s** | 10,88 s | **2** |
+| dopo (14:09) | 0,785 s | 6,26 s | **5,08 s** | 11,34 s | **2** |
+
+Il segmento che la correzione poteva toccare, `Home -> ultimo widget`, scende di **2,4-2,7 s** in
+modo riproducibile. Le invocazioni di Fen Light scendono con lui a parita' di codice:
+`build_continue_watching` da 5071 a 3186 ms, `mdblist` da 6097 a 4040 ms. E' la firma della contesa
+rimossa, non un'ottimizzazione del plugin.
+
+**Onesta' sulla misura**: il "prima" e' un campione solo, e le colonne `parse degli include` e
+`avvio -> Home` oscillano fra i due avvii "dopo" quanto basta a dire che li' siamo dentro il rumore.
+Cio' che regge e' il segmento mirato piu' il fatto meccanico verificabile nel log: due invocazioni
+sparite da quella finestra.
+
+**La conferma piu' istruttiva**: il controllo dei template differito parte a +10,4 s e dura
+**592 ms**. E' lo stesso identico lavoro che dentro la tempesta d'avvio ne costava 5500. Nove volte
+tanto, per contesa. Vale come misura indipendente della tesi dei lotti 28 e 117.
+
+### Cosa e' cambiato a schermo, dichiarato
+
+Lo splash di avvio sparisce **prima**: `Window Deinit (Custom_1198)` a 2,23 s dall'inizializzazione
+di Home invece di 6,88 s. Non e' un effetto collaterale, e' la conseguenza diretta di non aspettare
+piu' i due `sleep` dello script. Con `Startup.DisableWaitForLoad` attiva l'utente ha gia' dichiarato
+di non voler aspettare, quindi va nella direzione voluta, ma si vede: la home compare vuota per
+qualche secondo mentre i widget si costruiscono, invece di restare coperta dallo splash.
+
+### Verifiche fatte
+
+- XML valido sui tre file toccati.
+- **Simboli**: confronto delle definizioni `<include|variable|expression|constant name=>` fra
+  `HEAD` e l'albero di lavoro. `Includes_Actions.xml` 39 -> 39, nessuna persa. (La lezione di
+  [[scripted-edits-verify-symbols]]: `ast.parse` o l'XML ben formato non bastano.)
+- **Allineamento del dispositivo prima del deploy**: md5 di tutti i 207 XML della skin, stick contro
+  repo. Differivano solo i 3 file modificati piu' `script-skinvariables-generator-includes-.xml`,
+  che e' il file *generato* e deve restare diverso per dispositivo. **Non spinto.** Nessun ibrido.
+- md5 dei 3 file verificati dopo il push.
+- Nessun errore o warning nuovo nel log: l'insieme e' identico a prima, riga per riga.
+- Lo splash viene tolto (`Window Deinit (Custom_1198)` presente in entrambi gli avvii).
+- Il controllo differito non rigenera: nessun `ReloadSkin`, nessun `Unloaded skin` dopo l'avvio.
+
+### Verifica sul campo (04/09, 14:20-14:24): confermato
+
+Tre cicli completi Home -> riproduzione -> ritorno, fatti dall'utente col telecomando vero.
+
+| ingresso in Home | invocazioni skinvariables |
+|---|---|
+| boot 14:20:31 | 1 (`startup.json`) + 1 differita a +10 s |
+| ritorno dal player 14:21:29 | **0** |
+| ritorno dal player 14:22:31 | **0** |
+| ritorno dal player 14:23:46 | **0** |
+
+Prima erano **due per ogni ingresso**: sei interpreti risparmiati in tre ritorni, e due invocazioni
+in tutta la sessione contro le otto di prima. Nessun errore nuovo: i soli della sessione sono di
+riproduzione (`CMediaCodecVideoBuffer`, `Flush - timed out waiting for renderer`, buffer timeout),
+preesistenti.
+
+### Visto nello stesso log e NON riaperto: la doppia ondata dopo il player
+
+```
+ritorno #1:  +1,6s continue_watching | +5,5s continue_watching
+             +1,6s mdblist           | +6,8s mdblist
+             +1,7s mdblist           | +7,2s mdblist
+```
+
+Due ondate identiche a ogni uscita dal player, sei costruzioni per tre widget; al boot l'ondata e'
+una sola. E' esattamente il quadro del **lotto 129, REVOCATO**: le due ondate le ordina Kodi, che
+sveglia i `CDirectoryProvider` sia all'apertura della finestra sia sull'annuncio `Player.OnStop`.
+Registrato qui solo perche' i numeri di questa sessione lo riconfermano, **non** come fronte aperto.
+
+### Difetti confermati e non ancora corretti (dal log del 04/09)
+
+- `$VAR[Home_Icon_1106]`, `_1107`, `_1108` non definite: due warning ciascuna a ogni disegno del menu.
+- `LoadTimers: Could not load timers file .../1080i/Timers.xml`: file assente, warning a ogni avvio.
+- `Trying to add unsupported control type 7`, due volte.
+- `Image_SimpleBackground` ricade su `purle_blur.jpg` (manca la *p*). Mascherato perche'
+  `Background.Image` e' valorizzata.
+- Quattro resource addon referenziati e non installati: `resource.images.arctic.waves` (nel busy
+  loader di `Includes_Background.xml`), `moviecountryicons.maps`, `studios.white`,
+  `weatherfanart.multi`.
+
+## Lotto 152 -- l'interruttore che nascondeva i widget, e la freccia giu' dell'OSD
+
+Due richieste dell'utente dopo la prova sul campo del lotto B, entrambe su cose che si vedono.
+
+### 1. `Exp_TMDbHelper_IsData` non era piu' un interruttore di TMDbHelper
+
+Segnalazione: *"nella scheda Disposizione -> Informazioni -> Widget non potevo disattivare la voce
+tmdbhelper, perche' se no non comparivano piu' alcuni widget che da TMDbHelper non dipendono"*, e
+*"su Dettagli compare ancora TMDbHelper Servizio"*.
+
+Il difetto e' reale ed e' strutturale. `Exp_TMDbHelper_IsData` = `Skin.HasSetting(TMDbHelper.EnableData)`
+governa **48 punti** della skin, e con la migrazione a Fen Light la quasi totalita' di quei punti e'
+ormai alimentata da Fen Light. L'interruttore aveva quindi conservato il nome vecchio e acquisito un
+significato nuovo: non "usa TMDbHelper" ma "mostra i metadati estesi". Spegnerlo, che il nome
+invitava a fare, nascondeva **16 voci widget** nella pagina Informazioni
+([Dialog_DialogCustom.xml:1069-1219](skin.arctic.fuse.3/1080i/Dialog_DialogCustom.xml)) piu' la
+sezione Valutazioni.
+
+**Congelata a `[true]`.** Sul dispositivo `EnableData` e' attiva, quindi tutti i 48 gate valgono gia'
+true e tutti i rami `!$EXP[...]` valgono gia' false: il cambiamento e' a comportamento identico. Ma
+toglie la possibilita' che un reset delle impostazioni o un altro dispositivo si ritrovi met&agrave;
+interfaccia sparita per un interruttore che non governa piu' cio' che il suo nome dice.
+
+Rimossi i due comandi che lo pilotavano — l'etichetta e il radiobutton *TMDbHelper Servizio* in
+Dettagli, e il radiobutton *TMDbHelper* nella pagina Informazioni -> Widget — piu'
+`Action_TMDbHelper_Toggle_Onclick`, che era il loro unico corpo.
+
+**Restano da fare, segnalati e non toccati**: 21 `<visible>$EXP[Exp_TMDbHelper_IsData]</visible>` ora
+costanti-vere (righe eliminabili) e 12 rami `!$EXP[Exp_TMDbHelper_IsData]` ora costanti-falsi (sono i
+ripieghi nativi conservati di proposito al lotto 3, la loro rimozione e' una decisione a se').
+
+### 2. La freccia giu' nell'OSD: tolta tutta la catena
+
+Richiesta: *"non voglio nessuna voce che contiene info nell'osd, le ho disattivate tutte; l'OSD deve
+essere il piu' leggero possibile perche' la riproduzione e' il punto piu' importante"*.
+
+La catena, letta prima di toccarla (`Action_OSD_Main_OnDown` e le sue tre variabili satellite):
+
+```
+livetv + EPG            -> pvrosdguide
+livetv                  -> pvrosdchannels
+playlist presente       -> 1140  (OSD Playlist)
+altrimenti              -> videobookmarks
+ultimo ripiego          -> 1141  (OSD Cast)
+```
+
+Sulla stick nessuna impostazione `OSD.OnDown.*` e' scritta, quindi **tutti i rami erano attivi**.
+
+Rimosso per intero: i **tre** `<ondown>` (due in `VideoOSD.xml`, uno in `Includes_OSD.xml` che il
+primo censimento non aveva visto), i due `<ondown>` gemelli in `VideoOSDBookmarks.xml` e
+`DialogPVRChannelGuide.xml`, le 4 variabili della catena, le 5 variabili `Label_OSD_HintText*`,
+l'espressione `Exp_OSD_HasDownTarget`, il **suggerimento disegnato sopra la barra di ricerca in
+riproduzione** (`DialogSeekBar.xml`, che era l'unico consumatore di quelle etichette), i 5
+interruttori `OSD.OnDown.*` nelle impostazioni, e `OSD_CastInfo_Details`.
+
+**Due file eliminati**: `Custom_1140_OSD_Playlist.xml` e `Custom_1141_OSD_Cast.xml`, che dopo la
+rimozione della catena non erano piu' raggiungibili da nessun punto (verificato: zero
+`ActivateWindow` verso 1140/1141 in tutto l'albero).
+
+`Includes_OSD_CastInfo.xml` **resta**, nonostante il nome: definisce `OSD_Info_Dimensions`,
+`OSD_Info_Tray`, `OSD_List_Dimensions`, `OSD_View_Line`, usate 4-5 volte ciascuna fuori di li'. Il
+nome del file non dice a cosa serve, ed e' una trappola per il prossimo che passa.
+
+### Due errori miei, entrambi fermati dai controlli
+
+1. **Lo scanner di blocchi contava male.** Una riga `<include>Nome</include>` su riga singola
+   incrementava la profondita' senza decrementarla, e tre file sono usciti con i tag sbilanciati. Li
+   ha trovati il controllo XML su tutto l'albero, non l'occhio. Ripristinati da `HEAD` e rifatti con
+   il conteggio corretto (riga auto-conclusa = neutra).
+2. **Censimento incompleto.** Avevo cercato gli `<ondown>` solo in `VideoOSD.xml`: ne restavano tre
+   altrove, che sarebbero rimasti a puntare a variabili appena cancellate. Li ha trovati il controllo
+   globale dei `$VAR` usati e non definiti. **Quel controllo va eseguito dopo ogni rimozione di
+   definizioni, non alla fine del lotto.**
+
+### Verifiche fatte
+
+- XML valido su **tutti** i 205 file dell'albero, non solo su quelli toccati.
+- Simboli: 12 definizioni rimosse, esattamente le 12 volute, zero collaterali.
+- Coerenza globale: zero include usati e non definiti oltre ai 3 preesistenti; zero `$VAR`/`$EXP`
+  orfani nuovi; zero riferimenti residui a 1140/1141; zero riferimenti alla catena `Action_OSD_*_OnDown`.
+- Deploy a Kodi fermo, md5 11 su 11, i due file cancellati anche sul dispositivo.
+- Avvio pulito: nessun errore nuovo, nessun `Skin has invalid include`.
+
+### Trovato per strada, non corretto
+
+Aprendo l'hub ricerca compaiono tre `GetDirectory - Error getting &pgctl=1105.501/502/505`. E' la
+firma gia' diagnosticata al **lotto 7**: il token di paginazione viene emesso anche quando il path di
+base e' vuoto, e il criterio giusto e' *"il path di base non e' vuoto"*, non *"il token e'
+valorizzato"*. Corretto allora per home e hub, tornato sul percorso della ricerca dopo il lotto 67.
+Innocuo (il container resta vuoto) ma va chiuso.
+
+## Lotto 153 -- via la schermata di avvio: la Home non aspetta piu' uno script inerte
+
+Proposta dell'utente: *"ormai al boot abbiamo tolto tante voci che rallentavano, non possiamo
+togliere proprio la schermata di caricamento con la montagna e caricare direttamente la home?"*.
+
+### Il numero che la giustifica
+
+```
+15:05:52.633  Window Init (Startup.xml)
+15:05:52.776  skinvariables-startup.json parte
+15:05:55.223  skinvariables-startup.json finisce
+15:05:55.263  Window Init (Home.xml)          <- 40 ms dopo la fine dello script
+```
+
+**La Home compariva 40 ms dopo la fine di quello script.** Non era un caso: `ReplaceWindow` e'
+l'ultima azione del json, quindi la schermata di avvio durava esattamente quanto lo script.
+
+### Cosa faceva lo script dopo il primo avvio in assoluto: niente
+
+Censito voce per voce:
+
+| azione | verdetto |
+|---|---|
+| blocco primo avvio | gia' guardato da `DefaultConfig.InitDone`, che sulla stick e' impostata |
+| 20 `Skin.SetString(SkinConstant.Numeric.00..19)` | **zero consumatori** in tutto l'albero (xml, json, xmltemplate). Scritte a ogni avvio, lette da nessuno |
+| 19 default condizionali | verificati **uno per uno** contro `settings.xml` della stick: tutti gia' presenti |
+| `SetProperty(ReloadDone,1)` ×2 | anello chiuso: l'unico lettore e' lo script stesso |
+| `sleep=0.5` | mezzo secondo dichiarato |
+| blocco di attesa PVR | regole che non passano (`System.HasPVRAddon` falso) |
+| `{ReplaceWindowCommand}` | l'unica azione utile |
+
+### La correzione
+
+`Startup.xml` lancia lo script **solo quando `DefaultConfig.InitDone` non c'e'**, cioe' al primo
+avvio in assoluto o dopo un azzeramento delle impostazioni. A regime la finestra esegue direttamente
+le stesse tre regole del json, tradotte riga per riga: `StartupReplaceWindow` se valorizzata,
+altrimenti `System.StartupWindow`, poi l'eventuale `Startup.VideoPath`.
+
+Tolte anche le due righe che accendevano lo splash (`SplashIsVisible` + `AlarmClock(SplashTimeOut)`)
+e le 20 `SkinConstant.Numeric` dal json. La finestra 1198 **non e' stata eliminata**: il percorso
+skin-user la riarma per conto suo in `Custom_1195_SkinUserLoginScreen.xml:8-9`, e i profili sono fra
+i sottosistemi che l'utente usa.
+
+### Il risultato, e la parte da non gonfiare
+
+| boot | Kodi -> caric. skin | **Startup -> Home** | Home -> ultimo widget |
+|---|---|---|---|
+| prima 13:47 | 2,64 s | **2,362 s** | 7,51 s |
+| lotto A 14:07 | 2,29 s | **2,122 s** | 4,80 s |
+| lotto A 14:09 | 2,29 s | **2,294 s** | 5,08 s |
+| lotto 153 15:27 | 2,30 s | **0,023 s** | 7,55 s |
+| lotto 153 15:29 | 7,43 s | **0,028 s** | 8,12 s |
+
+Il segmento che la correzione poteva toccare passa da **2,1-2,4 s a 23-28 ms**, riproducibile su due
+avvii. Lo splash non compare piu' (`Window Init (Custom_1198)` assente), e gli interpreti
+skinvariables all'avvio scendono da 2 a **1** (resta il solo controllo differito del lotto 151).
+
+**Ma il tempo totale fino alla home popolata non migliora.** `Home -> ultimo widget` sale da 4,8-5,1
+a 7,6-8,1 s, e non e' un peggioramento del codice dei widget: la Home ora si apre 2,3 s prima, quindi
+i widget partono prima e competono con l'inizializzazione di Kodi ancora in corso. Il lavoro si e'
+**spostato**, non aggiunto. In assoluto il momento in cui la home e' piena resta lo stesso.
+
+Quindi la frase corretta e': **l'interfaccia compare 2,3 secondi prima, il boot non si accorcia.**
+Per la reattivita' percepita e' il guadagno che si voleva; per il totale non lo e', e va detto.
+
+**E il totale non e' comunque misurabile in questo modo**: la colonna `Kodi -> caric. skin` va da
+2,29 a 7,43 s fra due avvii consecutivi a codice identico. E' varianza dell'init di Kodi, fuori dalla
+portata della skin, ed e' esattamente il motivo per cui il lotto 102 aveva gia' stabilito di non
+guardare piu' i totali d'avvio.
+
+### Verifiche
+
+XML e JSON validi, md5 2 su 2 dopo il push a Kodi fermo, nessun errore o warning nuovo, il warning
+`CApplication::Initialize - startup.xml taints init process` **e' sparito** (la finestra non trattiene
+piu' l'inizializzazione).
+
+## Lotto 154 -- lotto C: via sette sottosistemi. E il guadagno di avvio NON si misura
+
+Rimossi i sottosistemi che l'utente non usa: PVR/LiveTV, Next Aired (hub 1106), meteo, musica,
+immagini, giochi, preferiti, piu' sei finestre morte. **Conservati** profili/skin users e file
+manager, come richiesto.
+
+### Il metodo: prima il raggio d'impatto, poi la cancellazione
+
+Prima di toccare un file, per ogni sottosistema: quante definizioni contiene e **quante di quelle
+sono usate da fuori**. Su 48 file e 5.270 righe, le definizioni usate altrove erano **tre**:
+
+| definizione | consumatore esterno | esito |
+|---|---|---|
+| `PVR_GenreType` | `Layout_PVRGuide_Programs` in `Includes_Layouts.xml`, a sua volta usato solo da `List_EPGGrid` in `Includes_Lists.xml`, a sua volta usato solo da `Includes_Views_PVR.xml` | catena interamente PVR: rimossa tutta |
+| `Weather_Details_HighLow` | 5 usi in `Includes_Hubs.xml`, dentro un gruppo con `<visible>String.IsEqual(Container(601).ListItem.Property(guid),weather)</visible>` | gruppo di 73 righe **permanentemente invisibile** (nessun menu dell'utente ha quel guid): rimosso |
+| `DialogPictureInfo` | `Custom_1126_Dialog_FileProperties.xml` e `DialogPlayerProcessInfo.xml`, che **non sono foto** | `Dialog_DialogPictureInfo.xml` **conservato**; eliminate solo `MyPics`, `SlideShow`, `DialogPictureInfo` |
+
+Il terzo caso e' lo stesso tranello di `Includes_OSD_CastInfo.xml` nel lotto 152: **un file il cui
+nome dice un sottosistema ma il cui contenuto e' un layout condiviso.** Due su due, in due lotti
+consecutivi. Il censimento delle definizioni usate da fuori e' l'unica cosa che li ha distinti.
+
+### Le code, tutte trovate dal controllo globale e non a occhio
+
+Dopo le cancellazioni il controllo degli orfani ha nominato, in tre giri successivi:
+`Weather_Details_HighLow`, poi `Weather_Details_HighLow_Items` (una regola dentro
+`generator/data/setup/widgets_row.xml`), poi `Hub_Weather_Widget` (usato da
+`Custom_1109_Settings.xml`). Ripulite anche le voci di menu di 1106 e 1107 in `Includes_Home.xml`,
+i 7 blocchi di `Dialog_DialogShortcuts.xml`, i termini `Window.IsVisible(110[67])` in due finestre,
+i blocchi di preload in `skinvariables-splash.json` e i default in `skinvariables-startup.json`.
+
+**`buildv` alzato a `0.2.0-lotto-C`**, e il controllo differito del lotto 151 lo ha rilevato
+rigenerando il file: la catena regge al terzo utilizzo consecutivo.
+
+### Sparito anche un warning vecchio
+
+`$VAR[Home_Icon_1106]`, `_1107`, `_1108` non erano definite e producevano **sei warning a ogni
+disegno del menu**. Le prime due sono uscite con i rispettivi hub; per la terza (l'hub Addon, che
+resta) il `<param name="icon">` e' stato rimosso, perche' la variabile non e' mai esistita. Il log
+d'avvio adesso non le nomina piu'.
+
+### I numeri
+
+| | prima | dopo |
+|---|---|---|
+| file `.xml` in `1080i/` | 207 | **158** |
+| righe parsate da `Includes.xml` | 38.879 | **35.025** (-9,9%) |
+| righe totali in `1080i/` | 45.780 | **39.748** |
+| path `plugin://…themoviedb.helper` | 46 (a inizio sessione) | **8** |
+
+### Il risultato di avvio: NEGATIVO, e va scritto cosi'
+
+| boot | parse | font | finestre custom | caricamento skin |
+|---|---|---|---|---|
+| prima 13:47 | 0,866 s | 0,577 s | 0,142 s | **1,585 s** |
+| lotto 153 15:27 | 0,734 s | 0,429 s | 0,118 s | **1,281 s** |
+| a freddo 15:36 | 0,856 s | 0,486 s | 0,147 s | **1,489 s** |
+| **lotto C #1** | 0,763 s | 0,587 s | 0,102 s | **1,452 s** |
+| **lotto C #2** | 0,696 s | 0,690 s | 0,235 s | **1,621 s** |
+| **lotto C #3** (prova utente) | 0,696 s | 0,421 s | 0,088 s | **1,554 s** |
+
+**Meno 9,9% di righe, zero guadagno misurabile.** E il motivo e' aritmetico, non misterioso: il
+guadagno atteso era 9,9% di 0,86 s = **85 ms**, mentre la banda di rumore fra avvii a codice
+identico e' di **±150 ms**. L'effetto, se c'e', sta sotto la risoluzione dello strumento.
+
+Questo dice due cose. La prima: **la stima andava fatta prima**, e avrebbe detto subito che la
+misura non poteva riuscire. La seconda, piu' utile: il parse degli include **non e' proporzionale
+alle righe** nella misura in cui si sperava, quindi togliere altre righe da li' non e' una strada
+per l'avvio. Il capitolo "ridurre l'albero degli include per accorciare il boot" si chiude qui, in
+negativo.
+
+Cio' che il lotto vale davvero: **49 file e 6.032 righe fuori dalla skin**, sei warning per disegno
+del menu in meno, e la sparizione di tutta la superficie PVR/meteo/musica/giochi/foto/Next Aired,
+inclusi gli 8 content path TMDbHelper dell'hub 1106 che avrebbero aperto il prompt d'installazione.
+
+### Verifiche fatte
+
+- XML valido su tutti i 158 file, JSON valido su tutti e quattro.
+- Controllo globale degli orfani ripetuto **dopo ogni gruppo** (la regola introdotta nel lotto 152):
+  zero include e zero `$VAR`/`$EXP` orfani nuovi. Restano i preesistenti.
+- Nessun file dichiarato in `Includes.xml` e assente, tranne
+  `script-skinvariables-skinusers.xml` che e' condizionale e generato.
+- Deploy a Kodi fermo: 46 file cancellati sul dispositivo con verifica del conteggio (158 = 158),
+  13 modificati con md5 verificati.
+- Due avvii: nessun errore, nessun warning nuovo, tre warning vecchi spariti.
+
+### Cosa resta
+
+Gli **8** riferimenti TMDbHelper superstiti sono tutti in `Dialog_DialogCustom.xml` e sono
+`RunScript(…,blur_image=…)` del selettore di sfondo: vanno con il **lotto D**, insieme allo strato
+blur.
+
+### La prova sul campo: il log conferma, il tempo di avvio no
+
+Log `16:15:59` -> `16:17:35`, avvio + hub + rientro + due menu contestuali + dialogo opzioni.
+L'utente riferisce che la home e' rimasta identica -- coerente, non usava nessuno dei sottosistemi
+rimossi.
+
+**Quello che il log dimostra**
+
+- **Zero occorrenze della stringa `themoviedb.helper` in tutto il log.** E' la conferma piu' netta
+  di tutta la sessione: non un content path, non un `RunScript`, non un tentativo di risoluzione.
+- Zero `$VAR`/`$EXP` non definiti, zero include mancanti, zero file di skin cercati e non trovati.
+  I 49 file cancellati non lasciano richiami.
+- **Un solo errore** in 96 secondi, `CPeripheralJoystick: No button mapping add-on` -- preesistente
+  e non nostro. I warning superstiti sono i noti del lotto E (`Timers.xml` assente, due
+  `unsupported control type 7`, gli MD5 del repo).
+- Nessuna `DoWork - took` sopra i 100 ms: le texture non sono un problema in questo giro.
+- Memoria: 293 MB liberi all'inizio, 268 nel punto peggiore della home, 305 all'uscita. Nessuna
+  deriva.
+
+**Il caricamento skin resta piatto.** 1,554 s, dentro la stessa nuvola di prima (1,281-1,621 s su
+cinque avvii, tre prima del lotto e due dopo). Terza misura, stessa conclusione: il capitolo si
+chiude in negativo, come gia' scritto sopra.
+
+**Due meccaniche dei lotti precedenti si vedono funzionare qui, e vanno registrate.**
+
+Il controllo differito dei template (lotto 151) e' partito alle `16:16:13.689` ed e' finito alle
+`16:16:14.285`: **596 ms, spesi 3,4 secondi dopo che la home era gia' popolata**, cioe' nel tempo
+morto in cui l'utente sta ancora guardando. Ed e' partito **una volta sola in tutta la sessione**:
+il rientro in Home alle `16:17:07` non l'ha rifatto, perche' `Shortcuts.TemplatesChecked` era gia'
+posata. E' esattamente il comportamento per cui era stato scritto.
+
+Il rientro dall'hub in Home, alle `16:17:07.560`, **non ha ricostruito nessun widget**: fra
+`16:16:21.198` e `16:17:13.352` non parte un solo interprete, e quel `13.352` e' gia' il menu
+contestuale aperto dall'utente. Il rientro da finestra a finestra e' gratis; resta caro solo il
+rientro dal player, che e' il `Player.OnStop` di `CDirectoryProvider` (lotto 129, revocato).
+
+**Il resto della sessione, per riferimento**
+
+| momento | tempo |
+|---|---|
+| avvio Kodi -> skin caricata | 3,84 s |
+| Startup -> Home | **22 ms** (lotto 153 regge) |
+| Home init -> ultimo widget consegnato | **6,96 s** (3 interpreti) |
+| avvio Kodi -> home popolata | **10,82 s** |
+| ingresso hub 1101 -> ultimo widget | 4,33 s (5 interpreti) |
+
+I 6,96 s della home sono il collo di bottiglia noto e non toccato da questo lotto: `import 545 +
+import pigri 2256` sulla prima invocazione, cioe' il modello del lotto 74 (costo per **file**
+aperto), non righe di skin. E' li' che va guardata la prossima ottimizzazione dell'avvio, non
+nell'albero degli include.
+
+## Lotto 155 -- la paginazione della ricerca: non era rotta, e la misura lo dimostra
+
+Il lotto nasce da una convinzione mia, ripetuta per tre sessioni: *"la paginazione nella ricerca non
+funziona come in home e hub"*. **Era sbagliata.** La prima cosa fatta questa volta e' stata misurarla
+invece di dedurla, e il log dice il contrario.
+
+### Cosa fa davvero la ricerca, misurato
+
+Sessione del 04/09, query "batman", scorrimento fino in fondo alla riga Film:
+
+```
+watcher TRIGGER key=1105.502 pages 2->3   current=11/31 built=31
+watcher TRIGGER key=1105.502 pages 3->4   current=14/34 built=34
+watcher TRIGGER key=1105.502 pages 4->5   current=17/37 built=37
+watcher TRIGGER key=1105.502 pages 5->6   current=20/38 built=38
+watcher TRIGGER key=1105.502 pages 6->7   current=21/39 built=39
+watcher TRIGGER key=1105.502 pages 7->8   current=23/39 built=39
+watcher TRIGGER key=1105.502 pages 8->9   current=27/41 built=41
+```
+
+Sette paginazioni consecutive, `path_pages=8` e `path_pages=9` confermati nelle righe PERF, la
+posizione del fuoco **conservata a ogni passo** (27/41 prima della ricostruzione, 28/41 dopo),
+nessun ritorno al lotto iniziale, nessun azzeramento del token. **La ricarica mirata per (finestra,
+contenitore) funziona in ricerca esattamente come in home e negli hub.**
+
+### Perche' allora *sembra* diversa
+
+Perche' la ricerca su TMDb **si prosciuga**. Elementi resi da ciascuna pagina, nello stesso giro:
+
+| pagina | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| elementi | 20 | 18 | 12 | 5 | 3 | 1 | 1 | 2 |
+
+Dalla quarta pagina in poi ogni paginazione **aggiunge da 1 a 3 elementi**, e ognuna costa una
+ricostruzione cumulativa intera: 5,06 s alla pagina 8 (di cui **4,68 s di sola risoluzione**, cioe'
+rifare da capo le otto chiamate a TMDb) e 2,92 s alla pagina 9. In home un passo aggiunge una
+ventina di elementi; qui ne aggiunge uno e ci mette lo stesso tempo. **La sensazione di "non pagina"
+e' quella: il meccanismo gira, e' la sorgente che non ha piu' niente da dare.**
+
+Non e' un difetto da correggere in questo lotto, ed e' bene dirlo invece di inseguirlo: e' il costo
+della costruzione cumulativa, che e' anche cio' che rende la paginazione robusta al ritorno dal
+player. Se un giorno si vorra' attaccare, la leva e' la cache delle pagine gia' risolte, non il
+token.
+
+### Quello che invece era rotto: quattro path monchi
+
+Nella stessa sessione, quattro `GetDirectory` fallite:
+
+| path | quando | causa |
+|---|---|---|
+| `&pgctl=1105.501` | apertura ricerca | riga Discover di TMDbHelper, path di base **morto** |
+| `&with_text_query=batman&pgctl=1105.501` | query conclusa | idem, con la coda del testo |
+| `&pgctl=1105.502` | apertura ricerca | riga Film, casella vuota |
+| `&pgctl=1105.505` | apertura ricerca | riga Discover di Fen Light, mai aperta |
+
+E' la firma del **lotto 7**, tornata sul percorso della ricerca dopo il lotto 92: il segmento di
+identita' `&pgctl=` viene accodato al path **al buio**, e quando il path di base e' vuoto resta da
+solo. Il criterio giusto e' *"il path di base non e' vuoto"*, non *"il token e' valorizzato"*.
+
+### La correzione
+
+**1. Via la riga Discover di TMDbHelper (contenitore 501 nella finestra 1105).** Il suo path e'
+`$INFO[window(home).property(tmdbhelper.userdiscover.folderpath)]`: una proprieta' che nessuno
+scrive piu' da quando, nel lotto B, e' sparito il `RunPlugin` verso `user_discover`. Il Discover vivo
+e' quello di Fen Light, contenitore **505**. Rimossi il row e il suo pannello info in
+`Includes_Search.xml`, spostato a 505 il valore di partenza di `TMDbHelper.WidgetContainer` per la
+finestra 1105 (`Includes_Hubs.xml`) e semplificato il guard che in `Includes_Images.xml` esisteva
+solo per tenere fuori il 501 dalla ricerca.
+
+**2. Il segmento di identita' diventa un parametro, con il default sicuro.** Le due righe `<content>`
+di `Hub_Wall_Widget` e `Hub_Combined_Widget` confluiscono in una definizione sola,
+`Defs_Widget_Content`, in cui i tre pezzi hanno tre mestieri distinti:
+
+```xml
+<content ...>$PARAM[content]$PARAM[pgctl]$INFO[Window(Home).Property(fenlight.pg.w...ctl....pages),&amp;pages=,]</content>
+```
+
+e i due widget la richiamano due volte, scegliendo con una condizione di include (statica, risolta al
+caricamento) chi scrive `pgctl`:
+
+```xml
+<param name="pggated">false</param>
+...
+<include content="Defs_Widget_Content" condition="![$PARAM[pggated]]">
+    <param name="pgctl">&amp;pgctl=$PARAM[pgscope].$PARAM[id]</param>
+<include content="Defs_Widget_Content" condition="$PARAM[pggated]">
+    <param name="pgctl" />
+```
+
+**Il default e' il comportamento di sempre.** Chi ha un path letterale (home, hub) non deve sapere
+niente di questo problema e non puo' introdurlo per dimenticanza: e' l'opposto di un parametro
+obbligatorio, che si dimentica in silenzio e spegne la paginazione di un widget senza un errore.
+
+Chi ha un path condizionale passa `pggated=true` e scrive `&pgctl=` nel **suffisso del proprio
+`$VAR`/`$INFO`**, dove sparisce insieme al path:
+
+```xml
+505: $INFO[Window(Home).Property(FenLight.Discover.ContentPath),,&amp;pgctl=1105.505]
+502: $VAR[Path_SearchTerm,plugin://...&amp;query=,&amp;pgctl=1105.502]      (search_row.xmltemplate)
+```
+
+### Perche' NON e' annidato
+
+La strada apparentemente piu' pulita era mettere tutto il token dentro il suffisso, `$INFO[...]`
+compreso. **Scartata su una verifica:** in 158 file della skin non esiste **un solo** `$INFO`/`$VAR`
+annidato dentro un altro. Il parser di Kodi trova la parentesi chiusa contando l'annidamento, ma
+spezza gli argomenti su una virgola semplice: un `$INFO[prop,&amp;pages=,]` dentro il terzo argomento di
+un `$VAR[a,b,c]` diventerebbe cinque argomenti invece di tre. Costruire il lotto su un
+comportamento mai esercitato in questa skin, e non verificabile senza provarlo, non valeva il
+risparmio di un parametro.
+
+### Censimento, perche' due volte non basta
+
+Prima di toccare qualcosa: **tutti** i `<param name="content">` che possono risultare vuoti, non solo
+quelli della ricerca. Sono sei, e quattro sono innocui:
+
+| path | dove finisce | esito |
+|---|---|---|
+| `$VAR[Path_SearchTerm,...]` x2 | `Hub_Combined_Widget` | **corretto** (template) |
+| `$INFO[...FenLight.Discover.ContentPath...]` | `Hub_Combined_Widget` | **corretto** |
+| `$INFO[...tmdbhelper.userdiscover...]` | `Hub_Combined_Widget` | **rimosso** |
+| `$INFO[Window.Property(Encoded.ListItem.Artist/Album),musicdb://...]` x2 | `Object_ContentDynamic` | nessun token, innocuo |
+| `$INFO[Skin.String(HomeSwitcher....Spotlight.Path)]` | `Hub_Spotlight_List` | nessun token, innocuo |
+
+E' la regola scritta al lotto 7 dopo averla sbagliata due volte -- *"prima di aggiungere qualcosa a un
+path, elencare tutti i modi in cui quel path puo' essere vuoto"* -- applicata per la prima volta
+prima e non dopo.
+
+### Cosa resta aperto, e va detto
+
+Il frammento `&amp;pages=N` continua a essere emesso da un `$INFO` proprio, che guarda la propria
+proprieta' e non il path di base. Se si pagina e **poi** si svuota la casella di ricerca, puo'
+comparire **una** `GetDirectory - Error getting &amp;pages=N` prima che il token venga azzerato. E' il
+residuo gia' annotato al lotto 7. Chiuderlo richiederebbe l'annidamento scartato sopra, oppure che il
+watcher azzeri il token dei contenitori vuoti senza il fuoco addosso -- e quest'ultima cancellerebbe
+il conteggio anche durante una costruzione fresca, cioe' al rientro dal player. Il rimedio costa piu'
+del guasto: resta com'e', dichiarato.
+
+### Verifiche fatte
+
+- XML valido su tutti i 158 file, JSON valido sul generatore.
+- Insieme degli orfani **identico** a HEAD: `Hub_Disabled_Onload` e `Settings_InfoText` prima e dopo,
+  zero `$VAR`/`$EXP` nuovi. (Nota: `script-skinvariables-generator-includes-.xml` e' in `.gitignore`
+  e non sta in git -- il confronto con HEAD va fatto sapendolo, o si legge una differenza che non c'e'.)
+- Zero riferimenti residui a 501 in `Includes_Search.xml`.
+- `buildv` alzato a `0.2.1-ricerca-pgctl`: le due righe di ricerca combinate sono generate, e senza
+  il salto di versione il file generato resterebbe quello di prima. Quarta volta che questa catena
+  serve davvero.
+
+### Un errore di metodo, registrato
+
+Ho tenuto per tre sessioni una diagnosi -- *"la ricerca non pagina"* -- basata su un'impressione
+riferita e su tre righe di errore nel log, senza mai far scorrere una lista di ricerca fino in fondo
+e guardare i TRIGGER. Le tre righe di errore erano vere e sono state corrette qui; la diagnosi che ci
+avevo appeso sopra era falsa. **Un errore visibile nel log non e' la spiegazione del sintomo
+riferito: e' un altro fatto, che va collegato al sintomo o tenuto separato.**
+
+## Lotto 156 -- autocompletion: l'unico residuo che girava davvero
+
+Censimento dei residui chiesto dall'utente dopo il lotto 155. Il risultato utile non e' l'elenco: e'
+la **separazione** fra cio' che sporca il sorgente e cio' che costa a runtime. Il criterio e' il log,
+non la lettura del codice.
+
+Sessione di ricerca completa (apertura, query "batman", scorrimento, chiusura): **13 errori**.
+
+```
+   4  Unable to find plugin plugin.program.autocompletion
+   4  GetDirectory - Error getting plugin://plugin.program.autocompletion/...
+   3  GetDirectory - Error getting &pgctl=1105.501/502/505    <- chiusi dal lotto 155
+   1  GetDirectory - Error getting &with_text_query=...       <- chiuso dal lotto 155
+   1  CPeripheralJoystick: No button mapping add-on           <- non nostro
+```
+
+**Otto errori su tredici erano autocompletion**, uno ogni battuta di tasti (id vuoto, `b`, `bat`,
+`batman`), cioe' esattamente sul percorso piu' caldo che esista in questa skin: scrivere in una
+casella di ricerca. L'addon non e' installato, e l'utente l'ha anche disinstallato del tutto -- ma la
+disinstallazione **non basta**, perche' i due `<content>` partono comunque.
+
+### I tre punti, e uno solo era vivo
+
+| dove | stato |
+|---|---|
+| `Dialog_DialogKeyboard.xml` -- il `<content>` della lista a destra | **vivo**, gli 8 errori sono suoi |
+| `Includes_Search.xml` -- l'include `Search_Autocompletion_Dropdown` | **definito e mai usato**: 68 righe morte |
+| `Includes_Expressions.xml` -- `Exp_AutoCompletion_IsEnabled` | **zero lettori** |
+
+L'espressione di guardia esisteva ed era corretta (`System.HasAddon` + `System.AddonIsEnabled`), ma
+**non era applicata a nessuno dei due `<content>`**: era una guardia messa davanti a una porta che
+non c'era. E' il motivo per cui il difetto e' sopravvissuto a due letture precedenti del file: chi
+guardava trovava la guardia e si fermava li'.
+
+Rimossi tutti e tre. `autocompletion` nella skin: **0 occorrenze**.
+
+### Il resto del censimento: sporco, ma fermo
+
+Nella stessa sessione **zero** errori `resource://`, quindi i resource addon citati e non installati
+(`studios.white` 23 usi, `moviecountryicons.maps` 23, `weatherfanart.multi` 15, `arctic.waves` 14)
+non costano niente: stanno in rami che non si raggiungono. Vanno tolti per pulizia, non per
+prestazioni, e la distinzione va tenuta o si finisce a rincorrere numeri che non si muovono -- come
+gia' successo con il lotto C.
+
+Le proprieta' `TMDbHelper.*` sono state classificate **per scrittore**, non per nome. La skin scrive
+solo `base_label`, `base_poster`, `WidgetContainer`, `Blur.*`, `Enable*`; il plugin scriveva le
+`BlurImage` da `blur_service`, che in `service.py` e' commentato e nel log non compare mai. Quindi
+sono morte `SimpleBackground.BlurImage` (11 usi), `ListItem.BlurImage(.Original)` (7),
+`ListItem.Current.*` (7), `Player.CropImage` (2), `ListItem.CropImage` (1), le proprieta' del cast in
+`Includes_DialogInfo` (6), tutte le `base_*` tranne le due scritte (~20) e `EnableExtendedProperties`.
+
+**`TMDbHelper.WidgetContainer` (79 usi) NON e' morta**, nonostante il nome: e' interna alla skin, la
+scrive lei a ogni focus e la legge la variabile dello sfondo. Confonderla con un residuo sarebbe
+stato il danno peggiore di tutto il censimento.
+
+### Un errore di taglio, preso dal controllo
+
+Il primo tentativo di rimuovere `Search_Autocompletion_Dropdown` ha cercato la chiusura come
+**sottostringa** `'    </include>'`: dentro il blocco c'e' un `</include>` a 16 spazi, che la contiene,
+e il taglio si e' fermato li' lasciando orfani due `</control>`. Stessa classe dell'errore del lotto
+152. Preso dal controllo XML sull'albero intero, ripristinato con `git checkout`, rifatto **per righe
+esatte** invece che per sottostringhe, con tre asserzioni scritte prima del taglio (una definizione
+sola, una sola chiusura di primo livello, il marcatore atteso dentro il blocco).
+
+La regola che ne esce, piu' stretta di quella del lotto 152: **su testo indentato non si cerca mai una
+sottostringa, si confronta la riga intera.**
+
+### Verifiche fatte
+
+- XML valido su tutti i 158 file.
+- Insieme degli orfani identico a HEAD.
+- Nessun riferimento pendente al contenitore 304 nella finestra di ricerca.
+- `grep -r autocompletion` su `1080i/` e `shortcuts/`: **0**.
+
+## Lotto 157 -- un solo punto di innesto per il token di paginazione
+
+Chiuso il punto sollevato dall'utente dopo il lotto 155: *"uniformare gli innesti a uno solo e'
+importante per avere un comportamento prevedibile e codice pulito"*. Ha ragione, ed e' la causa vera
+del difetto del 155: la logica di paginazione e' **una** (`paginator.py` piu' il servizio
+`WidgetPaginator`, una chiave `(finestra, contenitore)`), ma il token doveva essere scritto dentro il
+`<content>` di ogni riga di widget, e la skin costruisce le righe in quattro modi diversi. Quattro
+copie a mano della stessa stringa.
+
+| costruzione | dove | usata da |
+|---|---|---|
+| `widgets_row.xmltemplate` | template | widget di home e hub |
+| `search_row_standard.xmltemplate` | template | ricerca a schede separate |
+| `Hub_Wall_Widget` | `Includes_Hubs.xml` | hub a parete |
+| `Hub_Combined_Widget` | `Includes_Hubs.xml` | hub combinati **e ricerca** |
+
+Due scrivevano `&pgctl=` dentro il suffisso del `$VAR` (giusto per un path condizionale), due lo
+accodavano dopo (sbagliato per la ricerca). Stessa intenzione, quattro scritture, due comportamenti.
+
+### Adesso
+
+`Defs_Widget_Content` e' l'**unico** posto in tutta la skin dove esista un `<content>` con il token.
+Spostata da `Includes_Hubs.xml` a `Includes_Widgets.xml`, che e' la sua casa: non e' piu' roba da hub.
+Tutti e quattro i costruttori la richiamano passando i pezzi:
+
+```xml
+<include content="Defs_Widget_Content">
+    <param name="content">{widget_path}</param>
+    <param name="pgctl">&amp;pgctl={window_id}.{widget_id}</param>   <!-- path letterale -->
+    <param name="pgscope">{window_id}</param>
+    <param name="id">{widget_id}</param>
+    ...
+</include>
+```
+
+e chi ha un path condizionale lascia `pgctl` vuoto, mettendolo nel suffisso del proprio `$VAR`:
+
+```xml
+<param name="content">$VAR[{widget_search_variable},{widget_path},{widget_path_end}&amp;pgctl=1105.{widget_id}]</param>
+<param name="pgctl" />
+```
+
+Verifica: `grep` di `<content` con `pgctl` su `1080i/` e sui template da **un solo risultato**,
+`Includes_Widgets.xml`. Tutto il resto sono `<param>`.
+
+### Perche' si poteva fare senza rischio
+
+Il dubbio era se un `<include>` possa espandersi in un `<content>` dentro il controllo lista, e in
+particolare dentro la regione `<nested />` di `Widget_Row`. **La risposta era gia' nel file**:
+`_Widget_NoResults` fa esattamente questo da sempre -- e' un include che produce un `<content>` con
+gli `<item>` del segnaposto "nessun risultato", iniettato nello stesso punto. Il meccanismo non era
+da provare, era da riconoscere.
+
+E' la controparte positiva della decisione del lotto 155 sull'annidamento: li' il meccanismo non
+esisteva da nessuna parte nella skin e l'ho scartato, qui esisteva gia' e l'ho usato. Stessa domanda,
+stesso criterio, risposte opposte.
+
+### Verifiche fatte
+
+- XML valido su tutti i 158 file **e** sui 13 `.xmltemplate` (controllati sostituendo i segnaposto
+  `{...}` con un valore fittizio: non erano mai stati validati prima, e non lo sono per costruzione
+  perche' contengono testo che XML non accetta).
+- Insieme degli orfani identico a HEAD.
+- `buildv` alzato a `0.2.2-innesto-unico`: entrambi i template modificati sono generati.
+
+## Lotto 158 -- la tastiera perde la colonna destra, e il cambio disposizione scende in riga
+
+Proposta dell'utente, e va detto che e' migliore di quella che avevo fatto io. Io avevo offerto di
+togliere la colonna destra **e** il chip del cambio disposizione, cioe' di perdere una funzione. Lui
+ha notato che nella riga in basso c'era un pulsante che non serviva a niente e ha proposto lo
+scambio: **la funzione resta, l'ingombro sparisce.**
+
+### I due pulsanti a sinistra di Spazio, identificati
+
+Erano indicati come "uno che sembra per i caratteri non latini e uno che non ho idea di cosa faccia".
+Nel file hanno la loro descrizione originale:
+
+| id | descrizione | cosa fa davvero | esito |
+|---|---|---|---|
+| 304 | Symbols | commuta la griglia su punteggiatura e simboli | **tenuto**: e' utile, e non c'entra con il cinese |
+| 307 | IP Address | apre l'inserimento di un indirizzo IP | **sacrificato**: in una casella di ricerca non serve |
+
+Il chip in alto a destra era il controllo **309**, il cambio disposizione, che Kodi etichetta da se'
+("English QWERTY"). Viveva da solo in una colonna larga **320px**.
+
+### Cosa e' cambiato
+
+- 309 prende il posto di 307 nella riga in basso, con **il glifo di 307 come segnaposto**
+  (`&#xf6ff;`): l'icona giusta si scegliera' dopo aver verificato che il pulsante funzioni.
+- Via il `Part_Button_Grouplist` che teneva il chip e il gruppo `Size_Group_Panel_Right` con la
+  lista dei suggerimenti, ormai senza contenuto dal lotto 156. **32 righe.**
+- Via l'include `DialogKeyboard_Items` (9 righe), che esisteva solo per alimentare quel chip.
+- Via le tre righe di navigazione che puntavano alla colonna sparita (`<onright>9000</onright>` sul
+  campo di testo e le due `<onright>` condizionate su `Container(3).NumItems` nella riga tasti), e
+  corretto l'`<ondown>307</ondown>` del tasto sopra, che ora punta a 309.
+- Via i due `<visible>!Control.IsViible(313)</visible>`: **refuso**, mancava una `s`. Erano li' per
+  nascondere la lista quando compariva quella dei candidati cinesi, e non hanno mai funzionato.
+
+### La larghezza: sottrarre esattamente la colonna
+
+`Dimension_DialogKeysMenu` scende da **1510 a 1190**, cioe' esattamente i 320px della colonna, e il
+gruppo di sinistra smette di usare `Size_LeftGroup_Main` (che gli riservava gli stessi 320 a destra).
+Con `constant_dialog_pad` = 40:
+
+```
+prima :  1510 - 80 - 320 = 1110
+dopo  :  1190 - 80       = 1110
+```
+
+**L'area dei tasti resta identica al pixel**, e il dialogo si ricentra da solo perche'
+`Dimension_DialogCenter` lo centra. Non c'e' nessun valore da ritoccare a occhio -- che era il rischio
+vero di questa modifica.
+
+### Il cinese non e' stato toccato
+
+Controllo fatto prima, non dopo: i controlli **313** (codice) e **314** (candidati) dell'input CJK
+non stavano nella colonna destra, stanno **dentro l'area di testo in alto**. Togliere la colonna non
+li sfiora. Se fossero stati li' dentro, questa modifica avrebbe silenziosamente spento l'inserimento
+cinese.
+
+### Da verificare alla prova
+
+**Se Kodi scrive da se' l'etichetta di 309**, come faceva nel chip, sovrascrive il `<label>` con il
+glifo e il pulsante mostra "English QWERTY" dentro un quadrato da 80px. Si vede al primo colpo
+d'occhio. In quel caso la via e' un'immagine sovrapposta invece del label. E' scritto anche come
+commento accanto al pulsante, cosi' chi ci torna sa cosa guardare.
+
+## Lotto 159 -- il pulsante che non poteva funzionare, e due difetti della ricerca testuale
+
+### Il cambio disposizione se ne va (e non era una perdita)
+
+Il lotto 158 aveva spostato il controllo 309 nella riga in basso. Alla prova non mostrava il glifo e
+non cambiava niente. Due cause distinte, e solo la prima era prevista:
+
+1. **Kodi scrive da se' l'etichetta di 309** e sovrascrive il `<label>` della skin. Era annotato come
+   rischio accanto al pulsante; si risolverebbe con un'immagine sovrapposta.
+2. **Non ha nulla da cambiare.** In `guisettings.xml`:
+   ```
+   locale.keyboardlayouts      = English QWERTY
+   locale.activekeyboardlayout = English QWERTY
+   ```
+   Il pulsante di Kodi **cicla fra le disposizioni abilitate**: con una sola, ciclare rimette quella.
+   Nel log, alle 19:11:17-19, il clic non produce nessuna azione e nessuna finestra.
+
+La seconda causa e' decisiva e riqualifica anche il lotto 158: quel pulsante era **inerte anche
+prima**, quando stava nel chip in alto a destra. Non e' stata spostata una funzione, e' stata spostata
+una funzione che non poteva funzionare. Rimosso.
+
+Lo spazio va alla barra spaziatrice, che era l'unico tasto stretto della riga. L'aritmetica torna
+esatta senza ritoccare niente a occhio:
+
+```
+prima:  9 x 80 + 260 + 9 x 10 = 1070
+dopo :  8 x 80 + 350 + 8 x 10 = 1070      (= keyboard_edit_w)
+```
+
+Se un giorno viene abilitata una seconda disposizione in Impostazioni -> Interfaccia -> Regionale, il
+pulsante torna: serve il controllo 309 e un'immagine al posto del label.
+
+### La paginazione: prova sul campo superata ovunque
+
+28 `TRIGGER` in una sessione, distribuiti su **tutte** le costruzioni ora unificate dal lotto 157:
+
+| chiave | passi | dove |
+|---|---|---|
+| `home.502`, `home.503` | 3 + 3 | widget della Home (`widgets_row.xmltemplate`) |
+| `1101.502` | 5 | hub (`Hub_Combined_Widget`) |
+| `1105.502` | 13 | ricerca testuale |
+| `1105.505` | 4 | Discover avanzato |
+
+Un solo errore in tutto il log, il joystick. L'innesto unico regge su tutti i percorsi.
+
+### Difetto 1: al cambio query partono DUE costruzioni, e una e' sprecata
+
+Passando da "batman" (arrivata a 9 pagine) a "superman":
+
+```
+19:22:54.757  provider  query=superman  &pages=9      <- eredita il conteggio della query PRECEDENTE
+19:22:54.766  parte la build #1
+19:22:56.393  provider  query=superman  (senza pages) <- il token viene azzerato
+19:22:56.398  parte la build #2
+19:23:03.988  build #2 finita: path_pages=-   7.381 ms
+19:23:04.564  build #1 finita: path_pages=9   9.528 ms
+```
+
+**Due interpreti Python concorrenti, 7,4 s e 9,5 s, per una sola query.** La build #1 e' interamente
+sprecata: nasce con il conteggio della query precedente e quando finisce il token e' gia' stato
+riazzerato.
+
+La causa e' la solita famiglia del lotto 7, in una veste nuova: il frammento `&pages=N` viene emesso
+guardando **la propria proprieta'**, non se quella proprieta' appartenga ancora al contenuto che c'e'
+adesso nel contenitore. Il contenuto e' cambiato (query diversa) ma il token e' sopravvissuto fino a
+quando una build l'ha riconciliato -- e la riconciliazione, per definizione, arriva dopo che la build
+e' partita.
+
+**Dove va corretto:** il token va azzerato **nell'istante in cui cambia la query**, prima che il
+provider possa rileggere il path. Quell'istante e' noto e sta in un posto solo:
+`router._text_search_start`, dove gia' oggi si riconosce il cambio (`if
+win.getProperty('FenLight.TextSearch.Query') != query`) e si azzerano `Movie.HasResults`,
+`TV.HasResults` e gli stati. Basta azzerare li' anche `fenlight.pg.w1105.ctl*.pages`. E' lo stesso
+principio del lotto 92 -- la riconciliazione appartiene a chi CONOSCE il contenuto -- applicato un
+gradino piu' a monte.
+
+### Difetto 2: il fuoco non riparte dal primo elemento, e il codice dice il contrario
+
+Log, stessa transizione:
+
+```
+19:22:33.525  batman   current=42/42     <- il fuoco era sull'ultimo
+19:23:07.325  superman current=16/16     <- prima osservazione sulla nuova lista
+19:24:21.390  superman current=1/16      <- ci torna l'utente, a mano
+```
+
+La lista nuova ha 16 elementi e il fuoco atterra sul **16esimo**: Kodi non azzera l'indice del
+contenitore, lo **limita** al nuovo conteggio.
+
+Il punto che conta per il seguito e' che in `router.py` c'e' scritto il contrario:
+
+> *"a query change hides the (stale-positioned) row and lets it rebuild fresh at item 0"*
+
+E la riga di ricerca ha davvero il `<visible>` che la nasconde al cambio query (`Settled` diverso dal
+testo scritto), e in questa sessione si e' nascosta e riapparsa. **Nascondere un contenitore non ne
+azzera il cursore.** Il commento descrive un'intenzione che la piattaforma non onora, ed e' rimasto
+li' per settimane perche' nessuno l'aveva messo alla prova: e' un caso da manuale di documentazione
+che diventa falsa senza che niente cambi intorno.
+
+Il rimedio non e' ovvio: `SetFocus(id,0,absolute)` azzera il cursore ma **sposta anche il fuoco**, e
+al cambio query il fuoco e' sulla casella di testo, dove deve restare. Serve un esperimento per
+trovare la primitiva giusta, non una toppa scritta a mente. Non corretto in questo lotto.
+
+### Difetto 3: le due scritte di attesa restano sopra i risultati
+
+"Ricerca..." e "Attendi il caricamento dei risultati." compaiono con questa condizione:
+
+```
+Search.ActivePanel vuoto + casella non vuota
++ [ Query != testo scritto  |  TextSearch.State == loading ]
+```
+
+Il secondo termine e' il difetto: **durante una paginazione lo stato torna a `loading`**, quindi le
+scritte riappaiono sopra una lista gia' a schermo e coprono i metadati dell'elemento con il fuoco.
+
+La condizione giusta esiste gia' e non va inventata: `FenLight.TextSearch.Settled`, che vale *"i
+risultati a schermo corrispondono a cio' che e' scritto adesso"*. E' esattamente la stessa che la riga
+dei risultati usa per rendersi visibile, quindi scritte e riga diventano complementari per
+costruzione: o c'e' l'una o c'e' l'altra, mai entrambe. E la paginazione non le fa riapparire perche'
+`Settled` non viene toccato da una ricostruzione in place -- lo dice il commento di `_text_search_done`
+e lo conferma il log, dove durante i 13 passi di paginazione `Settled` resta uguale alla query.
+
+Non corretto in questo lotto: i difetti 1 e 3 sono due modifiche indipendenti e vanno misurate
+separatamente.
+
+## Lotto 160 -- al cambio query partivano due costruzioni, e una era sprecata per intero
+
+Misurato sulla stick il 04/09, passando da "batman" (arrivata a 9 pagine) a "superman":
+
+```
+19:22:54.757  provider  query=superman  &pages=9      <- il conteggio della query PRECEDENTE
+19:22:54.766  parte la build #1
+19:22:56.393  provider  query=superman  (senza pages) <- reconcile_position ha azzerato il token
+19:22:56.398  parte la build #2
+19:23:03.988  build #2 finita  path_pages=-   7.381 ms
+19:23:04.564  build #1 finita  path_pages=9   9.528 ms
+```
+
+**Due interpreti Python concorrenti, 7,4 s e 9,5 s, per una sola ricerca**, su un dispositivo legato a
+un core dove si rallentano anche a vicenda. La #1 e' inutile per intero: nasce con il conteggio di
+un'altra lista e quando finisce quel conteggio e' gia' stato riazzerato -- da lei stessa.
+
+### La causa, che e' la solita in una veste nuova
+
+Il frammento `&pages=N` nel `<content>` guarda **la propria proprieta'**, non se quella proprieta'
+appartenga ancora al contenuto che sta adesso in quel contenitore. Cambiando la query cambia il
+contenuto, ma il token sopravvive, e Kodi rilegge il path prima che qualcuno se ne accorga: la
+riconciliazione (`reconcile_position`, lotto 92) sta **dentro** la build, quindi per definizione
+arriva dopo che la build e' partita.
+
+E' la famiglia del lotto 7 -- *"il criterio e' il path di base, non il token"* -- spostata di un
+gradino: qui il path di base c'e' ed e' giusto, ma il token che gli si accoda e' di un'altra lista.
+
+### Perche' la correzione non poteva stare nella skin
+
+La prima idea era azzerare il token nell'istante in cui cambia il testo scritto, prima che Kodi
+rilegga il path. **Non esiste quell'istante nella skin**: il controllo `edit` 3000 non ha nessun
+aggancio sul cambio testo (verificato leggendo tutto il controllo: `onfocus`, `onunfocus`, le
+direzionali, niente altro), e il testo lo scrive Kodi stesso quando la tastiera si chiude. Qualunque
+azione della skin arriverebbe dopo il provider, cioe' troppo tardi.
+
+Quindi la build #1 **partira' sempre**. Cio' che si puo' fare e' non farle fare il lavoro.
+
+### Il cancello, fratello di quello che c'era gia'
+
+`_search_debounce_abort` lascia cadere una build la cui **query** e' gia' superata. Accanto ad esso
+ora c'e' `_stale_token_abort`, che lascia cadere una build il cui **conteggio pagine** lo e'. La
+decisione sta tutta in `paginator.token_is_stale`, e vale se e solo se **tutte e tre** queste cose
+sono vere insieme:
+
+1. il path porta un `&pages=N` -- Kodi ci ha chiamati leggendo il token;
+2. l'impronta del contenuto in quella posizione e' diversa da quella registrata -- quel conteggio e'
+   di un'altra lista;
+3. **la proprieta' del token e' ancora valorizzata**.
+
+La terza e' quella che rende l'abort sicuro, ed e' la ragione per cui questo non e' una toppa:
+azzerare una proprieta' gia' vuota **non cambia il path**, quindi non seguirebbe nessuna ricarica e
+il contenitore resterebbe vuoto per sempre. E' esattamente il guasto del lotto 111, dove sta scritto
+il perche' in una riga che vale la pena ripetere: *nell'API dei plugin non esiste "chiudi la cartella
+tenendo quello che hai"*. Chiudere a vuoto si fa **solo** quando si sa che ne arriva subito un'altra,
+e qui lo si sa perche' e' questa stessa funzione a cambiare il path.
+
+Il cancello sta in `routing` sotto `if 'build' in mode`, non nel ramo della ricerca: **il cambio
+inquilino non e' un fatto della ricerca**, e' solo dove si vede piu' spesso. Un hub che cambia
+categoria porta lo stesso token addosso e ora prende la stessa strada. Il filtro a costo zero
+(`'pgctl' not in params`) evita di importare il paginator per le invocazioni che non sono widget.
+
+### Provato fuori da Kodi
+
+`tests/test_160.py`, sette casi, tutti e quindici i file della cartella passano. Quelli che contano
+non sono i due positivi ma i **cinque negativi**, perche' il modo di sbagliare qui e' abortire di
+troppo:
+
+| caso | esito atteso |
+|---|---|
+| A -- query cambiata, token vivo | **cade**, e il token viene azzerato |
+| B -- stessa query, paginazione vera | costruisce, token intatto |
+| C -- token gia' azzerato da altri | costruisce (nessuna ricarica seguirebbe) |
+| D -- prima apertura, nessun `&pages` nel path | costruisce |
+| E -- path senza `pgctl` | costruisce |
+| F -- hub che cambia categoria | **cade**; stessa categoria: costruisce |
+| G -- seconda chiamata sullo stesso path | costruisce (idempotente) |
+
+### Da misurare sul campo
+
+Il guadagno atteso e' un interprete in meno per ogni cambio di query e per ogni cambio di categoria
+in un hub, e la fine della contesa fra i due. La verifica e' diretta e non ammette interpretazioni:
+nel log, dopo un cambio query, deve comparire **una sola** riga `INVOCAZIONE###` invece di due, e la
+riga `token sorpassato` del paginator al posto della seconda.
+
+## Lotto 161 -- l'invocazione che abbandona costava 697 ms di soli import
+
+Domanda posta il 04/09, e giusta: *"in che senso 0,7 s buttati? non possiamo eliminare anche questo
+tempo?"*. Il lotto 160 ha tolto la seconda costruzione, ma il biglietto d'ingresso e' rimasto intero.
+Ecco come si legge:
+
+```
+###FenLight PERF INVOCAZIONE###: totale 697 ms | import 102 + coda 1 + nessuna cartella costruita, solo azione 595
+###FenLight PERF CPU###:         totale 284/697 ms (41%)
+###FenLight PERF IMPORT###:      35 moduli | totale 636 ms | Fen Light 135 | resto 502
+                                     93 ms  sqlite3      <- caches.base_cache
+                                     36 ms  datetime     <- sqlite3.dbapi2
+```
+
+**636 dei 697 ms sono import**, per una funzione -- `token_is_stale` -- che confronta due stringhe. Il
+controllo in se' costa microsecondi. E il rapporto CPU/orologio (41%) dice che meno della meta' di
+quel tempo e' lavoro: il resto e' attesa sul GIL, perche' in quell'istante girano insieme
+skinvariables e la costruzione buona. Vale la regola di [[misurare-lavoro-o-attesa]]: non si pota
+lavoro che non c'e'.
+
+Il punto strutturale, che va detto perche' delimita quanto si puo' ottenere: quando Kodi decide di
+aggiornare il provider **il processo Python e' gia' nato**. Da li' in poi il minimo per poter dire
+"sono obsoleto" e' caricare abbastanza di Fen Light da saper leggere lo stato. Non esiste un modo di
+rispondere prima, perche' `reuselanguageinvoker` deve restare `false` (lotto sul segfault: il flag e'
+fatale). Quindi la domanda non e' *se* pagare il biglietto, ma **quanto**.
+
+### Le due porte da cui entrava sqlite3, e perche' la seconda e' quella istruttiva
+
+**Prima porta**, evidente: `from caches.settings_cache import get_setting` in testa a `paginator.py`.
+settings_cache tira dentro `caches.base_cache` e con lui sqlite3. Serve a quattro sole letture di
+impostazioni (`interactive_enabled`, `initial_batch`, `lookahead_pages`, `max_items`), tutte gia'
+dentro una funzione, e nessuna sul percorso di abbandono. Spostato l'import dentro un guscio pigro.
+E' lo stesso ragionamento del lotto 126 per `json` in `base_cache`.
+
+**Poi la prova e' fallita lo stesso**, e questa e' la parte che vale la pena ricordare. Tracciando gli
+import invece di rileggere il file:
+
+```
+paginator.py:247  PG_DEBUG = _perf_enabled()
+perf.py:25          from caches.settings_cache import get_setting
+```
+
+Due costanti di modulo -- `PG_DEBUG` (riga 247) e `PERF` (riga 362) -- chiamano `perf.enabled()`
+**durante l'import di paginator**, e `perf.enabled()` leggeva l'interruttore dal database. Cioe':
+**spegnere la strumentazione costava esattamente quanto tenerla accesa**, e chiunque importasse
+paginator pagava sqlite3 anche senza mai scrivere una riga di log. L'interruttore che doveva rendere
+gratuita la diagnostica era diventato la voce piu' cara del percorso piu' magro.
+
+La correzione non e' rendere pigre le due costanti (sono lette da una quarantina di punti come nomi
+nudi, e cambiarli sarebbe churn per niente): e' far leggere l'interruttore **dalla proprieta' di
+finestra**. `sync_settings`, all'avvio del servizio, rispecchia OGNI impostazione in una proprieta' di
+`Window(10000)` -- e' `SettingsCache.set_memory_cache` -- e `get_setting` stesso la consulta per
+prima. La skin la legge gia' cosi': `settings_manager.xml:759` fa
+`$INFO[Window(10000).Property(fenlight.perf.instrumentation)]`. Il plugin ora legge lo stesso posto.
+Il ripiego sul database resta per l'avvio molto precoce, quando il rispecchiamento non c'e' ancora.
+
+### Misura
+
+Sul Mac, contando i moduli che il percorso di abbandono carica davvero (le due porte sono le stesse,
+i tempi no):
+
+| | moduli caricati | sqlite3 | datetime | settings_cache | base_cache |
+|---|---|---|---|---|---|
+| prima | 54 | presente | presente | presente | presente |
+| dopo | **44** | -- | -- | -- | -- |
+
+Sulla stick le due voci nominate nella tabella PERF IMPORT valgono **93 + 36 = 129 ms**, piu' la coda
+di moduli che sqlite3 e settings_cache si tirano dietro e che il profilatore attribuisce ai loro
+genitori. Attesa realistica: **da 130 a 200 ms sui 697**, cioe' un quarto abbondante. Da verificare
+sul campo leggendo la riga `INVOCAZIONE` dell'invocazione che riporta `nessuna cartella costruita`.
+
+Il beneficio non e' solo li': `perf.enabled()` la chiama chiunque tocchi `perf_log` o `perf_memory`,
+cioe' `kodi_utils`, cioe' ogni invocazione. Sui percorsi che gia' aprono un database non cambia
+niente; su quelli magri -- azioni, dialoghi, il servizio -- toglie l'apertura del database.
+
+### Provato fuori da Kodi
+
+`tests/test_161.py`, sette casi, 16 su 16 file della cartella passano. Il caso che conta e' il **D**:
+strumentazione **spenta** letta correttamente **senza** che `caches.settings_cache` finisca in
+`sys.modules`. Il caso A deve girare prima di tutti gli altri, e il file lo dice apertamente, perche'
+le due costanti si valutano all'import: la proprieta' va seminata **prima** di `import paginator`,
+esattamente come sul dispositivo il servizio la semina prima che i widget si costruiscano.
+
+### Cosa NON e' stato fatto qui, e resta aperto
+
+Eliminare i 697 ms **per intero** vuol dire non essere invocati affatto. Il path incriminato e' cucito
+da due generazioni:
+
+```
+20:06:57.455  Window Deinit (DialogKeyboard.xml)          <- chiude la tastiera
+20:06:57.457  skinvariables ...&&batman                   <- la META' FRESCA del path
+20:06:57.462  provider  query=batman ... &pages=11        <- +5 ms, con la META' VECCHIA
+```
+
+Se in quell'istante la proprieta' del token fosse vuota, `$INFO[...,&pages=,]` non emetterebbe nulla
+e l'invocazione **non nascerebbe**. Il servizio non puo' arrivarci (campiona a 0,3 s, la finestra e'
+di 5 ms). Resta `<ontextchange>` sul controllo `edit` 3000 -- che la skin oggi non usa. Il lotto 160
+aveva concluso che *"non esiste quell'istante nella skin"*: era vero di cio' che la skin **usa**, non
+di cio' che Kodi **offre**, e la distinzione va tenuta.
+
+**Non e' stato fatto perche' e' una corsa, e l'ordine va misurato, non dedotto**: fra il cambio di
+testo e la ricomposizione del path passano 5 ms e sono guidati dalla stessa notifica di Kodi. Se
+`ontextchange` viene servito dopo, il `ClearProperty` arriva tardi e non cambia niente. Costa una riga
+di skin e un giro di prova sul dispositivo, e si fa a parte.
+
+## Lotto 162 -- strada B: far si' che quell'invocazione non nasca
+
+Il 160 ha messo un cancello, il 161 ha reso l'abbandono economico (697 -> 336 ms). Restano 336 ms di
+lavoro comunque buttato, e dall'interno del plugin non si scende: quando Kodi ricompone il path, il
+processo Python esiste gia'. L'unica mossa che li toglie e' **azzerare il token prima**, cosi' che il
+path si ricomponga senza `pages=N` e la GetDirectory non parta affatto.
+
+### Il fatto che ha cambiato il piano: le due meta' non sono simmetriche
+
+Il lotto 160 e il 161 hanno trattato "il cambio inquilino" come un fenomeno solo. Guardando **chi
+pubblica il path nuovo**, sono due cose diverse:
+
+| | chi ricompone il path | aggancio | natura |
+|---|---|---|---|
+| ricerca testuale (row 502, 503) | la SKIN, da `Control.GetLabel(3000)`, a ogni tasto | `<ontextchange>` | una corsa |
+| Discover (row 505) | il PLUGIN, `search.launch_discover` | la riga prima | deterministico |
+
+La meta' Discover non ha nessuna corsa da vincere, e **e' proprio quella su cui il cancello e' scattato
+nella misura del 04/09** (`reconcile 1105.505: contenuto bd4055e3 -> 90ef63f9`). Era rimasta invisibile
+finche' si e' guardato solo il caso della ricerca testuale, che e' quello che si vede piu' spesso.
+
+```python
+	# search.py, launch_discover
+	from modules.paginator import CTL_PAGES_PROP
+	win.clearProperty(CTL_PAGES_PROP % ('1105', '505'))
+	win.setProperty('FenLight.Discover.ContentPath', content_path)
+```
+
+Due proprieta' scritte nello stesso thread a microsecondi di distanza, prima che il ciclo della GUI
+rivaluti gli `$INFO` del `<content>`. Non c'e' finestra in cui Kodi possa vedere la vecchia coppia.
+
+### La meta' testuale, e perche' `<ontextchange>` esiste davvero
+
+Il lotto 160 aveva scritto *"non esiste quell'istante nella skin"*, il 161 ha corretto in *"non esiste
+in cio' che la skin usa"*. Terza verifica, questa volta sul binario invece che sulla memoria:
+
+```
+$ strings /Applications/Kodi.app/Contents/MacOS/Kodi | grep -n ontextchange
+210175:ontextchange
+```
+
+Sta nella tabella dei tag del control factory, fra `onclick` e `onfocus`. Sul controllo `edit` 3000:
+
+```xml
+<ontextchange>ClearProperty(fenlight.pg.w1105.ctl502.pages,Home)</ontextchange>
+<ontextchange>ClearProperty(fenlight.pg.w1105.ctl503.pages,Home)</ontextchange>
+```
+
+**Resta una corsa e va misurata, non dedotta.** L'ordine atteso: Kodi esegue le azioni di
+`ontextchange` sul thread della GUI nel momento in cui il testo cambia, mentre gli `$INFO` dentro il
+`<content>` li rivaluta al giro di rendering successivo. Se e' cosi', il `ClearProperty` arriva prima.
+Se non e' cosi', questa meta' non cambia niente e si vedra' dal log; l'altra funziona comunque.
+
+### Un difetto latente che si chiude di rimbalzo
+
+A box svuotato `$VAR[Path_SearchTerm]` non rende niente, ma il token in coda resta: il `<content>`
+diventerebbe il **solo** `pages=N`, su cui Kodi tenta una `GetDirectory` e la registra come errore. E'
+la stessa trappola per cui esiste il parametro `pggated` (vedi `Includes_Hubs.xml`, riga 127). Con
+l'azzeramento a ogni tasto, quando il box si svuota si svuota anche il token.
+
+### Il cancello del 160 resta
+
+Non e' ridondanza. La strada B copre i percorsi in cui **sappiamo** che il contenuto sta cambiando;
+il token puo' sopravvivere ad altri (un ritorno dalla riproduzione, una ricomposizione che la skin fa
+senza toccare il testo). Il cancello e' la rete sotto, e il 161 l'ha reso abbastanza economico da
+poterci restare. `tests/test_162.py` ha un caso apposta che lo dichiara, cosi' che nessuno lo tolga
+credendolo superato.
+
+### Provato fuori da Kodi
+
+`tests/test_162.py`, sette casi, 17 su 17 file passano. Quello che si puo' provare sul Mac non e' il
+tempo (non direbbe niente) ne' la corsa (la decide Kodi), ma i due modi in cui questa famiglia di
+modifiche si rompe **in silenzio**:
+
+- **i nomi che divergono.** La skin non puo' importare `paginator`: il nome della proprieta' e'
+  duplicato per forza. Il caso A non elenca a mano i contenitori, li ricava dal file **generato** --
+  da chi il token lo legge davvero -- e il caso C confronta con `paginator.CTL_PAGES_PROP`. Il giorno
+  in cui skinvariables aggiunge un row alla ricerca, la prova diventa rossa da sola. E' il guasto del
+  lotto 92, che allora e' costato una misura sul campo per essere trovato.
+- **l'ordine invertito in Python.** Mettere `clearProperty` dopo `setProperty` non rompe niente di
+  visibile: rimette solo i 336 ms. Il caso E confronta i due numeri di riga.
+
+Provata rossa iniettando entrambi i guasti: quattro casi caduti, ognuno quello previsto.
+
+### Da misurare sul dispositivo
+
+Nel log, dopo aver digitato una ricerca e dopo aver lanciato un Discover su una lista gia' paginata:
+
+- **atteso**: nessuna riga `token sorpassato`, e nessuna `INVOCAZIONE` con `nessuna cartella
+  costruita, solo azione`;
+- **se resta solo per la ricerca testuale**: la corsa e' persa, la meta' Discover ha comunque reso;
+- **da sorvegliare**: che la paginazione continui a funzionare, cioe' che scorrendo in fondo compaia
+  `set_state pages=2` e la lista cresca. Azzerare un token di troppo si vedrebbe come una lista che
+  torna al lotto iniziale.
+
+## Lotto 163 -- il fuoco che restava in fondo, e una riga di Kodi che spiega tutto
+
+Cambiando query, la riga dei risultati si apriva sulla CODA della lista nuova invece che sulla testa.
+Il punto 2 della coda della ricerca, aperto dal lotto 137 e rimasto li'.
+
+### La misura, e il pezzo che non mi aspettavo
+
+```
+03:14:56.541  set_head key=1105.502 built=31        <- lista nuova pronta, 31 elementi
+03:15:01.251  HandleKey: down                       <- l'utente entra nella riga
+03:15:01.510  watcher id=502 current=31/31          <- e' sull'ULTIMO
+03:15:04.401  watcher TRIGGER pages 2->3 current=31/31
+03:15:07.917  PERF INVOCAZIONE: build_movie_list | totale 3370 ms
+```
+
+Le ultime due righe sono la parte che rende il difetto **caro** e non solo brutto: stando in fondo il
+watcher legge `remaining=0` contro `runway=20`, conclude che la lista sta per finire e fa partire un
+caricamento avanti che nessuno ha chiesto. **3370 ms**, proprio mentre l'utente aspetta i risultati.
+Il confronto interno al log isola il caso:
+
+| momento | cursore al TRIGGER | legittimo |
+|---|---|---|
+| prima build di 'star' | `11/31` | si', aveva scorso |
+| dopo il cambio query | `31/31` | **no**, non si era mosso |
+| Discover, due volte | `15/34`, `12/32` | si' |
+
+### La causa, letta nel sorgente invece che dedotta
+
+`CGUIBaseContainer::UpdateListProvider`, Kodi 21.1 (il ramo che gira sulla stick):
+
+```cpp
+int currentItem = GetSelectedItem();
+const std::string prevSelectedPath(...);
+Reset();
+m_listProvider->Fetch(m_items);
+// 1. riprova a ritrovare l'elemento per PUNTATORE
+// 2. riprova per PATH
+if (!found && currentItem >= (int)m_items.size())
+    SelectItem(m_items.size() - 1);
+```
+
+**Non esiste nessun "torna in testa".** Kodi cerca di tenerti sullo stesso ELEMENTO; se non lo ritrova
+e l'indice vecchio SFORA la lista nuova, ti mette sull'ULTIMO. Con questa riga sola tornano tutte e
+due le meta' misurate:
+
+| | indice prima | elementi dopo | sfora | esito misurato |
+|---|---|---|---|---|
+| ricerca 'star' -> 'barbie' | 50 | 31 | **si'** | `31/31` |
+| Discover 1 -> Discover 2 | 31 | 32 | no | `1/32` |
+
+E il Discover non se la cava per merito proprio: aprendo il pannello filtri la skin azzera
+`FenLight.Discover.ContentPath` (`Includes_Search.xml`, riga 421), il contenitore passa da **vuoto** e
+l'indice si azzera li'. E' la stessa cosa che il lotto 111 aveva gia' osservato dall'altro verso --
+*"qualunque cosa diversa da un elenco completo lascia il widget senza elementi. Da qui la paginazione
+persa, il fuoco al primo elemento"*.
+
+### Due strade sbagliate, tenute perche' costano
+
+**Prima**: avevo attribuito la differenza fra ricerca e Discover ad `allowhiddenfocus`, vero sui row
+della ricerca e falso su quello di Discover. Spiegava la ritenzione del FUOCO, non quella del
+CURSORE, ed era una correlazione. Il sorgente l'ha smentita: `allowhiddenfocus` non compare in
+`UpdateListProvider`. Lezione ripetuta: quando due casi differiscono su piu' di una variabile, la
+prima che si trova non e' la causa.
+
+**Seconda**: la correzione che ne era seguita accodava il riposizionamento a build FINITA e aggiungeva
+un `continue` in `service.py` per evitare il TRIGGER spurio. Funzionava, ma toccava due file, aveva
+0,3 s di latenza con salto visibile, e restava una corsa fra il `Control.Move` e gli elementi appena
+arrivati. Era l'idea giusta presa dal lato sbagliato.
+
+### Cosa offre Kodi, per intero, prima di scegliere
+
+| builtin | manda | serve |
+|---|---|---|
+| `Control.Move(id,n)` | `GUI_MSG_MOVE_OFFSET` -> `MoveUp(true)` x n | si', ma **wrapAround=true**: un offset in eccesso avvolge alla fine. Serve l'esatto `1-current` |
+| `Control.Message(id,...)` | solo `moveup`/`movedown`/`pageup`/`pagedown`/`click` | no, non salta a un indice |
+| `SetFocus(id,pos,absolute)` | `GUI_MSG_SETFOCUS` | seleziona l'elemento **ma sposta il fuoco**: mentre si digita e' inaccettabile |
+| `Control.SetHidden/SetVisible` | visibilita' | non svuota: `UpdateVisibility` esce prima |
+
+Non esiste un "porta questo contenitore all'elemento 1" senza toccare il fuoco. `Control.Move` con
+l'offset esatto -- la primitiva del lotto 137 -- resta l'unica.
+
+### La correzione: una riga
+
+Dalla riga di Kodi discende che il danno si decide **nell'istante in cui arrivano gli elementi nuovi**.
+Quindi non serve rimettere a posto il cursore dopo: **basta che valga 0 prima**. E c'e' un punto che
+sta li', con un margine enorme: `reconcile_position` gira all'INIZIO della build, quando il
+contenitore ha ancora la lista vecchia.
+
+```python
+if was: rehead_queue(key)
+```
+
+Margine misurato fra il reconcile e `set_head`: **6,9 s** sulla ricerca testuale, **3,7 s** su
+Discover, contro i 0,3 s del giro del watcher. La corsa non esiste. E il TRIGGER spurio non nasce
+nemmeno, perche' il cursore e' gia' in testa molto prima che la build finisca: il `continue` in
+`service.py` che serviva alla seconda strada qui non serve.
+
+Il consumatore non si tocca: e' quello del lotto 138, gia' generico, gia' dietro i cancelli giusti
+(riproduzione, dialogo modale) e gia' nel processo dove le chiamate grafiche sono lecite. Che il
+lavoro resti al servizio non e' pigrizia: leggere `Container(N).CurrentItem` o muovere il cursore dal
+thread di un'invocazione e' esattamente cio' che il lotto 111 ha vietato.
+
+Il commento su `REHEAD_PROP` diceva *"un comando lanciato dal plugin cadrebbe sulla lista vecchia"*.
+Resta vero per l'innesco del 138, che vuole agire sulla lista NUOVA. Per questo, cadere sulla lista
+vecchia **e' lo scopo**: e' li' che l'indice va azzerato. I due inneschi guardano a istanti opposti e
+adesso il commento lo dice.
+
+### Provato fuori da Kodi
+
+`tests/test_163.py`, sette casi, 18 su 18 file passano. Il caso che protegge di piu' non e' quello del
+lotto: e' il **B**, la stessa lista ricostruita per paginare, che NON deve accodare niente. E' il caso
+piu' frequente in assoluto -- ogni caricamento avanti ripassa di li' -- e strattonare chi sta
+scorrendo sarebbe peggio del difetto che si sta correggendo. Poi il **D**, che verifica che la chiave
+accodata sia ancora quella che il watcher sa spacchettare (`rpartition('.')`, id numerico): se
+`widget_key` cambiasse forma, l'accodamento continuerebbe a funzionare e il riposizionamento sparirebbe
+in silenzio, che e' il guasto muto del lotto 90. E il **E**, che nessuna `getCondVisibility` e nessun
+builtin partano dal processo del plugin.
+Provata rossa togliendo la riga: cade il caso C e nient'altro.
+
+### Da misurare sul dispositivo
+
+Cambiare query dopo aver scorso a fondo, e lanciare un Discover diverso dopo aver paginato:
+
+- **atteso**: la riga si apre sul primo elemento, e nel log `watcher testa nuova key=1105.502: riga
+  riportata in cima (era N/M)` con M = la lista VECCHIA (la prova che ha agito prima del cambio);
+- **atteso**: nessun `TRIGGER` con `current` uguale a `built` subito dopo un `reconcile`;
+- **da sorvegliare**: che scorrendo normalmente la riga NON venga riportata in testa. Un
+  riposizionamento di troppo si vedrebbe come la lista che salta indietro mentre si naviga.
+
+## Lotto 164 -- il cancello del 160 buttava via 'continua a guardare' senza motivo
+
+Segnalato dall'utente: *"tornando in home si e' ricaricato continua a guardare da solo, perche'? era
+gia' caricato"*. Nel log del 05/09, due volte, entrambe al rientro in home:
+
+```
+04:15:25  PERF NAV: finestra 11105 -> 10000 | 289.6 s nella precedente
+04:15:25  token sorpassato home.501: path con pages=2 ma il contenuto e' cambiato
+04:15:25  INVOCAZIONE build_continue_watching | 231 ms | nessuna cartella costruita
+04:15:27  set_head key=home.501 built=7 firma=705b3911      <- ricostruito
+04:15:27  INVOCAZIONE build_continue_watching | totale 2639 ms
+```
+
+`firma=705b3911` e' la **stessa** della costruzione precedente. Il contenuto non era cambiato: il
+cancello buttava via una build e ne ordinava un'altra **identica**, 2,6 s, al rientro in home.
+
+### La causa: un presupposto del lotto 160 che non regge
+
+`token_is_stale` decide confrontando l'impronta REGISTRATA in quella posizione con quella del path.
+L'impronta la scrive `reconcile_position`, che la chiama `get_pages`, che con `params` lo chiamano
+**solo le quattro build paginate** -- `movies`, `tvshows`, `mdblist_lists`, `trakt_lists`:
+
+```
+$ grep -rn "get_pages(" resources/lib --include=*.py
+indexers/tvshows.py:120        indexers/movies.py:124
+indexers/mdblist_lists.py:83   indexers/trakt_lists.py:249
+```
+
+`build_continue_watching` non e' fra queste -- nel log non c'e' **nessun** `reconcile`, `get_pages` o
+`set_state` per `home.501` -- ma il `&pages=` nel path lo riceve lo stesso, perche'
+`Defs_Widget_Content` accoda il `$INFO` delle pagine a OGNI widget.
+
+Quindi il confronto era fra un'impronta **vuota** e quella del path: diverse, verdetto "inquilino
+cambiato". **Impronta assente non vuol dire cambiata: vuol dire che nessuno ha mai riconciliato qui.**
+
+```python
+if not registrato: return False
+```
+
+E' la stessa asimmetria gia' scritta nella docstring di `token_is_stale` per il token: nel dubbio si
+COSTRUISCE, perche' abortire a vuoto lascia il widget vuoto per sempre. Il lotto 160 l'aveva applicata
+al token e non all'impronta.
+
+### Provato fuori da Kodi
+
+`tests/test_164.py`, quattro casi, 19 su 19 file passano. Il caso **B** e' quello che protegge il
+lotto 160: se la correzione spegnesse il cancello anche per le build paginate tornerebbero le due
+costruzioni concorrenti al cambio query. Provata rossa togliendo la riga: cadono i due controlli del
+caso A e nient'altro.
+
+## Due cose viste nello stesso log e NON corrette, con la diagnosi
+
+Entrambe segnalate dall'utente, entrambe reali, nessuna delle due e' una regressione.
+
+### 1. Al caricamento di una pagina nuova l'elemento a fuoco viene spinto a sinistra
+
+Il contenitore e' un **`fixedlist`** (`Includes_Lists.xml`, `List_Poster_Row`:
+`<param name="control">fixedlist</param>`), e questo e' il suo contratto:
+
+```cpp
+// CGUIFixedListContainer::SelectItem, Kodi 21.1
+if ((int)m_items.size() - 1 - item <= maxCursor - m_fixedCursor)
+   cursor = std::max(m_fixedCursor, maxCursor + item - (int)m_items.size() + 1);  // vicino alla FINE
+else if (item <= m_fixedCursor - minCursor)
+   cursor = std::min(m_fixedCursor, minCursor + item);                            // vicino all'INIZIO
+else
+   cursor = m_fixedCursor;                                                        // in mezzo: FISSO
+ScrollToOffset(item - GetCursor());
+```
+
+L'elemento a fuoco sta in una posizione FISSA sullo schermo, tranne vicino ai due estremi, dove il
+cursore puo' scostarsi per permettere di raggiungere il primo e l'ultimo. Quando sei nella finestra di
+coda e la lista **cresce**, la prima condizione smette di valere, il cursore torna alla posizione
+fissa e la riga scorre: l'elemento su cui stavi scivola a sinistra e i nuovi compaiono a destra.
+
+Non e' un guasto nostro ne' un difetto di Kodi: e' cio' che un `fixedlist` fa quando la lista si
+allunga mentre stai in coda. **E si finisce in coda solo se si scorre piu' in fretta di quanto la
+pagina arrivi.** Misurato in questo log: `runway=20`, e **37 campioni** con `remaining<=3` e
+`loading=True`, cioe' 37 momenti in cui l'utente era a tre elementi dalla fine con la pagina ancora in
+volo. Le build duravano 1,5-3 s.
+
+Le leve sono due e nessuna e' un flag della skin: **allungare il runway** (oggi 20) o **accorciare la
+build**. Toglierlo dal lato skin vorrebbe dire azzerare lo scostamento del cursore, e allora non si
+raggiungerebbero piu' il primo e l'ultimo elemento.
+
+### 2. Una volta l'animazione ha spostato i risultati DOPO che erano comparsi
+
+E' il riposizionamento del lotto 163 che si vede. Il margine misurato:
+
+```
+04:08:49.676  reconcile 1105.502: contenuto 8b970d6a -> 222dca78
+04:08:49.704  load_cumulative page=1 items=20        <- pagine IN CACHE, 40 ms in tutto
+04:08:49.793  watcher testa nuova key=1105.502: riga riportata in cima (era 49/51)
+04:08:49.921  set_head built=31                      <- 128 ms dopo, non 6,9 s
+```
+
+Il lotto 163 aveva misurato 3,7-6,9 s di margine su build che andavano in rete. Con le pagine gia' in
+cache il margine crolla a **128 ms**, e `Control.Move` non e' istantaneo: e' uno scorrimento animato
+di 48 passi. La riga torna visibile quando il plugin pubblica `Settled` (a build finita) e in quel
+momento lo scorrimento e' ancora in corso: si vede la lista che scivola.
+
+La correzione pulita esiste e non e' una scorciatoia a tempo: **tenere la riga nascosta finche' il
+riposizionamento non e' stato consumato**, aggiungendo alla condizione `visible` dei row
+`!String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.502)`. Non serve stato nuovo, la
+proprieta' esiste gia' e il watcher la svuota. Non fatta qui perche' vive nel file **generato** da
+skinvariables (`searchwidgets-combined` e `-standard`), quindi va nel sorgente del generatore, ed e'
+una decisione dell'utente.
+
+## Lotto 165 -- il row torna visibile solo quando e' gia' in testa
+
+Chiude il punto 2 lasciato aperto dal 164. Il riposizionamento del lotto 163 si vedeva: l'utente
+*"una volta c'e' stata proprio l'animazione che spostava i risultati DOPO che questi fossero
+caricati... quando sarebbero dovuti spuntare direttamente dal primo"*.
+
+Il margine misurato quando le pagine sono in cache:
+
+```
+04:08:49.676  reconcile 1105.502: contenuto 8b970d6a -> 222dca78
+04:08:49.704  load_cumulative page=1 items=20        <- in cache, 40 ms in tutto
+04:08:49.793  watcher testa nuova key=1105.502: riga riportata in cima (era 49/51)
+04:08:49.921  set_head built=31                      <- 128 ms, non i 6,9 s del 163
+```
+
+Il 163 aveva misurato 3,7-6,9 s su build che andavano in rete e ne aveva concluso *"la corsa non
+esiste"*. Con le pagine gia' in cache il margine crolla a **128 ms**, e `Control.Move` non e'
+istantaneo: e' uno scorrimento animato. Il row torna visibile quando il plugin pubblica `Settled`, a
+build finita, e in quel momento lo scorrimento e' ancora in corso.
+
+**La conclusione del 163 era giusta ma la premessa era una misura sola.** Un margine misurato su un
+percorso che va in rete non descrive lo stesso percorso servito dalla cache.
+
+### La correzione: una condizione, nessuno stato nuovo
+
+Invece di rincorrere la corsa, si toglie: il row resta nascosto finche' il riposizionamento non e'
+stato consumato. La coda esiste gia' ed e' una proprieta' di finestra che il watcher svuota da se'.
+
+```xml
+<param name="visible">... + !String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.{widget_id})</param>
+```
+
+In `shortcuts/generator/data/parts/search_row.xmltemplate` e `search_row_standard.xmltemplate`,
+cioe' nel SORGENTE del generatore -- il file `script-skinvariables-generator-includes-.xml` e' un
+artefatto per-dispositivo e non va toccato (vedi la nota di deploy del lotto 162). `buildv` alzato a
+`0.2.3-row-nascosto-fino-al-riposizionamento` perche' il generatore rigeneri: modificare un
+`.xmltemplate` senza alzarlo non cambia niente per Kodi.
+
+**Il modo in cui puo' rompersi, dichiarato**: una chiave che resta in coda tiene il row nascosto. E'
+autolimitante -- il watcher la consuma appena quel contenitore ha elementi nella finestra a schermo,
+che e' esattamente la condizione in cui il row avrebbe qualcosa da mostrare -- ma e' il primo punto da
+guardare se un row della ricerca non compare piu'.
+
+### La latenza aggiunta e' quella dello scorrimento, non un'attesa
+
+Non c'e' nessun ritardo a tempo: il row appare appena la coda si svuota, cioe' al primo giro del
+watcher dopo il `Control.Move`. Nei due casi misurati il watcher ha consumato 117 ms e 237 ms dopo il
+reconcile, quindi ben prima che i risultati fossero pronti.
+
+## Il runway, e cosa vuol dire allungarlo
+
+Domanda dell'utente. Il watcher fa partire la pagina successiva quando gli elementi che restano
+davanti al fuoco scendono sotto:
+
+```python
+runway = page_limit(True) * paginator.lookahead_pages()      # service.py:624
+```
+
+Letti dal database della stick il 05/09 (`settings.db`, tabella `settings`):
+
+| impostazione | valore sulla stick | default dichiarato nel codice |
+|---|---|---|
+| `paginate.limit_widgets` | **20** elementi per pagina | 20 |
+| `paginate.lookahead` | **1** | **2** |
+| `paginate.initial_batch` | 2 pagine | 2 |
+| `paginate.max_items` | 100 | 75 |
+
+Quindi runway = 20 x 1 = **20 elementi**, ed e' proprio il valore contro cui mette in guardia il
+commento di `lookahead_pages`, scritto in agosto:
+
+> *Con 1 il margine e' di 20 elementi, cioe' 2-4 secondi di scorrimento, mentre sulla stick una build
+> misura da 0,6 a 13 secondi: il caricamento non fa in tempo a finire e l'utente arriva in fondo e
+> aspetta. Da qui la sensazione di paginazione "a gradini". Il default e' quindi 2.*
+
+Allungarlo a 2 porta il margine a 40 elementi. **Non aggiunge build**: quante ne servono per arrivare
+al tetto lo decide `max_items`, non il lookahead -- cambia solo QUANTO PRIMA ciascuna parte. L'unico
+costo e' qualche pagina caricata in liste abbandonate poco prima della fine.
+
+E' anche la leva del difetto del `fixedlist` descritto nel lotto 164: con 40 elementi di margine si
+arriva molto piu' di rado nella finestra di coda in cui il cursore si e' scostato, che e' la
+condizione necessaria perche' lo scatto si veda. Non e' stato cambiato qui: e' un'impostazione
+dell'utente, e va provata da lui.
+
+## Lotto 166 -- il 165 non funzionava: la coda si svuotava prima del movimento
+
+L'utente lo ha rivisto subito: *"ancora mi sembra che i risultati compaiano con l'animazione che li
+rifa' ripartire da capo"*. Aveva ragione, e il motivo era di due righe.
+
+Il 165 fa tenere il row nascosto finche' la sua chiave e' in `fenlight.pg.rehead`. Ma il consumatore
+nel servizio, scritto per il lotto 138, faceva:
+
+```python
+paginator.rehead_done(rkey)                      # toglie dalla coda
+if rcur > 1:
+    xbmc.executebuiltin('Control.Move(...)')     # e SOLO ORA muove
+```
+
+Cioe' scopriva il row **nell'istante esatto in cui cominciava lo scorrimento**, che dura 400 ms
+(`List_Core`: `<scrolltime tween="quadratic">400</scrolltime>`). Il difetto che il 165 doveva chiudere
+e' rimasto intatto: il 165 aveva scelto la proprieta' giusta e il momento sbagliato.
+
+**Lezione, e vale oltre questo caso**: una condizione che si arma su uno stato va agganciata alla FINE
+dell'azione, non al suo inizio. Fino al 165 quella coda serviva solo a spostare una riga, e svuotarla
+in anticipo non si vedeva; dandole un secondo uso, l'anticipo e' diventato il difetto.
+
+### La correzione
+
+La chiave esce dalla coda quando il contenitore **e' arrivato**: cursore in testa E scorrimento
+finito (`Container(N).Scrolling`). La decisione e' estratta in `paginator.rehead_step`, **pura**, per
+la ragione del lotto 139 -- un ramo che nessuno puo' provare e' un ramo che prima o poi sbaglia in
+silenzio, e questo ramo vive dentro il ciclo del servizio, che le prove non possono importare.
+
+```
+muovi    ordina il Control.Move e aspetta
+aspetta  sta ancora arrivando
+fatto    in testa e fermo: la chiave esce dalla coda
+mollo    REHEAD_TIMEOUT scaduto: si rinuncia
+```
+
+`mollo` non e' prudenza generica: dal 165 una chiave incastrata non lascia piu' solo una riga fuori
+posto, tiene il row **invisibile**. Il tetto rende il peggio uguale al comportamento di prima invece
+che a un widget che non compare piu'.
+
+`tests/test_166.py`, 12 controlli, 20 su 20 file passano. Il caso **B** e' la descrizione del difetto:
+non si dichiara mai 'fatto' mentre la riga scorre. Provata rossa togliendo il controllo sullo
+scorrimento: cadono solo i due controlli previsti.
+
+## Lo scatto durante la paginazione: cosa dicono i numeri e cosa resta
+
+L'utente, dopo aver portato `lookahead` a 2: *"anche mettendo lookahead a 2 la paginazione rimane a
+gradini perche' la stick e' generalmente lenta"*. Il confronto fra i due log:
+
+| | runway | momenti a <=3 elementi dalla fine | di cui con la pagina ancora in volo |
+|---|---|---|---|
+| post163 (`lookahead=1`) | 20 | 61 | **37** |
+| post165 (`lookahead=2`) | 40 | 28 | **12** |
+
+Il margine ha fatto quello che doveva -- da 37 a 12 -- e non basta, esattamente come dice l'utente:
+finche' una build dura 1,5-3 s (e in rete, con filtro doppiaggio, molto di piu') si arriva in fondo
+prima che la pagina atterri.
+
+**Cosa fa scattare la riga, letto invece che dedotto.** `List_Core` non dichiara `<focusposition>`,
+quindi il fisso vale 0; e `cursorrange` **non esiste in questo binario di Kodi** (verificato sulle
+stringhe), quindi lo scostamento consentito e' 0. Con `m_fixedCursor = 0` e `m_cursorRange = 0`, tutti
+e tre i rami di `CGUIFixedListContainer::SelectItem` danno `cursor = 0`: **la posizione di riposo
+dell'elemento a fuoco E' il primo posto a sinistra.** Quello che si vede non e' un elemento spinto in
+un posto sbagliato, e' la riga che torna nella sua posizione di riposo.
+
+Perche' se ne accorge solo a volte: mentre si scorre in fretta lo scorrimento morbido (400 ms,
+quadratico) resta indietro rispetto ai tasti, quindi il poster a fuoco NON e' ancora al bordo
+sinistro. Quando arriva la pagina, `UpdateListProvider` chiama `Reset()`, che alza `m_wasReset`, e
+`ScrollToOffset` legge proprio quel flag per **saltare l'animazione**:
+
+```cpp
+if (!m_wasReset) { SetContainerMoving(...); m_scrollTimer.Start(); }
+```
+
+Cioe' il ritardo accumulato viene recuperato tutto in un fotogramma: la riga scatta invece di
+scorrere. Piu' si scorre in fretta, piu' ritardo c'e' da recuperare, piu' lo scatto e' grosso.
+
+**La leva che ne discende, non provata:** `<scrolltime>` a 400 ms e' cio' che misura il ritardo
+recuperabile. Abbassarlo riduce lo scatto in proporzione, al prezzo di uno scorrimento meno morbido.
+Non toccato: e' una scelta di aspetto, e va provata sul dispositivo.
+
+## Lotto 167 -- il gate del 165 copriva due row su tre
+
+Terza volta che l'utente rivede lo stesso difetto, e stavolta l'ha descritto come una sequenza, che e'
+il modo in cui si e' trovato il buco:
+
+> ricerca 2: elementi ricerca 1 tornano al primo elemento -> scompaiono elementi ricerca 1 -> compaiono
+> quelli di ricerca 2 dal primo. Quando dovrebbe essere: scompaiono elementi di ricerca 1 -> compaiono
+> quelli di ricerca 2 dal primo.
+
+"La riga vecchia si vede scorrere" vuol dire che il row **era visibile**, cioe' che il gate del 165 non
+stava agendo. E infatti: il 165 l'ho scritto nei TEMPLATE del generatore, che producono i row della
+ricerca testuale (502 e 503). **Il row Discover (505) e' dichiarato a mano in `Includes_Search.xml`** e
+non e' stato toccato. Nel log del 05/09 tutti i riposizionamenti osservati erano proprio su 1105.505:
+
+```
+05:01:41.596  reconcile 1105.505: contenuto eb3b277e -> 735d4838
+05:01:41.866  watcher testa nuova key=1105.505: riga riportata in cima (era 56/76)
+05:01:42.072  set_head key=1105.505 built=30      <- 206 ms dopo l'inizio di uno scorrimento da 400 ms
+```
+
+Correzione: lo stesso terzo termine nel `visible` del row 505. `tests/test_167.py` non prova il
+comportamento (e' skin) ma la **copertura**: ricava dai file quali contenitori dichiarano un
+`pgctl=1105.N` e pretende il gate su ognuno, cosi' un row nuovo o dichiarato altrove si fa notare da
+solo. E' il modo in cui questa famiglia di correzioni sbaglia: si applica dove si stava guardando e si
+dimentica il gemello scritto in un altro file.
+
+**Tre lotti per una cosa sola, e vale la pena dire perche'.** Il 165 ha scelto il momento sbagliato
+(coda svuotata prima del movimento), il 166 l'ha corretto ma sul solo percorso che stavo guardando, il
+167 ha trovato che il gate non era nemmeno applicato dove il difetto si manifestava. Ogni volta la
+verifica e' stata "la prova passa" invece di "il difetto e' sparito dal log": nessuna delle tre prove
+poteva accorgersi che il gate non fosse applicato al row giusto, finche' il 167 non ha misurato la
+copertura invece del comportamento.
+
+## Lo scatto in paginazione: perche' non si puo' avere sia liscio sia fermo
+
+Richiesta dell'utente: *"non voglio uno scorrimento meno morbido, ma non voglio nemmeno lo scatto"*.
+Le due cose sono legate da una riga di Kodi, e va detto invece di provare a girarci intorno.
+
+`<scrolltime>400</scrolltime>` vuol dire che mentre si scorre in fretta la riga **disegnata** e' fino a
+400 ms indietro rispetto al cursore logico: e' proprio quel ritardo a farla sembrare morbida. Quando
+arriva una pagina nuova, `UpdateListProvider` chiama `Reset()`, che alza `m_wasReset`, e
+`ScrollToOffset` ci legge il permesso di **saltare l'animazione**:
+
+```cpp
+if (!m_wasReset) { SetContainerMoving(...); m_scrollTimer.Start(); }
+```
+
+Il ritardo accumulato viene quindi recuperato in un fotogramma. **Lo scatto E' la morbidezza, riscossa
+tutta insieme**: piu' lungo lo `scrolltime`, piu' liscio lo scorrimento e piu' grosso lo scatto. Non
+sono due difetti indipendenti fra cui scegliere una correzione, sono la stessa grandezza vista in due
+momenti.
+
+Quello che resta da decidere non e' quindi "liscio o fermo" ma **quanto spesso una pagina atterra
+mentre si sta scorrendo**. Le leve sono tre, tutte impostazioni:
+
+| leva | oggi | effetto | costo |
+|---|---|---|---|
+| `paginate.lookahead` | 2 | la pagina parte prima | gia' provata: momenti a rischio da 37 a 12 |
+| `paginate.initial_batch` | 2 pagine (40 elementi) | meno atterraggi in tutto | la PRIMA build, quella che si aspetta, si allunga |
+| `paginate.limit_widgets` | 20 per pagina | pagine piu' grosse, meno atterraggi | ogni build costa di piu' |
+
+**Onesta' sullo stato di questa spiegazione**: il ruolo di `m_wasReset` e' letto nel sorgente di Kodi,
+non misurato sul dispositivo, e su questo difetto mi sono gia' sbagliato due volte (prima
+`allowhiddenfocus`, poi la finestra di coda del `fixedlist`, entrambe smentite leggendo il codice).
+Prima di cambiare un'impostazione conviene misurare: alzare `initial_batch` a 3 e contare di nuovo i
+momenti con `remaining<=3` e `loading=True`, che e' il campione che ha gia' mostrato l'effetto del
+lookahead.
+
+## Lotto 168 -- 'Ricerca in corso' si ristendeva sopra i risultati a ogni pagina
+
+Ultimo punto rimasto della coda della ricerca. Segnalato dall'utente: *"la scritta che compare nelle
+ricerche testuali quando sta caricando ulteriori risultati"*.
+
+Non e' un difetto dell'etichetta, e' del segnale che legge. `_text_search_start` alzava
+`FenLight.TextSearch.State = loading` **fuori** dal cancello che distingue una query nuova da una
+ricostruzione:
+
+```python
+	if win.getProperty('FenLight.TextSearch.Query') != query:
+		...                                                        # <- il cancello
+	win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'loading')   # <- ma queste stavano
+	win.setProperty('FenLight.TextSearch.State', 'loading')                   #    fuori
+```
+
+Ogni ricarica per paginare passa di qui con la stessa query, e rialzava il segnale. La skin ci appende
+**tre** cose, tutte sulla schermata che l'utente sta guardando:
+
+| dove | cosa | come si vedeva |
+|---|---|---|
+| `Includes_Search.xml:250` | 'Ricerca in corso' | si ristendeva sopra risultati validi |
+| `Includes_Search.xml:263` | 'Attendi il caricamento dei risultati.' | idem |
+| `Includes_Search.xml:211` | il pannello info del risultato a fuoco | sbatteva via e tornava |
+
+L'utente ne aveva notata una; le altre due hanno la stessa causa e si chiudono con lo stesso spostamento.
+
+### Perche' la correzione sta nel plugin e non nella condizione della skin
+
+La strada alternativa era condizionare le due etichette su `Settled` invece che su `State`. L'ho
+scartata: in scope **standard** i due row si costruiscono in invocazioni separate e `Settled` viene
+scritto da ciascuna, quindi l'attesa sparirebbe appena la prima delle due ha finito, mentre l'altra
+sta ancora caricando. `State` aggregato esiste proprio per rispondere a "sono finite entrambe".
+
+Il problema non era dunque la condizione ma il **significato** della proprieta': `loading` deve voler
+dire *"sta caricando una ricerca NUOVA"*, che e' cio' che tutti e tre i consumatori gia' assumevano.
+Nessuno di loro voleva sapere se una build stava girando -- e quel fatto ha gia' il suo segnale,
+`Container(N).IsUpdating`, che il `Widget_Busy` usa ed e' per contenitore invece che per ricerca.
+Spostare le due righe dentro il cancello ripristina il significato invece di aggiungere una guardia,
+che e' la regola gia' scritta in [[stato-condiviso-non-toppe]].
+
+### Provato fuori da Kodi
+
+`tests/test_168.py`, cinque casi, 22 su 22 file passano. Il caso **B** e' il lotto: `State` a `done`,
+ricostruzione con la stessa query, `State` deve restare `done`. Il caso **D** protegge cio' che si
+poteva rompere spostando le righe: in scope standard le due righe vanno marcate **insieme** dalla
+prima invocazione, perche' la seconda vede la query gia' registrata e salta il blocco -- senza,
+`_text_search_done` non saprebbe piu' quando sono finite entrambe.
+La funzione si carica con `load_pure`, quindi la prova legge il sorgente spedito senza importare
+`router` (che tira dentro mezzo addon). Provata rossa rimettendo le due righe fuori dal cancello:
+cade il solo caso B.
+
+## Lotto 169 -- la rotellina accanto al nome del percorso, nella ricerca testuale
+
+Richiesta dell'utente, *"sia per continuita' grafica, sia per far capire all'utente di aspettare"*.
+
+I risultati della ricerca testuale sono costruiti da percorsi che l'utente configura e a cui da' un
+nome, come i widget della home: nello screenshot del 05/09 si chiamano **Movies** e **TV Shows**. Quei
+nomi sono le linguette del selettore (contenitore 601). I widget della home mostrano una rotellina
+accanto al proprio nome mentre costruiscono; le linguette no.
+
+### Cosa c'era gia', e perche' non bastava
+
+Il pezzo esisteva ma copriva solo meta' schermata: `Includes_Search.xml` ha gia' un
+`View_Line_Spinner` accanto all'etichetta **"Risultati"**, ed e' mosso da `Container(505).IsUpdating`
+-- cioe' **solo Discover**. Quel blocco e' visibile a casella vuota; la ricerca testuale non ha
+un'etichetta di titolo e quindi non aveva niente a cui appendere la rotellina.
+
+### Perche' una clausola per id e non una condizione sola
+
+Ogni voce del selettore porta gia' il proprio `widget_id` (lo scrive il generatore in
+`skinvariables-searchwidgets-selector`), ma **Kodi non sa risolvere
+`Container($INFO[ListItem.Property(widget_id)])`**: l'id dentro una condizione dev'essere letterale.
+Da qui una clausola per id:
+
+```
+[String.IsEqual(ListItem.Property(widget_id),502) + Container(502).IsUpdating] | ... fino a 506
+```
+
+E' la stessa ragione strutturale per cui il paginatore indicizza per (finestra, contenitore) invece di
+dedurre la posizione: dove l'id non puo' essere calcolato, va scritto.
+
+### Perche' NON il trucco del grouplist
+
+`View_Line_Spinner` si posiziona subito dopo il testo mettendo in un grouplist orizzontale una **copia
+trasparente dell'etichetta** come distanziatore. Qui non si puo': l'etichetta della linguetta e'
+**centrata** nei suoi 200 px, quindi un grouplist la sposterebbe di lato ogni volta che la rotellina
+compare. La rotellina e' ancorata al bordo destro della linguetta: il testo non si muove mai, e resta
+sulla stessa riga del nome. Icona e animazioni sono quelle di `View_Line_Spinner`, non riscritte.
+
+### Il modo in cui si rompe in silenzio, e la prova che lo impedisce
+
+Il parametro attraversa **quattro** include prima di arrivare al layout della linguetta:
+
+```
+Includes_Search.xml -> Hub_Widget_Switcher -> Categories_Selector -> List_ButtonMenu_Row
+```
+
+Un anello che **dichiara** il default ma non lo **inoltra** lascia `false`: la rotellina non compare
+mai e non c'e' nessun errore da nessuna parte. `tests/test_169.py` guarda percio' la CATENA e non
+l'aspetto -- come il `test_167`, e per lo stesso motivo. Provata rossa togliendo l'inoltro dall'anello
+di mezzo: cade il solo caso previsto. 23 su 23 file passano.
+
+Il default resta `false` in tutti e tre gli anelli intermedi, quindi gli altri selettori della skin
+non cambiano.
+
+## Lotto 170 -- la rotellina in fondo alla riga dei nomi, e perche' il 169 non compariva
+
+Il 169 non funzionava e nei log non c'era **niente**. Nessun errore sul Mac, nessuno sulla stick: gli
+include erano validi, la prova sulla catena passava, e la rotellina non si vedeva.
+
+### La diagnosi
+
+Il 169 ne metteva una **per linguetta**, mostrata quando il widget di quella linguetta stava
+costruendo. La condizione era:
+
+```
+String.IsEqual(ListItem.Property(widget_id),502) + Container(502).IsUpdating
+```
+
+Il generatore pero' scrive quella proprieta' come **`$NUMBER[502]`**, non come `502`
+(`skinvariables-searchwidgets-selector`). Il confronto non e' mai vero. **Una condizione falsa non e'
+un errore per Kodi**, e quindi non lascia traccia: e' la stessa classe di guasto muto del lotto 90, e
+la ragione per cui i due log non contenevano una riga utile.
+
+La prova del 169 verificava la CATENA degli include e passava. Aveva ragione: la catena era corretta,
+era il **bersaglio** a essere sbagliato. Una prova sulla copertura non puo' dire se la condizione che
+copre e' vera -- distinzione che vale la pena tenere a mente prima di fidarsi di un verde.
+
+### Cosa chiedeva davvero l'utente
+
+*"Deve comparire accanto alla riga con i nomi dei widget, quindi sempre alla destra di TV Shows su
+mac, e sulla stick ho solo il widget Film, quindi alla sua destra."* Una rotellina **sola**, in fondo
+alla riga. Che toglie di mezzo tutto il problema: se e' una sola, non deve sapere quale row sta
+costruendo.
+
+```
+Container(502).IsUpdating | Container(503).IsUpdating | ... | Container(506).IsUpdating
+```
+
+Niente `widget_id`, niente `$NUMBER`, niente contesto di voce.
+
+### La posizione, che le linguette non danno gratis
+
+Le linguette sono un CONTENITORE, non un grouplist: non c'e' un "dopo l'ultima voce" a cui agganciarsi.
+Il selettore parte a `left 40` e ogni voce e' larga 200 (`Categories_Selector` passa `itemlayout_w`
+200), quindi la fine della striscia e' `40 + 200*N`. N non e' noto a priori (due percorsi sul Mac, uno
+sulla stick) e **un `<left>` in Kodi e' statico**: non accetta un `$INFO`. Si parte percio' dalla
+posizione per UNA linguetta (240) e si scosta con animazioni condizionate su
+`Container(601).NumItems`, esclusive fra loro cosi' non si sommano.
+
+L'icona resta quella dei widget della home: si riusa `View_Line_Spinner` passandogli l'etichetta
+vuota, che fa collassare il distanziatore trasparente di cui li' si serve per allinearsi dopo un testo.
+
+### E poi non si vedeva lo stesso: la diagnosi a due riquadri
+
+Anche il 170 non compariva, e di nuovo **senza una riga nei log**. A quel punto indovinare una quarta
+volta sarebbe stato solo un modo piu' lento di non sapere: si e' messo in campo un accertamento che
+separa le due domande possibili. Dentro il gruppo della rotellina, due riquadri 28x28:
+
+| | cosa dice |
+|---|---|
+| VERDE | sempre visibile, nessuna condizione, nessuna animazione. Se non si vede il problema e' la POSIZIONE |
+| ROSSO | la stessa condizione della rotellina, ma senza il ritardo di 1600 ms con cui `View_Line_Spinner` sfuma in entrata. Verde si' e rosso mai: il problema e' la CONDIZIONE |
+
+Esito: **si vedevano tutti e due, e sotto il rosso c'era anche la rotellina**. Cioe' il 170 era giusto
+da subito -- posizione giusta, condizione vera al momento giusto, icona che gira.
+
+### Perche' allora non si vedeva: il file non era sulla macchina
+
+Le date lo dicono senza margini. `kodi.old.log` -- la sessione in cui e' arrivato *"continua a non
+essere visibile alcuna rotella"* -- e' partita alle **16:01:38**. La copia installata sul Mac di
+`Includes_Hubs.xml` porta la data **16:05:27**, quattro minuti DOPO. Kodi legge gli XML della skin
+all'avvio (`Custom_1105_Search.xml` e' `KEEP_IN_MEMORY`): quel Kodi stava girando su un
+`Includes_Hubs.xml` che il gruppo della rotellina **non lo conteneva affatto**. `Includes_Search.xml`
+era aggiornato (15:43) e passava correttamente la condizione, ma la passava a un include che non aveva
+niente a cui darla -- un parametro non usato, che per Kodi non e' un errore.
+
+Il guasto quindi non era nella skin: era nel **giro di consegna**. I due file erano stati copiati a
+mano nella skin installata invece di passare da `deploy_local.py`, in due momenti diversi, e uno dei
+due e' arrivato dopo l'avvio di Kodi. Lezione, che vale piu' della rotellina: *prima* di dichiarare che
+una modifica non funziona, verificare che sia sulla macchina **e** che sia arrivata prima dell'avvio.
+Un md5 uguale fra repo e skin installata non basta se lo si guarda dopo aver ricopiato il file.
+
+### Il margine, dimezzato
+
+La cella di una linguetta e' larga 200, il nome quasi mai: appoggiare la rotellina alla fine della
+cella (`left 240`) lasciava un vuoto grande il doppio del necessario. Il left di partenza scende a
+**140**. Gli scostamenti restano di 200, perche' quella e' la larghezza vera di una voce e non e'
+negoziabile: si sposta il punto di partenza, non il passo.
+
+### Ripulito, non lasciato a meta'
+
+`Includes_Lists.xml` e `Includes_Categories.xml` sono tornati a prima del 169. Un parametro inerte
+lasciato li' sarebbe la cosa peggiore: sembra che qualcosa faccia qualcosa, e non fa niente. Il caso
+**D** di `tests/test_170.py` lo verifica.
+
+## Cosa resta aperto, dichiarato
+
+1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
+   il conto confrontabile che si riteneva inesistente, e con esso sparisce la proporzionalita' fra il
+   costo del controllo e la dimensione dello storico. La premessa di questa voce era sbagliata: era
+   stata dedotta dal fatto che `sync/watched/shows` non espone piu' la scomposizione in episodi, senza
+   cercare **altrove** nell'API. Lezione: prima di dichiarare un limite strutturale, rileggere la
+   documentazione del servizio, non solo il proprio codice.
+2. **LAVORO RESIDUO A (il prossimo) -- il rimappaggio degli anime, via skyhook con numerazione TVDB.** Il
+   rimappaggio attuale non e' iniettivo, e la chiave unica `(db_type, media_id, season, episode)` con
+   `INSERT OR REPLACE` scarta i perdenti in silenzio.
+   **Vedi la revisione del 04/09 qui sopra**, che sostituisce la descrizione che stava in questa voce:
+   la causa non e' un errore di calcolo isolato ma l'appaiamento POSIZIONALE di due elenchi, piu' il
+   fatto che TMDb per questa serie non fa ripartire la numerazione da 1 a ogni stagione. Stato
+   misurato sul Mac il 04/09: mappa in cache con 41 voci giuste, 37 sbagliate, 12 mancanti; inversa
+   che ne perde 12 su 78. La strada individuata e' la giuntura per `tvdbId` fra skyhook e Trakt,
+   verificata a 148 agganci su 148.
+   Misurato e loggato a ogni rebuild (`scarto locale/Trakt`), **non ancora corretto**.
+   Il difetto e' PER DISPOSITIVO, non per account: dipende dai metadati TMDb in cache, e il 03/09 il
+   Mac aveva scarto 0 mentre la stick aveva scarto 4 sullo stesso account nello stesso momento.
+   Quando sara' corretto lo scarto andra' a zero da solo al primo rebuild, e il confronto degli
+   episodi diventera' identico a quello dei film -- piu' forte, perche' sorveglia anche l'integrita'
+   del nostro database invece di limitarsi a compensarne il difetto.
+3. **LAVORO RESIDUO B (dopo A, vedi sotto) -- riparazione MIRATA invece del rebuild integrale.** Con il conto in mano
+   sappiamo QUANTE righe mancano; manca sapere DA QUALE serie. `sync/progress/watched` lo dice: una
+   sola pagina, 61 KB, con il `completed` per serie. Individuata la serie, basta
+   `sync/history/shows/<trakt_id>` invece di tutta la cronologia.
+   Misura che lo motiva, Mac 22:52:15 del 03/09: mancava **un** episodio e si sono scaricate 6 pagine.
+   Nella stessa occasione e' emerso il caso che rende il rebuild inevitabile oggi -- la via
+   incrementale trovava `nessun play piu' recente del piu' recente locale` pur mancando una riga,
+   perche' l'episodio rimarcato conserva su Trakt un `watched_at` VECCHIO. La via incrementale assume
+   "nuovo = piu' recente" ed e' cieca ai play retrodatati; la riparazione mirata non fa quella
+   assunzione, quindi chiude anche questo.
+4. **Il voto IMDb sugli episodi degli anime (lotto 150, aperto).** `imdb_episode_ratings` riceve la
+   stagione che mostriamo -- quella di TVDB -- ma IMDb usa una TERZA numerazione. Misurato su Hunter
+   x Hunter: TVDB 58/78/12, TMDb 1..62 / 63..136 / 137..148, IMDb **una stagione sola con gli
+   episodi 1..148**. Chiedendo a IMDb la stagione 2 o 3 la risposta e' vuota, quindi i voti IMDb
+   compaiono solo sulla prima stagione degli anime e mai sulle altre.
+   Una corrispondenza per `(stagione, episodio)` non e' possibile in generale. Le alternative --
+   numero assoluto, data di messa in onda -- sono EURISTICHE, cioe' la stessa famiglia di scelte che
+   il rimappaggio ha gia' pagato due volte (la mappa posizionale, la riparazione per date). Prima di
+   scrivere va deciso se esiste un'identita' vera da usare, come e' stato per il `tvdbId`.
+   Il regista, gli sceneggiatori, il voto TMDb e le guest star sono invece gia' risolti dal 150.
+5. **Episodi visti: la corsa sui timestamp del punto 140.3 non e' chiusa.** Li' non c'e' uno snapshot
+   economico da confrontare, solo la cronologia paginata.
+6. Il presupposto del lotto 139 (ogni ramo muto dichiara un'azione) resta scritto nella docstring di
+   `decide_refresh` e non e' protetto da una prova -- vedi li' il perche'.
+
+Da provare sul campo: marcare un film come visto sulla stick e leggere
+`watched movies: nessun play nuovo e il conto coincide (N visti): niente da ricostruire`. Se invece
+compare `il conto NON coincide`, i due conti misurano cose diverse e va guardato prima di fidarsi.
+
+## Coda aperta dopo il lotto 129
 
 - Verificare sul campo il lotto 127: chiudendo un episodio dentro la serie deve comparire
   `NON ordinato, il pannello episodi ... si e' gia' ricostruito` e UNA sola `build_season_list`.
@@ -15424,7 +20356,8 @@ stato servisse dalla cache, saltare il nostro refresh lascerebbe il badge vecchi
   `trakt_official_status`: passa da letture di proprieta' di finestra, che prendono il lock della
   GUI, e il costo dipende da quanto e' occupato il thread grafico. Da misurare a fasi prima di
   correggere -- non stimare, e' gia' andata male due volte.
-- Il Mac sta ancora girando il lotto 121 rotto. Serve `deploy_local.py --apply`, che porta anche il
-  lotto 118 e la skin.
-- Il Mac sta ancora girando il lotto 121 rotto (verificato per hash: copia vera, non un symlink).
-  Serve `deploy_local.py --apply`, che porta anche il lotto 118 e la skin.
+- ~~Il Mac sta ancora girando il lotto 121 rotto~~ -- NON E' PIU' VERO. Il 02/09, indagando sul
+  lotto 130, gli md5 di `service.py`, `kodi_utils.py`, `trakt_api.py`, `trakt_cache.py` e `player.py`
+  sul Mac sono risultati IDENTICI al repo: il Mac era gia' aggiornato. La voce era rimasta in coda
+  (per giunta duplicata) dopo che il deploy era stato fatto. Prima di ripetere una nota di coda,
+  riverificarla.

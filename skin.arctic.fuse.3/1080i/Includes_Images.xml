@@ -229,7 +229,7 @@
     <variable name="Image_Foreground_NoService">
         <value condition="!String.IsEmpty(Container.ListItem.Art(fanart))">$INFO[Container.ListItem.Art(fanart)]</value>
         <value condition="Integer.IsEqual(Window(Home).Property(TMDbHelper.WidgetContainer),301)">$INFO[Container(301).ListItem.Art(fanart)]</value>
-        <value condition="Integer.IsEqual(Window(Home).Property(TMDbHelper.WidgetContainer),501) + [![Window.IsVisible(1105) | Window.IsVisible(11105)] | !String.IsEmpty(Control.GetLabel(3000).index(1))]">$INFO[Container(501).ListItem.Art(fanart)]</value>
+        <value condition="Integer.IsEqual(Window(Home).Property(TMDbHelper.WidgetContainer),501)">$INFO[Container(501).ListItem.Art(fanart)]</value>
         <value condition="Integer.IsEqual(Window(Home).Property(TMDbHelper.WidgetContainer),502)">$INFO[Container(502).ListItem.Art(fanart)]</value>
         <value condition="Integer.IsEqual(Window(Home).Property(TMDbHelper.WidgetContainer),503)">$INFO[Container(503).ListItem.Art(fanart)]</value>
         <value condition="Integer.IsEqual(Window(Home).Property(TMDbHelper.WidgetContainer),504)">$INFO[Container(504).ListItem.Art(fanart)]</value>

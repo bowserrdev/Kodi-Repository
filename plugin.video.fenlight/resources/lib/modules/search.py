@@ -220,6 +220,17 @@ def launch_discover(params):
 	xbmc.sleep(100)
 	xbmc.log('###AF3_DISCOVER### clear_edit_result=[%s]' % xbmc.executeJSONRPC(json.dumps({'jsonrpc': '2.0', 'method': 'Input.SendText', 'params': {'text': '', 'done': True}, 'id': 1})), xbmc.LOGINFO)
 	xbmc.sleep(100)
+	# STRADA B, meta' Discover (lotto 162). Il token di paginazione appartiene al CONTENITORE, non
+	# alla lista: appena cambia ContentPath, Kodi ricompone il <content> del row 505 e in coda ci
+	# trova ancora il 'pages=N' della ricerca PRECEDENTE. Il plugin viene invocato, si accorge che
+	# l'inquilino e' cambiato e butta via tutta l'invocazione -- 336 ms misurati il 04/09 (lotto 161),
+	# 697 prima di quello. Azzerando il token QUI l'invocazione non nasce proprio.
+	# Qui non c'e' nessuna corsa da vincere, ed e' il motivo per cui questa meta' e' piu' solida
+	# dell'altra: le due proprieta' si scrivono nello stesso thread a microsecondi di distanza, prima
+	# che il ciclo della GUI rivaluti gli $INFO del path. Il caso simmetrico -- la ricerca testuale --
+	# non ha un punto come questo e deve passare da <ontextchange> nella skin.
+	from modules.paginator import CTL_PAGES_PROP
+	win.clearProperty(CTL_PAGES_PROP % ('1105', '505'))
 	win.setProperty('FenLight.Discover.ContentPath', content_path)
 	execute_builtin('SetFocus(3050)')
 	# Attendi il caricamento dei risultati: se la ricerca non produce risultati,

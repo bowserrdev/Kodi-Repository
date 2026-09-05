@@ -32,9 +32,7 @@
                 <param name="window">1104</param>
             </include>
 
-            <onload condition="String.IsEmpty(Window(1105).Property(TMDbHelper.WidgetContainer))">SetProperty(TMDbHelper.WidgetContainer,501,1105)</onload>
-            <onload condition="String.IsEmpty(Window(1106).Property(TMDbHelper.WidgetContainer))">SetProperty(TMDbHelper.WidgetContainer,501,1106)</onload>
-            <onload condition="String.IsEmpty(Window(1107).Property(TMDbHelper.WidgetContainer))">SetProperty(TMDbHelper.WidgetContainer,501,1107)</onload>
+            <onload condition="String.IsEmpty(Window(1105).Property(TMDbHelper.WidgetContainer))">SetProperty(TMDbHelper.WidgetContainer,505,1105)</onload>
             <onload condition="String.IsEmpty(Window(1108).Property(TMDbHelper.WidgetContainer))">SetProperty(TMDbHelper.WidgetContainer,501,1108)</onload>
 
             <menucontrol>300</menucontrol>
@@ -81,6 +79,7 @@
 
     <include name="Hub_Wall_Widget">
         <param name="pgscope">home</param>
+        <param name="pggated">false</param>
         <param name="target">videos</param>
         <param name="include">List_Poster_Row</param>
         <param name="visible">true</param>
@@ -122,7 +121,33 @@
                     <onfocus condition="![$PARAM[home_switcher]]">ClearProperty(HomeSwitcher.IsVisible,Home)</onfocus>
                     <onfocus condition="$PARAM[home_switcher]">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
                     <onfocus>SetProperty(InfoPanel.FullSwitch,Wall,Home)</onfocus>
-                    <content sortby="$PARAM[sortby]" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]&amp;pgctl=$PARAM[pgscope].$PARAM[id]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
+                    <!-- LOTTO 155. Il segmento di identita' NON puo' essere accodato al buio.
+                         Dove il path di base e' un URL letterale (home, hub) accodarlo va bene: e' sempre non vuoto.
+                         Dove nasce da un $VAR/$INFO condizionale (la ricerca) il path sparisce e il segmento resta da
+                         solo: Kodi tenta una GetDirectory su '&amp;pgctl=1105.502' e la registra come errore. Chi ha un
+                         path condizionale passa pggated=true e scrive '&amp;pgctl=...' dentro il SUFFISSO del proprio
+                         $VAR/$INFO, dove sparisce insieme al path. Il default e' il comportamento di sempre: chi non
+                         sa di questo problema non lo ha. -->
+                    <include content="Defs_Widget_Content" condition="![$PARAM[pggated]]">
+                        <param name="pgctl">&amp;pgctl=$PARAM[pgscope].$PARAM[id]</param>
+                        <param name="content">$PARAM[content]</param>
+                        <param name="pgscope">$PARAM[pgscope]</param>
+                        <param name="id">$PARAM[id]</param>
+                        <param name="sortby">$PARAM[sortby]</param>
+                        <param name="sortorder">$PARAM[sortorder]</param>
+                        <param name="target">$PARAM[target]</param>
+                        <param name="limit">$PARAM[limit]</param>
+                    </include>
+                    <include content="Defs_Widget_Content" condition="$PARAM[pggated]">
+                        <param name="pgctl" />
+                        <param name="content">$PARAM[content]</param>
+                        <param name="pgscope">$PARAM[pgscope]</param>
+                        <param name="id">$PARAM[id]</param>
+                        <param name="sortby">$PARAM[sortby]</param>
+                        <param name="sortorder">$PARAM[sortorder]</param>
+                        <param name="target">$PARAM[target]</param>
+                        <param name="limit">$PARAM[limit]</param>
+                    </include>
                 </include>
                 <include content="Widget_Busy">
                     <param name="visible">Container($PARAM[id]).IsUpdating + Integer.IsEqual(Container($PARAM[id]).NumItems)</param>
@@ -142,6 +167,7 @@
 
     <include name="Hub_Combined_Widget">
         <param name="pgscope">home</param>
+        <param name="pggated">false</param>
         <param name="target">videos</param>
         <param name="include">List_Poster_Row</param>
         <param name="visible">true</param>
@@ -177,7 +203,33 @@
                 <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
                 <onfocus>ClearProperty(HomeSwitcher.IsVisible,Home)</onfocus>
                 <onfocus>ClearProperty(InfoPanel.FullSwitch,Home)</onfocus>
-                <content sortby="$PARAM[sortby]" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]&amp;pgctl=$PARAM[pgscope].$PARAM[id]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
+                <!-- LOTTO 155. Il segmento di identita' NON puo' essere accodato al buio.
+                     Dove il path di base e' un URL letterale (home, hub) accodarlo va bene: e' sempre non vuoto.
+                     Dove nasce da un $VAR/$INFO condizionale (la ricerca) il path sparisce e il segmento resta da
+                     solo: Kodi tenta una GetDirectory su '&amp;pgctl=1105.502' e la registra come errore. Chi ha un
+                     path condizionale passa pggated=true e scrive '&amp;pgctl=...' dentro il SUFFISSO del proprio
+                     $VAR/$INFO, dove sparisce insieme al path. Il default e' il comportamento di sempre: chi non
+                     sa di questo problema non lo ha. -->
+                <include content="Defs_Widget_Content" condition="![$PARAM[pggated]]">
+                    <param name="pgctl">&amp;pgctl=$PARAM[pgscope].$PARAM[id]</param>
+                    <param name="content">$PARAM[content]</param>
+                    <param name="pgscope">$PARAM[pgscope]</param>
+                    <param name="id">$PARAM[id]</param>
+                    <param name="sortby">$PARAM[sortby]</param>
+                    <param name="sortorder">$PARAM[sortorder]</param>
+                    <param name="target">$PARAM[target]</param>
+                    <param name="limit">$PARAM[limit]</param>
+                </include>
+                <include content="Defs_Widget_Content" condition="$PARAM[pggated]">
+                    <param name="pgctl" />
+                    <param name="content">$PARAM[content]</param>
+                    <param name="pgscope">$PARAM[pgscope]</param>
+                    <param name="id">$PARAM[id]</param>
+                    <param name="sortby">$PARAM[sortby]</param>
+                    <param name="sortorder">$PARAM[sortorder]</param>
+                    <param name="target">$PARAM[target]</param>
+                    <param name="limit">$PARAM[limit]</param>
+                </include>
                 <visible allowhiddenfocus="$PARAM[allowhiddenfocus]">$PARAM[visible]</visible>
 
                 <include content="Defs_AutoScroll" condition="$PARAM[autoscroll]">
@@ -207,6 +259,9 @@
         <param name="onup">300</param>
         <param name="home_switcher">false</param>
         <param name="line_visible">true</param>
+        <!-- Vedi lotto 169: nella ricerca ogni linguetta e' il nome di un percorso dell'utente e
+             mostra la propria rotellina mentre quel widget carica, come i widget della home. -->
+        <param name="spinner_condition">false</param>
         <definition>
             <control type="group">
                 <top>$PARAM[top]</top>
@@ -244,6 +299,38 @@
                         <include>$PARAM[include_content]</include>
                     </content>
                 </include>
+                <!-- LOTTO 170. La rotellina in fondo alla riga dei nomi, subito a destra dell'ultima
+                     linguetta: e' quella che i widget della home mostrano accanto al proprio nome
+                     (stesso include View_Line_Spinner), portata dove nella ricerca il nome esiste.
+                     La posizione va calcolata perche' le linguette sono un contenitore e non un
+                     grouplist: il selettore parte a left 40 e ogni voce e' larga 200 (Categories_Selector
+                     passa itemlayout_w 200), quindi la fine della striscia e' 40 + 200*N. N non e' noto
+                     a priori (sul Mac due percorsi, sulla stick uno) e Kodi non accetta un $INFO dentro
+                     un left, che e' statico: si parte dalla posizione per UNA linguetta e si scosta con
+                     animazioni condizionate al numero di voci. Le condizioni sono esclusive fra loro,
+                     quindi non si sommano.
+                     Il left di partenza e' 140 e non 240: la cella e' larga 200 ma il nome quasi
+                     mai, quindi appoggiare la rotellina al bordo della cella lasciava un vuoto
+                     grande il doppio del necessario. Gli scostamenti restano di 200, perche'
+                     quella e' la larghezza vera di una voce.
+                     L'etichetta passata vuota fa collassare il distanziatore trasparente di
+                     View_Line_Spinner, che li' serve solo ad allinearsi dopo un testo. -->
+                <control type="group">
+                    <left>170</left>
+                    <centertop>0</centertop>
+                    <height>80</height>
+                    <animation effect="slide" end="200,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,2)">Conditional</animation>
+                    <animation effect="slide" end="400,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,3)">Conditional</animation>
+                    <animation effect="slide" end="600,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,4)">Conditional</animation>
+                    <animation effect="slide" end="800,0" time="0" condition="Integer.IsGreater(Container(601).NumItems,4)">Conditional</animation>
+                    <include content="View_Line_Spinner">
+                        <param name="label" />
+                        <param name="label_fallback" />
+                        <param name="haspath">false</param>
+                        <param name="textcolor">main_fg_100</param>
+                        <param name="visible">$PARAM[spinner_condition]</param>
+                    </include>
+                </control>
             </control>
         </definition>
     </include>
@@ -821,10 +908,6 @@
                 <param name="window">$PARAM[window]</param>
                 <param name="overlay">[String.IsEqual(Skin.String(HomeSwitcher.$PARAM[window].Mode),Wall)]</param>
 
-                <onclick condition="Window.IsVisible(1106) + Skin.String(HomeSwitcher.1106.UpNextMode,library_nextaired)">Skin.SetString(HomeSwitcher.1106.UpNextMode,trakt_calendar)</onclick>
-                <onclick condition="Window.IsVisible(1106) + Skin.String(HomeSwitcher.1106.UpNextMode,trakt_calendar)">Skin.SetString(HomeSwitcher.1106.UpNextMode,library_nextaired)</onclick>
-                <onclick condition="Window.IsVisible(1106)">SetProperty(ReloadWidgets,1)</onclick>
-                <onclick condition="Window.IsVisible(1106)">AlarmClock(resetproperty,ClearProperty(ReloadWidgets),00:00,silent)</onclick>
 
             </include>
 
@@ -901,81 +984,6 @@
         </control>
     </include>
 
-    <include name="Hub_Weather_Widget">
-        <control type="group">
-            <top>0</top>
-            <right>40</right>
-            <left>80</left>
-            <top>320</top>
-            <bottom>90</bottom>
-            <visible>String.IsEqual(Container(601).ListItem.Property(guid),weather)</visible>
-            <control type="group">
-                <left>0%</left>
-                <height>660</height>
-                <bottom>0</bottom>
-                <width>20%</width>
-                <control type="group">
-                    <right>40</right>
-                    <include content="Weather_Details_HighLow">
-                        <param name="diffuse">diffuse/tall_w320_h720.png</param>
-                        <param name="day">Day0</param>
-                    </include>
-                </control>
-            </control>
-            <control type="group">
-                <left>20%</left>
-                <height>660</height>
-                <bottom>0</bottom>
-                <width>20%</width>
-                <control type="group">
-                    <right>40</right>
-                    <include content="Weather_Details_HighLow">
-                        <param name="diffuse">diffuse/tall_w320_h720.png</param>
-                        <param name="day">Day1</param>
-                    </include>
-                </control>
-            </control>
-            <control type="group">
-                <left>40%</left>
-                <height>660</height>
-                <bottom>0</bottom>
-                <width>20%</width>
-                <control type="group">
-                    <right>40</right>
-                    <include content="Weather_Details_HighLow">
-                        <param name="diffuse">diffuse/tall_w320_h720.png</param>
-                        <param name="day">Day2</param>
-                    </include>
-                </control>
-            </control>
-            <control type="group">
-                <left>60%</left>
-                <height>660</height>
-                <bottom>0</bottom>
-                <width>20%</width>
-                <control type="group">
-                    <right>40</right>
-                    <include content="Weather_Details_HighLow">
-                        <param name="diffuse">diffuse/tall_w320_h720.png</param>
-                        <param name="day">Day3</param>
-                    </include>
-                </control>
-            </control>
-            <control type="group">
-                <left>80%</left>
-                <height>660</height>
-                <bottom>0</bottom>
-                <width>20%</width>
-                <control type="group">
-                    <right>40</right>
-                    <include content="Weather_Details_HighLow">
-                        <param name="diffuse">diffuse/tall_w320_h720.png</param>
-                        <param name="day">Day4</param>
-                    </include>
-                </control>
-            </control>
-        </control>
-    </include>
 
     <include name="Hub_Settings_Items">
         <item>

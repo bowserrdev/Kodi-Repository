@@ -7,10 +7,22 @@
 from hashlib import md5
 from re import compile as re_compile
 from modules.kodi_utils import parse_qsl
-from caches.settings_cache import get_setting
 # Interruttore unico della strumentazione: qui in testa perche' lo usano sia PG_DEBUG sia PERF,
 # e il primo dei due sta molto piu' su del secondo.
 from modules.perf import enabled as _perf_enabled
+
+# L'import di settings_cache NON sta piu' in testa (lotto 161), ed e' la stessa ragione del lotto 126
+# per json in base_cache: settings_cache si tira dietro caches.base_cache e con lui sqlite3 -- 93 ms
+# sulla stick -- piu' datetime (36 ms) che sqlite3.dbapi2 importa a sua volta. Ma paginator lo importa
+# ANCHE chi non legge nessuna impostazione, e il caso che ha reso la cosa misurabile e' token_is_stale:
+# nell'invocazione lasciata cadere dal lotto 160, 636 dei 697 ms totali erano import, sqlite3 in testa,
+# per una funzione che confronta due stringhe. Le uniche quattro funzioni che leggono impostazioni sono
+# qui sotto e sono gia' tutte dentro una chiamata: spostare l'import dentro di loro non cambia niente
+# per le build vere (che le impostazioni le leggono comunque) e toglie l'intera catena sqlite a chi non
+# le legge. Dopo la prima volta 'from ... import' e' una lettura di sys.modules, quindi non si paga due volte.
+def get_setting(setting_id, fallback=''):
+	from caches.settings_cache import get_setting as _get_setting
+	return _get_setting(setting_id, fallback)
 
 # Window(10000) properties bridging the plugin build and the service watcher. Keyed per widget.
 PAGES_PROP = 'fenlight.pg.%s.pages'
@@ -157,6 +169,37 @@ IDS_PROP = 'fenlight.pg.ids.%s'
 # id, quindi la regola per id lo scarterebbe proprio mentre va ricostruito. Vedi
 # refresh_containers_for_ids.
 ACTION_PROP = 'fenlight.pg.action.%s'
+# La testa dell'ULTIMA costruzione di questo widget: il path del primo elemento. Serve a rispondere a
+# una domanda che nessuno sapeva porre -- 'in questa ricostruzione la testa e' cambiata?' -- e la
+# risposta la conosce solo set_head, che vede la lista nuova avendo pubblicato la vecchia.
+FIRSTURL_PROP = 'fenlight.pg.first.%s'
+# I widget che hanno una testa NUOVA e vanno riportati a inizio riga: UNA proprieta' sola, con dentro
+# l'elenco delle chiavi separate da virgola. La riempie set_head, la svuota il watcher.
+# Perche' una coda e non una bandiera per chiave: il watcher deve poter chiedere 'c'e' qualcosa da
+# fare?' a ogni giro da 0,3 s, e con una bandiera per chiave la domanda costava una lettura per ogni
+# widget conosciuto anche quando la risposta era no. Cosi' costa una lettura sola, servita dalla
+# memoria, e l'elenco si guarda solo nei rari giri in cui c'e' davvero lavoro.
+# Perche' il lavoro lo fa il watcher e non il plugin: quando la build finisce Kodi non ha ancora
+# popolato il contenitore -- la stessa corsa gia' documentata in refresh_containers_for_ids, dove
+# container_head non riesce a leggere un contenitore appena ordinato -- quindi un comando lanciato dal
+# plugin cadrebbe sulla lista vecchia. Il watcher e' l'unico che lo guarda DOPO.
+#
+# I due inneschi guardano pero' a due istanti OPPOSTI, e vale la pena dirlo perche' la frase qui sopra,
+# letta da sola, sembra escludere il secondo:
+#   set_head (lotto 138)          accoda a build FINITA. Vuole agire sulla lista NUOVA, e per quello
+#                                 deve aspettare il watcher.
+#   reconcile_position (163)      accoda a build APPENA COMINCIATA. Vuole agire sulla lista VECCHIA --
+#                                 azzerare l'indice PRIMA che arrivino gli elementi nuovi, perche' e'
+#                                 confrontando l'indice vecchio con la lunghezza nuova che Kodi decide
+#                                 di mandarti in fondo. Qui 'cadere sulla lista vecchia' non e' il
+#                                 rischio, e' lo scopo.
+# Il margine e' misurato e non e' stretto: fra il reconcile e set_head passano 3,7 s (Discover) e 6,9 s
+# (ricerca testuale) sulla stick, contro i 0,3 s del giro del watcher.
+# Il plugin non puo' fare da se' nemmeno questo: leggere Container(N).CurrentItem o muovere il cursore
+# vuol dire chiamate grafiche dal thread di un'invocazione, che e' proprio cio' che il lotto 111 ha
+# vietato. Il watcher gira nel servizio, dove sono lecite, e ha gia' davanti i cancelli giusti
+# (riproduzione, dialogo modale).
+REHEAD_PROP = 'fenlight.pg.rehead'
 # I contenitori dei widget della skin. Arctic Fuse li numera 501-504 (verificato nel file generato e
 # in Includes_Search.xml); il margine copre una riconfigurazione della home senza dover ritoccare qui.
 # Sondarli costa una getInfoLabel ciascuno e avviene UNA volta per refresh, non in un ciclo.
@@ -886,6 +929,7 @@ def set_head(key, items, action=None):
 	mark_build_end(key)
 	_publish_ids(key, items)
 	if action: set_property(ACTION_PROP % key, str(action))
+	_note_head_change(key, url, action)
 	_register(key, (headhash, headhash_one))
 	# Il censimento (registry_add) passa solo sui contenitori A SCHERMO, e all'avvio i widget spesso
 	# finiscono di costruirsi dopo che l'utente ha gia' cambiato finestra: il 28/08 alle 20:18 la Home
@@ -905,6 +949,96 @@ def set_head(key, items, action=None):
 	except: pass
 	log('set_head key=%s built=%s firma=%s first_url=%s' %
 		(short(key), count, (headhash[:8] if headhash else '-'), (url[:90] if url else '-')))
+
+def _note_head_change(key, url, action=None):
+	"""Se la testa di 'continua a guardare' e' cambiata, chiede al watcher di riportare la riga a 1.
+
+	Perche' serve, misurato sulla stick il 03/09. Alle 16:02:39 un film messo in pausa dal Mac entra
+	nel widget IN TESTA (`first_url=...media_type=movie&tmdb_id=1232569`, 7 elementi). Kodi, ricaricando
+	un contenitore, conserva l'ELEMENTO su cui eri, non la posizione: l'elemento su cui stava il fuoco
+	e' scivolato da 1 a 2 e il fuoco l'ha seguito (`current=1/6` prima, `current=2/7` dopo). La riga si
+	disegna a partire dall'elemento col fuoco, quindi il film era li' ma un posto piu' a sinistra,
+	fuori campo. Il log lo dimostra due volte con i tasti dell'utente: alle 15:59:37 un `Left` porta
+	`current` da 2 a 1 e l'elemento nuovo si vede; alle 16:03:19 `Down`+`Up` non spostano niente dentro
+	la riga e infatti resta `2/7`; alle 16:11:58 un `Back` riporta a `1/7` -- 'e' comparso'.
+
+	Vale SOLO per 'continua a guardare', per scelta dell'utente: e' la lista il cui senso e' che la cosa
+	piu' recente sta in testa, e un arrivo che atterra fuori campo non serve a niente. Su ogni altro
+	widget il fuoco resta dov'e', perche' li' l'ordine non e' una promessa e strattonare chi sta
+	scorrendo sarebbe solo un fastidio.
+
+	Questa restrizione riguarda la TESTA CHE CAMBIA dentro la stessa lista, e resta. Dal lotto 163 la
+	coda ha un secondo innesco, che e' un'altra domanda: reconcile_position la usa quando in una
+	posizione cambia la LISTA INTERA. Li' non si strattona nessuno -- cio' su cui l'utente stava non
+	esiste piu'.
+
+	Alla PRIMA costruzione non si alza niente: non c'e' una testa precedente da confrontare, e un
+	contenitore appena nato parte gia' dal primo elemento.
+	"""
+	if not url: return
+	from modules.kodi_utils import set_property, get_property, CONTINUE_WATCHING_ACTION
+	precedente = get_property(FIRSTURL_PROP % key)
+	set_property(FIRSTURL_PROP % key, url)
+	if not precedente or precedente == url: return
+	# L'azione arriva dal costruttore quando la passa; se non la passa vale quella gia' pubblicata,
+	# che e' la stessa cosa scritta un attimo prima. Il confronto e' per prefisso qualificato, come
+	# ovunque: 'continue_watching' copre anche un eventuale 'continue_watching:movie'.
+	azione = str(action) if action else get_property(ACTION_PROP % key)
+	if not _action_matches(azione, {CONTINUE_WATCHING_ACTION}): return
+	rehead_queue(key)
+
+def rehead_queue(key):
+	"""Mette questo widget in coda per il riposizionamento. Idempotente.
+
+	Read-modify-write su una proprieta' condivisa, lo stesso schema del lotto 3: in contesa si puo'
+	perdere una scrittura. Il danno peggiore e' una riga che resta dov'e' fino alla prossima testa
+	nuova -- cioe' il comportamento di prima -- quindi non vale un lucchetto.
+	"""
+	from modules.kodi_utils import set_property
+	coda = rehead_pending()
+	if key in coda: return
+	coda.append(key)
+	set_property(REHEAD_PROP, ','.join(coda))
+
+REHEAD_TIMEOUT = 3
+
+def rehead_step(rnum, rcur, scrolling, mosso, atteso):
+	"""Cosa fare, a questo giro, per il contenitore in coda di riposizionamento. Funzione PURA.
+
+	Sta qui e non dentro il ciclo del servizio per la ragione del lotto 139: un ramo muto e' un ramo
+	che nessuno puo' provare. Le quattro risposte sono tutto cio' che il chiamante puo' fare.
+
+	  'muovi'   ordina il Control.Move e aspetta
+	  'aspetta' non fare niente: sta ancora arrivando
+	  'fatto'   e' in testa e fermo: togli la chiave dalla coda
+	  'mollo'   e' passato troppo tempo: togli la chiave e rassegnati
+
+	Perche' 'fatto' pretende ANCHE che lo scorrimento sia finito: dal lotto 165 la skin tiene il row
+	nascosto finche' la chiave e' in coda, e Control.Move non e' istantaneo -- List_Core dichiara
+	<scrolltime>400</scrolltime>. Togliere la chiave appena il cursore segna 1 scoprirebbe il row a
+	scorrimento ancora in corso, che e' esattamente il difetto che il 165 doveva chiudere (e che nel
+	lotto 166 si e' scoperto ancora vivo, perche' rehead_done stava PRIMA del movimento).
+
+	Perche' esiste 'mollo': con il 165 una chiave incastrata non lascia piu' solo una riga fuori
+	posto, tiene il row INVISIBILE. Il tetto e' cio' che rende il peggio uguale al comportamento di
+	prima invece che a un widget che non compare.
+	"""
+	if atteso > REHEAD_TIMEOUT: return 'mollo'
+	if not rnum or not rcur: return 'aspetta'
+	if rcur > 1: return 'aspetta' if mosso else 'muovi'
+	return 'aspetta' if scrolling else 'fatto'
+
+def rehead_pending():
+	"""Le chiavi in attesa di essere riportate a inizio riga, in ordine di arrivo."""
+	from modules.kodi_utils import get_property
+	return [k for k in (get_property(REHEAD_PROP) or '').split(',') if k]
+
+def rehead_done(key):
+	"""Toglie una chiave dalla coda. La chiama il watcher DOPO aver agito."""
+	from modules.kodi_utils import set_property, clear_property
+	rimaste = [k for k in rehead_pending() if k != key]
+	if rimaste: set_property(REHEAD_PROP, ','.join(rimaste))
+	else: clear_property(REHEAD_PROP)
 
 def _action_matches(stored, wanted_actions):
 	"""L'azione pubblicata da un widget soddisfa una delle azioni richieste?
@@ -963,10 +1097,12 @@ def refresh_containers_for_ids(ids, actions=()):
 	# Lo scope si legge UNA volta: la finestra non cambia a meta' di questo ciclo.
 	scope = ctl_scope()
 	seen_any, hit, hit_other, skipped = False, 0, 0, 0
+	identified = set()
 	for cid in WIDGET_CONTAINER_IDS:
 		key, first_url = container_head(cid, scope)
 		if not first_url or 'plugin.video.fenlight' not in first_url: continue
 		seen_any = True
+		identified.add(str(cid))
 		if key and not _action_matches(get_property(ACTION_PROP % key), wanted_actions):
 			stored = get_property(IDS_PROP % key)
 			# stored vuota = elenco mai pubblicato: non si puo' dimostrare niente, quindi si ricarica.
@@ -981,6 +1117,41 @@ def refresh_containers_for_ids(ids, actions=()):
 		if not pages: pages = str(raw_pages(key, initial_batch())) if key else str(initial_batch())
 		set_property(CTL_PAGES_PROP % (scope, cid), '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
 		hit += 1
+	# --- QUESTA finestra, i contenitori che l'infolabel non ha saputo leggere -----------------------
+	# container_head interroga una infolabel VIVA, e un contenitore che Kodi non ha ancora popolato non
+	# risponde: il `continue' la' sopra lo scartava senza contarlo da nessuna parte -- ne' ricaricato,
+	# ne' saltato, ne' seen_any. Non era un contenitore dimostrato estraneo: era un contenitore mai
+	# guardato, e l'unico modo di accorgersene era sapere a memoria quanti widget ha quella schermata.
+	# Misurato sulla stick il 02/09 alle 21:53:04.698: la Home ha TRE widget, tutti e tre avevano gia'
+	# fatto set_head, e il censimento ne ha visti due (`ricaricati=1 saltati=1'). Sul Mac, dove le
+	# costruzioni durano decimi di secondo, il conto torna sempre (5 su 5). E' una corsa fra noi e la
+	# GUI, e la vince chi ha la macchina lenta -- cioe' si perde proprio dove fa piu' male.
+	# La correzione non aspetta e non riprova: NON SERVE l'infolabel. Serviva solo a rispondere
+	# 'questo contenitore e' nostro?', e il registro lo sa gia' -- e' esattamente il criterio con cui
+	# il giro qui sotto raggiunge le finestre che non sono nemmeno a schermo. Stessa regola del giro
+	# a schermo, altra fonte: si salta solo cio' che si dimostra estraneo, il resto si ricarica.
+	unresolved, recovered = 0, 0
+	for pair in registry_pairs():
+		pair_scope, _, cid = pair.partition(':')
+		if pair_scope != scope or cid in identified: continue
+		key = '%s.%s' % (scope, cid)
+		if not get_property(BUILT_PROP % key): continue
+		unresolved += 1
+		seen_any = True
+		if not _action_matches(get_property(ACTION_PROP % key), wanted_actions):
+			stored = get_property(IDS_PROP % key)
+			# Elenco vuoto = mai pubblicato: non si dimostra niente, quindi si ricarica. Qui, a
+			# differenza del giro sulle altre finestre, il contenitore E' a schermo: lasciarlo stare
+			# vorrebbe dire lasciare un widget visibile con il dato vecchio.
+			if stored and not wanted.intersection(stored.split(',')):
+				skipped += 1
+				continue
+		pages = (get_property(CTL_PAGES_PROP % (scope, cid)) or '').split('&')[0]
+		if not pages: pages = str(raw_pages(key, initial_batch()))
+		set_property(CTL_PAGES_PROP % (scope, cid), '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
+		hit += 1
+		recovered += 1
+
 	# --- le ALTRE finestre -------------------------------------------------------------------------
 	# Fin qui si e' guardata solo la finestra a schermo, perche' e' l'unica che le infolabel sanno
 	# leggere. Ma un widget della Home che contiene il film appena cambiato e' vecchio anche se in
@@ -1012,8 +1183,12 @@ def refresh_containers_for_ids(ids, actions=()):
 		hit_other += 1
 	LAST_OTHER_HITS[0] = hit_other
 	LAST_SEEN_ANY[0] = seen_any
-	log('refresh_for_ids ids=%s azioni=%s contenitori=%s ricaricati=%s altre_finestre=%s saltati=%s' %
-		(len(wanted), len(wanted_actions), 'trovati' if seen_any else 'NESSUNO', hit, hit_other, skipped))
+	# 'non_identificati' e 'recuperati' vanno nel log per una ragione precisa: senza di loro questo
+	# difetto era invisibile: si vedevano solo 'ricaricati' e 'saltati', e per accorgersi che mancava
+	# qualcuno bisognava conoscere a memoria il numero di widget della schermata.
+	log('refresh_for_ids ids=%s azioni=%s contenitori=%s ricaricati=%s altre_finestre=%s saltati=%s non_identificati=%s recuperati=%s' %
+		(len(wanted), len(wanted_actions), 'trovati' if seen_any else 'NESSUNO', hit, hit_other, skipped,
+			unresolved, recovered))
 	# Il conteggio restituito resta quello della finestra a schermo: e' cio' che decide il fallback
 	# globale del chiamante, e ricadere sul globale perche' l'unico contenitore interessato sta in
 	# un'altra finestra sarebbe esattamente il contrario di quello che si vuole.
@@ -1136,6 +1311,76 @@ def raw_pages(key, default):
 	except: value = 0
 	return value if value >= default else default
 
+def token_is_stale(params):
+	"""Questa build e' nata da un path SORPASSATO? Se si', azzera il token e dice di lasciar perdere.
+
+	LOTTO 160. Al cambio query nella ricerca partivano DUE costruzioni concorrenti. Misurato il
+	04/09 passando da "batman" (arrivata a 9 pagine) a "superman":
+
+	    19:22:54.757  provider  query=superman  &pages=9      <- il conteggio della query PRECEDENTE
+	    19:22:54.766  parte la build #1
+	    19:22:56.393  provider  query=superman  (senza pages) <- reconcile_position ha azzerato il token
+	    19:22:56.398  parte la build #2
+	    19:23:03.988  build #2 finita  7.381 ms
+	    19:23:04.564  build #1 finita  9.528 ms
+
+	Due interpreti Python insieme, su un dispositivo legato a un core, per una sola ricerca. La #1
+	e' inutile per intero: nasce con il conteggio di un'altra lista e quando finisce quel conteggio
+	e' gia' stato riazzerato dalla #1 stessa.
+
+	PERCHE' SUCCEDE. Il frammento '&pages=N' nel <content> guarda la PROPRIA proprieta', non se
+	quella proprieta' appartenga ancora al contenuto che c'e' adesso nel contenitore. Cambiando la
+	query cambia il contenuto ma il token sopravvive, e Kodi rilegge il path prima che qualcuno se
+	ne accorga: la riconciliazione, per definizione, arriva dopo che la build e' partita. E' la
+	stessa famiglia del lotto 7 -- criterio di emissione sbagliato -- in una veste nuova.
+
+	PERCHE' SI PUO' ABORTIRE SENZA LASCIARE IL CONTENITORE VUOTO. Le tre condizioni qui sotto messe
+	insieme dicono che una ricarica corretta e' GIA' in arrivo, non che potrebbe esserlo:
+	  1. il path porta un '&pages=N': Kodi ci ha chiamati leggendo il token;
+	  2. l'impronta del contenuto in questa posizione e' diversa da quella registrata: quel conteggio
+	     e' di un'altra lista;
+	  3. la proprieta' del token e' ancora valorizzata: azzerandola il path CAMBIA, e un path diverso
+	     e' esattamente cio' che fa rileggere la cartella a Kodi.
+	Se la (3) non vale il token e' gia' stato azzerato da qualcun altro, il path non cambierebbe,
+	nessuna ricarica seguirebbe e abortire lascerebbe il widget vuoto per sempre: in quel caso si
+	costruisce normalmente. E' la stessa asimmetria del lotto 111 (vedi il commento nel router):
+	nell'API dei plugin non esiste "tieni quello che hai", quindi chiudere una cartella a vuoto si
+	fa solo quando si sa che ne arriva subito un'altra.
+
+	Non aggiorna CTL_KEY_PROP: quello resta compito di reconcile_position nella build che costruira'
+	davvero. Qui si tocca solo il conteggio, ed e' idempotente.
+	"""
+	if not isinstance(params, dict):
+		params = dict(parse_qsl(params, keep_blank_values=True))
+	try: path_pages = int(params.get('pages') or 0)
+	except: path_pages = 0
+	if path_pages <= 0: return False
+	scope, cid = position_of(params)
+	if not scope: return False
+	from modules.kodi_utils import get_property, clear_property
+	registrato = get_property(CTL_KEY_PROP % (scope, cid))
+	# LOTTO 164. Impronta ASSENTE non vuol dire "cambiata": vuol dire che in questa posizione non ha
+	# mai riconciliato nessuno, quindi non sappiamo niente e non c'e' niente da dichiarare superato.
+	# Trattarla come un cambio era il difetto: reconcile_position la scrive solo per le QUATTRO build
+	# paginate (movies, tvshows, mdblist_lists, trakt_lists), mentre 'continua a guardare' riceve
+	# comunque il '&pages=' nel path perche' Defs_Widget_Content lo accoda a ogni widget. Risultato,
+	# misurato sulla stick il 05/09 alle 04:15:25: tornando in home dopo cinque minuti nella ricerca,
+	#     token sorpassato home.501: path con pages=2 ma il contenuto e' cambiato
+	#     INVOCAZIONE build_continue_watching 231 ms, nessuna cartella costruita
+	#     ... e subito dopo la ricostruzione INTERA, 2639 ms, con firma 705b3911: la STESSA di prima.
+	# Cioe' il cancello buttava via una build e ne ordinava un'altra identica, per un contenuto che non
+	# era cambiato affatto. Due volte in questo log, entrambe al rientro in home.
+	# E' la stessa asimmetria gia' scritta qui sotto per il token: nel dubbio si costruisce.
+	if not registrato: return False
+	if registrato == make_key(params): return False
+	ctl_prop = CTL_PAGES_PROP % (scope, cid)
+	if not get_property(ctl_prop): return False
+	clear_property(ctl_prop)
+	clear_property(PAGES_PROP % widget_key(params))
+	log('token sorpassato %s.%s: path con pages=%s ma il contenuto e\' cambiato, '
+		'build lasciata cadere e token azzerato' % (scope, cid, path_pages))
+	return True
+
 def reconcile_position(key, params):
 	"""Azzera il conteggio se in questa posizione e' cambiata la lista. Torna il path_pages da usare.
 
@@ -1165,6 +1410,22 @@ def reconcile_position(key, params):
 	set_property(prop, content)
 	clear_property(PAGES_PROP % key)
 	clear_property(CTL_PAGES_PROP % (scope, cid))
+	# LOTTO 163 -- il cursore. Se in questa posizione c'era gia' un'altra lista, il contenitore sta per
+	# ricevere elementi che non c'entrano con quello su cui l'utente stava. Kodi da solo NON lo riporta
+	# in testa: CGUIBaseContainer::UpdateListProvider prova a ritrovare l'elemento selezionato prima per
+	# puntatore e poi per path, e quando non lo trova fa
+	#     if (!found && currentItem >= (int)m_items.size()) SelectItem(m_items.size()-1);
+	# cioe' se l'indice vecchio SFORA la lista nuova ti mette sull'ULTIMO elemento. Misurato sulla stick
+	# il 05/09: 'star' scorsa fino a 50/51, query cambiata, lista nuova di 31 -> il fuoco atterra su
+	# 31/31 e la riga si disegna dalla coda. Discover nella stessa sessione non lo mostra (31 su 32: non
+	# sforava) e non e' un caso fortunato -- il pannello filtri azzera FenLight.Discover.ContentPath, il
+	# contenitore passa da vuoto e l'indice si azzera li'.
+	# Non e' solo estetica: stando in fondo il watcher legge remaining=0 contro runway=20 e fa partire
+	# un caricamento avanti che nessuno ha chiesto (misurato: TRIGGER a current=31/31, build da 3370 ms)
+	# proprio mentre l'utente aspetta i risultati.
+	# Alla prima costruzione non si accoda niente: non c'e' una lista precedente e il contenitore parte
+	# gia' dal primo elemento. Stessa disciplina di _note_head_change, altro innesco della stessa coda.
+	if was: rehead_queue(key)
 	log('reconcile %s: contenuto %s -> %s, conteggio azzerato' % (key, short(was) if was else '(nuovo)', short(content)))
 	return 0
 

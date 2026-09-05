@@ -22,8 +22,19 @@ def _text_search_start(params, media_type):
 		if search_scope == 'standard':
 			win.setProperty('FenLight.TextSearch.Movie.State', 'loading')
 			win.setProperty('FenLight.TextSearch.TV.State', 'loading')
-	win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'loading')
-	win.setProperty('FenLight.TextSearch.State', 'loading')
+		# LOTTO 168 -- 'loading' vuol dire "sta caricando una RICERCA NUOVA", non "una build sta
+		# girando". Queste due righe stavano FUORI dal cancello, quindi le rialzava anche una
+		# ricostruzione per paginare: stessa query, risultati gia' a schermo. La skin ci appende tre
+		# cose che allora sparivano e tornavano a ogni pagina caricata --
+		#   Includes_Search.xml:250 e 263   'Ricerca in corso' / 'Attendi il caricamento dei
+		#                                    risultati', che si ristendevano sopra i risultati validi
+		#   Includes_Search.xml:211         il pannello info del risultato a fuoco, che sbatteva
+		# -- ed e' il difetto segnalato dall'utente il 05/09.
+		# Dentro il cancello il significato torna quello che i tre consumatori gia' assumevano.
+		# La paginazione ha il suo segnale ed e' un altro: Container(N).IsUpdating, usato dal
+		# Widget_Busy, che e' per contenitore e non per ricerca.
+		win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'loading')
+		win.setProperty('FenLight.TextSearch.State', 'loading')
 	return win
 
 def _search_debounce_abort(sys, params, action_filtered):
@@ -41,6 +52,21 @@ def _search_debounce_abort(sys, params, action_filtered):
 	if paginator.is_loading(key) or get_property(paginator.PG_REFRESH_PROP) == 'true':
 		return False
 	if not paginator.search_should_abort(params.get('query', '')): return False
+	try: end_directory(int(sys.argv[1]), cacheToDisc=False)
+	except: pass
+	return True
+
+def _stale_token_abort(sys, params):
+	# LOTTO 160. Fratello di _search_debounce_abort: quello lascia cadere una build la cui QUERY e'
+	# gia' superata, questo una build il cui CONTEGGIO PAGINE lo e'. Entrambi chiudono la cartella
+	# a vuoto sapendo che ne arriva subito un'altra corretta.
+	# La condizione vera sta in paginator.token_is_stale, che e' anche l'unico posto che tocca lo
+	# stato; qui c'e' solo il filtro a costo zero che evita di importare il paginator per le
+	# invocazioni che non sono widget (navigator, riproduzione, dialoghi: niente pgctl nel path).
+	if 'pgctl' not in params or not params.get('pages'): return False
+	from modules import paginator
+	if not paginator.token_is_stale(params): return False
+	from modules.kodi_utils import end_directory
 	try: end_directory(int(sys.argv[1]), cacheToDisc=False)
 	except: pass
 	return True
@@ -134,6 +160,10 @@ def routing(sys):
 		from apis import mdblist_api
 		return getattr(mdblist_api, mode.split('.')[1])(params)
 	if 'build' in mode:
+		# Prima di qualunque costruzione: se il path porta il conteggio pagine di un'altra lista
+		# questa invocazione e' gia' superata. Vale per home, hub e ricerca allo stesso modo --
+		# il cambio inquilino non e' un fatto della ricerca, li' si vede soltanto piu' spesso.
+		if _stale_token_abort(sys, params): return
 		if mode == 'build_movie_list':
 			if _get('action') == 'tmdb_movies_search' and _get('search_hub'): params['action'] = 'tmdb_movies_search_filtered'
 			if _search_debounce_abort(sys, params, 'tmdb_movies_search_filtered'): return
@@ -421,7 +451,12 @@ def routing(sys):
 	if mode == 'refresh_widgets':
 		from modules.kodi_utils import refresh_widgets
 		# user=true lo mette solo la voce di menu degli indexer, non il servizio.
-		return refresh_widgets(_get('show_notification', 'false'), _get('user', 'false') != 'true')
+		# coalesce=false lo mette WidgetRefresher quando consuma un RINVIO globale (lotto 130): e'
+		# lavoro gia' rimandato una volta, e riaccorparlo dietro la costruzione d'avvio lo perde per
+		# sempre. Due canali distinti e non sovrapponibili -- 'e' l'utente' e 'e' un rinvio maturo' --
+		# che pero' chiedono la stessa cosa: non giudicare due volte con la stessa guardia.
+		return refresh_widgets(_get('show_notification', 'false'),
+								_get('user', 'false') != 'true' and _get('coalesce', 'true') != 'false')
 	if mode == 'person_data_dialog':
 		from indexers.people import person_data_dialog
 		return person_data_dialog(params)

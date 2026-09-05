@@ -101,32 +101,11 @@
         </include>
     </include>
 
-    <include name="Home_ControlList_Item_1106">
-        <include content="Home_ControlList_Item">
-            <param name="label">Next Aired</param>
-            <param name="icon">$VAR[Home_Icon_1106]</param>
-            <param name="action">ReplaceWindow(1106)</param>
-            <param name="enabled">!String.IsEmpty(Skin.String(HomeSwitcher.1106.Toggle))</param>
-            <param name="visible">Window.IsVisible(1105) | Window.IsVisible(Home) | Window.IsVisible(1101) | Window.IsVisible(1102) | Window.IsVisible(1103) | Window.IsVisible(1104) | Window.IsVisible(1106)</param>
-            <param name="mod">$PARAM[mod]</param>
-        </include>
-    </include>
 
-    <include name="Home_ControlList_Item_1107">
-        <include content="Home_ControlList_Item">
-            <param name="label">PVR</param>
-            <param name="icon">$VAR[Home_Icon_1107]</param>
-            <param name="action">ReplaceWindow(1107)</param>
-            <param name="enabled">!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle)) + System.HasPVRAddon + PVR.HasTVChannels</param>
-            <param name="visible">Window.IsVisible(1105) | Window.IsVisible(Home) | Window.IsVisible(1101) | Window.IsVisible(1102) | Window.IsVisible(1103) | Window.IsVisible(1104) | Window.IsVisible(1106) | Window.IsVisible(1107)</param>
-            <param name="mod">$PARAM[mod]</param>
-        </include>
-    </include>
 
     <include name="Home_ControlList_Item_1108">
         <include content="Home_ControlList_Item">
             <param name="label">Addons</param>
-            <param name="icon">$VAR[Home_Icon_1108]</param>
             <param name="action">ReplaceWindow(1108)</param>
             <param name="enabled">!String.IsEmpty(Skin.String(HomeSwitcher.1108.Toggle))</param>
             <param name="visible">Window.IsVisible(1105) | Window.IsVisible(Home) | Window.IsVisible(1101) | Window.IsVisible(1102) | Window.IsVisible(1103) | Window.IsVisible(1104) | Window.IsVisible(1106) | Window.IsVisible(1107) | Window.IsVisible(1108)</param>
@@ -152,12 +131,6 @@
                 <param name="mod">$PARAM[mod]</param>
             </include>
             <include content="Home_ControlList_Item_1104">
-                <param name="mod">$PARAM[mod]</param>
-            </include>
-            <include content="Home_ControlList_Item_1106">
-                <param name="mod">$PARAM[mod]</param>
-            </include>
-            <include content="Home_ControlList_Item_1107">
                 <param name="mod">$PARAM[mod]</param>
             </include>
             <include content="Home_ControlList_Item_1108">
@@ -250,7 +223,6 @@
                 <onclick condition="$PARAM[onclick_condition] + !String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">ActivateWindow($INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target)],$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)],return)</onclick>
                 <onclick condition="$PARAM[onclick_condition] + String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)]</onclick>
                 <onclick condition="Window.IsVisible(1108)">ActivateWindow(addonbrowser)</onclick>
-                <onclick condition="Window.IsVisible(1107)">ActivateWindow(tvchannels)</onclick>
                 <onclick condition="Window.IsVisible(1105)">SetFocus(3001)</onclick>
                 <onclick condition="Window.IsVisible(1105)">AlarmClock(reclick,Action(Select),00:00,silent)</onclick>
 
@@ -418,15 +390,6 @@
                         <param name="icon">$VAR[Home_Icon_1104]</param>
                         <param name="window">1104</param>
                     </include>
-                    <include content="Home_Object_VertIcon" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1106.Toggle))">
-                        <param name="icon">$VAR[Home_Switcher_Right_Buttons_Calendar]</param>
-                        <param name="window">1106</param>
-                    </include>
-                    <include content="Home_Object_VertIcon" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))">
-                        <param name="icon">resource://resource.images.arcticfuse/icons/livetv.png</param>
-                        <param name="window">1107</param>
-                        <param name="visible">System.HasPVRAddon + PVR.HasTVChannels</param>
-                    </include>
                     <include content="Home_Object_VertIcon" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1108.Toggle))">
                         <param name="icon">resource://resource.images.arcticfuse/icons/addon.png</param>
                         <param name="window">1108</param>
@@ -465,7 +428,6 @@
     </include>
 
     <variable name="Home_Switcher_Right_Buttons_Calendar">
-        <value condition="Skin.String(HomeSwitcher.1106.UpNextMode,trakt_calendar)">resource://resource.images.arcticfuse/icons/trakt.png</value>
         <value>resource://resource.images.arcticfuse/icons/calendar.png</value>
     </variable>
 
@@ -481,17 +443,6 @@
             <centertop>50%</centertop>
             <orientation>horizontal</orientation>
             <itemgap>20</itemgap>
-            <include content="Home_Settings_Button" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1106.Toggle))">
-                <param name="icon">$VAR[Home_Switcher_Right_Buttons_Calendar]</param>
-                <param name="window">1106</param>
-                <param name="id">3106</param>
-            </include>
-            <include content="Home_Settings_Button" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1107.Toggle))">
-                <param name="icon">resource://resource.images.arcticfuse/icons/livetv.png</param>
-                <param name="window">1107</param>
-                <param name="id">3107</param>
-                <param name="visible">System.HasPVRAddon + PVR.HasTVChannels</param>
-            </include>
             <include content="Home_Settings_Button" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1108.Toggle))">
                 <param name="icon">resource://resource.images.arcticfuse/icons/addon.png</param>
                 <param name="window">1108</param>

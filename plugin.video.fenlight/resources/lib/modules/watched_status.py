@@ -20,6 +20,7 @@
 #   datetime                -> get_last_played_value
 #   database                -> clear_local_bookmarks
 # E due nomi erano MORTI, importati e mai usati: cache_object e get_timestamp.
+from caches import progress_sync
 from caches.base_cache import connect_database
 from modules import kodi_utils, settings
 # logger = kodi_utils.logger
@@ -42,6 +43,15 @@ finished_show_check = ('Ended', 'Canceled')
 def _spawn(target, args=()):
 	from threading import Thread
 	Thread(target=target, args=args).start()
+
+# Le righe che stiamo cancellando (pending_delete, lotto 133) sono gia' sparite per l'utente: restano
+# in tabella solo finche' Trakt non conferma la cancellazione. Nessun lettore che disegna deve
+# vederle, o 'azzera avanzamento' sembrerebbe non aver fatto niente.
+VISIBILI = "sync_state != 'pending_delete'"
+PROGRESS_WRITE = 'INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+PROGRESS_MARK_DELETED = ("UPDATE progress SET sync_state = 'pending_delete' "
+							'WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?')
+PROGRESS_DROP = 'DELETE FROM progress WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?'
 
 def get_database(watched_indicators=None):
 	return connect_database(indicators_dict[watched_indicators or watched_indicators_function()])
@@ -101,11 +111,15 @@ def _map_to_tmdb_episode(tmdb_id, season, episode):
 	except: return season, episode
 	try:
 		meta = metadata.tvshow_meta('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime())
-		ep_map = meta.get('tvdb_to_tmdb_ep')
-		if ep_map is None:
-			from apis.skyhook_api import get_tvdb_to_tmdb_map
-			ep_map = get_tvdb_to_tmdb_map(meta.get('tvdb_id'), meta.get('tmdb_season_data_original', []))
-		return ep_map.get((int(season), int(episode)), (season, episode))
+		# Vedi la nota gemella in player.monitor (lotto 144): il ripiego su skyhook che stava qui non
+		# poteva produrre una mappa non vuota, perche' si attivava esattamente quando mancava anche
+		# 'tmdb_season_data_original', che e' il suo secondo argomento. Costava una lettura dell'intero
+		# JSON della serie a ogni marcatura di episodio -- qui in un thread di sfondo, ma pur sempre
+		# durante la riproduzione, dove la rete e' contesa.
+		# TRE esiti, non due (lotto 145): None vuol dire che su Trakt quell'episodio non esiste, e
+		# allora non si manda niente invece di mandare una coppia inventata.
+		from modules.utils import traduci_episodio
+		return traduci_episodio(meta.get('tvdb_to_tmdb_ep'), meta.get('ep_esclusi_tvdb'), season, episode)
 	except: return season, episode
 
 def make_batch_insert(action, media_type, media_id, season, episode, last_played, title):
@@ -174,7 +188,7 @@ def get_watched_status_movie(watched_info, media_id):
 def get_bookmarks_movie(watched_db=None):
 	if not watched_db: watched_db = get_database()
 	try:
-		info = watched_db.execute('SELECT media_id, resume_point, curr_time, resume_id FROM progress WHERE db_type = ?', ('movie',)).fetchall()
+		info = watched_db.execute('SELECT media_id, resume_point, curr_time, resume_id FROM progress WHERE db_type = ? AND %s' % VISIBILI, ('movie',)).fetchall()
 		info = dict([(i[0], {'media_id': i[0], 'resume_point': i[1], 'curr_time': i[2], 'resume_id': i[3]}) for i in info])
 	except: info = {}
 	return info
@@ -248,7 +262,7 @@ def get_watched_status_episode(watched_info, season_episode):
 def get_bookmarks_episode(media_id, season, watched_db=None):
 	if not watched_db: watched_db = get_database()
 	try:
-		info = watched_db.execute('SELECT resume_point, curr_time, resume_id, episode FROM progress WHERE db_type = ? AND media_id = ? AND season = ?',
+		info = watched_db.execute('SELECT resume_point, curr_time, resume_id, episode FROM progress WHERE db_type = ? AND media_id = ? AND season = ? AND %s' % VISIBILI,
 			('episode', str(media_id), int(season))).fetchall()
 		info = dict([(i[3], {'resume_point': i[0], 'curr_time': i[1], 'resume_id': i[2]}) for i in info])
 	except: info = {}
@@ -293,7 +307,13 @@ def _mark_on_trakt(args, cache_media_type, ep_map_for=None):
 	from apis.trakt_api import trakt_watched_status_mark
 	try:
 		if ep_map_for is not None:
-			args = tuple(args) + _map_to_tmdb_episode(*ep_map_for)
+			_coppia = _map_to_tmdb_episode(*ep_map_for)
+			if _coppia is None:
+				# L'episodio esiste da noi (numerazione TVDB) e non su Trakt. La riga locale e' gia'
+				# scritta e resta: quello che non si fa e' inventare una coppia da spedire, che
+				# indicherebbe un altro episodio o niente. Vedi il lotto 145.
+				return notification('Episodio non presente su Trakt', 3500)
+			args = tuple(args) + _coppia
 		if not trakt_watched_status_mark(*args): return notification('Error')
 		from caches.trakt_cache import clear_trakt_collection_watchlist_data
 		clear_trakt_collection_watchlist_data('watchlist', cache_media_type)
@@ -348,7 +368,20 @@ def erase_bookmark(media_type, media_id, season='', episode='', refresh='false')
 		# l'interfaccia. Da li' la sensazione che 'azzera avanzamento' non facesse niente. La riga locale
 		# e' il dato che il badge legge: si cancella subito, l'interfaccia si aggiorna subito, e
 		# l'allineamento con Trakt lo paga un thread di sfondo.
-		watched_db.execute('DELETE FROM progress where db_type = ? and media_id = ? and season = ? and episode = ?', (media_type, media_id, season, episode))
+		# CON TRAKT NON SI CANCELLA, SI MARCA (lotto 133). Prima la riga spariva subito e la DELETE
+		# remota partiva in un thread che ingoiava gli errori: se falliva, Trakt conservava il
+		# segnalibro e la sincronizzazione successiva lo RIMETTEVA. Il commento in
+		# _clear_progress_on_trakt dava la cosa per persa -- 'verra' ripulito alla prima
+		# sincronizzazione utile' -- e non era vero: la prima sincronizzazione utile faceva il
+		# contrario, lo resuscitava.
+		# Marcata `pending_delete` la riga e' gia' invisibile a tutti i lettori (vedi VISIBILI), quindi
+		# per l'utente sparisce esattamente come prima, ma non puo' piu' tornare: la riconciliazione la
+		# toglie davvero solo quando Trakt conferma, e finche' Trakt la elenca ancora chiede di ripetere
+		# la cancellazione. Senza indicatori Trakt non c'e' niente da attendere e si cancella subito.
+		if watched_indicators == 1:
+			watched_db.execute(PROGRESS_MARK_DELETED, (media_type, media_id, season, episode))
+		else:
+			watched_db.execute(PROGRESS_DROP, (media_type, media_id, season, episode))
 		refresh_container_for(media_id, refresh == 'true')
 		if watched_indicators == 1 and resume_id is not None:
 			_spawn(_clear_progress_on_trakt, (media_type, media_id, season, episode, resume_id))
@@ -370,7 +403,8 @@ def batch_erase_bookmark(watched_indicators, insert_list, action):
 						trakt_progress('clear_progress', i[0], i[1], 0, i[2], i[3], resume_id)
 					except: pass
 			_spawn(_process)
-		watched_db.executemany('DELETE FROM progress where db_type = ? and media_id = ? and season = ? and episode = ?', modified_list)
+		# Stessa regola di erase_bookmark: con Trakt si marca, in locale si cancella.
+		watched_db.executemany(PROGRESS_MARK_DELETED if watched_indicators == 1 else PROGRESS_DROP, modified_list)
 	except: pass
 
 def _push_bookmark_to_trakt(media_type, tmdb_id, season, episode, resume_point):
@@ -384,9 +418,20 @@ def _push_bookmark_to_trakt(media_type, tmdb_id, season, episode, resume_point):
 		_ts, _te = _map_to_tmdb_episode(tmdb_id, season, episode)
 		resume_id = trakt_progress('set_progress', media_type, tmdb_id, resume_point, _ts, _te) or 0
 		if resume_id:
+			# Solo il resume_id: lo stato resta `pending_put`. Che Trakt abbia ACCETTATO la spinta non
+			# significa che il suo `sync/playback` la elenchi -- il 03/09 fra le due cose sono passati
+			# oltre cinque secondi. Il passaggio a `synced` lo decide la riconciliazione, quando la riga
+			# torna davvero dentro uno snapshot. Vedi caches/progress_sync.
 			get_database(1).execute('UPDATE progress SET resume_id = ? WHERE db_type = ? and media_id = ? and season = ? and episode = ?',
 									(resume_id, media_type, tmdb_id, season, episode))
-	except: pass
+		else:
+			# NON PIU' MUTO (lotto 133). Una spinta fallita lasciava la riga con resume_id 0 e nessuna
+			# traccia: per escluderla come causa, il 03/09, e' servita mezza indagine. La riga resta
+			# visibile e la riconciliazione chiedera' di rispingerla.
+			kodi_utils.logger('Fen Light', 'spinta a Trakt NON confermata per %s %s (s%s e%s): la riga resta in attesa'
+								% (media_type, tmdb_id, season, episode))
+	except Exception as e:
+		kodi_utils.logger('Fen Light', 'spinta a Trakt FALLITA per %s %s: %s' % (media_type, tmdb_id, e))
 
 def set_bookmark(params):
 	# STRUMENTAZIONE (lotto 125). Questa funzione e' misurata a 806-1275 ms sulla stick, ed e' il
@@ -431,12 +476,14 @@ def set_bookmark(params):
 				try:
 					dbcon = get_database(1)
 					_lap_ms('apertura database')
-					dbcon.execute('INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time), get_last_played_value(1), 0, title))
-					# La riga e' NOSTRA e Trakt non puo' ancora saperlo: si annota, cosi' la
-					# riscrittura in blocco non la scambia per una cancellazione remota anche dopo
-					# che la spinta asincrona le avra' messo il resume_id vero (lotto 128).
-					kodi_utils.note_local_progress_write(media_type, tmdb_id, season, episode)
+					# NASCE `pending_put` (lotto 133): l'abbiamo scritta noi e Trakt non puo' ancora
+					# saperlo. Lo stato lo dice la riga, non piu' un registro a scadenza in una
+					# proprieta' di finestra (lotto 128) ne' il resume_id a 0 (lotto 122).
+					# Diventera' `synced` quando la vedremo tornare dentro uno snapshot di Trakt --
+					# non quando la spinta risponde: rispondere non significa essere pubblicata.
+					dbcon.execute(PROGRESS_WRITE,
+						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time),
+							get_last_played_value(1), 0, title, progress_sync.PENDING_PUT, 0))
 					_lap_ms('INSERT')
 				except: pass
 				_spawn(_push_bookmark_to_trakt, (media_type, tmdb_id, season, episode, resume_point))
@@ -447,9 +494,10 @@ def set_bookmark(params):
 			last_played = get_last_played_value(watched_indicators)
 			dbcon = get_database(watched_indicators)
 			_lap_ms('apertura database')
-			dbcon.execute('INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time), last_played, 0, title))
-			kodi_utils.note_local_progress_write(media_type, tmdb_id, season, episode)
+			# Indicatori LOCALI: non esiste nessun remoto da attendere, quindi la riga e' gia' allineata.
+			dbcon.execute(PROGRESS_WRITE,
+						(media_type, tmdb_id, season, episode, str(resume_point), str(curr_time),
+							last_played, 0, title, progress_sync.SYNCED, 0))
 			_lap_ms('INSERT')
 		refresh_container_for(tmdb_id, refresh)
 		_lap_ms('refresh_container_for')
@@ -645,7 +693,7 @@ def get_next(season, episode, watched_info, season_data, nextep_content):
 def get_in_progress_movies(dummy_arg, page_no):
 	from modules.utils import sort_for_article
 	dbcon = get_database()
-	data = dbcon.execute('SELECT media_id, title, last_played FROM progress WHERE db_type = ?', ('movie',)).fetchall()
+	data = dbcon.execute('SELECT media_id, title, last_played FROM progress WHERE db_type = ? AND %s' % VISIBILI, ('movie',)).fetchall()
 	data = [{'media_id': i[0], 'title': i[1], 'last_played': i[2]} for i in data if not i[0] == '']
 	if lists_sort_order('progress') == 0: data = sort_for_article(data, 'title')
 	else: data = sorted(data, key=lambda x: x['last_played'], reverse=True)
@@ -664,7 +712,7 @@ def get_in_progress_tvshows(dummy_arg, page_no):
 def get_in_progress_episodes():
 	from modules.utils import sort_for_article
 	dbcon = get_database()
-	data = dbcon.execute('SELECT media_id, season, episode, resume_point, last_played, title FROM progress WHERE db_type = ?', ('episode',)).fetchall()
+	data = dbcon.execute('SELECT media_id, season, episode, resume_point, last_played, title FROM progress WHERE db_type = ? AND %s' % VISIBILI, ('episode',)).fetchall()
 	if lists_sort_order('progress') == 0: data = sort_for_article(data, 5)
 	else: data.sort(key=lambda k: k[4], reverse=True)
 	episode_list = [{'media_ids': {'tmdb': i[0]}, 'season': int(i[1]), 'episode': int(i[2]), 'resume_point': float(i[3]), 'last_played': i[4]} for i in data]
