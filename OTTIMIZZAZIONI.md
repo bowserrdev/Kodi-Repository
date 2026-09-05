@@ -19866,6 +19866,89 @@ proprieta' esiste gia' e il watcher la svuota. Non fatta qui perche' vive nel fi
 skinvariables (`searchwidgets-combined` e `-standard`), quindi va nel sorgente del generatore, ed e'
 una decisione dell'utente.
 
+## Lotto 165 -- il row torna visibile solo quando e' gia' in testa
+
+Chiude il punto 2 lasciato aperto dal 164. Il riposizionamento del lotto 163 si vedeva: l'utente
+*"una volta c'e' stata proprio l'animazione che spostava i risultati DOPO che questi fossero
+caricati... quando sarebbero dovuti spuntare direttamente dal primo"*.
+
+Il margine misurato quando le pagine sono in cache:
+
+```
+04:08:49.676  reconcile 1105.502: contenuto 8b970d6a -> 222dca78
+04:08:49.704  load_cumulative page=1 items=20        <- in cache, 40 ms in tutto
+04:08:49.793  watcher testa nuova key=1105.502: riga riportata in cima (era 49/51)
+04:08:49.921  set_head built=31                      <- 128 ms, non i 6,9 s del 163
+```
+
+Il 163 aveva misurato 3,7-6,9 s su build che andavano in rete e ne aveva concluso *"la corsa non
+esiste"*. Con le pagine gia' in cache il margine crolla a **128 ms**, e `Control.Move` non e'
+istantaneo: e' uno scorrimento animato. Il row torna visibile quando il plugin pubblica `Settled`, a
+build finita, e in quel momento lo scorrimento e' ancora in corso.
+
+**La conclusione del 163 era giusta ma la premessa era una misura sola.** Un margine misurato su un
+percorso che va in rete non descrive lo stesso percorso servito dalla cache.
+
+### La correzione: una condizione, nessuno stato nuovo
+
+Invece di rincorrere la corsa, si toglie: il row resta nascosto finche' il riposizionamento non e'
+stato consumato. La coda esiste gia' ed e' una proprieta' di finestra che il watcher svuota da se'.
+
+```xml
+<param name="visible">... + !String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.{widget_id})</param>
+```
+
+In `shortcuts/generator/data/parts/search_row.xmltemplate` e `search_row_standard.xmltemplate`,
+cioe' nel SORGENTE del generatore -- il file `script-skinvariables-generator-includes-.xml` e' un
+artefatto per-dispositivo e non va toccato (vedi la nota di deploy del lotto 162). `buildv` alzato a
+`0.2.3-row-nascosto-fino-al-riposizionamento` perche' il generatore rigeneri: modificare un
+`.xmltemplate` senza alzarlo non cambia niente per Kodi.
+
+**Il modo in cui puo' rompersi, dichiarato**: una chiave che resta in coda tiene il row nascosto. E'
+autolimitante -- il watcher la consuma appena quel contenitore ha elementi nella finestra a schermo,
+che e' esattamente la condizione in cui il row avrebbe qualcosa da mostrare -- ma e' il primo punto da
+guardare se un row della ricerca non compare piu'.
+
+### La latenza aggiunta e' quella dello scorrimento, non un'attesa
+
+Non c'e' nessun ritardo a tempo: il row appare appena la coda si svuota, cioe' al primo giro del
+watcher dopo il `Control.Move`. Nei due casi misurati il watcher ha consumato 117 ms e 237 ms dopo il
+reconcile, quindi ben prima che i risultati fossero pronti.
+
+## Il runway, e cosa vuol dire allungarlo
+
+Domanda dell'utente. Il watcher fa partire la pagina successiva quando gli elementi che restano
+davanti al fuoco scendono sotto:
+
+```python
+runway = page_limit(True) * paginator.lookahead_pages()      # service.py:624
+```
+
+Letti dal database della stick il 05/09 (`settings.db`, tabella `settings`):
+
+| impostazione | valore sulla stick | default dichiarato nel codice |
+|---|---|---|
+| `paginate.limit_widgets` | **20** elementi per pagina | 20 |
+| `paginate.lookahead` | **1** | **2** |
+| `paginate.initial_batch` | 2 pagine | 2 |
+| `paginate.max_items` | 100 | 75 |
+
+Quindi runway = 20 x 1 = **20 elementi**, ed e' proprio il valore contro cui mette in guardia il
+commento di `lookahead_pages`, scritto in agosto:
+
+> *Con 1 il margine e' di 20 elementi, cioe' 2-4 secondi di scorrimento, mentre sulla stick una build
+> misura da 0,6 a 13 secondi: il caricamento non fa in tempo a finire e l'utente arriva in fondo e
+> aspetta. Da qui la sensazione di paginazione "a gradini". Il default e' quindi 2.*
+
+Allungarlo a 2 porta il margine a 40 elementi. **Non aggiunge build**: quante ne servono per arrivare
+al tetto lo decide `max_items`, non il lookahead -- cambia solo QUANTO PRIMA ciascuna parte. L'unico
+costo e' qualche pagina caricata in liste abbandonate poco prima della fine.
+
+E' anche la leva del difetto del `fixedlist` descritto nel lotto 164: con 40 elementi di margine si
+arriva molto piu' di rado nella finestra di coda in cui il cursore si e' scostato, che e' la
+condizione necessaria perche' lo scatto si veda. Non e' stato cambiato qui: e' un'impostazione
+dell'utente, e va provata da lui.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
