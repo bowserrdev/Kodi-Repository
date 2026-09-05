@@ -274,7 +274,6 @@
                 </control>
                 <include content="Categories_Selector">
                     <param name="id">601</param>
-                    <param name="spinner_condition">$PARAM[spinner_condition]</param>
                     <param name="detailed">true</param>
                     <param name="hidden_button">List_ButtonMenu_Row_HiddenButton_ERow</param>
                     <param name="hidden_button_enabled">true</param>
@@ -300,6 +299,34 @@
                         <include>$PARAM[include_content]</include>
                     </content>
                 </include>
+                <!-- LOTTO 170. La rotellina in fondo alla riga dei nomi, subito a destra dell'ultima
+                     linguetta: e' quella che i widget della home mostrano accanto al proprio nome
+                     (stesso include View_Line_Spinner), portata dove nella ricerca il nome esiste.
+                     La posizione va calcolata perche' le linguette sono un contenitore e non un
+                     grouplist: il selettore parte a left 40 e ogni voce e' larga 200 (Categories_Selector
+                     passa itemlayout_w 200), quindi la fine della striscia e' 40 + 200*N. N non e' noto
+                     a priori (sul Mac due percorsi, sulla stick uno) e Kodi non accetta un $INFO dentro
+                     un left, che e' statico: si parte dalla posizione per UNA linguetta e si scosta con
+                     animazioni condizionate al numero di voci. Le condizioni sono esclusive fra loro,
+                     quindi non si sommano.
+                     L'etichetta passata vuota fa collassare il distanziatore trasparente di
+                     View_Line_Spinner, che li' serve solo ad allinearsi dopo un testo. -->
+                <control type="group">
+                    <left>240</left>
+                    <centertop>0</centertop>
+                    <height>80</height>
+                    <animation effect="slide" end="200,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,2)">Conditional</animation>
+                    <animation effect="slide" end="400,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,3)">Conditional</animation>
+                    <animation effect="slide" end="600,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,4)">Conditional</animation>
+                    <animation effect="slide" end="800,0" time="0" condition="Integer.IsGreater(Container(601).NumItems,4)">Conditional</animation>
+                    <include content="View_Line_Spinner">
+                        <param name="label" />
+                        <param name="label_fallback" />
+                        <param name="haspath">false</param>
+                        <param name="textcolor">main_fg_100</param>
+                        <param name="visible">$PARAM[spinner_condition]</param>
+                    </include>
+                </control>
             </control>
         </definition>
     </include>

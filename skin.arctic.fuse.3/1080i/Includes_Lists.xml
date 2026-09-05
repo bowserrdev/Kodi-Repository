@@ -523,28 +523,6 @@
         </control>
     </include>
 
-    <!-- LOTTO 169. La rotellina che le linguette del selettore mostrano accanto al proprio nome.
-         E' la stessa icona e le stesse animazioni di View_Line_Spinner, che i widget della home usano
-         accanto al nome del percorso: continuita' grafica voluta, non riscritta.
-         Qui NON si usa il grouplist con la copia trasparente dell'etichetta (il trucco con cui
-         View_Line_Spinner si posiziona subito dopo un testo allineato a sinistra): l'etichetta della
-         linguetta e' CENTRATA nei suoi 200px, quindi un grouplist la sposterebbe di lato ogni volta che
-         la rotellina compare. Ancorata al bordo destro della linguetta il testo non si muove mai. -->
-    <include name="Object_ButtonMenu_Spinner">
-        <control type="image">
-            <width>32</width>
-            <height>32</height>
-            <right>0</right>
-            <centertop>50%</centertop>
-            <aspectratio>keep</aspectratio>
-            <texture colordiffuse="$PARAM[textcolor]">resource://resource.images.arcticfuse/icons/update.png</texture>
-            <animation effect="rotate" start="0" end="-180" time="1200" delay="1200" loop="true" center="auto" tween="back" condition="true">Conditional</animation>
-            <animation effect="fade" start="0" end="100" delay="1600" time="1" reversible="true">Visible</animation>
-            <animation effect="fade" start="100" end="0" delay="400" time="1" reversible="true">Hidden</animation>
-            <visible>$PARAM[visible]</visible>
-        </control>
-    </include>
-
     <include name="List_ButtonMenu_Row">
         <param name="control">list</param>
         <param name="itemlayout_w">240</param>
@@ -558,9 +536,6 @@
         <param name="backing">false</param>
         <param name="label_fo">true</param>
         <param name="underline">false</param>
-        <!-- Condizione della rotellina per QUESTA voce. Spenta ovunque tranne dove viene passata: il
-             selettore della ricerca, dove ogni linguetta e' il nome di un percorso dell'utente. -->
-        <param name="spinner_condition">false</param>
         <definition>
             <control type="$PARAM[control]" id="$PARAM[id]">
                 <nested />
@@ -591,10 +566,6 @@
                                 <textcolor>$PARAM[color_nf]</textcolor>
                                 <label>$INFO[ListItem.Label]</label>
                             </control>
-                            <include content="Object_ButtonMenu_Spinner">
-                                <param name="textcolor">$PARAM[color_nf]</param>
-                                <param name="visible">$PARAM[spinner_condition]</param>
-                            </include>
                         </control>
                     </control>
                 </itemlayout>
@@ -648,12 +619,6 @@
                                     <label>$INFO[ListItem.Label]</label>
                                 </control>
                             </control>
-                            <!-- Fuori dai due rami label_fo: la rotellina va mostrata comunque, e il
-                                 colore segue quello del testo della linguetta selezionata. -->
-                            <include content="Object_ButtonMenu_Spinner">
-                                <param name="textcolor">$PARAM[color_fo]</param>
-                                <param name="visible">$PARAM[spinner_condition]</param>
-                            </include>
                         </control>
                         <control type="group">
                             <right>40</right>
