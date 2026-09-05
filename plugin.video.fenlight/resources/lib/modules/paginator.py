@@ -183,6 +183,22 @@ FIRSTURL_PROP = 'fenlight.pg.first.%s'
 # popolato il contenitore -- la stessa corsa gia' documentata in refresh_containers_for_ids, dove
 # container_head non riesce a leggere un contenitore appena ordinato -- quindi un comando lanciato dal
 # plugin cadrebbe sulla lista vecchia. Il watcher e' l'unico che lo guarda DOPO.
+#
+# I due inneschi guardano pero' a due istanti OPPOSTI, e vale la pena dirlo perche' la frase qui sopra,
+# letta da sola, sembra escludere il secondo:
+#   set_head (lotto 138)          accoda a build FINITA. Vuole agire sulla lista NUOVA, e per quello
+#                                 deve aspettare il watcher.
+#   reconcile_position (163)      accoda a build APPENA COMINCIATA. Vuole agire sulla lista VECCHIA --
+#                                 azzerare l'indice PRIMA che arrivino gli elementi nuovi, perche' e'
+#                                 confrontando l'indice vecchio con la lunghezza nuova che Kodi decide
+#                                 di mandarti in fondo. Qui 'cadere sulla lista vecchia' non e' il
+#                                 rischio, e' lo scopo.
+# Il margine e' misurato e non e' stretto: fra il reconcile e set_head passano 3,7 s (Discover) e 6,9 s
+# (ricerca testuale) sulla stick, contro i 0,3 s del giro del watcher.
+# Il plugin non puo' fare da se' nemmeno questo: leggere Container(N).CurrentItem o muovere il cursore
+# vuol dire chiamate grafiche dal thread di un'invocazione, che e' proprio cio' che il lotto 111 ha
+# vietato. Il watcher gira nel servizio, dove sono lecite, e ha gia' davanti i cancelli giusti
+# (riproduzione, dialogo modale).
 REHEAD_PROP = 'fenlight.pg.rehead'
 # I contenitori dei widget della skin. Arctic Fuse li numera 501-504 (verificato nel file generato e
 # in Includes_Search.xml); il margine copre una riconfigurazione della home senza dover ritoccare qui.
@@ -951,6 +967,11 @@ def _note_head_change(key, url, action=None):
 	widget il fuoco resta dov'e', perche' li' l'ordine non e' una promessa e strattonare chi sta
 	scorrendo sarebbe solo un fastidio.
 
+	Questa restrizione riguarda la TESTA CHE CAMBIA dentro la stessa lista, e resta. Dal lotto 163 la
+	coda ha un secondo innesco, che e' un'altra domanda: reconcile_position la usa quando in una
+	posizione cambia la LISTA INTERA. Li' non si strattona nessuno -- cio' su cui l'utente stava non
+	esiste piu'.
+
 	Alla PRIMA costruzione non si alza niente: non c'e' una testa precedente da confrontare, e un
 	contenitore appena nato parte gia' dal primo elemento.
 	"""
@@ -1347,6 +1368,22 @@ def reconcile_position(key, params):
 	set_property(prop, content)
 	clear_property(PAGES_PROP % key)
 	clear_property(CTL_PAGES_PROP % (scope, cid))
+	# LOTTO 163 -- il cursore. Se in questa posizione c'era gia' un'altra lista, il contenitore sta per
+	# ricevere elementi che non c'entrano con quello su cui l'utente stava. Kodi da solo NON lo riporta
+	# in testa: CGUIBaseContainer::UpdateListProvider prova a ritrovare l'elemento selezionato prima per
+	# puntatore e poi per path, e quando non lo trova fa
+	#     if (!found && currentItem >= (int)m_items.size()) SelectItem(m_items.size()-1);
+	# cioe' se l'indice vecchio SFORA la lista nuova ti mette sull'ULTIMO elemento. Misurato sulla stick
+	# il 05/09: 'star' scorsa fino a 50/51, query cambiata, lista nuova di 31 -> il fuoco atterra su
+	# 31/31 e la riga si disegna dalla coda. Discover nella stessa sessione non lo mostra (31 su 32: non
+	# sforava) e non e' un caso fortunato -- il pannello filtri azzera FenLight.Discover.ContentPath, il
+	# contenitore passa da vuoto e l'indice si azzera li'.
+	# Non e' solo estetica: stando in fondo il watcher legge remaining=0 contro runway=20 e fa partire
+	# un caricamento avanti che nessuno ha chiesto (misurato: TRIGGER a current=31/31, build da 3370 ms)
+	# proprio mentre l'utente aspetta i risultati.
+	# Alla prima costruzione non si accoda niente: non c'e' una lista precedente e il contenitore parte
+	# gia' dal primo elemento. Stessa disciplina di _note_head_change, altro innesco della stessa coda.
+	if was: rehead_queue(key)
 	log('reconcile %s: contenuto %s -> %s, conteggio azzerato' % (key, short(was) if was else '(nuovo)', short(content)))
 	return 0
 
