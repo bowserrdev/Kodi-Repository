@@ -19758,6 +19758,114 @@ Cambiare query dopo aver scorso a fondo, e lanciare un Discover diverso dopo ave
 - **da sorvegliare**: che scorrendo normalmente la riga NON venga riportata in testa. Un
   riposizionamento di troppo si vedrebbe come la lista che salta indietro mentre si naviga.
 
+## Lotto 164 -- il cancello del 160 buttava via 'continua a guardare' senza motivo
+
+Segnalato dall'utente: *"tornando in home si e' ricaricato continua a guardare da solo, perche'? era
+gia' caricato"*. Nel log del 05/09, due volte, entrambe al rientro in home:
+
+```
+04:15:25  PERF NAV: finestra 11105 -> 10000 | 289.6 s nella precedente
+04:15:25  token sorpassato home.501: path con pages=2 ma il contenuto e' cambiato
+04:15:25  INVOCAZIONE build_continue_watching | 231 ms | nessuna cartella costruita
+04:15:27  set_head key=home.501 built=7 firma=705b3911      <- ricostruito
+04:15:27  INVOCAZIONE build_continue_watching | totale 2639 ms
+```
+
+`firma=705b3911` e' la **stessa** della costruzione precedente. Il contenuto non era cambiato: il
+cancello buttava via una build e ne ordinava un'altra **identica**, 2,6 s, al rientro in home.
+
+### La causa: un presupposto del lotto 160 che non regge
+
+`token_is_stale` decide confrontando l'impronta REGISTRATA in quella posizione con quella del path.
+L'impronta la scrive `reconcile_position`, che la chiama `get_pages`, che con `params` lo chiamano
+**solo le quattro build paginate** -- `movies`, `tvshows`, `mdblist_lists`, `trakt_lists`:
+
+```
+$ grep -rn "get_pages(" resources/lib --include=*.py
+indexers/tvshows.py:120        indexers/movies.py:124
+indexers/mdblist_lists.py:83   indexers/trakt_lists.py:249
+```
+
+`build_continue_watching` non e' fra queste -- nel log non c'e' **nessun** `reconcile`, `get_pages` o
+`set_state` per `home.501` -- ma il `&pages=` nel path lo riceve lo stesso, perche'
+`Defs_Widget_Content` accoda il `$INFO` delle pagine a OGNI widget.
+
+Quindi il confronto era fra un'impronta **vuota** e quella del path: diverse, verdetto "inquilino
+cambiato". **Impronta assente non vuol dire cambiata: vuol dire che nessuno ha mai riconciliato qui.**
+
+```python
+if not registrato: return False
+```
+
+E' la stessa asimmetria gia' scritta nella docstring di `token_is_stale` per il token: nel dubbio si
+COSTRUISCE, perche' abortire a vuoto lascia il widget vuoto per sempre. Il lotto 160 l'aveva applicata
+al token e non all'impronta.
+
+### Provato fuori da Kodi
+
+`tests/test_164.py`, quattro casi, 19 su 19 file passano. Il caso **B** e' quello che protegge il
+lotto 160: se la correzione spegnesse il cancello anche per le build paginate tornerebbero le due
+costruzioni concorrenti al cambio query. Provata rossa togliendo la riga: cadono i due controlli del
+caso A e nient'altro.
+
+## Due cose viste nello stesso log e NON corrette, con la diagnosi
+
+Entrambe segnalate dall'utente, entrambe reali, nessuna delle due e' una regressione.
+
+### 1. Al caricamento di una pagina nuova l'elemento a fuoco viene spinto a sinistra
+
+Il contenitore e' un **`fixedlist`** (`Includes_Lists.xml`, `List_Poster_Row`:
+`<param name="control">fixedlist</param>`), e questo e' il suo contratto:
+
+```cpp
+// CGUIFixedListContainer::SelectItem, Kodi 21.1
+if ((int)m_items.size() - 1 - item <= maxCursor - m_fixedCursor)
+   cursor = std::max(m_fixedCursor, maxCursor + item - (int)m_items.size() + 1);  // vicino alla FINE
+else if (item <= m_fixedCursor - minCursor)
+   cursor = std::min(m_fixedCursor, minCursor + item);                            // vicino all'INIZIO
+else
+   cursor = m_fixedCursor;                                                        // in mezzo: FISSO
+ScrollToOffset(item - GetCursor());
+```
+
+L'elemento a fuoco sta in una posizione FISSA sullo schermo, tranne vicino ai due estremi, dove il
+cursore puo' scostarsi per permettere di raggiungere il primo e l'ultimo. Quando sei nella finestra di
+coda e la lista **cresce**, la prima condizione smette di valere, il cursore torna alla posizione
+fissa e la riga scorre: l'elemento su cui stavi scivola a sinistra e i nuovi compaiono a destra.
+
+Non e' un guasto nostro ne' un difetto di Kodi: e' cio' che un `fixedlist` fa quando la lista si
+allunga mentre stai in coda. **E si finisce in coda solo se si scorre piu' in fretta di quanto la
+pagina arrivi.** Misurato in questo log: `runway=20`, e **37 campioni** con `remaining<=3` e
+`loading=True`, cioe' 37 momenti in cui l'utente era a tre elementi dalla fine con la pagina ancora in
+volo. Le build duravano 1,5-3 s.
+
+Le leve sono due e nessuna e' un flag della skin: **allungare il runway** (oggi 20) o **accorciare la
+build**. Toglierlo dal lato skin vorrebbe dire azzerare lo scostamento del cursore, e allora non si
+raggiungerebbero piu' il primo e l'ultimo elemento.
+
+### 2. Una volta l'animazione ha spostato i risultati DOPO che erano comparsi
+
+E' il riposizionamento del lotto 163 che si vede. Il margine misurato:
+
+```
+04:08:49.676  reconcile 1105.502: contenuto 8b970d6a -> 222dca78
+04:08:49.704  load_cumulative page=1 items=20        <- pagine IN CACHE, 40 ms in tutto
+04:08:49.793  watcher testa nuova key=1105.502: riga riportata in cima (era 49/51)
+04:08:49.921  set_head built=31                      <- 128 ms dopo, non 6,9 s
+```
+
+Il lotto 163 aveva misurato 3,7-6,9 s di margine su build che andavano in rete. Con le pagine gia' in
+cache il margine crolla a **128 ms**, e `Control.Move` non e' istantaneo: e' uno scorrimento animato
+di 48 passi. La riga torna visibile quando il plugin pubblica `Settled` (a build finita) e in quel
+momento lo scorrimento e' ancora in corso: si vede la lista che scivola.
+
+La correzione pulita esiste e non e' una scorciatoia a tempo: **tenere la riga nascosta finche' il
+riposizionamento non e' stato consumato**, aggiungendo alla condizione `visible` dei row
+`!String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.502)`. Non serve stato nuovo, la
+proprieta' esiste gia' e il watcher la svuota. Non fatta qui perche' vive nel file **generato** da
+skinvariables (`searchwidgets-combined` e `-standard`), quindi va nel sorgente del generatore, ed e'
+una decisione dell'utente.
+
 ## Cosa resta aperto, dichiarato
 
 1. ~~**Episodi visti: la guardia a orologio resta.**~~ -- CHIUSA dal lotto 142: `users/me/stats` da'
