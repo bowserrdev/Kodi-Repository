@@ -3,7 +3,17 @@
     <param name="groupid">{widget_group_id}</param>
     <param name="label">{widget_label}</param>
     <param name="include">{widget_include}</param>
-    <param name="visible">{widget_visible}</param>
+    <!-- LOTTO 165. Il row resta nascosto anche finche' il riposizionamento non e' stato eseguito.
+         Perche': al cambio query reconcile_position mette il contenitore in coda (fenlight.pg.rehead) e
+         il watcher lo riporta in testa con Control.Move, che NON e' istantaneo: e' uno scorrimento
+         animato. Con le pagine gia' in cache fra il riposizionamento e la fine della build passano
+         128 ms (misurato il 05/09), il row torna visibile a scorrimento ancora in corso e si vede la
+         lista scivolare DOPO essere comparsa, invece di comparire gia' in testa.
+         La proprieta' esiste gia' e la svuota il watcher appena ha agito: nessuno stato nuovo, e
+         nessun ritardo a tempo. Se la coda non si svuota il row resta nascosto, ma e' autolimitante:
+         il watcher consuma appena quel contenitore ha elementi nella finestra a schermo, che e'
+         esattamente la condizione in cui il row avrebbe qualcosa da mostrare. -->
+    <param name="visible">[{widget_visible}] + !String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.{widget_id})</param>
     <param name="altvisible">{widget_altvisible}</param>
     <param name="busy_isupdating">{widget_altvisible}</param>
     <param name="busy_visible">[Integer.IsEqual(Container({widget_id}).NumItems,0) | Container({widget_id}).IsUpdating]</param>
