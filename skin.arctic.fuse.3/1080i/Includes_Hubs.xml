@@ -309,10 +309,14 @@
                      un left, che e' statico: si parte dalla posizione per UNA linguetta e si scosta con
                      animazioni condizionate al numero di voci. Le condizioni sono esclusive fra loro,
                      quindi non si sommano.
+                     Il left di partenza e' 140 e non 240: la cella e' larga 200 ma il nome quasi
+                     mai, quindi appoggiare la rotellina al bordo della cella lasciava un vuoto
+                     grande il doppio del necessario. Gli scostamenti restano di 200, perche'
+                     quella e' la larghezza vera di una voce.
                      L'etichetta passata vuota fa collassare il distanziatore trasparente di
                      View_Line_Spinner, che li' serve solo ad allinearsi dopo un testo. -->
                 <control type="group">
-                    <left>240</left>
+                    <left>140</left>
                     <centertop>0</centertop>
                     <height>80</height>
                     <animation effect="slide" end="200,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,2)">Conditional</animation>
