@@ -239,7 +239,12 @@ class TraktMonitor:
 							cosa, ids, acts = decide_refresh(changed, actions, age, TRAKT_REFRESH_COALESCE)
 							if cosa == 'niente':
 								logger('Fen Light', 'TraktMonitor: nessun titolo cambiato davvero, nessuna ricostruzione')
-							elif cosa == 'rinvio': self._defer_widget_refresh(window, ids, acts, age)
+							# LOTTO 179. `changed == '-'` vuol dire "lo sappiamo, non e' cambiato nessuno":
+							# decide_refresh lo fonde con "non lo sappiamo" quando rimanda, e a valle i
+							# due casi diventano indistinguibili. Qui la distinzione c'e' ancora, e
+							# viaggia col rinvio: e' cio' che permette di non ridisegnare due volte lo
+							# stesso widget senza tornare a una guardia a tempo.
+							elif cosa == 'rinvio': self._defer_widget_refresh(window, ids, acts, age, changed == '-')
 							elif cosa == 'mirato':
 								logger('Fen Light', 'TraktMonitor: refresh MIRATO su %d titoli e %d azioni%s'
 										% (len(ids.split(',')) if ids else 0, len(acts.split(',')) if acts else 0,
@@ -254,7 +259,7 @@ class TraktMonitor:
 		except: pass
 		return logger('Fen Light', 'TraktMonitor Service Finished')
 
-	def _defer_widget_refresh(self, window, changed, actions, age):
+	def _defer_widget_refresh(self, window, changed, actions, age, nochange=False):
 		# La guardia dell'accorpamento vieta di ricostruire ADESSO, e ha ragione: all'avvio scatta
 		# sempre, perche' stamp_startup_rebuild timbra la costruzione iniziale dei widget come
 		# ricostruzione globale, e senza di lei la prima sincronizzazione ordinava UpdateLibrary sopra
@@ -284,7 +289,7 @@ class TraktMonitor:
 		_ids = [i for i in changed.split(',') if i]
 		_acts = [a for a in actions.split(',') if a]
 		if queue_pending_refresh('kodi_refresh_ids' if (_ids or _acts) else 'kodi_refresh',
-									_ids, _acts, scope=''):
+									_ids, _acts, scope='', nochange=nochange):
 			return logger('Fen Light', 'TraktMonitor: refresh GLOBALE rimandato, interfaccia ricostruita %.1fs fa' % age)
 		ids = [i for i in window.getProperty(PENDING_IDS_PROP).split(',') if i]
 		acts = [a for a in window.getProperty(PENDING_ACTIONS_PROP).split(',') if a]
@@ -296,7 +301,7 @@ class WidgetRefresher:
 		logger('Fen Light', 'WidgetRefresher Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, refresh_flag_expired, modal_dialog_open
+		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, PENDING_NOCHANGE_PROP, refresh_flag_expired, modal_dialog_open, pending_refresh_is_redundant
 		self.modal_dialog_open = modal_dialog_open
 		self.refresh_flag_expired = refresh_flag_expired
 		monitor, player = xbmc.Monitor(), xbmc.Player()
@@ -331,10 +336,20 @@ class WidgetRefresher:
 							and self._nothing_building() and self._widgets_on_screen():
 						pending_ids = self.window.getProperty(PENDING_IDS_PROP)
 						pending_actions = self.window.getProperty(PENDING_ACTIONS_PROP)
+						# LOTTO 179. Unico caso in cui un rinvio si spegne invece di essere disegnato:
+						# la sincronizzazione ha dichiarato zero titoli cambiati E cio' che il rinvio
+						# chiederebbe e' gia' tutto a schermo. Non e' l'accorpamento a tempo del lotto
+						# 130 -- quello bocciava anche i rinvii che portavano roba nuova -- ne' la
+						# guardia del lotto 139, che deduceva "e' gia' a schermo" da un timbro. Vedi
+						# kodi_utils.pending_refresh_is_redundant.
+						_inutile = pending_refresh_is_redundant(
+								[i for i in pending_ids.split(',') if i],
+								[a for a in pending_actions.split(',') if a])
 						self.window.clearProperty(PENDING_REFRESH_PROP)
 						self.window.clearProperty(PENDING_IDS_PROP)
 						self.window.clearProperty(PENDING_ACTIONS_PROP)
 						self.window.clearProperty(PENDING_SCOPE_PROP)
+						self.window.clearProperty(PENDING_NOCHANGE_PROP)
 						logger('Fen Light', 'WidgetRefresher: rinvio consumato dopo %.1fs di attesa, nessuna costruzione in volo'
 								% (time() - self.pending_since))
 						self.pending_since = None
@@ -363,7 +378,10 @@ class WidgetRefresher:
 						# La protezione che stamp_startup_rebuild doveva dare non si perde: quella
 						# vietava di ordinare una ricostruzione SOPRA la costruzione d'avvio ancora in
 						# corso, e a garantirla e' _nothing_building() qui sopra, non l'accorpamento.
-						if pending_ids or pending_actions:
+						if _inutile:
+							logger('Fen Light', 'WidgetRefresher: rinvio spento, nessun titolo cambiato e i widget richiesti [%s] sono gia\' quelli appena ricostruiti'
+									% (pending_actions or pending_ids or '-'))
+						elif pending_ids or pending_actions:
 							refresh_ids_inproc(pending_ids, pending_actions, coalesce=False)
 						else: run_plugin({'mode': 'refresh_widgets', 'coalesce': 'false'})
 				elif self.pending_since is not None: self.pending_since = None
@@ -1031,6 +1049,12 @@ class FenLightMonitor(xbmc.Monitor):
 			# l'invocazione, e a spegnere la bandiera pensa WidgetRefresher, che gira gia'. La
 			# finestra di 20 s copre abbondantemente il ritardo osservato fra OnStop (17:18:57,078) e
 			# la prima get_pages (17:18:59,031).
+			#
+			# LOTTO 177. Qui NON si timbra piu' una ricostruzione globale. Il passo 1.2 lo faceva
+			# perche' Kodi, uscendo dal player, invalidava davvero tutti i contenitori; da quando
+			# non scrive piu' nel proprio database video quella ricostruzione non avviene, e il
+			# timbro scartava il refresh mirato del segnalibro -- l'unico che porta l'id del film.
+			# Il motivo per esteso sta in kodi_utils, dove stava la funzione.
 			try:
 				from modules.kodi_utils import hold_refresh_flag
 				hold_refresh_flag('fenlight.pg.refresh')
