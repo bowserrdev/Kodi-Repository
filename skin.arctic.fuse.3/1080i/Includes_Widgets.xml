@@ -629,10 +629,46 @@
          di base nasce da un $VAR/$INFO condizionale (la ricerca) il path sparisce e il segmento
          resterebbe da solo, e Kodi tenterebbe una GetDirectory su '&amp;pgctl=1105.502'. Chi ha un path
          condizionale lascia pgctl vuoto e lo scrive nel SUFFISSO del proprio $VAR/$INFO, dove
-         sparisce insieme al path. -->
+         sparisce insieme al path.
+
+         LOTTO 176, PASSO 1.1. Perche' sortby vale 'programcount' e non piu' $PARAM[sortby].
+         CDirectoryProvider::Announce butta via il contenuto di un widget a ogni OnPlay/OnResume/
+         OnStop, ma SOLO se il suo ordinamento e' uno di quattro:
+
+             if (m_currentSort.sortBy == SortByNone || m_currentSort.sortBy == SortByLastPlayed ||
+                 m_currentSort.sortBy == SortByPlaycount || m_currentSort.sortBy == SortByLastUsed)
+               m_updateState = INVALIDATED;
+
+         Un sortby vuoto e' SortByNone, quindi ci cascavano tutti. Misura sulla stick del 06/09,
+         riproduzione avviata dalla Home alle 20:34:36.646:
+
+             20:34:36.712  refreshing.. x3      (66 ms dopo OnPlay)
+             20:34:36.716  running add on script x3
+             20:34:39.855  Window Deinit (Home.xml)
+             20:34:39.880  build_continue_watching | totale 2725 ms
+             20:34:41.163  mdblist                 | totale 3985 ms
+             20:34:41.480  mdblist                 | totale 4267 ms
+
+         Le tre costruzioni finiscono fino a 1,6 s DOPO che Home.xml e' stato distrutto, e per un
+         film di durata normale il loro risultato viene comunque riscritto dal refresh di fine
+         riproduzione: e' lavoro buttato, e cade sull'apertura del player, dove si mangia 78 MB
+         medi fra OnPlay e OnAVStart mentre MediaCodec si sta configurando.
+
+         'programcount' e' l'unico modo che Kodi da' alla skin per uscire da quei quattro valori
+         senza riordinare niente: ByProgramCount legge FieldProgramCount, che gli elementi di un
+         plugin non impostano mai, quindi la chiave e' "0" per tutti, AlphaNumericCompare torna 0
+         e lo std::stable_sort conserva l'ordine d'ingresso, che e' quello consegnato da Fen Light.
+         Il valore e' scritto qui e non piu' preso dal chiamante perche' TUTTI i 26 widget generati
+         passano <param name="sortby"/> vuoto: non c'e' nessun ordinamento da rispettare. Chi un
+         ordinamento vero ce l'ha (Includes_Hubs 826 e 1024) non passa da qui.
+
+         L'UNICO caso in cui questo riordina: preliminarySort mette le cartelle prima dei file
+         quando handleFolder e' attivo. Vale solo per un widget che MESCOLA film (non cartelle) e
+         serie (cartelle) nello stesso elenco. Se ne salta fuori uno si vede subito, le serie
+         vanno tutte in cima, e si torna indietro cambiando questa sola parola. -->->
     <include name="Defs_Widget_Content">
         <definition>
-            <content sortby="$PARAM[sortby]" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]$PARAM[pgctl]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
+            <content sortby="programcount" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]$PARAM[pgctl]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
         </definition>
     </include>
 

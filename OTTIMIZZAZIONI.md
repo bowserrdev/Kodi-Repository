@@ -20361,3 +20361,2034 @@ compare `il conto NON coincide`, i due conti misurano cose diverse e va guardato
   sul Mac sono risultati IDENTICI al repo: il Mac era gia' aggiornato. La voce era rimasta in coda
   (per giunta duplicata) dopo che il deploy era stato fatto. Prima di ripetere una nota di coda,
   riverificarla.
+
+---
+
+## Lotto 171 -- il player sulla stick: nove riproduzioni misurate, e la causa non era nel codice
+
+**SOLA DIAGNOSI. Nessuna riga di codice toccata in questo lotto.** Log di riferimento:
+`kodi.log` della sessione 16:41:53 -> 17:12 del 05/09, nove riproduzioni via TorBox, piu'
+`kodi.old.log`, `guisettings.xml`, `traktcache.db` e il `logcat` del dispositivo.
+
+### Il quadro delle nove riproduzioni
+
+`CDVDInputStreamFile::SetReadRate` scrive nel log **1,1 volte il bitrate medio del file**
+(`VideoPlayer.cpp`: `SetReadRate(len * 1000 / tim)`, e `CDVDInputStreamFile` aggiunge il 10%).
+Da li' si ricava il bitrate reale di ogni file, e la prova che il numero e' giusto sta in Dune Parte
+Due: 10,40 GB a 1150043 -> 8,4 Mbit/s -> 9948 s = **166 minuti**, che e' esattamente la durata del film.
+
+| ora | GB | Mbit/s | risoluzione | stalli di cache |
+|---|---|---|---|---|
+| 16:50 | 10,73 | **13,1** | 1614x1080 @23,976 | **1 (11,5 s)** |
+| 16:52 | ~1,1 | 5,2 | 720x480 @29,97 | 0 (uccisa da Android, vedi sotto) |
+| 16:54 | ~1,1 | 5,2 | 720x480 @29,97 | 0 |
+| 16:55 | 2,19 | 2,5 | 702x380 @29,97 | 0 |
+| 16:59 | 2,77 | 2,4 | 1920x800 @23,976 | 0 |
+| 17:00 | 9,42 | 8,1 | 1920x1080 @23,976 | 0 |
+| 17:03 | 5,32 | 5,7 | 1440x1080 @23,976 | 0 |
+| 17:05 | 7,72 | **12,5** | 1920x800 @23,976 | **1 (10,2 s)** |
+| 17:08 | 10,40 | 8,4 | 1920x804 @23,976 | 0 |
+
+**I due soli stalli cadono sui due soli file sopra i 12 Mbit/s.** Sotto, zero stalli in venti
+salti in avanti. La soglia non e' un'opinione: e' l'unica variabile che separa le due righe in
+grassetto da tutte le altre.
+
+Uno stallo si riconosce dalla sequenza `SetCaching 1 -> 2 -> 3 -> 0` **senza** un
+`CDVDVideoCodecAndroidMediaCodec::Reset` in mezzo. Con il Reset e' un salto voluto dall'utente, e
+quelli costano **0,2-0,8 s**: la rete risponde subito alle richieste di intervallo, TorBox non c'entra.
+Entrambi gli stalli veri sono arrivati **circa 3 secondi dopo un salto**: Kodi riparte con la cache
+quasi vuota, la esaurisce, e poi la rifa' da capo.
+
+### Cos'e' cambiato, visto che le impostazioni sono le stesse
+
+Non le impostazioni. **La radio.**
+
+```
+mWifiInfo SSID: TIM-..., BSSID: 98:2c:c6:4d:fa:51, RSSI: -52,
+          Link speed: 72Mbps, Frequency: 2437MHz
+```
+
+2437 MHz e' il canale 6 dei **2,4 GHz**. Nella cronologia del supplicant si legge che fino al
+**05/09 alle 14:42:29** la stick stava su `98:2c:c6:4d:fa:55` a **5180 MHz (5 GHz, canale 36)**, e
+che l'ha persa con `rssi=-79` ripiegando sui 2,4 GHz. Lo stesso salto era gia' avvenuto il 04/09
+alle 14:39. Da allora e' li'.
+
+72 Mbit/s e' il rate PHY (802.11n, 20 MHz, un flusso): il TCP utile su un collegamento cosi', in una
+banda condivisa, sta fra i 20 e i 35 Mbit/s. Le misure fatte in sessione lo confermano:
+`adb exec-out dd` 80 MB in 41,9 s = **1,91 MB/s**, `adb pull` di kodi.log 1,9 MB/s. Il ping al
+gateway non perde pacchetti ma ha `mdev 4,2 ms` con punte a 25,8 ms, e verso Internet `mdev 17,8 ms`
+con punte a 116 ms: contesa tipica dei 2,4 GHz.
+
+Con `readfactor 4x` la cache di Kodi punta a riempirsi a **4,4 volte il bitrate**. Per il file da
+13,1 Mbit/s vuol dire chiedere al collegamento **57,6 Mbit/s sostenuti**, che questo collegamento non
+puo' dare. Per gli 8,4 Mbit/s di Dune vuol dire 37 Mbit/s, ed e' al limite ma passa -- e infatti Dune
+non ha avuto stalli. **La quadra dei 10 GB / 1080p era corretta sui 5 GHz e non lo e' piu' sui 2,4.**
+
+### Perche' lo stallo dura dieci secondi e non uno
+
+`CFileCache` riserva **un quarto della memoria al buffer all'indietro** (`const size_t back =
+cacheSize / 4`): dei 64 MB, **48 MB sono in avanti**. Uscendo da `CACHESTATE_FULL` la cache si
+riempie mentre alimenta la riproduzione, quindi il guadagno netto e' `(rate_effettivo - bitrate)`.
+Sul file da 12,5 Mbit/s: 48 MB / (4,4-1)x1,565 MB/s = **10,2 s**, e la misura dice 10,17 s.
+
+Da qui una conseguenza che va contro l'intuito: **alzare la memoria della cache allunga gli stalli,
+non li accorcia.** Piu' cuscino significa piu' tempo per ricostruirlo. Il cuscino serve a NON
+esaurirsi; una volta esaurito, e' un debito da ripagare per intero prima di rivedere un fotogramma.
+
+### Perche' gli fps crollano quando il video sta per partire
+
+Due cause, entrambe misurate, e **nessuna delle due e' la decodifica**.
+
+**1. Kodi ricostruisce tutti i widget all'annuncio `OnPlay`.** `CDirectoryProvider::Announce`:
+
+```cpp
+if (message == "OnPlay" || message == "OnResume" || message == "OnStop")
+{
+  if (m_currentSort.sortBy == SortByNone || m_currentSort.sortBy == SortByLastPlayed ||
+      m_currentSort.sortBy == SortByPlaycount || m_currentSort.sortBy == SortByLastUsed)
+    m_updateState = INVALIDATED;
+}
+```
+
+I `<content>` dei widget della home non dichiarano `sortby`, quindi sono `SortByNone`, quindi **si
+invalidano tutti a ogni avvio e a ogni chiusura**. Nel log, a 180 ms da `VideoPlayer::OpenFile`:
+cinque `CDirectoryProvider ... refreshing..` e cinque interpreti Python nuovi. Costo misurato dalle
+righe `PERF CPU` della prima riproduzione: **785 + 951 + 1021 + 952 + 793 = 4502 ms di CPU**, spalmati
+su dodici secondi che coincidono esattamente con l'apertura dello stream, l'inizializzazione del
+decoder e il cambio di modo HDMI. Alla chiusura e' peggio: **tredici** costruzioni, ~10,4 s di CPU.
+
+Il rapporto `PERF CPU` dice 13-28%: quelle costruzioni sono per tre quarti **attesa**, non lavoro --
+e l'attesa e' il lock grafico, cioe' proprio la risorsa che il thread di rendering usa per disegnare.
+E' il motivo per cui 4,5 s di CPU distribuiti su quattro core producono un crollo di fps visibile.
+Vale anche la pena notare che `Window Deinit (Custom_1101_Hub.xml)` arriva **dopo** che le cinque
+costruzioni sono finite: si ricostruisce una finestra che sta per essere chiusa.
+
+Il cancello per fermarle esiste gia' (`PLAYBACK_ACTIVE_PROP`, alzato in `play_video` **prima** di
+`self.play()`, cioe' prima che l'annuncio esca -- non e' una corsa) ma dal lotto 113 non taglia piu'
+nessuna costruzione. `kodi_utils._defer_refresh_if_busy` rimanda solo i refresh che ordiniamo **noi**:
+questo lo ordina Kodi, e il plugin lo vede arrivare come una `GetDirectory` qualunque.
+
+**2. L'apertura del decoder prova venti codec in fila.** `CDVDVideoCodecAndroidMediaCodec::Open`
+elenca `OMX.amlogic.audio.decoder.ac3`, `.dtshd`, `.eac3`, `.ffmpeg`, `vp6a`, `vp6f`, ... prima di
+arrivare a `OMX.amlogic.avc.decoder.awesome`. Dal `Creating video codec` all'`Using codec` passano
+**1,35 s**. Non e' governabile da noi.
+
+### Lo schermo nero prima di ogni film
+
+Ogni apertura contiene questa sequenza:
+
+```
+16:50:09.553 SetHdmiState: state: 0
+16:50:10.201 SetHdmiState: state: 0     <- HDMI is plugged in: no
+16:50:11.203 error: Flush - timed out waiting for renderer to flush
+16:50:11.205 SetHdmiState: state: 1     <- HDMI is plugged in: yes
+```
+
+**1,65 s dentro Kodi, di cui 1,00 s esatti sono un timeout in errore** (`CRenderManager::Flush`
+aspetta il thread di rendering, che nel frattempo sta smontando la surface, e rinuncia dopo mille
+millisecondi). Piu' il tempo che ci mette il televisore a riagganciare l'HDMI, che nel log non c'e'.
+Succede **a ogni riproduzione**, e una seconda volta alla chiusura, perche' `adjustrefreshrate` e' 2
+(= all'avvio E alla chiusura).
+
+La risoluzione del desktop e' il modo **17: 1920x1080@60,000004**. La whitelist contiene solo modi
+1080p (60, 59,94, 50, 25, 24, 23,976): la risoluzione quindi **non** cambia mai, cambia solo il
+refresh -- ma cambia sempre, perche' praticamente tutto il materiale e' 23,976.
+
+### I 25 fps del player non sono un problema: sono la cosa giusta
+
+`[WHITELIST] Matched an exact resolution with an exact refresh rate 1920x1080 @ 23.976025`. Il
+pannello degli fps mostra **il refresh del display**, non quanto lavora la CPU. Su un film 23,976 il
+display va a 23,976 Hz e l'interfaccia disegna 24 volte al secondo: e' esattamente cio' che si vuole,
+un fotogramma di film per un fotogramma di schermo, zero judder.
+
+I 55 fps sul film SD si spiegano nella stessa riga: Angel Dust e' 720x480 **@29,97**, la whitelist non
+ha una corrispondenza esatta per quella risoluzione e Kodi ripiega sul modo di scrivania a
+**59,94 Hz**. Non e' il player a essere piu' libero: e' lo schermo che va al doppio.
+
+### Angel Dust: il segnale che sparisce, e cosa e' successo davvero
+
+Non e' Kodi, non e' la skin, non e' Fen Light, non e' TorBox. Dal log di Kodi:
+
+```
+16:53:13.560 CXBMCApp::onPause()
+16:53:13.684 CXBMCApp::surfaceDestroyed()
+16:53:13.720 CXBMCApp::onStop()
+...  (13 secondi di buio)
+16:53:26.423 CXBMCApp::onStart()
+16:53:26.900 CXBMCApp::onResume()
+```
+
+Android ha messo l'attivita' di Kodi in pausa e poi l'ha fermata. Il perche' sta nel buffer `crash`
+del `logcat`, all'istante esatto:
+
+```
+09-05 16:53:14.194 FATAL EXCEPTION: main
+Process: com.google.android.tvrecommendations, PID: 7185
+android.content.ActivityNotFoundException: No Activity found to handle Intent
+  { act=com.google.android.tvlauncher.intent.action.LAUNCH_BOOT_HELPER_EMPTY_ACTIVITY
+    pkg=com.google.android.tvlauncher }
+```
+
+`com.google.android.tvrecommendations` ha tentato di lanciare un'attivita' del launcher Google che su
+questa stick **non esiste** (Xiaomi ne monta uno suo). Il tentativo ha portato in primo piano
+qualcosa d'altro -- Kodi va in `onPause`/`onStop`, la surface muore, il segnale HDMI cade -- e poi il
+processo e' morto (`am_proc_died` alle 16:53:14.549), lasciando Kodi a tornare da solo
+sull'interfaccia. Le raffiche di `HdmiHotPlugEvent` di `droidlogic` che seguono sono la conseguenza,
+non la causa.
+
+**Attenzione a non chiamarlo "sistematico su Angel Dust" senza altre prove**: in questo log e'
+successo **una volta sola**, e la seconda riproduzione dello stesso file (16:54:35 -> 16:55:19) e'
+finita normalmente. E' un guasto di sistema che capita quando capita.
+
+C'e' pero' una cosa che Angel Dust ha di suo, e che vale la pena togliere di mezzo: e' l'unico file
+della sessione a **29,97 fps**, e per lui Kodi passa dal modo 17 (60,000 Hz) al modo 18 (59,94 Hz).
+Un cambio di modo HDMI per una differenza dello 0,1%. **Mettendo la scrivania su 1920x1080@59,94
+invece di @60,000** quel cambio sparisce del tutto -- e sparisce anche per tutto il materiale
+29,97/59,94, che e' meta' del catalogo.
+
+### Il disallineamento Trakt/Kodi su Perfect Days: trovato, ed e' deterministico
+
+La riga, letta da `traktcache.db` sulla stick:
+
+```
+db_type = movie | media_id = 976893 | title = Perfect Days
+resume_point = 80.8 | resume_id = 0 | sync_state = pending_put | misses = 0
+last_played = 2026-09-05T15:03:55.000Z
+```
+
+Accanto, la riga di Angel Dust, chiusa al **70,2%**: `resume_id = 1840552966`, `sync_state = synced`.
+Sana. La differenza fra le due e' tutta in un numero.
+
+La catena, in ordine:
+
+1. Il film e' stato chiuso all'**80,8%**.
+2. `player.py:22` dichiara `set_watched = 90`. 80,8 < 90 -> **in locale non e' visto**: si scrive il
+   segnalibro, compare il badge di avanzamento, il titolo entra in 'continua a guardare'.
+   E' esattamente cio' che l'utente vede su Kodi.
+3. `media_watched_marker` manda comunque `trakt_scrobble_stop(..., current_point=80.8)`.
+   **La regola di Trakt e' 80, non 90**: `scrobble/stop` con progresso sopra l'80% viene *scrobblato*,
+   sotto l'80% viene trattato come pausa. Trakt segna quindi Perfect Days come **visto**.
+   E' esattamente cio' che l'utente vede su Trakt.
+4. Subito dopo, `_push_bookmark_to_trakt` -> `trakt_progress('set_progress', ...)` ->
+   `scrobble/pause` con progresso 80,8 su un film che Trakt ha appena archiviato come visto -> **422**.
+   `resume_id` resta 0.
+5. `progress_sync.reconcile`, cella **5a** (`PENDING_PUT`, assente da Trakt, nessun `resume_id`):
+   nessun tentativo consumato, la riga finisce in `retry_push`.
+6. Il TraktMonitor la rispinge **ogni 30 secondi, per sempre**. Nel log:
+   `###Trakt Error###: 422 per https://api.trakt.tv/scrobble/pause` alle 16:52:12, 17:03:56, 17:06:42,
+   17:07:12, 17:10:05, 17:10:35... e la diagnosi che la accompagna dice
+   `in locale 3 (1 pending_delete, 1 pending_put, 1 synced)`.
+
+**La banda difettosa e' 80 <= progresso < 90, ed e' riproducibile a comando**: basta fermare un film
+in quell'intervallo. Sotto l'80 (Angel Dust, 70,2) funziona tutto; sopra il 90 le due soglie
+concordano di nuovo. Due bug distinti, non uno:
+
+- **il disallineamento**: due soglie diverse per la stessa domanda, la nostra a 90 e quella di Trakt
+  a 80. Si chiude o allineando `set_watched` a 80, o -- meglio, perche' non cambia il comportamento
+  locale -- **non mandando `scrobble/stop` quando il verdetto locale e' "non visto"**: in quel caso a
+  Trakt va solo la pausa. Oggi si mandano entrambe le cose, e per giunta da due thread che corrono
+  l'uno contro l'altro;
+- **la riprova infinita**: `retry_push` non ha ne' tetto ne' memoria dell'esito. Un 422 e' un rifiuto
+  *permanente* (il corpo non e' processabile), non un guasto di rete: rispingerlo ogni 30 secondi non
+  potra' mai funzionare, e nel frattempo e' una chiamata di rete ogni mezzo minuto che gira anche a
+  interfaccia ferma. La cella 5a distingue gia' "mai confermata" da "confermata e poi sparita";
+  manca la distinzione fra "non e' arrivata" e "e' stata rifiutata".
+
+### Impostazioni: cosa e' fuori posto
+
+Da `guisettings.xml` della stick.
+
+- `audiooutput.passthrough = false` con `audiodevice = AUDIOTRACK:AudioTrack (RAW)`. Il passthrough
+  e' **spento**, quindi il log mostra `CDVDAudioCodecFFmpeg::Open() Successful opened audio decoder
+  eac3`: E-AC3 5.1 decodificato via software su un Cortex-A53 a 1416 MHz, poi ridotto a stereo
+  (`audiooutput.channels = 1`) e ricampionato con `processquality = 30`. E' l'unica cosa che gira
+  davvero e di continuo sulla CPU accanto al video, ed e' evitabile.
+  `ac3passthrough` e' gia' `true` ma e' inerte finche' l'interruttore principale e' spento.
+- `audiooutput.streamsilence = 153722867`. Valore fuori scala (le opzioni sono -1, 0, 1, 2, 5, 10,
+  20, 30, 60). Il sink infatti si riapre **tre volte** per riproduzione (`CActiveAESink::OpenSink`).
+- `videoscreen.resolution = 17` (1920x1080@60,000004). Vedi sopra: a 59,94 si eliminerebbe una
+  classe intera di cambi di modo.
+- `filecache`: memoria 64 MB, fattore 4x, blocco 128 KB, buffermode 2. Il **buffermode 2 e' giusto**
+  (bufferizza solo i veri filesystem Internet). Gli altri tre vanno riletti insieme alla banda vera
+  del collegamento, non da soli -- vedi l'aritmetica dello stallo qui sopra.
+- `videoscreen.limitgui = 720`, `usemediacodecsurface = true` (nel log: `CRendererMediaCodecSurface`),
+  `usedisplayasclock = false`: **tutti e tre corretti**, non toccare. `hqscalers = 20` e'
+  irrilevante con la surface di MediaCodec, perche' la GPU il video non lo tocca mai.
+
+### Il micro-lag dell'OSD
+
+Aprendo i pannelli dell'OSD durante il film si spawnano interpreti Python **nuovi**:
+
+```
+17:08:53.444 Window Init (Custom_1147_OSD_SubtitleStreams.xml)
+17:08:53.447 running add-on script Skin Variables ... ?info=get_player_streams&stream_type=subtitle
+17:08:53.449 initializing python engine.
+17:08:53.670 Window Init (Custom_1146_OSD_AudioStreams.xml)
+17:08:53.670 Loading skin file: Custom_1146_OSD_AudioStreams.xml, load type: KEEP_IN_MEMORY
+17:08:53.722 running add-on script Skin Variables ...
+17:08:54.639 Python interpreter stopped
+```
+
+Due cose insieme: il file XML del pannello viene **caricato da disco al primo uso**, cioe' durante la
+riproduzione (KEEP_IN_MEMORY vuol dire "poi resta", non "e' gia' li'"), e `script.skinvariables`
+mette su un interprete Python per elencare le tracce. Da `Window Init (VideoOSD)` a pannello disegnato
+passano **1,5 s** nel campione delle 17:08:49-50.
+
+### Cosa NON e' colpevole, e va scritto perche' costa tempo riverificarlo
+
+- **TorBox e la CDN.** Ogni salto ottiene la nuova posizione in 0,2-0,8 s. Nessun errore HTTP, nessun
+  `source read hit eof` fuori posto, nessuna riconnessione fallita in tutta la sessione.
+- **Il servizio di sfocatura.** Non tocca niente durante la riproduzione: le righe che sembravano sue
+  in una prima lettura del log erano `PERF DUB` che contengono la parola `bluray`.
+- **La saturazione della macchina.** `PerfSampler` non ha emesso **nemmeno una** riga `PERF CARICO`:
+  il suo ciclo da 2 s non e' mai stato ritardato di piu' di 1,5 s. La macchina non e' satura, e'
+  *contesa* -- che e' un guasto diverso e si cura diversamente (vedi la nota di memoria
+  `misurare-lavoro-o-attesa`).
+- **I guardiani dei servizi.** `TraktMonitor`, `CustomFonts`, `DubResolver` hanno tutti il loro
+  `while is_playing()`. Le tre righe `Trakt Update Performed` che cadono dentro una finestra di
+  riproduzione (16:55:54, 17:00:50, 17:05:10) stanno tutte nei **quattro secondi fra `OpenFile` e il
+  primo fotogramma**, quando `isPlayingVideo()` e' ancora falsa. Il buco e' reale ma e' quello, ed e'
+  chiudibile leggendo `PLAYBACK_ACTIVE_PROP` invece di `isPlayingVideo()`.
+
+### Ordine di lavoro proposto
+
+Prima la rete, perche' e' l'unica cosa che spiega il "prima andava benissimo con le stesse
+impostazioni", e perche' finche' il collegamento sta a 2,4 GHz ogni taglio di CPU e' un cerotto.
+
+1. **Riportare la stick sui 5 GHz** e impedirle di tornare sui 2,4 (SSID separati sul router, o
+   banda fissata). E' la sola causa individuata degli stalli veri.
+2. **Finche' resta sui 2,4 GHz, abbassare il tetto delle dimensioni** da 10 GB a circa 5-6 GB. La
+   soglia misurata e' 12 Mbit/s; un film di due ore a 6 GB sta a 6,7 Mbit/s, cioe' dentro il margine
+   che il collegamento regge anche con `readfactor 4x`.
+3. **Fermare le cinque ricostruzioni dei widget all'avvio del film.** E' il crollo di fps che si vede
+   partire il video. Due strade, indipendenti: dichiarare un `sortby` sui `<content>` dei widget
+   (toglie l'invalidazione a monte, ma cambia l'ordine delle liste), oppure far tornare al plugin una
+   cartella gia' pronta quando `PLAYBACK_ACTIVE_PROP` e' alzata (non cambia niente a schermo, perche'
+   la finestra sotto sta per essere chiusa comunque).
+4. **Accendere il passthrough audio.** Toglie la decodifica E-AC3/AC3 dalla CPU: e' l'unica lavorazione
+   continua che oggi corre accanto al video.
+5. **Scrivania a 1920x1080@59,94.** Toglie un cambio di modo HDMI, con il suo secondo di
+   `Flush - timed out`, a tutto il materiale 29,97/59,94.
+6. **Chiudere le due meta' del difetto Perfect Days** (la soglia 80/90 e la riprova infinita del 422).
+7. **Precaricare gli XML dell'OSD** e togliere l'interprete Python dall'elenco delle tracce.
+
+### Cosa resta aperto
+
+- Il conto dello stallo (48 MB / `(fattore-1) x bitrate`) e' **verificato su due campioni**, 10,17 s
+  contro 10,2 s previsti e 11,45 s contro 9,8 s. Il secondo scarto non e' spiegato: probabilmente ci
+  sta dentro il riaggancio del salto, ma non e' stato misurato. Prima di girare le manopole della
+  cache serve un terzo campione, altrimenti si ottimizza su un modello e non su una misura.
+- La banda vera del collegamento e' stata stimata **solo attraverso adb** (1,91 MB/s), che ha overhead
+  suo. Non e' una misura pulita del collegamento e non va citata come tale.
+
+### Revisione del 05/09, stessa sera: la banda misurata bene, e due conti da rifare
+
+La stima via adb (1,91 MB/s) era **sbagliata**: misurava adb, non il collegamento. Misura pulita, con
+un blaster TCP sul Mac e `toybox nc` sulla stick, nessun adb nel percorso:
+
+```
+SENT 125.8 MB in 24.35 s = 5.17 MB/s = 41.3 Mbit/s
+```
+
+**41,3 Mbit/s** verso la stick (Mac su 5 GHz -> AP -> stick su 2,4 GHz). I 2,4 GHz non sono il muro
+che sembravano. Vanno quindi rifatti due ragionamenti.
+
+**Il conto della soglia era giusto per caso, il meccanismo no.** Non e' che il collegamento non regge
+il file: 41,3 contro 13,1 Mbit/s e' un margine di 3,1 volte, e infatti a regime tutto scorre -- lo
+dice anche l'utente, i 10 GB una volta stabilizzati sono fluidi. Quello che si rompe e' la **finestra
+di pochi secondi dopo un salto**, quando la cache e' a zero perche' Kodi riparte subito (0,2-0,8 s) e
+la ricostruisce mentre alimenta la riproduzione. In quella finestra basta un avvallamento
+istantaneo della banda **sotto il bitrate del file** per andare a secco. Piu' alto e' il bitrate,
+piu' e' piccolo l'avvallamento che basta. Da qui il carattere probabilistico osservato: due stalli su
+una ventina di salti, entrambi sui due file piu' pesanti, entrambi **circa 3 secondi dopo un salto**.
+
+Regola pratica ricavata dai nove campioni (8,4 Mbit/s passa, 12,5 e 13,1 no): **il bitrate va tenuto
+sotto un quarto della banda misurata**. Qui 41,3/4 = 10,3 Mbit/s, che cade esattamente fra il caso
+che regge e i due che non reggono. Non e' una legge, e' una taratura su nove campioni.
+
+**`readfactor` non e' una leva: va lasciato a 4x.** Con 4x la cache CHIEDE 4,4 volte il bitrate, cioe'
+57,6 Mbit/s per il file da 13,1: sopra i 41,3 disponibili, quindi a comandare e' gia' il collegamento.
+Alzarlo non otterrebbe niente, abbassarlo rallenterebbe soltanto la ricostruzione. Il ramo adattivo
+di `CFileCache` (`readFactor = level * -2.5 + 4.0`, da 4,0x a vuoto a 1,5x a pieno, attivo quando
+l'impostazione e' **sotto 100**) per lo stesso motivo qui non cambierebbe nulla: interviene quando e'
+il tetto a limitare, non il collegamento.
+
+**`memorysize` invece e' una leva, e va nella direzione opposta a quella che verrebbe da pensare.**
+I 64 MB (48 in avanti) non hanno protetto da nessuno dei due stalli, perche' in entrambi i casi la
+cache era vicina a zero comunque -- si era appena saltato. L'unico effetto che hanno avuto e' stato
+di rendere il debito da ripagare lungo dieci secondi. A 32 MB il cuscino resta di ~15 s di video a
+13 Mbit/s (ampio per un avvallamento domestico) e la ripresa si dimezza. In piu' libera 32 MB su una
+macchina che ha `free` a 145 MB.
+
+### La colpa dell'audio non e' un'impostazione sbagliata: il passthrough non e' offerto
+
+Il livello impostazioni e' gia' **Expert** (`<settinglevel>3</settinglevel>`), quindi non e' nascosto.
+E' la piattaforma che lo nega. All'avvio, riga 388 del log:
+
+```
+Enumerated AUDIOTRACK devices:
+    m_deviceName      : AudioTrack (RAW)
+    m_deviceType      : AE_DEVTYPE_HDMI
+    m_dataFormats     : AE_FMT_S16LE, AE_FMT_FLOAT, AE_FMT_RAW
+    m_streamTypes     : No passthrough capabilities
+```
+
+`No passthrough capabilities`: Android dichiara a Kodi che quell'uscita HDMI non accetta **nessun**
+formato compresso, e Kodi di conseguenza non mostra la sezione. Il sink infatti si apre a
+`Channel Count: 2 / Channel Layout: FL, FR`. Le cause possibili, in ordine: il "Surround sound" di
+Android (Preferenze dispositivo -> Audio) su *None*; oppure l'EDID dell'ingresso HDMI del televisore
+che dichiara solo PCM 2.0. **Da verificare sul dispositivo prima di dare la voce per persa.**
+
+Se resta negato, la spesa si taglia dall'altro lato -- e questa parte e' indipendente dalla
+connessione: preferire nelle sorgenti **AC3/AAC invece di E-AC3, DTS-HD e TrueHD**, che su questo SoC
+si pagano tutti in decodifica software; `processquality` al minimo; `config` fisso a 48000 per
+smettere di riaprire il sink (nel log `CAESinkAUDIOTRACK::Deinitialize`/`Initialize` piu' volte per
+riproduzione, e a volte a 44100 con contenuto a 48000); e sistemare `streamsilence = 153722867`, che
+e' fuori scala.
+
+### Il tetto va messo sul BITRATE, non sulla dimensione -- e cosi' si guadagnano sorgenti
+
+E' la conseguenza pratica di tutto il resto, e ribalta la conclusione del lotto. **Il file piu' grande
+della sessione e' quello che e' andato meglio**: Dune Parte Due, 10,40 GB, zero stalli, perche' dura
+166 minuti e sta a 8,4 Mbit/s. Ad andare in stallo sono stati un 10,73 GB *e un 7,72 GB*, entrambi
+sopra i 12 Mbit/s. **La dimensione e' l'asse sbagliato.**
+
+Fen Light ha gia' i due numeri prima di riprodurre: la dimensione arriva dallo scraper/debrid, la
+durata sta nella meta (`self.meta_get('duration')` in `player.py`). `bitrate = dimensione x 8 / durata`
+non costa una chiamata di rete.
+
+Con un tetto a ~10 Mbit/s invece che a 10 GB: un film di due ore puo' pesare **9 GB**, uno di tre ore
+**13,5 GB** -- cioe' piu' del tetto di oggi. Si perdono solo i file corti e densi, che sono
+esattamente quelli che si rompono. Ed e' un numero solo, quindi tarabile per dispositivo: a casa,
+sulla fibra e sui 5 GHz, puo' stare molto piu' in alto che a casa dello zio.
+
+---
+
+## Lotto 172 -- le lingue del film precedente, e il verde: una diagnosi chiusa e una aperta
+
+Log di riferimento: `kodi.log` del 05/09, sessione 19:17 -> 19:44, quattro riproduzioni
+(Obsession, Cime Tempestose, Wicked, Soffio) piu' il `logcat` del dispositivo.
+Impostazioni cambiate nel frattempo e **verificate attive nel log**: `Memory Size: 32 MB`,
+whitelist senza `1920x1080@59,94`, tetto di Fen Light a 10 Mbit/s.
+
+### Le lingue del film precedente: trovato, ed e' misurabile
+
+Il pannello tracce si alimenta da un `<content>` che rilegge quando cambia la sua URL
+(`Includes_OSD.xml:471`), e la chiave di rilettura la scrive `VideoOSD.xml`:
+
+```xml
+<onload>SetProperty(UID,$ESCINFO[Player.Title]$INFO[Player.Time(ss)],1146)</onload>
+<onload>SetProperty(UID,$ESCINFO[Player.Title]$INFO[Player.Time(ss)],1147)</onload>
+```
+```xml
+<content>plugin://script.skinvariables?info=get_player_streams&stream_type=...&reload=$INFO[Window.Property(UID)]</content>
+```
+
+Nel log i gettoni si leggono per esteso: `reload="Obsession"27`, `"“Cime Tempestose”"03`,
+`"Wicked"11`, `"Soffio"02` -- titolo piu' **i secondi della posizione** all'istante in cui l'OSD si
+apre.
+
+**La chiave cambia, e il contenitore si dichiara sporco: fin qui e' giusto.** Il difetto sta in cosa
+succede dopo. `CDirectoryProvider` non svuota il contenitore mentre rilegge: **tiene a schermo le voci
+vecchie** finche' le nuove non arrivano. E le nuove arrivano solo dopo che e' nato un interprete
+Python. I tempi, misurati fra `refreshing..` e l'interprete pronto:
+
+| film | pannello | attesa |
+|---|---|---|
+| Obsession | audio | 231 ms |
+| Cime Tempestose | audio | 228 ms |
+| Wicked | audio | 359 ms |
+| **Soffio** | sottotitoli | **989 ms** |
+| **Soffio** | audio | **3104 ms** |
+
+Su Soffio il pannello sottotitoli e' stato **aperto alle 19:42:45.033 e chiuso alle 19:42:45.197**,
+mentre lo script parte alle 19:42:46.022: chiuso **prima** che la lettura cominciasse. Il pannello
+audio e' rimasto aperto 3,16 s e lo script e' partito a 3,10 s. **Per tutta la loro vita hanno
+mostrato le tracce del film precedente.**
+
+Perche' proprio Soffio: la riproduzione era partita alle 19:42:41 e l'OSD e' stato aperto due
+secondi dopo, cioe' **dentro la raffica di ricostruzioni dei widget del lotto 171**. Alle 19:42:41.204
+il log mostra `FENLIGHT_PG load_cumulative` in corso. Non sono due difetti: e' lo stesso, visto da due
+lati. Chi aspetta un interprete Python aspetta la macchina, e la macchina e' occupata da cinque
+costruzioni che nessuno ha chiesto.
+
+Da qui due conseguenze pratiche, e la seconda vale piu' della prima:
+
+1. `Player.Time(ss)` nella chiave e' **il parametro sbagliato**: fa rileggere a ogni apertura
+   dell'OSD anche quando le tracce sono identiche, e le tracce di un film non cambiano mai. Paga un
+   interprete Python per niente, ripetutamente.
+2. Finche' l'elenco arriva da un plugin, **la finestra di dato vecchio non si puo' chiudere**: e'
+   asincrona per costruzione. L'unico modo di farla sparire e' che l'elenco esista **prima** che il
+   pannello si apra -- il player di Fen Light e' gia' sveglio a `onAVStarted` e le tracce li' sono
+   gia' note.
+
+### Il verde: cosa il log esclude, cosa mostra, e la prova che manca
+
+**Cosa e' stato ESCLUSO, con i dati:**
+
+- *Non* e' un errore di decodifica. Nessun errore OMX/amlogic nel `logcat` fra le 19:37:50 e le
+  19:43:10; `DisplayManagerService` registra i cambi di modo puliti (`modeId 8` -> `modeId 1`).
+  Su tutte e quattro le riproduzioni il renderer si configura, l'audio si sincronizza
+  (`ActiveAE::SyncStream`) e `OnAVStarted` arriva.
+- *Non* e' l'HEVC ne' il 10 bit. Nella sessione delle 16:41, **senza nessuno schermo verde**, c'erano
+  gia' due riproduzioni HEVC di cui una `Profile 2` (Main10, 1920x800). E fra le quattro di stasera
+  due sono H.264 8 bit (`Profile 77` e `Profile 100`) e sono andate verdi lo stesso.
+- *Non* e' la geometria. `CRenderManager::Configure` riporta 1632x1080/1620x1080, 1920x1038,
+  1920x800, 1920x1038: la sessione precedente aveva 1632x1080/1614x1080, 704x380/624x380, 1920x804/1919x804
+  senza problemi.
+
+**Cosa il log MOSTRA:**
+
+- Su ogni riproduzione esiste una finestra in cui **il piano video e' a schermo senza un fotogramma
+  dentro**. In apertura, da `SetHdmiState: 1` a `OnAVStarted`: **0,74 s** sulle riproduzioni 2, 3 e 4,
+  e 3,32 s sulla prima (li' la cache stava ancora riempiendo). In chiusura, da
+  `MediaCodec::Dispose` a `SetHdmiState: 0`: **0,34-0,59 s**. Una surface MediaCodec non ancora
+  scritta contiene YUV tutto a zero, e **YUV(0,0,0) e' verde**: e' letteralmente il colore del vuoto.
+- **`Flush - timed out waiting for renderer to flush`, quattro volte su quattro.** E' il thread di
+  rendering che non chiude un flush entro mille millisecondi, esattamente durante lo scambio di
+  surface del cambio di modo. E' l'errore ricorrente piu' sospetto di tutto il log.
+- `CMediaCodecVideoBuffer::ReleaseOutputBuffer error in render(false)`, due volte, sul salto di
+  Obsession; e `SignalEndOfStream: invalid index: -1` alla chiusura di Cime Tempestose.
+
+**Cosa NON si puo' concludere, e va detto.** L'osservazione riportata -- prima riproduzione a posto,
+dalla seconda in poi verde -- **non trova riscontro nei tempi**: la finestra senza fotogramma piu'
+lunga (3,32 s) e' proprio quella della prima. Zero-e-settantaquattro centesimi di secondo sono un
+lampo, non uno schermo verde che dura. Se il verde e' rimasto per secondi, **in questo log non c'e'
+la riga che lo spiega**, e continuare a dedurre sarebbe inventare.
+
+**La prova che lo decide, in due passi, entrambi reversibili e a costo zero:**
+
+1. `videoplayer.adjustrefreshrate` su **Off**, poi tre film di fila. Toglie il cambio di modo e con
+   esso la distruzione/ricreazione della surface e il `Flush - timed out`. Se il verde sparisce, la
+   causa e' li' e tutto il resto (schermo nero incluso) discende da quella.
+2. Se resiste: `videoplayer.usemediacodecsurface` su **Off**. Kodi smette di usare l'overlay hardware
+   e disegna il video dentro la scena GL. Costa CPU e GPU vere e potrebbe non reggere il 1080p -- non
+   e' una configurazione da tenere -- ma se il verde sparisce il piano video e' provato colpevole.
+
+Per il log della prova conviene accendere anche la componente **Video** del debug: il renderer
+comincia a scrivere per fotogramma, e la finestra sospetta si vede invece di doverla dedurre.
+
+### Correzione: precaricare gli XML dell'OSD non serve
+
+Il numero che avevo attribuito al caricamento degli XML era sbagliato: erano intervalli fra due
+finestre diverse, cioe' l'utente che navigava. Misurato per bene su questo log, da
+`Loading skin file` all'evento successivo:
+
+| file | peso su disco | caricamento |
+|---|---|---|
+| `VideoOSD.xml` | 13,0 KB | ~180 ms |
+| `Custom_1147_OSD_SubtitleStreams.xml` | 1,9 KB | ~54 ms |
+| `Custom_1146_OSD_AudioStreams.xml` | 1,7 KB | ~55 ms |
+
+Tutti e sei i file dell'OSD pesano **28 KB in tutto**. Precaricarli sposterebbe all'avvio meno di
+mezzo secondo speso una volta sola per sessione, in cambio di un avvio piu' lento e di memoria tenuta
+occupata su una macchina che ne ha poca. **Non conviene: la voce 7 del lotto 171 si riduce alla sola
+meta' Python**, che invece si paga a ogni apertura ed e' quella che produce anche il difetto delle
+lingue qui sopra.
+
+### Il tetto a 10 Mbit/s: attivo, ma il budget resta inutilizzato
+
+Le quattro riproduzioni, con bitrate ricavato da `SetReadRate` e durata verificata contro quella
+reale del film:
+
+| film | GB | Mbit/s | durata calcolata | codec |
+|---|---|---|---|---|
+| Obsession | 1,43 | **1,75** | 109 min | HEVC Main10 |
+| Cime Tempestose | 1,55 | **1,52** | 137 min | HEVC Main10 |
+| Wicked | 4,34 | 3,58 | 162 min | H.264 Main |
+| Soffio | 4,02 | 6,62 | 81 min | H.264 High |
+
+Il tetto e' 10 Mbit/s e le prime due stanno **sotto un quinto** di quel budget. Con 10 Mbit/s
+disponibili, Cime Tempestose avrebbe potuto pesare 10 GB invece di 1,55. Un tetto senza un
+**ordinamento che preferisca il bitrate piu' alto sotto il tetto** non spende il margine che gli e'
+stato dato: filtra e basta. Da guardare prima di dichiarare tarata l'impostazione.
+
+### Revisione del 05/09, tarda sera: il passthrough e' bloccato da Android, e il verde non e' di Kodi
+
+**Il passthrough: il televisore lo accetta, Android lo vieta.** L'EDID letto dal dispositivo
+(`/sys/class/amhdmitx/amhdmitx0/edid`) dice che il televisore -- un LG del 2020 -- dichiara:
+
+```
+Audio {format, channel, freq, cce}
+{1, 1, 57, 7}     LPCM 2 canali
+{2, 5, 7, 50}     AC-3 6 canali
+{10, 7, 7, 1}     E-AC-3 8 canali
+{12, 7, 4, 3}     DTS-HD 8 canali
+```
+
+Il televisore quindi accetta AC-3, E-AC-3 e DTS-HD. A negarlo e' Android:
+
+```
+settings get global encoded_surround_output  ->  1
+```
+
+Nella costante Android `ENCODED_SURROUND_OUTPUT`, **1 = NEVER**: nessun formato compresso esce mai,
+tutto viene ridotto a PCM. E' esattamente la voce che l'utente ha trovato nell'interfaccia come
+*Formato audio-digitale: PCM*, ed e' la ragione della riga `m_streamTypes : No passthrough
+capabilities` del lotto 171. **Portandola su Automatico**, Android ricomincia a dichiarare le
+capacita' del sink e la sezione passthrough di Kodi ricompare. E' la voce piu' redditizia dell'intero
+capitolo audio: toglie la decodifica E-AC3/AC3 dalla CPU per intero.
+
+**Il verde: i log lo scagionano, Kodi.** Il confronto fra le tre sessioni e' netto, e va nella
+direzione opposta a quella attesa:
+
+| | riproduzioni | `Flush - timed out` | `ReleaseOutputBuffer error` | verde |
+|---|---|---|---|---|
+| 16:41 (funzionava) | 9 | 8 | **27** | no |
+| 19:17 | 4 | 4 | 2 | si' |
+| 20:16 | 2 | 2 | 1 | si' |
+
+**La sessione senza schermi verdi e' quella con piu' errori del renderer.** Nessuno dei due errori
+correla con il sintomo: erano gia' li' quando tutto andava bene. Aggiungendo che il verde sopravvive
+al riavvio di Kodi, che nelle impostazioni di Kodi non e' cambiato niente che lo spieghi, e che
+`CAndroidUtils: Display supported HDR types: None` esclude anche la commutazione HDR, **nei log di
+Kodi non c'e' la causa**.
+
+L'unico cambiamento ambientale documentato fra la sessione buona e le successive e' una
+**rinegoziazione del collegamento HDMI**: gli identificativi dei modi di Android sono passati da
+17-24 (sessione 16:41) a 1-8 (sessioni 19:17 e 20:16). E' la firma di un TV spento e riacceso, di un
+cambio di ingresso o di un ricollegamento. Stato attuale dell'uscita, letto dal dispositivo:
+
+```
+/sys/class/amhdmitx/amhdmitx0/attr      ->  444,12bit
+/sys/class/amhdmitx/amhdmitx0/disp_mode ->  VIC:16   (1920x1080p60)
+```
+
+`444,12bit` e' colore profondo. Il televisore lo dichiara supportato (`ColorDeepSupport b8`, cioe'
+DC_36bit e DC_Y444 attivi; `MaxTMDSClock1 300 MHz` contro i 222,75 MHz richiesti), quindi non e'
+fuori specifica -- ma resta la modalita' piu' esigente per cavo e connettore, ed e' quella in cui un
+disallineamento di spazio colore si manifesta **come tinta verde**. Non e' scrivibile senza root,
+quindi non e' verificabile da qui.
+
+**La prova che va fatta per prima non riguarda Kodi**: riprodurre un video **fuori** da Kodi
+(YouTube, il lettore del launcher). Se il verde compare anche li', Kodi e' scagionato del tutto e
+l'indagine si sposta su cavo/porta/EDID. Se non compare, allora e' Kodi e valgono le due prove del
+lotto 172 (`adjustrefreshrate` Off, poi `usemediacodecsurface` Off).
+
+**Perche' il debug Video non si trovava**: `debug.extralogging` e' `false`. La voce
+*Specifica i componenti...* resta inerte finche' non si accende *Registrazione specifica per
+componente*, sopra di lei.
+
+### L'effetto collaterale delle preferenze audio sul bitrate
+
+Nelle quattro riproduzioni della sessione 19:17 il rango e' perfetto:
+
+| film | codec audio | Mbit/s |
+|---|---|---|
+| Cime Tempestose | **AAC** | 1,52 |
+| Obsession | **AAC** | 1,75 |
+| Wicked | AC-3 | 3,58 |
+| Soffio | E-AC-3 | 6,62 |
+
+I due file AAC sono i due piu' leggeri, e con distacco. Non e' una coincidenza: in una versione 1080p
+l'AAC e' la firma delle codifiche x265 compatte, mentre i WEB-DL e i BluRay veri portano DD+/AC-3.
+**Preferire l'AAC significa quindi preferire, di fatto, il bitrate piu' basso** -- e la preferenza
+appena aggiunta per le tracce a 2 canali spinge nella stessa direzione, perche' anche quella
+seleziona le codifiche piccole.
+
+Due preferenze scelte per ragioni di CPU finiscono cosi' per governare la qualita' video. La cura non
+e' toglierle: e' l'**ordine delle chiavi**. Il bitrate piu' alto sotto il tetto deve essere la chiave
+primaria; codec audio e numero di canali sono spareggi. Con l'ordine di oggi il tetto di 10 Mbit/s non
+verra' mai avvicinato, e infatti non lo e' stato.
+
+---
+
+## Lotto 173 -- il passthrough e' disponibile ma non si accende, e i 35 secondi prima del primo fotogramma
+
+Log: `kodi.log` del 05/09, sessione 20:41:39, **una** riproduzione (20:42:23 -> 20:43:38) con le
+componenti di debug **Video, Audio e FFmpeg accese**. E' il primo log con la strumentazione del
+renderer, e cambia parecchie cose.
+
+Prima, la chiusura di due voci aperte:
+
+- **Gli schermi verdi non erano di Kodi.** Confermato sul campo: il verde compariva anche riproducendo
+  da YouTube, e un riavvio della stick lo ha fatto sparire. Era la parte video del dispositivo,
+  bloccata. La tabella del lotto 172 -- la sessione senza verde era quella con piu' errori del
+  renderer -- puntava gia' fuori da Kodi; la prova fuori da Kodi l'ha confermato.
+- **La riga incastrata di Perfect Days non c'e' piu'**: la tabella `progress` di `traktcache.db` e'
+  vuota, e in questa sessione c'e' **un solo** 422 invece di uno ogni trenta secondi.
+
+### Il passthrough: acceso a meta'
+
+Il cambio su Android ha funzionato. Kodi ora enumera **due** dispositivi invece di uno:
+
+```
+Device 1  AudioTrack (IEC)  "Kodi IEC packer (recommended)"
+  m_streamTypes : STREAM_TYPE_AC3, STREAM_TYPE_DTSHD_CORE, STREAM_TYPE_DTS_1024,
+                  STREAM_TYPE_DTS_2048, STREAM_TYPE_DTS_512, STREAM_TYPE_EAC3, STREAM_TYPE_DTS...
+Device 2  AudioTrack (RAW)  "Android IEC packer"
+  m_streamTypes : STREAM_TYPE_AC3, STREAM_TYPE_EAC3
+```
+
+Dove prima c'era `No passthrough capabilities`. **Ma su questo film il passthrough non e' entrato:**
+
+```
+20:42:38.166  Finding audio codec for: 86056
+20:42:38.194  CDVDAudioCodecFFmpeg::Open() Successful opened audio decoder eac3
+20:42:38.431  Creating audio stream (codec id: 86056, channels: 6, sample rate: 48000, no pass-through)
+20:42:38.528  Initializing with: m_sampleRate: 48000 ... method: PCM stream-type: PCM-STREAM
+                Channel Count : 2 / Channel Layout: FL, FR
+```
+
+`86056` e' E-AC3. `no pass-through`, `method: PCM`, due canali -- e nel log compare la matrice di
+riduzione di swresample (`FC:0.707107 ... SL:0.707107`), cioe' il downmix 5.1 -> 2.0 fatto in
+software. La decodifica e' rimasta esattamente dov'era.
+
+Il motivo sta nelle impostazioni: `audiooutput.passthrough` e' `true`, ma dei singoli formati **solo
+l'AC-3 e' acceso**:
+
+```
+audiooutput.ac3passthrough    true
+audiooutput.eac3passthrough   false
+audiooutput.dtspassthrough    false
+audiooutput.truehdpassthrough false
+audiooutput.dtshdpassthrough  false
+```
+
+Erano i valori predefiniti di Kodi calcolati **quando la piattaforma diceva di non saper fare
+passthrough**. Ora che il sink dichiara AC3, E-AC3, DTS e DTS-HD, vanno accesi a mano. Con l'E-AC3
+acceso, questo stesso film sarebbe uscito in bitstream e la decodifica sarebbe sparita dalla CPU.
+
+### Trentacinque secondi dal click al primo fotogramma, scomposti
+
+`VideoPlayer::OpenFile` alle 20:42:23.251, `OnAVStarted` alle 20:42:58.235.
+
+| tratto | durata | cosa succede |
+|---|---|---|
+| 23,25 -> 23,83 | 0,6 s | apertura input stream e cache |
+| 23,83 -> 28,62 | **4,8 s** | probe del demuxer: salto a fine file per l'indice mkv, `avformat_find_stream_info`, **14 tracce** (versione multilingua) |
+| 28,84 -> 30,94 | **2,1 s** | cambio di modo a 1920x1080@24, HDMI giu' e su' |
+| 35,78 -> 36,80 | **1,0 s** | **secondo** ciclo HDMI, che Kodi NON ha chiesto (vedi sotto) |
+| 29,82 -> 38,13 | **8,3 s** | apertura del decoder: `Creating video codec` -> `Using codec`. Nelle sessioni precedenti costava 0,3-1,4 s |
+| 38,41 -> 43,43 | 5,0 s | riempimento cache (`caching state 2` -> `0`) |
+| 43,45 -> 52,93 | **9,5 s** | **il decoder non accetta ingressi** (vedi sotto) |
+| 52,93 -> 58,09 | 5,2 s | avvio vero, 31 fotogrammi in tutto nella finestra |
+
+**Il secondo ciclo HDMI e' del televisore, non di Kodi.** Cinque secondi dopo che il cambio di modo
+si era gia' chiuso:
+
+```
+20:42:35.775  CXBMCApp::onReceive - Got intent. Action: android.media.action.HDMI_AUDIO_PLUG
+20:42:35.776  -- HDMI is plugged in: no
+20:42:36.799  Flush - timed out waiting for renderer to flush
+20:42:36.800  -- HDMI is plugged in: yes
+```
+
+E' il televisore che rifa' l'aggancio dopo il passaggio a 24 Hz. Kodi lo subisce: distrugge la
+superficie una seconda volta e perde un altro secondo. **Lo schermo nero prima del film non e' un
+evento ma due**, per un totale di 3,14 s -- e il secondo non e' governabile da Kodi.
+
+**I 9,5 secondi in cui il decoder e' fermo.** Il debug Video lo mostra a chiare lettere:
+
+```
+20:42:43.450  AddData ... sz:410 indexBuffer:-1     <- MediaCodec non ha un buffer di ingresso
+   (nove secondi e mezzo di niente)
+20:42:52.926  GetPicture VC_BUFFER
+20:42:52.927  AddData ... indexBuffer:1
+```
+
+`indexBuffer: -1` vuol dire che MediaCodec rifiuta i dati. In tutta la finestra di 19,7 secondi ci
+sono **32 `AddData` e 31 `GetPicture`**: a 24 fotogrammi al secondo ce ne sarebbero dovuti essere
+circa 470. Il decoder e' stato configurato mentre la sua superficie veniva distrutta e ricreata
+**due volte** (i due cicli HDMI), ed e' partito in uno stato degradato -- il che spiega anche perche'
+la sua apertura sia costata 8,3 s invece di uno.
+
+### Il microlag, e da dove viene
+
+Con la strumentazione accesa il salto si vede per nome: `CVideoPlayerVideo::CalcDropRequirement -
+hurry: 1`, tredici volte in tutta la riproduzione, in due gruppi.
+
+**Gruppo 1, otto eventi fra 20:42:58.234 e 20:42:58.869** -- cioe' nel primo secondo di
+riproduzione, subito dopo `CDVDMsg::GENERAL_RESYNC(-111745)` (111 ms di risincronizzazione) e mentre
+Kodi carica `VideoFullScreen.xml` e rifa' la ricerca nella whitelist. **E' il microlag all'avvio**, ed
+e' la coda dei 9,5 secondi qui sopra.
+
+**Gruppo 2, sei eventi fra 20:43:21.140 e 20:43:22.381**, con il log per il resto vuoto. Salti
+isolati a meta' film. Il film e' a 24,000 fps su un pannello a 24,000 Hz: margine zero per
+fotogramma, quindi qualunque contesa momentanea di CPU si vede. Con l'E-AC3 ancora decodificato e
+ridotto a stereo in software, la contesa c'e' ed e' continua.
+
+### E intanto, di nuovo, la raffica dei widget
+
+A 363 ms da `OpenFile`, tre `CDirectoryProvider ... refreshing..` e tre interpreti Python. Misure di
+questa sessione, dalle righe `PERF INVOCAZIONE`:
+
+| costruzione | tempo totale | di cui CPU |
+|---|---|---|
+| `build_continue_watching` | **5756 ms** (import pigri 2608 + indexer 2783) | 911 ms |
+| `mdblist 101881` | **7345 ms** | 760 ms |
+| `mdblist 91378` | **7467 ms** | 838 ms |
+
+Coprono la finestra 20:42:23,6 -> 20:42:32,0, cioe' **tutta** l'apertura del player: il probe del
+demuxer, l'apertura del decoder e il primo ciclo HDMI. La memoria libera scende da 237 a 209 MB
+mentre MediaCodec sta cercando di configurarsi. Non e' la causa dei 9,5 secondi -- quella e' la
+superficie -- ma e' esattamente il carico che non dovrebbe esserci in quel momento, e resta la
+voce 3 del lotto 171.
+
+---
+
+## Lotto 174 -- quattro riproduzioni con il passthrough acceso: la prova che l'audio era il peso, e la preferenza che lo rimette
+
+Sessione del 06/09, `kodi.log` avviato alle 02:43:22, quattro riproduzioni fra le 02:47 e le 02:52,
+con i componenti di debug Video/Audio/FFmpeg ancora attivi. Impostazioni cambiate rispetto al lotto
+173: `eac3passthrough`, `dtspassthrough`, `dtshdpassthrough` portati a `true` (`truehdpassthrough`
+e' rimasto `false`).
+
+### Le quattro riproduzioni, misurate
+
+I fotogrammi sono contati sulle righe `CMediaCodecVideoBuffer::ReleaseOutputBuffer render(true)` e
+`render(false)`; la finestra e' da `GENERAL_RESYNC` a `CloseFile`, **al netto della pausa di ricerca**
+(dallo `SetCaching 1` allo `SetCaching 0` che racchiudono il `MediaCodec::Reset`), altrimenti il
+confronto e' falsato dal fatto che solo P4 non ha avuto un avanzamento.
+
+| | audio | video | banda | netto | resi | scartati | fps | `hurry: 1` |
+|---|---|---|---|---|---|---|---|---|
+| P1 | AAC 5.1 -> PCM 2.0 | HEVC Main10 1920x804 SDR | 1,90 Mbit/s | 15,7 s | 368 | 6 | 23,45 | 4 |
+| P2 | AAC 5.1 -> PCM 2.0 | HEVC Main10 1920x800 SDR | 1,61 Mbit/s | 14,5 s | 345 | 3 | 23,74 | **90** |
+| P3 | TrueHD 7.1 -> PCM 2.0 | HEVC Main10 1920x1080 **HDR** | 5,08 Mbit/s | 18,4 s | 427 | **10** | **23,19** | 11 |
+| P4 | E-AC3 5.1 **passthrough** | HEVC Main10 1920x780 **HDR** | 8,53 Mbit/s | 18,0 s | 429 | **2** | **23,89** | 4 |
+
+Il bersaglio e' 23,976 fps. **P4 e' la migliore su ogni colonna**, ed e' anche quella con la banda
+piu' alta e con l'HDR: quindi ne' la banda ne' l'HDR sono il vincolo. L'unica variabile che si muove
+in modo monotono con il risultato e' **quanto lavoro audio resta alla CPU**:
+
+- P3 (TrueHD 7.1 decodificato in software + downmix 8->2) e' la peggiore: 23,19 fps, 10 fotogrammi
+  scartati;
+- P1 e P2 (AAC 5.1 decodificato + downmix 6->2) stanno in mezzo;
+- P4 (nessuna decodifica audio, bitstream verso il televisore) e' pulita.
+
+E' la prima misura che lega direttamente il carico audio alla resa video su questa macchina.
+
+### Il caso P2: 90 `hurry` senza perdere un fotogramma
+
+P2 e' l'anomalia: 90 `CVideoPlayerVideo::CalcDropRequirement - hurry: 1` distribuiti su **tutta** la
+riproduzione (5-10 al secondo dalle 02:48:16 alle 02:48:31), con `SetCodecControl 0->4000000` e
+`4000000->0` che si alternano di continuo -- Kodi accende e spegne la richiesta di fretta a MediaCodec
+decine di volte -- eppure consegna 345 fotogrammi su 14,5 s e ne scarta 3. **Nessuna perdita, solo
+cadenza instabile**: e' esattamente la sensazione di microlag descritta, e non si vede contando i
+fotogrammi scartati.
+
+Le costruzioni dei widget in questo caso sono innocenti: erano tutte finite alle 02:48:13,75, quasi
+tre secondi prima che la riproduzione partisse (02:48:16,77). Cio' che P2 ha di unico rispetto a P1,
+girata sulla stessa combinazione audio/video, e' il flusso di sottotitoli aperto:
+
+- P1 -> `Opening stream: 4` = `Subtitle: subrip (forced)`
+- P2 -> `Opening stream: 13` = `Subtitle: ass (forced)`
+- P3 -> `Opening stream: 27` = `Subtitle: subrip`
+- P4 -> **nessun flusso di sottotitoli aperto** (apre solo `stream 0` video e `stream 6` audio)
+
+Il file di P2 conteneva sia il `subrip (forced)` (#0:14) sia l'`ass (forced)` (#0:13), e Kodi ha
+scelto l'ASS. Un ASS porta stili, posizionamento e font: libass deve impaginare e rasterizzare, non
+solo scrivere una riga. **E' una correlazione, non una dimostrazione** -- libass non registra nulla
+per fotogramma, quindi nel log non c'e' la prova diretta. La prova decisiva e' una sola riproduzione
+dello stesso file forzando la traccia `subrip (forced)` al posto dell'`ass`.
+
+### Cio' che il riavvio della stick ha sistemato
+
+Tutte le voci del lotto 173 legate all'apertura sono sparite:
+
+| | lotto 173 (k4) | lotto 174 (k5) |
+|---|---|---|
+| dal click al primo fotogramma | 35 s | **2,3 - 2,6 s** |
+| apertura del decoder | 8,3 s | **0,25 - 0,35 s** |
+| cicli HDMI all'apertura | **2** (il secondo dal televisore) | **1** |
+| stallo `indexBuffer: -1` | 9,5 s | assente in apertura |
+| `Flush - timed out` | 4 | 4 |
+
+Il secondo ciclo HDMI di sua iniziativa del televisore non si e' ripetuto in nessuna delle quattro
+riproduzioni. Va quindi riletto come parte dello stesso guasto hardware che dava lo schermo verde,
+non come un comportamento stabile del televisore.
+
+Riepilogo errori dell'intera sessione: 5 `ReleaseOutputBuffer error in render(false)`, 4
+`OutputPicture - timeout waiting for buffer` (tutti e quattro alla chiusura, uno per riproduzione),
+4 `Flush - timed out`, 16 `MSGQ_NOT_INITIALIZED`. Nulla di anomalo.
+
+### Il passthrough e' entrato solo una volta su quattro
+
+```
+P1  Creating audio stream (codec id: 86018, channels: 6, ..., no pass-through)   <- AAC
+P2  Creating audio stream (codec id: 86018, channels: 6, ..., no pass-through)   <- AAC
+P3  Creating audio stream (codec id: 86060, channels: 8, ..., no pass-through)   <- TrueHD
+P4  Creating audio stream (codec id: 86056, channels: 6, ..., pass-through)      <- E-AC3
+    method: IEC (PT) stream-type: STREAM_TYPE_EAC3
+```
+
+Tre cause diverse:
+
+- **86018 = AAC.** Non e' un formato che Kodi manda in bitstream su AudioTrack IEC, e non e' nei
+  blocchi audio dell'EDID del televisore. Un file AAC **non potra' mai** usare il passthrough: la
+  decodifica e il downmix restano sulla CPU per definizione.
+- **86060 = TrueHD.** `truehdpassthrough` e' ancora `false`. La sorgente era 7.1 a 24 bit: decodifica
+  software piu' downmix 8->2, il carico audio piu' pesante possibile, e infatti P3 e' la peggiore.
+- **86056 = E-AC3.** Con `eac3passthrough=true` funziona. Questa e' la conferma.
+
+### Perche' Fen ha scelto un file da 1,61 Mbit/s avendone da 8,5
+
+Correzione a quanto detto a voce: le preferenze **non pesano tutte uguale**.
+`resources/lib/modules/sources.py:47`
+
+```python
+preference_values = {0:100, 1:50, 2:20, 3:10, 4:5, 5:2}
+```
+
+e in `sort_preferred_autoplay` (riga 260) il punteggio di ogni risultato e' la **somma dei pesi
+posizionali** delle preferenze che soddisfa; i risultati che ne soddisfano almeno una vengono spostati
+**in blocco davanti a tutti gli altri**, qualunque fosse l'ordinamento precedente.
+
+Impostazione attuale: `preferred_autoplay = AAC, 2CH, REMUX`, cioe' AAC=100, 2CH=50, REMUX=20.
+`auto_play_movie=true`, quindi il riordino si applica sempre (con la scelta manuale dalla lista non si
+applicherebbe: `if not self.autoplay: return results`).
+
+Il filtro a monte, `filter_size_method=1` con `line_speed=10` (riga 226):
+
+```python
+max_size = ((0.125 * (0.90 * line_speed)) * duration)/1000
+```
+
+Il tetto reale e' quindi **9 Mbit/s**, non 10, e P4 a 8,53 Mbit/s ci stava appena sotto. Un REMUX sta
+fra i 25 e i 60 Mbit/s: **REMUX non sopravvive mai al filtro**, e' una preferenza morta che non ha
+mai effetto. In pratica le preferenze attive sono due, AAC e 2CH, e puntano entrambe verso le
+codifiche piu' piccole.
+
+Caso concreto, P2. Per "Lee Cronin's The Mummy (2026)" TorBox aveva in cache, fra le altre:
+
+```
+Lee.Cronins.The.Mummy.2026.1080p.WebRip.EAC3.5.1.x265-Lootera
+Lee.Cronins.the.Mummy.2026.1080p.iT.WEB-DL.DDP5.1.H.264.Dual.YG
+Lee.Cronins.The.Mummy.2026.1080p.AMZN.WEB-DL.DUAL.DDP5.1.H.264-TURG
+La.Mummia.Di.Lee.Cronin.2026.iTA-ENG.Bluray.1080p.x264-CYBER.mkv
+Lee.Cronins.the.Mummy.2026.1080p.ITA-ENG.MULTI.WEBRip.x265.AAC-V3SP4EV3R.mkv   <- scelto
+```
+
+Ha vinto l'unico con AAC nel nome, a **1,61 Mbit/s**, contro un tetto di 9. Il 82% della banda
+consentita e' rimasto inutilizzato, e la preferenza AAC ha anche escluso per costruzione il
+passthrough appena abilitato. **La preferenza AAC lavora contro il passthrough**: sono
+reciprocamente esclusive.
+
+### La raffica dei widget, misurata di nuovo
+
+Confermata e ora quantificata su quattro aperture. All'`OnPlay`, cinque `CDirectoryProvider ...
+refreshing..` nello stesso millisecondo, cinque interpreti Python:
+
+| momento | evento | invocazioni | quando finiscono |
+|---|---|---|---|
+| 02:47:06.264 | OnPlay P1 | 5 | 02:47:10,5 / 11,3 / 11,5 / 13,17 / 13,34 |
+| 02:47:28.759 + 02:47:29.200 | OnStop P1 | **10, in due ondate** | fino a 02:47:36,8 |
+| 02:48:09.441 | OnPlay P2 | 5 | fino a 02:48:13,75 |
+| 02:48:33.06 + 02:48:33.31 | OnStop P2 | **11, in due ondate** | -- |
+
+Su P1 le ultime due costruzioni finiscono alle 02:47:13,3, cioe' **2,5 secondi dopo che il video era
+gia' partito** (02:47:10,84). La memoria libera passa da 338 MB all'`OnPlay` a 279 MB
+all'`OnAVStart`: **59 MB consumati durante l'apertura del player**. All'`OnStop` la raffica e'
+doppia: la finestra viene invalidata due volte a 440 ms di distanza.
+
+### Il costo di `playback.media`
+
+Righe `PERF CPU` delle quattro invocazioni:
+
+| durata riproduzione | CPU consumata da `playback.media` |
+|---|---|
+| 38 346 ms | 2 906 ms |
+| 43 950 ms | 2 740 ms |
+| 6 638 ms | 2 599 ms |
+| 5 569 ms | 2 893 ms |
+
+**Il costo non dipende dalla durata**: ~2,8 s di CPU comunque, anche per una riproduzione di 5
+secondi. Quindi il ciclo `monitor()` con `sleep(1000)` e' praticamente gratuito, e tutto il costo sta
+nell'avvio: `PERF IMPORT` dichiara **283-286 moduli, 2,3-2,8 s**, di cui solo 216-458 ms di Fen Light
+e il resto libreria standard. Sono 2,8 secondi di CPU spesi **esattamente sul percorso di apertura**,
+in concorrenza con il probe del demuxer e la configurazione di MediaCodec.
+
+Correzione utile: nel lotto 171 avevo attribuito al ciclo di monitoraggio un peso che non ha. Il
+bersaglio e' l'albero degli import di `playback.media`, non il polling.
+
+### Trakt
+
+`traktcache.db` sano. In tutta la sessione: un `404` su `sync/playback/1840957255` (cancellazione di
+un segnalibro che su Trakt non esisteva piu', innocuo) e **un solo `422` su `scrobble/stop`**, alla
+chiusura. Il ciclo di ritentativi del lotto 171 non si e' ripresentato. Il blocco resta da sistemare,
+ma non sta piu' facendo danni.
+
+### Perche' `truehdpassthrough` non compare fra le impostazioni
+
+Non e' un'opzione nascosta: **la stick non sa mandare TrueHD in bitstream**, e Kodi lo sa dall'avvio.
+`k5.log:483-500`, enumerazione dei dispositivi audio:
+
+```
+Device 1  AudioTrack (IEC)   m_deviceType: AE_DEVTYPE_HDMI
+  m_channels    : FL, FR, FC, LFE, SL, SR, BL, BR, BC, BLOC, BROC
+  m_streamTypes : STREAM_TYPE_AC3, STREAM_TYPE_DTSHD_CORE, STREAM_TYPE_DTS_1024,
+                  STREAM_TYPE_DTS_2048, STREAM_TYPE_DTS_512, STREAM_TYPE_EAC3, STREAM_TYPE_DTSHD
+Device 2  AudioTrack (RAW)
+  m_streamTypes : STREAM_TYPE_AC3, STREAM_TYPE_EAC3
+```
+
+`STREAM_TYPE_TRUEHD` non c'e'. Kodi nasconde la voce di impostazione dei formati che il sink non
+dichiara, quindi l'assenza dell'opzione **e' l'informazione**. `STREAM_TYPE_DTSHD` invece c'e':
+`dtshdpassthrough=true` era corretto.
+
+Conseguenza operativa: su questa macchina **una traccia TrueHD verra' sempre decodificata in
+software**, e il risultato e' quello misurato su P3 (23,19 fps, 10 fotogrammi scartati, il peggiore
+delle quattro). Non e' correggibile da Kodi: va evitata **a monte**, nella scelta della sorgente.
+Che e' un filtro lato Fen, non un'impostazione Kodi -- e dipende dal dispositivo *e* dal televisore.
+
+### La latenza di ingresso durante la riproduzione
+
+Misurata sulle coppie `CAndroidKey: key down` -> `Keyboard: scancode` di tutta la sessione, separando
+le finestre di riproduzione dal resto:
+
+| | campioni | mediana | media | massimo |
+|---|---|---|---|---|
+| nell'interfaccia | 224 | **30,0 ms** | 33,2 | 408 |
+| durante la riproduzione | 27 | **57,0 ms** | 52,9 | 78 |
+
+**La latenza raddoppia mentre il video gira.** Kodi processa la coda di ingresso una volta per
+fotogramma di interfaccia disegnato: se l'anello di rendering della GUI e' in affanno, il tasto
+aspetta. Sono 57 ms spesi **prima** che qualunque animazione cominci.
+
+### L'animazione dell'OSD: tre effetti sovrapposti, e uno e' uno zoom
+
+All'apertura dell'OSD si accavallano tre animazioni sullo stesso sottoalbero.
+
+`VideoOSD.xml:4-6` -- livello finestra:
+```xml
+<animation effect="fade" start="0" end="100" time="300" delay="200"
+           condition="Window.IsActive(DialogSeekBar.xml) | Window.IsVisible(1152)">WindowOpen</animation>
+<animation effect="fade" start="0" end="100" time="300"
+           condition="![Window.IsActive(DialogSeekBar.xml) | Window.IsVisible(1152)]">WindowOpen</animation>
+<animation effect="fade" end="0" start="100" time="300">WindowClose</animation>
+```
+
+`Includes_OSD.xml:1032-1035` -- `OSD_HideControls`, incluso subito dentro:
+```xml
+<animation effect="fade" time="200" start="100" end="0" condition="$EXP[Exp_OSD_HideControls]" reversible="false">Conditional</animation>
+<animation effect="fade" time="200" delay="200" end="100" start="0" condition="!$EXP[Exp_OSD_HideControls]" reversible="false">Conditional</animation>
+```
+
+`Includes_Animations.xml:27-37` -- `Animation_OSD_HideForInfoDialog`, anch'esso incluso subito dentro,
+che richiama `Animation_Zoom_In` con `delay=200`; e `Animation_Zoom_In` (righe 69-79) e':
+```xml
+<effect type="fade" start="0"  end="100" time="300" delay="$PARAM[delay]" tween="sine" easing="in" />
+<effect type="zoom" start="85" end="100" time="300" delay="$PARAM[delay]" center="auto" tween="sine" easing="out" />
+```
+
+**Lo zoom e' la voce cara, non la dissolvenza.** Una dissolvenza e' una moltiplicazione di alpha per
+controllo: costa quasi nulla. Uno zoom mette una matrice di trasformazione sullo stack di rendering e
+**ogni controllo figlio disegna attraverso quella matrice**; con `center="auto"` Kodi ricalcola il
+centro dal rettangolo di ciascun controllo. Soprattutto: per tutti i 300 ms la scala e' frazionaria
+(85 -> 100 con easing sine), quindi ogni texture e ogni glifo dell'OSD cade su coordinate non intere
+e viene **ricampionato in bilineare invece di essere copiato 1:1**. Per l'intero OSD, a ogni
+fotogramma, mentre MediaCodec sta spingendo 1080p sullo stesso display attraverso l'overlay hardware
+e la GUI compone sopra il buco trasparente.
+
+Bilancio dal tasto all'OSD completamente disegnato:
+
+| voce | tempo |
+|---|---|
+| latenza di ingresso (misurata) | ~57 ms |
+| `delay` dell'animazione | 200 ms |
+| durata di fade + zoom | 300 ms |
+| **totale** | **~560 ms** |
+
+I 200 ms di `delay` sono attesa pura: servono a far uscire di scena la barra di ricerca prima che
+entri l'OSD, ma sono dichiarati **tre volte** (finestra, `OSD_HideControls`, `Animation_Zoom_In`).
+
+Onesta' sulla misura: in `k5.log` **`VideoOSD.xml` non viene mai aperto** -- l'utente ha usato solo
+`DialogSeekBar`. La latenza di ingresso e' misurata, il costo dell'animazione e' letto dagli XML della
+skin e non misurato su questo log. Per misurarlo serve una riproduzione in cui l'OSD venga aperto e
+chiuso quattro o cinque volte. Va anche ricordato che il caricamento dell'XML avviene **una volta
+sola** (`Loading skin file: VideoOSD.xml, load type: KEEP_IN_MEMORY`, visibile solo alla prima
+apertura): dalla seconda in poi resta solo animazione e Python.
+
+### Voce 13 -- calibrazione automatica del dispositivo
+
+L'esigenza vera non e' l'audio: **la stick andra' su un televisore e una connessione sconosciuti**.
+Ogni valore discusso in questi lotti (formati passthrough, numero di canali, frequenze della
+whitelist, `line_speed`, `memorysize`, e le preferenze di sorgente) dipende dall'accoppiata
+dispositivo+televisore+rete, e nessuno di questi puo' essere un valore fisso nel codice.
+
+Cosa e' leggibile a runtime, e come:
+
+| dato | via | nota |
+|---|---|---|
+| formati che il sink sa mandare in bitstream | JSON-RPC `Settings.GetSettings`, campo `enabled` delle voci `audiooutput.*passthrough` | Kodi disabilita le voci il cui `STREAM_TYPE` non e' stato dichiarato -- e' proprio il meccanismo che nasconde `truehdpassthrough`. **Da verificare per primo**: l'intera meta' audio poggia su questo |
+| canali reali del televisore | `options` della voce di lista `audiooutput.channels` | derivano da `m_channels` del sink, che viene dall'EDID |
+| frequenze disponibili | `options` di `videoscreen.whitelist` | qui ne elenca 8 (60, 59.94, 50, 30, 29.97, 25, 24, 23.976). **Da verificare dopo la scrittura**: su questo televisore 59.94 era elencata ma in pratica veniva rifiutata (lotto 172) |
+| velocita' della connessione | `_speed_test_mbps()` | **esiste gia'** in `modules/advanced_settings.py:52` |
+| RAM totale | `_total_ram_mb()` | **esiste gia'**, riga 33 |
+
+Ripiego se `Settings.GetSettings` non porta abbastanza informazione: scrivere `true` su ciascun
+`audiooutput.*passthrough` con `Settings.SetSettingValue` e **rileggere** -- Kodi rifiuta i formati
+che il sink non supporta, quindi la rilettura e' la risposta.
+
+Cosa scriverebbe: le voci `audiooutput.*` di cui sopra, `audiooutput.channels`,
+`filecache.memorysize` (gia' fatto), `videoscreen.whitelist` + `adjustrefreshrate`, `results.line_speed`
+e -- la piu' importante -- **`preferred_autoplay` derivata da cio' che il dispositivo sa fare in
+bitstream**: preferire i formati che passano senza decodifica, non preferire mai AAC, ed escludere
+TrueHD se il sink non lo dichiara.
+
+Dove gira: **fra i Tools, non all'avvio.** Tre motivi misurati: il solo test di rete arriva a 12 s
+(`SPEEDTEST_MAX_SECONDS`); il sondaggio audio richiede la riapertura del sink; e la verifica della
+whitelist richiede un cambio di modo reale, che stacca il segnale HDMI per circa un secondo (misurato:
+1,0 s per ciclo su tutte e quattro le aperture). Non e' roba da pagare a ogni avvio -- tanto piu' che
+l'avvio e' gia' il momento piu' congestionato di questa macchina.
+
+Il "senza che l'utente se ne renda conto" si ottiene comunque con una **verifica di deriva** all'avvio,
+che e' gratuita: leggere solo l'elenco dei formati abilitati e l'elenco dei modi video (nessuna I/O,
+nessun cambio di modo), confrontarli con un'impronta salvata e, se il televisore e' cambiato, mostrare
+**una** notifica che invita a rifare la calibrazione. Il gancio esiste gia': il sottomenu
+`navigator.advanced_cache` con la voce `advancedsettings.network_test`.
+
+---
+
+## Lotto 175 -- l'EDID dice il contrario del sink: perche' "audio non supportato" su Decision to Leave
+
+Sessione del 06/09, `kodi.log` avviato alle 03:45:28, sei riproduzioni fino alle 03:54:29, sempre con
+i componenti di debug Video/Audio/FFmpeg attivi (775 406 righe, 116 MB). E' la prima sessione con
+`eac3passthrough`, `dtspassthrough` e `dtshdpassthrough` tutti a `true`.
+
+### Il risultato generale: il passthrough entra quasi sempre, e i fotogrammi tornano
+
+| riproduzione | banda | durata | resi | scartati | fps | `hurry` |
+|---|---|---|---|---|---|---|
+| MPEG-2, AC3 5.1 passthrough | 5,45 Mbit/s | 8,3 s | -- | -- | -- | 1 |
+| HEVC, AC3 2.0 passthrough | 9,68 Mbit/s | 18,3 s | 431 | 7 | **23,52** | 7 |
+| H264, AC3 2.0 passthrough | 5,54 Mbit/s | 40,2 s | 958 | 8 | **23,85** | 3 |
+| HEVC HDR, DTS 5.1 passthrough | 7,92 Mbit/s | 46,7 s | 1114 | 7 | **23,84** | 5 |
+| MPEG-4 SD | 0,97 Mbit/s | 35,1 s | -- | -- | -- | 0 |
+| H264 720p, AC3 2.0 passthrough | 2,98 Mbit/s | 16,4 s | 252 | 5 | 15,36 | **2866** |
+
+(La prima e la quinta usano il decodificatore software `CDVDVideoCodecFFmpeg`, che non emette
+`ReleaseOutputBuffer`: per quelle il conteggio non e' disponibile.)
+
+Escluso l'ultimo caso -- che ha una causa a se', vedi sotto -- **tutte le riproduzioni stanno fra
+23,52 e 23,85 fps con al massimo 7 `hurry`**. E' il migliore insieme di misure di tutta l'indagine.
+Confronto diretto col lotto 174, dove le riproduzioni senza passthrough stavano fra 23,19 e 23,74 con
+90 `hurry` nel caso peggiore. La riga da guardare e' la terza: **40 secondi consecutivi a 23,85 fps**.
+
+### Correzione al lotto 173: l'EDID non dichiara DTS
+
+Nel lotto 173 avevo scritto che il televisore accetta "AC-3 6ch, E-AC-3 8ch, DTS-HD 8ch". **La parte
+sul DTS era sbagliata.** I blocchi audio letti da `/sys/class/amhdmitx/amhdmitx0/edid`, nel formato
+`{formato, canali, frequenze, cce}` del CEA-861:
+
+```
+{1,  1, 57, 7}    formato 1  = LPCM,   2 canali
+{2,  5,  7, 50}   formato 2  = AC-3,   6 canali
+{10, 7,  7, 1}    formato 10 = E-AC-3, 8 canali
+{12, 7,  4, 3}    formato 12 = MLP (Dolby TrueHD), 8 canali
+```
+
+Il formato 7 (**DTS**) e il formato 11 (**DTS-HD**) **non ci sono**. Il televisore non ha mai
+dichiarato di saper decodificare DTS.
+
+Ma il sink Android dice il contrario -- `k5.log:491`:
+
+```
+m_streamTypes : STREAM_TYPE_AC3, STREAM_TYPE_DTSHD_CORE, STREAM_TYPE_DTS_1024,
+                STREAM_TYPE_DTS_2048, STREAM_TYPE_DTS_512, STREAM_TYPE_EAC3, STREAM_TYPE_DTSHD
+```
+
+`isDirectPlaybackSupported` di questo Amlogic risponde `true` per il DTS **indipendentemente
+dall'EDID**. Kodi si fida del sink, abilita l'opzione, e manda in HDMI un flusso che il televisore non
+sa leggere.
+
+E c'e' il rovescio esatto: il televisore dichiara **MLP/TrueHD 8 canali**, ma il sink non espone
+`STREAM_TYPE_TRUEHD`, quindi l'unica cosa che il televisore saprebbe accettare senza decodifica e'
+proprio quella che non possiamo usare. **I due elenchi si contraddicono in entrambe le direzioni.**
+
+### Decision to Leave, riga per riga
+
+Il file: `Duration: 02:19:02.62, bitrate: 7545 kb/s`, video HEVC Main10 HDR, e come traccia
+predefinita:
+
+```
+03:51:25.401  Stream #0:1(ita), Audio: dts (DTS), 48000 Hz, 5.1(side), fltp, 1536 kb/s (default)
+03:51:25.404  Stream #0:2(ita), Audio: ac3, 48000 Hz, 5.1(side), fltp,  640 kb/s (default)
+```
+
+Kodi apre la prima:
+
+```
+03:51:27.420  CAEStreamParser::SyncDTS - dts stream detected (6 channels, 48000Hz, 16bit BE,
+              period: 512, syncword: 0x7ffe8001, target rate: 0x18, framesize 2012)
+03:51:27.420  Creating audio stream (codec id: 86020, channels: 6, sample rate: 48000, pass-through)
+03:51:27.523  Trying to open: samplerate: 48000, channelMask: 12, encoding: 13
+03:51:27.560  Initializing with: method: IEC (PT) stream-type: STREAM_TYPE_DTS_512
+              Channel Count: 2   Channel Layout: FL, FR
+```
+
+`encoding: 13` e' `ENCODING_IEC61937`: Kodi impacchetta da se' e spedisce burst IEC su un canale a
+48 kHz / 16 bit / 2 canali. **Quel tubo porta esattamente 1 536 000 bit/s.** La traccia DTS e' a
+**1536 kb/s**. Margine zero, prima ancora di contare i preamboli IEC.
+
+Quindi ci sono due motivi indipendenti perche' il televisore dica "audio non supportato", ed entrambi
+bastano da soli:
+1. il televisore non dichiara DTS in nessuna forma;
+2. anche se lo dichiarasse, la traccia satura al millesimo il tubo IEC a 48 kHz stereo.
+
+Confronto con cio' che invece **funziona**: l'E-AC3 del lotto 174 apre a `m_sampleRate: 192000`
+(192 kHz x 2 x 16 bit = 6144 kb/s di tubo per un flusso da 768 kb/s), e gli AC-3 a 640 e 192 kb/s
+girano su 48 kHz con abbondanza. Il DTS a 1536 e' l'unico caso senza margine.
+
+**Azione: `dtspassthrough` e `dtshdpassthrough` vanno rimessi a `false` su questo televisore.**
+Restano AC-3 ed E-AC-3, che coprono tutto cio' che il televisore dichiara e che in questa sessione
+hanno funzionato sei volte su sei. E la traccia AC3 5.1 a 640 kb/s era **nello stesso file**, subito
+sotto.
+
+### E questo demolisce il progetto di calibrazione basato sul sink
+
+La voce 13 del lotto 174 proponeva di leggere le capacita' dal sink via `Settings.GetSettings`. Questa
+sessione dimostra che **il sink mente**, e mente in tutt'e due i sensi. Leggere l'EDID sarebbe la
+risposta giusta ma non e' praticabile in modo portatile: `/sys/class/amhdmitx/amhdmitx0/edid` e'
+specifico Amlogic, e il file gemello `aud_cap` risponde gia' `Permission denied` anche dal dominio
+shell, quindi da dentro l'app Kodi (SELinux `untrusted_app`) non c'e' garanzia.
+
+La forma robusta e' **empirica**: una procedura guidata che, una volta sola, prova un formato alla
+volta e chiede all'utente se sente l'audio. Tre o quattro domande, nessuna dipendenza da sysfs, da
+root o dalla sincerita' del driver, e funziona su qualunque accoppiata dispositivo/televisore --
+compresa quella sconosciuta dello zio.
+
+### Il difetto nuovo: undici secondi senza audio, sbloccati dal cane da guardia
+
+Riproduzione delle 03:50:18, un rip DVD (`title: DVD`, `Audio: ac3, 48000 Hz, 2 channels, 192 kb/s`).
+Il video parte alle 03:50:20,28. L'audio **non esiste**:
+
+```
+03:50:20.284  CVideoPlayerAudio - GENERAL_RESYNC(-95000), level: 0, cache: 300000
+   ... undici secondi di video senza una sola riga audio ...
+03:50:31.113  CVideoPlayer::HandlePlaySpeed - audio stream stalled, triggering re-sync
+03:50:31.159  demuxer seek to: 10785.000000
+03:50:31.240  CAEStreamParser::TrySyncAC3 - AC3 stream detected (2 channels, 48000Hz)
+03:50:31.241  Creating audio stream (codec id: 86019, channels: 2, ..., pass-through)
+```
+
+Sul percorso passthrough Kodi non decodifica: `CAEStreamParser` cerca la parola di sincronismo nei
+byte grezzi. Qui non l'ha trovata per undici secondi, e a sbloccare la situazione e' stato il cane da
+guardia di Kodi con una risincronizzazione forzata e un salto. **Per tutto quel tempo il canale audio
+HDMI era aperto e vuoto** -- l'altra condizione in cui un televisore scrive "audio non supportato".
+
+E' un secondo difetto, distinto da quello del DTS, e riguarda le tracce AC-3 stereo a basso bitrate
+dei rip vecchi. Su una traccia cosi' il passthrough non fa guadagnare nulla (192 kb/s decodificati in
+software costano un'inezia) e introduce questo rischio.
+
+### Il difetto piu' grave: durante un salto in rete, il video gira a vuoto
+
+Ultima riproduzione, 720p H264 a 2,98 Mbit/s. Alle 03:54:17,638 un salto in avanti:
+
+```
+03:54:17.638  CVideoPlayer::SetCaching - caching state 1
+03:54:17.639  demuxer seek to: 15017.737598
+03:54:17.640  easy_acquire - Created session to https://nexus-182.ceur.tb-cdn.st
+03:54:17.641  CurlFile::CReadState::Connect - Resume from position 3080397027
+   ...
+03:54:23.527  demuxer seek to: 15017.737598, success
+```
+
+**Cinque secondi e nove decimi** per riaprire la sessione HTTP e riposizionarsi a 3,08 GB dentro il
+file. E in quei secondi il thread video fa questo, circa **seicento volte al secondo**:
+
+```
+03:54:18.902  AddData dts:6250000.00 pts:6292000.00 sz:1887 indexBuffer:-1 current state (3)
+03:54:18.902  CVideoPlayerVideo::CalcDropRequirement - hurry: 1
+03:54:18.904  AddData dts:6250000.00 pts:6292000.00 sz:1887 indexBuffer:-1 current state (3)
+03:54:18.904  CVideoPlayerVideo::CalcDropRequirement - hurry: 1
+   ... 2866 iterazioni identiche, con lo stesso identico pacchetto ...
+```
+
+Sempre lo stesso pacchetto, sempre `indexBuffer:-1` (nessun buffer di ingresso libero), e a ogni giro
+una chiamata a `CalcDropRequirement`. **Un core bruciato per cinque secondi mentre si aspetta la
+rete.** Il conteggio dei fotogrammi di quella riproduzione (15,36 fps contro 23,976) e' quasi tutto
+qui dentro.
+
+Questo e' il meccanismo, misurato, del "porto avanti il video e c'e' lag" con cui era cominciata
+l'indagine. E chiarisce anche una cosa importante: **il costo non e' solo l'attesa della rete, e'
+l'attesa piu' un core saturo**. Su questa macchina la seconda meta' e' quella che si vede.
+
+I 2866 `hurry` di questa riproduzione, da soli, sono piu' di tutti gli altri di entrambe le sessioni
+messi insieme. Vanno letti come un contatore di questo giro a vuoto, non come un giudizio sulla
+fluidita'.
+
+---
+
+## Lotto 176 -- fase 1, l'apertura del player. Passo 1.1: i widget non si ricostruiscono piu' all'OnPlay
+
+Prima volta che si lavora con una misura fissa prima e dopo. Lo strumento e'
+`tests/misura_apertura.py`: legge un `kodi.log`, delimita le riproduzioni fra `Player.OnPlay` e
+`Player.OnStop` delle righe `PERF MEM`, e tira fuori sempre le stesse metriche. Gira in 0,45 s su un
+log da 116 MB. La regola e' una sola: **se cambia lo strumento fra due misure, il confronto non vale
+niente** -- quindi ogni correzione allo strumento va fatta prima della baseline, mai in mezzo.
+
+Due correzioni fatte in corsa, prima della baseline:
+- la finestra dei fotogrammi va dal primo all'ultimo reso, non fino a `OnStop`: fra `CloseFile` e
+  `OnStop` passa oltre un secondo in cui non si disegna, e contarlo abbassava gli fps di una
+  quantita' proporzionale alla durata della riproduzione. Un metro che cambia con l'oggetto misurato;
+- la finestra dell'`OnStop` da 5 a 15 s (tagliata al prossimo `OnPlay`): la seconda ondata arriva
+  anche dieci secondi dopo, e con 5 s restava fuori dal conto.
+
+### Il protocollo
+
+Tre riproduzioni **avviate dalla Home**, almeno 40 s ciascuna, **senza salti**, chiuse normalmente.
+Componenti di debug Video/Audio/FFmpeg **spenti** (il log passa da 116 MB a 1,1 MB, e quei componenti
+sono un carico che falsa proprio la CPU che stiamo misurando).
+
+Prezzo da pagare, da tenere presente: senza il componente Video le righe `ReleaseOutputBuffer` non
+esistono, quindi **fps, fotogrammi scartati e `hurry` non sono misurabili in fase 1**. Come ancora
+per datare l'apertura si usa il `GENERAL_RESYNC` del thread video, che nelle sessioni con entrambe le
+righe dista pochi millisecondi dal primo fotogramma; nell'output e' etichettata come stimata. Alla
+fase 2 (i salti) il componente Video andra' riacceso.
+
+### Il difetto, misurato
+
+I widget della Home sono tre: `home.501` (`build_continue_watching`), `home.502` e `home.503`
+(mdblist). A ogni avvio di riproduzione:
+
+```
+20:34:36.646  Player.OnPlay
+20:34:36.712  refreshing.. x3                    <- 66 ms dopo
+20:34:36.716  running add on script x3
+20:34:39.855  Window Deinit (Home.xml)
+20:34:39.880  build_continue_watching | totale 2725 ms
+20:34:41.163  mdblist                 | totale 3985 ms
+20:34:41.480  mdblist                 | totale 4267 ms
+```
+
+Le tre costruzioni finiscono **fino a 1,6 s dopo che `Home.xml` e' stato distrutto**. E siccome a fine
+riproduzione i widget si ricostruiscono comunque, per un film di durata normale quel risultato viene
+riscritto prima di essere mai mostrato: **e' lavoro interamente buttato, e cade sull'apertura del
+player**, in concorrenza con il probe del demuxer e la configurazione di MediaCodec.
+
+La causa e' in `CDirectoryProvider::Announce` (verificata sul sorgente Omega, non a memoria):
+
+```cpp
+if (m_currentSort.sortBy == SortByNone || m_currentSort.sortBy == SortByLastPlayed ||
+    m_currentSort.sortBy == SortByPlaycount || m_currentSort.sortBy == SortByLastUsed)
+  m_updateState = INVALIDATED;
+```
+
+su `OnPlay`, `OnResume` e `OnStop`. Il file generato dallo skinshortcuts passa
+`<param name="sortby"/>` -- vuoto -- per **tutti e 26** i widget, e vuoto significa `SortByNone`.
+
+### La correzione, una parola
+
+`Includes_Widgets.xml`, dentro `Defs_Widget_Content`, che dal lotto 155 e' il punto unico da cui passa
+il `<content>` di ogni widget paginabile:
+
+```xml
+<content sortby="$PARAM[sortby]" ...>   ->   <content sortby="programcount" ...>
+```
+
+Perche' `programcount` e non un altro valore. Il preparatore e'
+`ByProgramCount = std::to_string((int)values.at(FieldProgramCount).asInteger())`, e
+`FieldProgramCount` gli elementi di un plugin non lo impostano mai: la chiave e' `"0"` per tutti,
+`AlphaNumericCompare` torna 0 e lo `std::stable_sort` conserva l'ordine d'ingresso, che e' quello
+consegnato da Fen Light. E' l'unico modo che Kodi da' a una skin per uscire da quei quattro valori
+senza riordinare niente.
+
+Il valore e' scritto fisso e non piu' preso dal chiamante perche' **nessuno dei 26 widget lo usa**: non
+c'e' nessun ordinamento da rispettare. Chi un ordinamento vero ce l'ha (`Includes_Hubs` 826 e 1024)
+non passa da `Defs_Widget_Content`.
+
+Nessuna rigenerazione, nessun `buildv` da alzare: il file generato include `Defs_Widget_Content` **per
+nome**, quindi cambiare la definizione basta. E' l'eccezione alla regola del lotto sui template.
+
+**Il rischio dichiarato prima di provare**, e verificato dopo: `preliminarySort` mette le cartelle
+prima dei file quando `handleFolder` e' attivo, quindi un widget che mescolasse film (non cartelle) e
+serie (cartelle) si riordinerebbe. Controllato sul dispositivo: nessun widget mescola i due tipi, e
+l'ordine degli elementi e' rimasto identico in tutti.
+
+### Il risultato
+
+| metrica | baseline | dopo 1.1 | |
+|---|---|---|---|
+| **refresh @OnPlay** | 3,0 | **0,0** | bersaglio |
+| **interpreti Python in apertura** | 3,0 | **0,0** | bersaglio |
+| **coda dentro il video** | 1,50 s (0,53-2,29) | **nessuna** | bersaglio |
+| refresh @OnStop | 3,7 | 4,0 | controllo, invariato |
+| `playback.media` CPU | 3015 ms | 3009 ms | controllo, invariato |
+| moduli importati | 285 | 284 | controllo, invariato |
+
+I tre bersagli a zero, i tre controlli fermi: i passi sono indipendenti come previsto, e il 1.2 e il
+1.3 restano interamente da fare. Su tutta la sessione gli `running add on script` scendono da 38 a 30.
+
+Verificato che non si e' rotto niente: dopo l'`OnStop` i widget si ricostruiscono regolarmente
+(`build_continue_watching` riparte 1,46 s dopo, con il token `&reload=`), quindi nessun elenco resta
+vecchio.
+
+### Due metriche da correggere, e sono errori miei
+
+**L'apertura e' peggiorata, da 3,35 a 4,10 s di media -- ma non e' la modifica.** Scomposizione della
+riproduzione 2, stesso identico file in entrambe le sessioni (`Resume from position 7163857793`):
+
+| fase | baseline | dopo 1.1 |
+|---|---|---|
+| OnPlay -> secondo `CFileCache::Open` | 0,405 s | **0,964 s** |
+| `Creating Demuxer` -> probe formato | 0,034 s | 0,038 s |
+| lettura dell'indice mkv a 7,16 GB | **1,385 s** | **2,363 s** |
+| ritorno a inizio file -> `Creating video codec` | **1,953 s** | **2,139 s** |
+| codec + audio + riempimento cache | 0,663 s | 0,542 s |
+| **totale** | **4,45 s** | **6,05 s** |
+
+**Tutte e sole le fasi di rete sono piu' lente**; quelle che dipendono dalla macchina sono uguali o
+migliori, e il nodo CDN era diverso (nexus-068 contro nexus-056). L'apertura non e' una metrica di
+questa fase: e' dominata dalla rete, e va letta solo nella fase 2.
+
+**La metrica della RAM non e' pulita e va abbandonata.** Dice 78 MB medi prima e 48 dopo, ma i tre
+valori sono 4, 82 e 58 MB: non e' rumore, e' che misura due cose insieme. Nella riproduzione 2, fra
+`OnPlay` e `OnAVStart`, **non gira piu' un solo interprete Python** -- eppure il calo e' 82 MB, e 67
+di quelli avvengono nei 260 ms fra `Window Init (VideoFullScreen.xml)` e `OnAVStart`: sono i buffer di
+MediaCodec, il renderer e le texture della finestra a schermo intero. Costo fisso del player, non
+nostro. E il valore di partenza cambia da solo (402 MB contro 311) a seconda di quanto Android abbia
+gia' recuperato. Nelle prossime misure resta stampata, ma non e' un bersaglio.
+
+### Passo 1.2 -- l'uscita dal player e' una ricostruzione globale, e nessuno la dichiarava
+
+All'`OnStop` le ondate non erano di Kodi: erano **nostre**, ed erano una corsa fra due percorsi che
+osservano lo stesso evento. Misura del 06/09, fine della terza riproduzione:
+
+```
+21:05:06.360  Player.OnStop
+21:05:06.5-06.9  tre costruzioni (token 1788721287312)   <- Kodi rimostra la Home
+21:05:07.239  TraktMonitor: refresh MIRATO               <- token nuovo, 0,88 s dopo
+21:05:09.076  build_continue_watching | totale 2519 ms   <- finisce la prima
+21:05:09.138  running add on script build_continue_watching (token nuovo)
+21:05:11.226  build_continue_watching | totale 1838 ms   <- la stessa, di nuovo
+```
+
+`set_head ... firma=5fba5ff5` in entrambi i giri: **contenuto identico**. Il monitor Trakt rilegge da
+Trakt il progresso che abbiamo appena spinto noi e lo classifica come cambiamento. E i due giri non si
+sovrappongono nemmeno -- `CDirectoryProvider` serializza per contenitore -- quindi il secondo aspetta
+il primo e raddoppia la latenza: ~13 s di Python per la fine di un film.
+
+La guardia dell'accorpamento non scattava perche' la ricostruzione che Kodi fa uscendo dal player
+**non era timbrata**. Che esistesse lo diceva gia' il lotto 112 ("Uscendo dal player Kodi reinvalida
+da solo tutti i CDirectoryProvider"), ma la si marcava solo come refresh IN POSTO, per non far perdere
+il conteggio delle pagine; per `refresh_age()` restava invisibile. E' **la stessa identica lacuna** che
+`stamp_startup_rebuild` aveva gia' chiuso per la costruzione dell'avvio.
+
+Correzione: `stamp_return_from_player()` in `kodi_utils`, chiamata accanto a `hold_refresh_flag` nel
+ramo `Player.OnStop` di `service.py`. Non butta niente -- e' il confine con il lotto 139: cade nel ramo
+`'rinvio'` di `decide_refresh`, che rimanda con id e azioni al seguito.
+
+### Passo 1.2 bis -- 1,4 secondi in cui la costruzione e' partita e nessuno lo sa
+
+Il timbro da solo non e' bastato, e il log lo ha detto subito:
+
+```
+22:14:19.796  TraktMonitor: refresh MIRATO rimandato ...     <- il timbro funziona
+22:14:20.145  WidgetRefresher: rinvio consumato dopo 0.1s di attesa, nessuna costruzione in volo
+```
+
+Il consumatore rilasciava il rinvio immediatamente, dichiarando che non c'era nessuna costruzione in
+volo. Ma:
+
+```
+22:14:18.747  CPythonInvoker(15) parte      <- le tre ricostruzioni del ritorno dal player
+22:14:18.781  CPythonInvoker(16) parte
+22:14:18.792  CPythonInvoker(17) parte
+22:14:20.145  WidgetRefresher controlla     <- QUI
+22:14:20.270  get_pages key=home.502        <- la bandiera si alza solo adesso
+```
+
+**Una finestra cieca di 1,4 secondi.** `mark_build_start` e `get_pages` dichiarano l'inizio della
+costruzione, ma stanno entrambe DOPO gli import pigri (1247 ms su questa macchina). E' lo stesso punto
+cieco del passo 1.2 un livello piu' sotto: un lavoro in corso che nessuno ha dichiarato.
+
+Correzione: `paginator.mark_invocation_start(key)`, chiamata da `router.routing()` subito dopo
+`parse_qsl` -- chi ha un `pgctl` E' la costruzione di un widget, e quello e' l'istante piu' presto in
+cui lo si sa. Non chiama `_stamp_build`: `LASTBUILD_PROP` deve continuare a significare "una
+costruzione e' ARRIVATA IN FONDO", perche' su quello si regge il giudizio `soft_refresh` di
+`get_pages`. Il caso E di `tests/test_176.py` fissa questa distinzione.
+
+### Il conto della fase 1 finora
+
+Somma dei `PERF INVOCAZIONE` delle costruzioni di widget che finiscono entro 25 s da un `OnPlay` o da
+un `OnStop`, cioe' il lavoro che la riproduzione si porta dietro:
+
+| | riproduzioni | apertura | chiusura | per riproduzione |
+|---|---|---|---|---|
+| baseline | 3 | 9 costruzioni, **34 877 ms** | 22 costruzioni, 53 194 ms | **29 357 ms** |
+| dopo 1.1 | 3 | 0 costruzioni, **0 ms** | 15 costruzioni, 29 282 ms | 9 761 ms |
+| dopo 1.2 | 4 | -- | 19 costruzioni, 38 624 ms | 12 436 ms |
+| dopo 1.2 bis | 3 | 0 costruzioni, **0 ms** | 11 costruzioni, 26 512 ms | **8 837 ms** |
+
+**Meno 70% di lavoro di costruzione per riproduzione, e il percorso di apertura e' a zero.** Le
+metriche fisse dello strumento:
+
+| metrica | baseline | dopo 1.1 | dopo 1.2 | dopo 1.2 bis |
+|---|---|---|---|---|
+| refresh @OnPlay | 3,0 | 0,0 | 0,0 | **0,0** |
+| refresh @OnStop | 3,7 | 4,0 | 3,2 | **1,3** |
+| interpreti Python in apertura | 3,0 | 0,0 | 0,0 | **0,0** |
+| coda dentro il video | 1,50 s | nessuna | nessuna | **nessuna** |
+| `playback.media` CPU | 3015 ms | 3009 | 3088 | 3151 ms |
+
+L'ultima riga e' il controllo e non si e' mossa: e' il bersaglio del passo 1.3, ancora intatto.
+
+Il refresh mirato ora si vede funzionare nel log -- `refresh_for_ids ids=1 azioni=1 ricaricati=2
+saltati=1` -- e la coppia che si ricarica cambia col film: `continue_watching` piu' la sola lista che
+contiene quel titolo. Confermato a occhio dall'utente su tre film diversi.
+
+### Due errori miei nello strumento, corretti
+
+`render(true)` come sottostringa prendeva anche la riga
+`CMediaCodecVideoBuffer::ReleaseOutputBuffer error in render(true)`, che e' un ERRORE e non un
+fotogramma. Nel log del 06/09 due righe d'errore alle 22:05:14 facevano risultare il primo fotogramma
+della riproduzione 1 a 23,28 s dall'OnPlay (vero: 4,14) e la RAM consumata a -14 MB. Ora il match
+richiede `ReleaseOutputBuffer index(`. Le misure di baseline e passo 1.1 non cambiano: in quelle
+finestre non c'erano righe d'errore.
+
+E la metrica della RAM resta da non usare, per il motivo del passo 1.1: misura insieme il nostro
+lavoro e i buffer del player, e il valore di partenza dipende da quanto Android abbia gia' recuperato.
+
+### Residuo aperto: chi invalida i tre contenitori al rientro
+
+Su due rientri su tre resta una ricostruzione di TUTTI e tre i widget, e non e' nostra -- porta il
+token di ricarica VECCHIO:
+
+```
+22:28:03.298  Window Init (Home.xml)
+22:28:03.299  refreshing.. x3      <- token 1788726262167, quello di 3 minuti prima
+```
+
+E' successo al rientro dalla prima e dalla terza riproduzione, NON dalla seconda, pur essendo
+`Window Init (Home.xml)` presente in tutti e tre i casi. La via `OnPlay`/`OnStop` di
+`CDirectoryProvider::Announce` e' chiusa dal passo 1.1 -- se fosse quella scatterebbe tutte e tre le
+volte. Restano le altre bandiere di `Announce` (`VideoLibrary`, `GUI`) o l'attivazione della finestra.
+**Causa non ancora isolata**: e' il prossimo pezzo, e va chiuso prima del passo 1.3 perche' e' lo
+stesso tema.
+
+## Lotto 177 -- chi invalidava i tre contenitori: Kodi scriveva in un database che nessuno rilegge
+
+Il residuo lasciato aperto in fondo al 176 e' chiuso, con la prova nel log invece che per deduzione.
+La causa non era dove l'avevo cercata, e la mia correlazione del 176 era una coincidenza.
+
+### Come si e' visto
+
+Acceso il SOLO componente di debug "Annunci" (`LOGANNOUNCE`), che e' a basso volume -- 74 righe in
+un log da 1,7 MB, contro i 116 MB che producevano Video/Audio/FFmpeg. Sei riproduzioni:
+
+```
+23:59:22.198  DoWork - Marking video item https://nexus-064.../69416b50-... as watched
+23:59:22.256  GOT ANNOUNCEMENT, type: VideoLibrary, from xbmc, message OnUpdate
+23:59:22.870  ------ Window Init (Home.xml) ------
+```
+
+| # | film              | "Marking as watched" | `VideoLibrary.OnUpdate` | ricostruisce tutto |
+|---|-------------------|----------------------|-------------------------|--------------------|
+| 1 | Mayday            | no                   | no                      | no                 |
+| 2 | Toy Story         | no                   | no                      | no                 |
+| 3 | Signore Anelli    | no                   | no                      | no                 |
+| 4 | Minions           | SI                   | SI                      | (chiusura spontanea)|
+| 5 | Minions           | SI                   | SI                      | (chiusura spontanea)|
+| 6 | Minions           | SI                   | SI                      | SI                 |
+
+Sei su sei. E la stessa regola spiega `p12b`, dove il componente era spento: incrociando la tabella
+`bookmark` del database con le durate reali,
+
+| film           | durata | segnalibro | `OnUpdate` | ricostruiva |
+|----------------|--------|------------|------------|-------------|
+| Mayday         | 3m20s  | SI, 193 s  | si         | SI          |
+| Toy Story      | 2m15s  | no         | no         | no          |
+| Signore Anelli | 3m16s  | SI, 189 s  | si         | SI          |
+
+193 e 189 secondi, contro la soglia `ignoresecondsatstart` di Kodi che vale **180**.
+
+### Errore mio del 176, da cancellare
+
+Nel 176 avevo scritto che il discriminante era la posizione della fine dell'invocazione
+`playback.media` rispetto a `Window Init (Home.xml)` (759 ms prima / 93 ms dopo / 1624 ms prima).
+**Era una coincidenza**: quel numero si muoveva insieme alla durata della riproduzione, che era la
+vera variabile. Il metodo sbagliato era cercare la causa nel log generale invece di accendere il
+componente che la nomina.
+
+Sbagliato anche il protocollo di prova: "tre riproduzioni da almeno 40 s" mancava il caso per
+costruzione, perche' tutte e tre restavano sotto i 180 s. Da qui in avanti almeno una delle prove
+deve superare i 3 minuti.
+
+### La causa, nel sorgente 21.1
+
+`CDirectoryProvider::Announce` (`xbmc/guilib/listproviders/DirectoryProvider.cpp`) ha due rami. Quello
+del player guarda il criterio di ordinamento -- ed e' la leva del passo 1.1. Quello della libreria non
+guarda niente:
+
+```cpp
+else {
+  if (message == "OnScanFinished" || message == "OnCleanFinished" || message == "OnUpdate" ||
+      message == "OnRemove" || message == "OnRefresh")
+    m_updateState = INVALIDATED;      // incondizionato
+}
+```
+
+Non puo' nemmeno essere selettivo: l'annuncio trasporta `{id, type}`, e per un elemento di addon
+quell'id vale -1. Nessun contenitore puo' sapere se il film cambiato e' uno dei suoi.
+
+A monte, `CSaveFileStateJob.cpp` annuncia in due punti -- quando marca visto (oltre il 90%) e quando
+scrive il punto di ripresa (oltre i 180 s, `if (... && !updatePlayCount)`). Quindi **qualunque visione
+vera** innesca l'invalidazione: e' la regola, non l'eccezione.
+
+### Il database che nessuno rilegge
+
+FenLight passa al player l'URL risolto del momento, con nodo CDN e token in scadenza. Kodi lo usa come
+chiave per salvare l'avanzamento nel proprio database video. Quella chiave non si ripete mai, quindi
+ogni riproduzione crea una riga nuova. Sulla stick, `MyVideos131.db`:
+
+```
+files 474 | path 323 | bookmark 331 | streamdetails 3850 | movie 0 | episode 0
+```
+
+E FenLight quel database non lo legge: usa `StartPercent` sulla listitem, le proprie costanti
+`set_resume = 5, set_watched = 90` (player.py:22) e il proprio archivio piu' Trakt. Ricerca di
+`MarkWatched`, `SetPlayCount`, `ToggleWatched` in addon e skin: zero occorrenze.
+
+### La correzione: un interruttore, non una soglia
+
+`ApplicationPlayerCallback.cpp:159` e' l'UNICO punto da cui parte la catena:
+
+```cpp
+if (GetCurrentProfile().canWriteDatabases())
+  CSaveFileState::DoWork(fileItem, resumeBookmark, playCountUpdate);
+```
+
+Falso -> niente scrittura, niente annuncio, niente invalidazione, niente crescita del database, in
+TUTTI i casi. `CProfile::Load` legge il flag in modo uniforme per ogni profilo, master compreso:
+nessun trattamento speciale per l'id 0.
+
+**Fatto il 07/09 su `userdata/profiles.xml`**, a Kodi chiuso (un'istanza avviata tiene il valore
+vecchio in memoria e riscrive il file al primo `Save()`, che avviene gia' all'avvio in
+`UpdateCurrentProfileDate`):
+
+```
+<canwritedatabases>true</canwritedatabases>   ->   false
+md5  7a661013ceff479108aa1f39e9c62f78  ->  93d924eeec9432a1883162c6e15fc0fd
+originale accanto: profiles.xml.bak-canwritedatabases
+```
+
+`hasdatabases` e `canwritesources` NON toccati.
+
+### Perche' le soglie di advancedsettings sono state scartate
+
+`playcountminimumpercent` accetta fino a 101 (irraggiungibile) e `ignoresecondsatstart` fino a 900.
+Ma 900 s sono 15 minuti: una visione fermata dopo venti minuti scriverebbe comunque. Copriva forse
+l'1% dei casi. Scartata su indicazione dell'utente, giustamente.
+
+### Raggio d'azione, contato sul sorgente
+
+`canWriteDatabases` compare in 19 punti dell'intero albero, tutti nella stessa famiglia: finestre
+Musica e Video native di Kodi, le loro schede informative, e i due lavori di libreria
+`VideoLibraryMarkWatchedJob` / `VideoLibraryResetResumePointJob`. Non tocca il database degli addon,
+le texture, l'EPG, le modalita' di visualizzazione, ne' la scansione (che dipende da `hasdatabases`,
+lasciato acceso). La condizione di visibilita' `profilecanwritedatabase` e' registrata in
+`SettingConditions.cpp:489` ma **non e' usata da nessuna impostazione**: dal menu non sparisce niente.
+
+Sulla stick la libreria video ha 0 film e 0 episodi, e `MyMusic83.db` non ha nemmeno le tabelle.
+
+### Prezzo misurato di cio' che si toglie
+
+| | rientro #1 (mirato) | rientro #6 (invalidato) |
+|---|---|---|
+| widget ricostruiti | 2 | 3 |
+| CPU | 1065 ms | 1740 ms |
+| tempo di parete | 2920 ms | 14 027 ms |
+| quando partono | 5,4 s dopo la Home | **1 ms dopo la Home** |
+
+Lo spreco di CPU e' 620 ms (il terzo widget, che il film non lo contiene). Ma il tempo di parete
+triplica perche' i tre interpreti nascono INSIEME nell'istante in cui la Home si ridisegna: le
+costruzioni passano da ~1,3 s a ~4,7 s l'una. E' quello che si sente.
+
+### Menu contestuale: le voci native NON sono rimovibili
+
+Domanda dell'utente: si possono togliere "Segna come visto" / "Segna come non visto" di Kodi, che
+duplicano quelle di Fen Light? **No.** La lista e' un vettore fisso in `CContextMenuManager::Init()`
+(`ContextMenuManager.cpp:92-94`), senza impostazione ne' leva da skin o addon. L'argomento
+`replaceItems` di `addContextMenuItems` e' documentato in `ListItem.h:967` come "Completely removed"
+dall'API Python v17: esiste nella firma e non fa niente. L'unico filtro e' `IsVisible(item)`, che per
+quelle due richiede solo un elemento non-cartella con infotag video, e ne mostra sempre esattamente
+una delle due (`GetPlayCount() == 0` contro `> 0`).
+
+Una delle tre pero' sparisce da sola: `CVideoRemoveResumePoint::IsVisible` chiama
+`GetItemResumeInformation`, che ricade sulla lettura del database video. Senza piu' segnalibri scritti,
+`isResumable` resta falso e la voce non compare piu'.
+
+### Da verificare sul campo
+
+E' provato che questo e' UN percorso che annuncia `VideoLibrary.OnUpdate`, non che sia l'unico. Con il
+componente "Annunci" ancora acceso, una riproduzione di 5+ minuti chiusa a meta' lo dice subito: se non
+compare nessun `GOT ANNOUNCEMENT ... VideoLibrary` e i widget non si ricostruiscono, e' chiuso.
+
+### Verifica sul campo, e la conseguenza che non avevo previsto
+
+Log delle 00:41 del 07/09, una riproduzione. L'interruttore funziona: **zero annunci `VideoLibrary`,
+zero righe `DoWork - Saving file state`, zero `Marking as watched`**. Kodi non tocca piu' il database
+e non invalida piu' niente.
+
+Ma l'utente ha visto che `continue watching` si aggiornava e **i widget che contenevano il film no**.
+Aveva ragione lui sull'origine: "prima Fen Light si agganciava a un segnale che ora non esiste piu'".
+Solo che il segnale non era di Kodi, era nostro.
+
+```
+00:41:24.175  Player.OnStop                                          <- stamp_return_from_player -> '*'
+00:41:24.177  PERF BOOKMARK: scritto                                 <- refresh mirato CON l'id
+00:41:24.181  refresh mirato accorpato: gli stessi id ricostruiti 0.01s fa
+00:41:24.652  Trakt: titoli cambiati: 0 | azioni: continue_watching
+00:41:25.095  refresh_for_ids ids=0 azioni=1 ricaricati=1 saltati=2
+```
+
+Contro lo stesso punto nel log del giorno prima, con Kodi che ancora invalidava:
+
+```
+23:50:48.593  titoli cambiati: 1 -> ['1137844'] | azioni: continue_watching
+23:50:48.812  refresh_for_ids ids=1 azioni=1 ricaricati=2 saltati=1
+```
+
+`_refresh_covered_by_last()` esce con `True` appena legge `scope == '*'`. Il timbro globale del passo
+1.2 scartava quindi l'UNICO segnale che portava l'identificativo del film -- quello del segnalibro,
+scritto 2 ms dopo l'OnStop. Mezzo secondo dopo il monitor Trakt trovava `titoli cambiati: 0`, perche'
+il progresso l'avevamo gia' scritto noi in locale: gli restava la sola azione `continue_watching`, che
+identifica un contenitore solo. `saltati=2` sono i due mdblist.
+
+Perche' prima non si vedeva: la ricostruzione globale di Kodi copriva il buco per forza bruta. Il
+timbro non era sbagliato, era **vero finche' Kodi invalidava**. Tolta l'invalidazione, e' diventato
+una dichiarazione falsa. E' lo stesso schema di
+[[stato-condiviso-non-toppe]]: il guasto e' tornato nello stesso punto perche' mancava un dato, non
+una guardia.
+
+### Correzione
+
+`stamp_return_from_player()` rimossa da `kodi_utils.py`, e con lei la chiamata nel ramo
+`Player.OnStop` di `service.py`. Al suo posto, nel file, il motivo per esteso: serve a evitare che
+qualcuno la rimetta leggendo il lotto 176 senza il 177. `hold_refresh_flag('fenlight.pg.refresh')`
+resta -- e' preesistente (commit `5253eea`) e riguarda il conteggio delle pagine, non
+l'accorpamento. `stamp_startup_rebuild()` resta: all'avvio i widget si costruiscono davvero tutti, e
+quel fatto non dipende dal database di Kodi.
+
+**Il doppione che il timbro preveniva resta prevenuto**, ma per merito invece che per scorciatoia: il
+refresh del segnalibro timbra il proprio ambito reale (`'<id>,@continue_watching'`) e il monitor Trakt
+che arriva mezzo secondo dopo ci ricade dentro per sottoinsieme. Un titolo diverso invece passa, che
+e' il confine del lotto 139.
+
+`tests/test_177.py` fissa i cinque punti: la scorciatoia di `scope == '*'`, l'assenza della funzione,
+l'accorpamento per sottoinsieme, il titolo diverso che non viene ingoiato, e la separazione fra id e
+azioni (prefisso `@`). Sezioni A e B di `test_176.py` ritirate, con la spiegazione al loro posto.
+25 su 25 passano. Installato sulla stick a Kodi chiuso: 96 file su 96, md5 verificati.
+
+### Prova finale: 8 minuti, nessun salto
+
+Log delle 01:00 del 07/09. La riproduzione supera i 180 s, cioe' la soglia che prima innescava tutto.
+
+**Zero annunci `VideoLibrary`, zero `Saving file state`, zero `Marking as watched`.** L'invalidazione
+globale non esiste piu' nemmeno nel caso che la causava.
+
+E il rientro e' quello giusto:
+
+```
+01:00:27.945  PERF BOOKMARK: scritto
+01:00:27.986  Player.OnStop
+01:00:28.022  refresh_for_ids ids=1 azioni=1 ricaricati=2 saltati=1
+```
+
+Due contenitori ricaricati -- `continue_watching` piu' l'mdblist che contiene il film -- e uno saltato.
+Costo: 3765 ms di parete, 1108 ms di CPU, contro i 14 027 / 1740 dell'invalidazione di Kodi.
+
+### Un residuo, e una mia affermazione da ritirare
+
+Scrivendo la correzione avevo affermato che il doppione restava prevenuto "per merito, per
+sottoinsieme". **Falso, e la misura lo smentisce:**
+
+```
+01:00:32.968  DIAG progress movie: da Trakt 1 | in locale 1 (1 pending_put) | scritte 1
+01:00:32.969  titoli cambiati: 0 | azioni: continue_watching
+01:00:32.988  TraktMonitor: refresh MIRATO rimandato, interfaccia ricostruita 4.9s fa
+01:00:33.315  WidgetRefresher: rinvio consumato dopo 0.0s di attesa
+01:00:33.342  refresh_for_ids ids=0 azioni=1 ricaricati=1 saltati=2
+```
+
+`continue_watching` si ricostruisce una seconda volta: 724 ms, **445 ms di CPU**.
+
+Il motivo e' scritto in `service.py` sopra `refresh_ids_inproc`: il rinvio si consuma con
+`coalesce=False` di proposito (lotto 130). Un rinvio e' lavoro NON ancora fatto, e ripassarlo sotto la
+stessa guardia che l'aveva fatto rimandare lo bocciava sempre. Quindi `_refresh_covered_by_last` su
+quel percorso **non viene nemmeno interrogata**: la mia previsione l'aveva data per scontata.
+
+Il guaio del lotto 130 pero' non era la copertura in se': era che la costruzione d'avvio aveva
+ricostruito quegli id PRIMA della sincronizzazione, cioe' sui dati vecchi -- "ricostruito di recente"
+era vero e inutile. Qui la situazione e' rovesciata: l'onda 1 gira DOPO la nostra scrittura locale, e
+la sincronizzazione che segue non porta niente (`titoli cambiati: 0`, `in locale 1 (1 pending_put)`:
+rilegge il nostro stesso segnalibro).
+
+Quindi la domanda giusta non e' "e' stato ricostruito di recente?" ma "la sincronizzazione ha portato
+qualcosa che quella ricostruzione non aveva?". E' la stessa distinzione che il docstring di
+`decide_refresh` fa gia' per il lotto 139.
+
+**Rimandato dopo il punto 1.3**, per un motivo misurato: dei 445 ms di CPU di quel secondo giro, 372
+sono import (`import 53 + import pigri 319`). Il punto 1.3 aggredisce esattamente quelli, e va
+rimisurato dopo invece che stimato adesso. `tests/test_177.py` porta la correzione dell'affermazione
+sbagliata, cosi' non resta scritta da nessuna parte come vera.
+
+## Lotto 178 -- il punto 1.3: chardet rimandato, e perche' l'albero degli import e' quasi finito
+
+Il punto 1.3 era "l'albero di import di playback.media: 284-286 moduli, ~2,9 s di CPU per riproduzione
+indipendentemente dalla durata, di cui solo ~270 ms codice nostro".
+
+### Prima di potare: lavoro o attesa
+
+Il commento del lotto 131 in cima a `fenlight.py` imponeva un taglio preliminare: *"se in quei ms il
+thread ha davvero MACINATO e' lavoro e va tolto lavoro; se ha ATTESO e' contesa, e togliere import non
+restituisce nulla"*. Su `playback.media` quella fase non era strumentata.
+
+Esteso il profilatore alla **CPU per modulo** (stesso conteggio a tempo proprio, due pile spinte ed
+estratte insieme). Risposta, su tre riproduzioni:
+
+```
+playback.media | 284 moduli | totale 3042 ms (cpu  86%)
+playback.media | 284 moduli | totale 2621 ms (cpu  90%)
+playback.media | 284 moduli | totale 2683 ms (cpu  91%)
+```
+
+**86-91%.** L'opposto dei widget, dove la stessa fase vale `496/3615 ms`, cioe' 14%: li' potare non
+restituirebbe niente. Qui restituisce quasi tutto. Nota sulla lettura: `thread_time` conta anche il
+tempo di sistema, quindi le letture dalla flash risultano CPU; il 90% significa "il thread non era
+bloccato ad aspettare altri thread", che e' esattamente la distinzione che serviva.
+
+### Aggiunta la riga 'quando'
+
+Il rendiconto diceva CHI costa, non QUANDO. Aggiunta una riga a quarti sull'ordine reale di ingresso,
+piu' soglia abbassata da 25 a 8 ms ed elenco da 18 a 30 voci:
+
+```
+25% a 77/284 (apis.trakt_api) | 50% a 142/284 (zstandard)
+75% a 205/284 (codingstatemachine) | 100% a 284/284 (modules.auto_subtitles)
+```
+
+Il 75% del costo sta DOPO il modulo 77, cioe' dopo tutto l'albero di Fen Light. E `codingstatemachine`
+e' un modulo di **chardet**.
+
+### chardet: 1,1 MB per una stringa di versione
+
+Il lotto 84 aveva gia' tolto `requests` da dentro Fen Light (337 moduli contro 66 di http.client) e il
+suo commento nominava gia' il colpevole: *"quello che si paga per niente: charset_normalizer (776 ms)
+e chardet/langrussianmodel (250 ms)"*. Ma **cocoscrapers importa requests lo stesso**
+(`modules/client.py:8`), e requests importa chardet in `compat.py:11`.
+
+```
+chardet   1 107 804 byte  48 file   <- piu' di requests + urllib3 messi insieme
+urllib3     393 677 byte
+idna        337 359 byte   8 file
+requests    179 089 byte
+```
+
+`chardet/__init__.py:24` tira dentro `universaldetector`, e con lui ogni modello di lingua
+(langbulgarianmodel, langgreekmodel, langrussianmodel, langthaimodel, johabfreq: tabelle di
+frequenza). Serve a UNA funzione: `Response.apparent_encoding` (`requests/models.py:793`), cioe'
+indovinare la codifica quando la risposta non la dichiara. Nel caso normale non viene mai chiamata.
+
+**Correzione**: `install_lazy_chardet()` in `modules/utils.py`, chiamata prima di caricare lo scraper
+esterno (`sources.import_external_scrapers` e `indexers/dialogs.py`). Mette in `sys.modules` un modulo
+finto che espone `__version__` -- letta da `chardet/version.py` senza eseguire `__init__.py` -- e
+delega ogni altro attributo al chardet vero, importandolo in quel momento. Non si toglie una funzione,
+si sposta un costo. Se qualcosa non torna non installa niente e si resta come prima.
+
+### Misura, con un artefatto dentro
+
+```
+p17 (prima)  284 moduli | totale 2592 ms | Fen Light 253 | terze parti 2338
+p18 (dopo)   243 moduli | totale 2560 ms | Fen Light 473 | terze parti 2087
+```
+
+**41 moduli in meno, terze parti -251 ms (-11%).** Il numero delle terze parti e' pulito: chardet e'
+terza parte e le modifiche toccano solo file nostri.
+
+Il totale sembra fermo perche' la quota Fen Light e' salita di 220 ms, di cui **160 su
+`modules.sources`** (da 27 a 187). E' l'artefatto del deploy: quel file era stato appena modificato,
+828 righe e 43 751 byte, e la prima invocazione l'ha ricompilato -- `__pycache__/sources.pyc` porta
+l'ora d'inizio di quella sessione. **Errore di metodo mio**: la volta prima avevo chiesto due
+riproduzioni proprio per questo, stavolta una sola. Da qui in avanti: dopo un deploy, la prima
+riproduzione non si misura.
+
+### Perche' l'albero e' quasi finito, e requests resta
+
+Domanda dell'utente: se abbiamo gia' http_client, perche' non sostituirlo a requests dentro
+cocoscrapers?
+
+La direzione e' giusta e `client.py` (202 righe, il percorso principale) usa di requests solo
+`Session` e `HTTPAdapter` -- e non tocca cfscrape. Ma:
+
+  * `cfscrape` (410 righe) sottoclassa `requests.sessions.Session` e monta un
+    `CipherSuiteAdapter(HTTPAdapter)` che manipola `ssl_context` e `set_ciphers`: e' l'aggiramento di
+    Cloudflare via impronta TLS. Riproducibile su `http.client` (che accetta un ssl_context) ma e' un
+    PORTING, non una sostituzione di chiamate.
+  * il rischio vero non e' la fragilita' della libreria, ed e' un punto su cui mi ero spiegato male:
+    requests e' congelato alla versione installata in Kodi, non si aggiorna da solo. Il rischio e' la
+    **copertura dei casi limite** -- http_client e' stato verificato su TMDb/Trakt/debrid, API educate
+    con charset dichiarato; i siti degli scraper sono ostili (brotli, chunked, redirect strani,
+    cookie). Se ne manca uno, lo scraper non torna risultati e SEMBRA che il sito sia cambiato.
+  * il costo di divergenza dalla biforcazione e' invece piu' piccolo di come l'avevo raccontato:
+    `client.py` e' stato toccato **3 volte su 19** aggiornamenti di cocoscrapers in questo repo.
+
+Guadagno stimato: `url 158 + compat 51 + urllib3 35 + logging 29 + util 24 + poolmanager 21 +
+connection 19 + idna 21 + ipaddress 19` = ~377 ms elencati, piu' la coda -> **400-600 ms**. Ma
+`email` (85), `http` (47), `ssl` (45) e `socket` (27) NON spariscono: http_client si appoggia a
+`http.client`, che li importa comunque.
+
+**Decisione dell'utente, condivisa: si tiene requests.** Il bersaglio resta scritto qui se un giorno
+servisse: solo `client.py`, lasciando cfscrape su requests cosi' si carica pigramente solo sui siti
+protetti.
+
+### Piste chiuse per strada
+
+  * **bytecode mancante**: i 32 `.py` senza `.pyc` sono moduli mai importati piu' i due punti
+    d'ingresso, che Kodi esegue come script e che per definizione non si mettono in cache. Falso
+    allarme.
+  * **rendere pigri gli import in cima a `sources.py`**: costo marginale misurato uno per uno --
+    `base_window` 11 moduli, `scrapers.external` 7, `player` 4, tutti gli altri **zero**. Al massimo
+    24 su 108. Non e' la leva.
+  * **`idna`**: e' **gia' pigro** in entrambi i punti (`urllib3/util/url.py:335` dentro `_idna_encode`,
+    solo per host non ASCII; `requests/models.py:402`). Avevo annunciato che era il bersaglio
+    successivo: sbagliato, non c'e' niente da rimandare.
+  * **`auto_subtitles`**: gia' pigro (`player.py:203`, dentro una funzione). Compare nel profilo
+    perche' serve davvero.
+  * **`zstandard`**: `try: import zstandard` in `urllib3/util/request.py:32` e `response.py:29`, e non
+    e' installato -- due import FALLITI che scandiscono tutto `sys.path` sulla flash a vuoto. Piccolo
+    e non pulitamente risolvibile: uno stub farebbe credere a urllib3 che zstd ci sia.
+  * un'analisi dell'albero fatta sul Mac con gli stub e' stata **buttata**: lo stub `xbmcvfs` importa
+    `shutil`, che si tira dietro bz2/lzma/zlib/grp/pwd, nessuno dei quali esiste sul percorso della
+    stick. I conteggi erano gonfiati e le conclusioni sulla "base comune" non valevano.
+
+### Cosa insegna il lotto
+
+L'elenco copre 1 507 ms su 2 560: il resto e' una coda di ~213 moduli a ~5 ms l'uno, e nessuno domina.
+Per togliere altri 400 ms servono altri 40 file, e ogni gruppo da 40 file costa lavoro o rischio.
+
+Messi in fila gli interventi rimasti:
+
+| intervento                          | guadagno        | rischio | dove       |
+|-------------------------------------|-----------------|---------|------------|
+| chardet pigro (fatto)               | -251 ms         | nessuno | nostro     |
+| portare `client.py` su http_client  | -400/600 ms     | reale   | terze parti|
+| togliere la ricostruzione doppia    | **-445 ms CPU** | nessuno | nostro     |
+
+L'ultima e' il residuo aperto del lotto 177, e vale quanto tutto il porting. **Non far girare
+un'invocazione vale piu' che renderla economica**: dei 445 ms, 372 sono proprio import -- gli stessi
+che qui abbiamo potuto ridurre solo dell'11%.
+
+`tests/test_178.py` costruisce un chardet finto su disco e fissa quattro casi: si installa senza
+toccare il modulo pesante; al primo `detect()` carica quello autentico e da li' in poi in `sys.modules`
+c'e' il vero, non l'intermediario; non scavalca un chardet gia' caricato; e se il pacchetto non e' sul
+percorso lascia `sys.modules` pulito. 26 su 26.
+
+## Lotto 179 -- il rinvio che ridisegnava un widget appena disegnato
+
+Residuo aperto del lotto 177, e prima voce della lezione del 178: **non far girare un'invocazione vale
+piu' che renderla economica**.
+
+### Il guasto
+
+Dal lotto 177 l'uscita dal player ricostruisce i contenitori giusti. Ma cinque secondi dopo il monitor
+Trakt ne ricostruiva uno una seconda volta, a vuoto (log 01:00 del 07/09):
+
+```
+01:00:27.945  PERF BOOKMARK: scritto
+01:00:28.022  refresh_for_ids ids=1 azioni=1 ricaricati=2 saltati=1   <- giusto
+01:00:32.968  DIAG progress movie: da Trakt 1 | in locale 1 (1 pending_put) | scritte 1
+01:00:32.969  titoli cambiati: 0 | azioni: continue_watching
+01:00:33.342  refresh_for_ids ids=0 azioni=1 ricaricati=1 saltati=2   <- a vuoto
+```
+
+`1 pending_put` e' il nostro stesso segnalibro, che deve ancora salire su Trakt: la sincronizzazione
+rileggeva cio' che avevamo appena scritto noi.
+
+### Il dato che mancava
+
+In `apis/trakt_api.py:1722` il canale degli id ha TRE stati:
+
+```python
+_ids = '' if changed_unknown else (','.join(...) or '-')
+```
+
+un elenco; `'-'` = "lo sappiamo, non e' cambiato nessuno"; `''` = "non lo sappiamo". Ma il ramo del
+rinvio in `decide_refresh` fonde i due vuoti:
+
+```python
+if age < coalesce_seconds: return ('rinvio', '' if changed == '-' else (changed or ''), acts)
+```
+
+Da li' in poi i due casi sono indistinguibili, e chi consuma il rinvio disegnava sempre -- giustamente,
+perche' nel dubbio e' l'unica scelta sicura. Ancora una volta mancava un DATO, non una guardia.
+
+### Correzione
+
+Quel bit viaggia col rinvio (`PENDING_NOCHANGE_PROP`, impostato da `_defer_widget_refresh` che riceve
+`changed == '-'` dal chiamante, dove la distinzione esiste ancora). Al consumo,
+`pending_refresh_is_redundant` spegne il rinvio SOLO se valgono insieme:
+
+  1. la sincronizzazione ha dichiarato **zero titoli cambiati** -- il rinvio nasce dalla sola azione;
+  2. l'ultima ricostruzione copre **gia' per intero** cio' che il rinvio chiederebbe.
+
+La marca segue le regole della somma del lotto 136: basta un rinvio che porti un cambiamento vero --
+o che semplicemente non sappia di non portarne, cioe' ogni altro chiamante -- perche' si spenga, e non
+si riaccende mai sommando. Un rinvio globale non e' mai saltabile. La marca si azzera in tutti e
+quattro i punti in cui la coda si consuma.
+
+### Perche' non e' nessuno dei due guasti passati
+
+**Non e' la guardia del lotto 139.** Quella chiedeva "ho scritto di recente?", domanda temporale che
+rispondeva si' anche a un cambiamento arrivato da un altro dispositivo: il 03/09 un episodio segnato
+visto dal Mac fu buttato cosi'. Qui il punto 1 e' la sincronizzazione stessa che dichiara di non aver
+trovato niente -- se il Mac avesse cambiato qualcosa, `titoli cambiati` non sarebbe zero.
+
+**Non e' il doppio giudizio vietato dal lotto 130.** Li' il rinvio veniva bocciato dall'accorpamento a
+TEMPO: `stamp_startup_rebuild` timbra '*', che copre qualunque elenco, e la costruzione d'avvio era
+avvenuta PRIMA della sincronizzazione, cioe' sui dati vecchi. "Ricostruito di recente" era vero e
+inutile. Il punto 1 chiude esattamente quel caso.
+
+### Verifica sul campo
+
+**Primo log (p19)**: il meccanismo scatta, ma all'AVVIO, non dopo una riproduzione:
+
+```
+02:09:45.273  i tre CDirectoryProvider si costruiscono      <- costruzione d'avvio, timbro '*'
+02:09:52.548  titoli cambiati: 0 | azioni: continue_watching
+02:09:53.102  WidgetRefresher: rinvio spento
+```
+
+E' letteralmente lo scenario del lotto 130, risolto per il verso giusto: la costruzione d'avvio era su
+dati vecchi, ma la sincronizzazione ha poi confermato che non c'era niente di nuovo, quindi era gia'
+giusta. **Guadagno non previsto: scatta a ogni avvio di Kodi.** Verificato che non ingoi niente -- 3,5 s
+dopo un `refresh_for_ids ids=1 azioni=1 ricaricati=2` (cambiamento vero) e' passato regolarmente.
+
+Le due riproduzioni di quel log non hanno prodotto il doppione: 89,7 s e 88,6 s, **zero
+`PERF BOOKMARK`**, cioe' sotto la soglia del 5% (`set_resume` in player.py:22). Senza segnalibro non
+c'e' timbro, `refresh_age()` resta enorme e `decide_refresh` torna `mirato` invece di `rinvio`. E' la
+stessa soglia della voce aperta sul badge: qui si manifesta come "il caso da provare non si presenta".
+
+**Secondo log (p20)**, con una riproduzione portata oltre il 5%:
+
+```
+02:18:14.584  Player.OnStop
+02:18:14.615  PERF BOOKMARK: scritto
+02:18:14.702  refresh_for_ids ids=1 azioni=1 ricaricati=2 saltati=1
+02:18:20.787  titoli cambiati: 0 | azioni: continue_watching
+02:18:20.790  refresh MIRATO rimandato, interfaccia ricostruita 6.1s fa
+02:18:21.487  WidgetRefresher: rinvio spento
+```
+
+Nessun secondo `refresh_for_ids ids=0`.
+
+| | costruzioni | tempo | CPU |
+|--------------|-------------|-----------|----------|
+| prima (p15)  | 3           | 4 489 ms  | 1 553 ms |
+| adesso (p20) | **2**       | **3 761 ms** | **1 108 ms** |
+
+**-728 ms di parete, -445 ms di CPU**, esattamente la previsione. Le due costruzioni legittime non si
+muovono (1719 -> 1691, 2046 -> 2070: rumore).
+
+Per confronto, il lotto 178 su tutto l'albero degli import ha reso -251 ms. Togliere UNA invocazione
+ha reso quasi il doppio.
+
+### Prove
+
+`tests/test_179.py`, otto casi costruiti sui due modi in cui questa correzione puo' andare storta: il
+caso misurato si spegne; un titolo cambiato passa sempre, anche sotto timbro globale (139); all'avvio
+si salta solo se il sync non ha portato niente (130); la marca non sopravvive a un rinvio con
+cambiamenti in nessuno dei due ordini (136); chi non sa non marca; un rinvio globale non si salta mai;
+marcato ma non coperto si disegna; nessun timbro alle spalle e non si salta. 27 su 27.

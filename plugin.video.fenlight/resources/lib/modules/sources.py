@@ -10,7 +10,7 @@ from scrapers import external, folders
 from modules import debrid, kodi_utils, settings, metadata, watched_status
 from modules.player import FenLightPlayer
 from modules.source_utils import get_cache_expiry, make_alias_dict
-from modules.utils import clean_file_name, string_to_float, safe_string, remove_accents, get_datetime, append_module_to_syspath, manual_function_import, manual_module_import
+from modules.utils import clean_file_name, string_to_float, safe_string, remove_accents, get_datetime, append_module_to_syspath, manual_function_import, manual_module_import, install_lazy_chardet
 # logger = kodi_utils.logger
 
 get_icon, notification, sleep, xbmc_monitor = kodi_utils.get_icon, kodi_utils.notification, kodi_utils.sleep, kodi_utils.xbmc_monitor
@@ -311,6 +311,13 @@ class Sources():
 	
 	def import_external_scrapers(self):
 		try:
+			# LOTTO 178. Prima di far entrare lo scraper esterno si rimanda chardet: e' lui a
+			# importare requests, ed e' requests a importare chardet (compat.py:11) per leggerne la
+			# versione. 48 file e 1,1 MB di tabelle di frequenza, piu' di requests e urllib3 insieme,
+			# per una funzione -- indovinare la codifica di una risposta che non la dichiara -- che
+			# nel caso normale non viene mai chiamata. Vedi install_lazy_chardet e il commento in
+			# cima a http_client.py, che nel lotto 84 aveva gia' nominato questo costo.
+			install_lazy_chardet()
 			append_module_to_syspath('special://home/addons/%s/lib' % self.ext_folder)
 			self.ext_sources = manual_module_import('%s.sources_%s' % (self.ext_name, self.ext_name))
 			self.provider_defaults = [k.split('.')[1] for k, v in manual_function_import('%s.modules.control' % self.ext_name, 'getProviderDefaults')().items() if v == 'true']
