@@ -4,8 +4,28 @@
     <animation effect="fade" start="0" end="100" time="300" delay="200" condition="Window.IsActive(DialogSeekBar.xml) | Window.IsVisible(1152)">WindowOpen</animation>
     <animation effect="fade" start="0" end="100" time="300" condition="![Window.IsActive(DialogSeekBar.xml) | Window.IsVisible(1152)]">WindowOpen</animation>
     <animation effect="fade" end="0" start="100" time="300">WindowClose</animation>
-    <onload>SetProperty(UID,$ESCINFO[Player.Title]$INFO[Player.Time(ss)],1146)</onload>
-    <onload>SetProperty(UID,$ESCINFO[Player.Title]$INFO[Player.Time(ss)],1147)</onload>
+    <!-- LOTTO 183, passo 3.4 :: la chiave della cache delle tracce.
+         UID e' il gettone che finisce in ?reload= dentro il <content> dei pannelli 1146 (audio) e
+         1147 (sottotitoli), in Includes_OSD.xml:471. script.skinvariables NON ha una cache propria:
+         interroga sempre il player vivo (Player.GetProperties via JSON-RPC). La cache e' quella dei
+         percorsi di Kodi, e la chiave e' l'URL intero. Stesso URL = Kodi non richiama nemmeno il
+         plugin: serve di nuovo la lista di prima.
+         La chiave era Player.Title + Player.Time(ss): il titolo piu' il campo dei SECONDI, cioe'
+         sessanta valori in tutto. Due edizioni diverse dello stesso film hanno lo stesso titolo e
+         tracce completamente diverse: bastava riaprire l'OSD sullo stesso valore dei secondi per
+         vedersi servire le tracce della riproduzione precedente. E' il difetto segnalato il 07/09.
+         Ora la chiave e' fatta di cio' che DEVE cambiarla, e di nient'altro:
+           - fenlight.perf.playstart: str(time()) scritto una volta per riproduzione da
+             mark_playback_start() prima di self.play() (kodi_utils.py:863). Cambia a ogni
+             riproduzione, non collide mai.
+           - AudioLanguage / SubtitlesLanguage: cambiano quando cambia la traccia in corso, anche se
+             a cambiarla e' stato un dialogo di Kodi invece del nostro pannello.
+           - Player.Title: non discrimina niente, resta perche' rende leggibili i log.
+         Effetto collaterale voluto: dentro una stessa riproduzione la chiave e' STABILE. Prima
+         cambiava a ogni apertura dell'OSD e faceva ripartire un interprete Python ogni volta
+         (367-527 ms, misurati il 07/09); ora si paga una volta per riproduzione per pannello. -->
+    <onload>SetProperty(UID,$ESCINFO[Player.Title]$INFO[Window(Home).Property(fenlight.perf.playstart)]$INFO[VideoPlayer.AudioLanguage]$INFO[VideoPlayer.SubtitlesLanguage],1146)</onload>
+    <onload>SetProperty(UID,$ESCINFO[Player.Title]$INFO[Window(Home).Property(fenlight.perf.playstart)]$INFO[VideoPlayer.AudioLanguage]$INFO[VideoPlayer.SubtitlesLanguage],1147)</onload>
     <onunload>CancelAlarm(osd_timeout,true)</onunload>
     <controls>
 

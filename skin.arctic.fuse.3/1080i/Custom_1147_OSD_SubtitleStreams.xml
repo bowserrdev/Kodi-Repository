@@ -30,6 +30,7 @@
             </control>
 
             <include content="OSD_CustomDialog_GroupList">
+                <param name="dialog_id">1147</param>
                 <param name="onclick">ActivateWindow(osdsubtitlesettings)</param>
                 <param name="onup">SetFocus(6207)</param>
                 <param name="icon">resource://resource.images.arcticfuse/icons/quote.png</param>

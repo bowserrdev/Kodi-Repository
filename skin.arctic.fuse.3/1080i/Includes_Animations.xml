@@ -24,16 +24,28 @@
         </animation>
     </include>
 
+    <!-- LOTTO 181, passo 3.1. Qui c'era Animation_Zoom_In / Animation_Zoom_Out, cioe' una
+         dissolvenza PIU' uno zoom da 85 a 100 con center="auto". Lo zoom e' la voce cara: mette una
+         matrice di trasformazione sullo stack di rendering e ogni controllo figlio disegna
+         attraverso quella matrice. Per tutti i 300 ms la scala e' frazionaria, quindi ogni texture e
+         ogni glifo cade su coordinate non intere e viene ricampionato in bilineare invece di essere
+         copiato uno a uno. Una dissolvenza, al confronto, e' una moltiplicazione di alpha per
+         controllo e costa quasi nulla.
+         Il sottoalbero coinvolto non e' piccolo: 19 controlli e 20 include in VideoOSD.xml, 6 e 10
+         in DialogSeekBar.xml, 3 e 4 in Custom_1153. E la barra di ricerca si apre a OGNI salto,
+         cioe' proprio mentre il player sta rileggendo la cache da zero (lotto 180).
+         Restano identici la durata (300 ms), il ritardo (200 ms) e le curve: si toglie SOLO lo zoom,
+         una variabile per volta. Animation_Zoom_In e Animation_Zoom_Out non sono toccate e restano
+         in uso in Includes_DialogInfo.xml. -->
     <include name="Animation_OSD_HideForInfoDialog">
         <visible>!Window.IsActive(1193)</visible>
         <visible>!$EXP[Exp_InfoDialogs]</visible>
-        <include content="Animation_Zoom_Out">
-            <param name="type">Hidden</param>
-        </include>
-        <include content="Animation_Zoom_In">
-            <param name="type">Visible</param>
-            <param name="delay">200</param>
-        </include>
+        <animation type="Hidden" reversible="false" condition="true">
+            <effect type="fade" start="100" end="0" tween="cubic" easing="out" time="300" />
+        </animation>
+        <animation type="Visible" reversible="false" condition="true">
+            <effect type="fade" start="0" end="100" time="300" delay="200" tween="sine" easing="in" />
+        </animation>
     </include>
 
     <!-- Slide Expansions for Seekbar -->
