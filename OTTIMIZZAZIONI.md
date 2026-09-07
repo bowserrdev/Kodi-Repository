@@ -22392,3 +22392,1123 @@ caso misurato si spegne; un titolo cambiato passa sempre, anche sotto timbro glo
 si salta solo se il sync non ha portato niente (130); la marca non sopravvive a un rinvio con
 cambiamenti in nessuno dei due ordini (136); chi non sa non marca; un rinvio globale non si salta mai;
 marcato ma non coperto si disegna; nessun timbro alle spalle e non si salta. 27 su 27.
+
+## Lotto 180 -- fase 2, i salti: non e' il salto, e non e' il buffer
+
+Due prove con la stessa serie di salti (+10, +30, +60, +180, +300, -300, una trentina di secondi fra
+l'uno e l'altro), su due file molto diversi. Componente Video acceso.
+
+### Il salto in se' non e' il problema
+
+| | file A: 11 711 kb/s | file B: 22 556 kb/s |
+|---|---|---|
+| durata dei salti | 0,50 - 1,60 s | 0,40 - 2,23 s |
+| riconnessioni per salto | 1 (3 sul primo) | 1 (3 sul primo) |
+| giri a vuoto | 262 - 996 | 0 - 852 |
+
+Il difetto del lotto 175 (5,9 s e 2 866 giri) **non si e' riprodotto** in nessuna delle due. Il giro a
+vuoto (`AddData` con `indexBuffer:-1` piu' `CalcDropRequirement`) gira a **~600 iterazioni al secondo**
+in tutti i casi: e' proporzionale all'attesa, quindi e' un SINTOMO, non un costo autonomo. L'unica leva
+sarebbe accorciare l'attesa.
+
+### Risultato negativo: il buffer non c'entra
+
+Kodi conferma `using single memory cache sized 33554432` -> `back = cacheSize/4 = 8 MB`,
+`front = 24 MB` (`FileCache.cpp:183`). Con 24 MB e il file A (1,46 MB/s) il buffer copre 16 s; col
+file B (2,82 MB/s) ne copre 8,9.
+
+Eppure **tutti e sette i salti riconnettono, anche quello da 10 secondi**. Il motivo si legge nelle
+posizioni richieste al primo salto di ogni riproduzione:
+
+```
+02:35:25.355  Resume from position 9715855316   <- apertura: l'indice mkv, a 9,05 GB
+02:35:26.006  Resume from position       5907   <- torna all'inizio
+02:36:35.212  Resume from position 9715855316   <- primo salto: RILEGGE lo stesso indice
+02:36:35.769  Resume from position   56461372   <- poi la posizione vera
+02:36:36.192  Resume from position   59522004
+```
+
+L'indice in fondo al file viene scaricato **due volte**, e il primo salto costa tre riconnessioni
+invece di una: 1,55 s e 983 giri, contro 0,5 s e ~300 dei successivi. Gli altri salti riconnettono
+perche' il bersaglio e' fuori da qualunque buffer immaginabile.
+
+**Quindi alzare `filecache.memorysize` non toglierebbe una sola riconnessione.** Manopola che costa
+RAM su una macchina che ne ha poca, per zero. Scartata.
+
+### Il problema vero: lo stallo DOPO il salto
+
+Sul file B, quello da 22,6 Mbit/s:
+
+```
+02:52:00  salto (+10 s), bufferizza 2,3 s, riparte
+02:52:05  CVideoPlayerAudio::Process - stream stalled
+02:52:05  SetCaching - caching state 1       <- CACHESTATE_FULL, riproduzione FERMA
+02:52:14  SetCaching - caching state 2       <- 8,93 s dopo
+```
+
+Un secondo stallo di 9,8 s undici secondi dopo il salto +60. Sul file A: nessuno. E' esattamente
+l'osservazione lasciata in sospeso dal lotto 175 ("gli stalli veri sono arrivati circa 3 secondi dopo
+un salto: Kodi riparte con la cache a zero"), ora spiegata.
+
+### Perche' dura sempre ~9 secondi, e perche' il buffer non lo accorcia
+
+`CVideoPlayer::HandlePlaySpeed`, uscita da `CACHESTATE_FULL`:
+
+```cpp
+if (cache.time > 8.0)
+  SetCaching(CACHESTATE_INIT);
+```
+
+Otto secondi, cablati. E `cache.time` viene da `GetCachingTimes`:
+
+```cpp
+const double cacheTime = (static_cast<double>(cached) / currate) + (queueTime / 1000.0);
+```
+
+dove `currate = m_writeRateActual` e' il **tasso di download**, non il bitrate del film
+(`FileCache.cpp:623`). In `CACHESTATE_FULL` la riproduzione e' ferma, quindi tutta la banda va nel
+buffer: `cached = R*t` e `cache.time = R*t/R = t`.
+
+**La soglia si raggiunge dopo esattamente 8 secondi di download, qualunque sia la dimensione del
+buffer.** Misurato: 8,93 e 9,8 s. Un buffer piu' grande non accorcia nulla -- avevo quasi consigliato
+64 MB proprio per quello, ed era sbagliato.
+
+### E perche' lo stallo arriva a meta' scena invece che sul salto
+
+`SetCaching(CACHESTATE_FLUSH)` dopo un salto sceglie `CACHESTATE_FULL` se le informazioni di cache sono
+valide (`VideoPlayer.cpp`, `SetCaching`). Ma nel log quella bufferizzazione dura **2,3 s**, non 8: esce
+presto, riparte, e cinque secondi dopo le code si svuotano e ricomincia da capo per 9 s.
+
+Il risultato per chi guarda e' il peggiore possibile: una breve attesa dove l'attesa e' attesa (subito
+dopo il salto), poi cinque secondi di film, poi un blocco di nove secondi **in mezzo alla scena**. Se
+Kodi avesse aspettato una volta sola, il costo totale sarebbe stato lo stesso e invisibile.
+
+Tutto questo e' `CVideoPlayer` in C++. **Non e' raggiungibile ne' da Fen Light ne' dalla skin.**
+
+### Cosa resta in mano nostra
+
+Il file B sta al limite: 22,6 Mbit/s su un collegamento a 2,4 GHz da 72 Mbps nominali.
+
+```
+Frequency: 2437MHz   Link speed: 72Mbps   RSSI: -52
+5 GHz   (BSSID ...fa:55): RSSI -75, score 176
+2,4 GHz (BSSID ...fa:51): RSSI -52, score 220
+```
+
+Android sceglie i 2,4 GHz perche' il 5 GHz arriva a -75. Col file A (11,7 Mbit/s) il margine bastava e
+non c'e' stato un solo stallo; col file B no. Dopo la bufferizzazione il film e' andato fluido, quindi
+il collegamento REGGE 22,6 Mbit/s -- ma senza margine per recuperare da una cache azzerata.
+
+Le due leve vere, in ordine di resa:
+
+  1. **La banda.** Recuperare i 5 GHz vale piu' di qualunque modifica al codice. Fuori dal software.
+  2. **La scelta della fonte.** Il filtro sulla velocita' di linea che l'utente ha (e che ha tolto per
+     questa prova) e' gia' la mitigazione giusta: tenere il bitrate sotto quello che il collegamento
+     regge con margine. E' materiale della fase 4 (calibrazione): misurare la banda reale una volta e
+     scriverci sopra il tetto, invece di lasciarlo scegliere a mano.
+
+Da segnare come **non risolvibile nel player**: la fase 2 non ha un intervento di codice.
+
+### Correzione al lotto 180: gli 8 secondi non sono 8 secondi (misura del 07/09, 03:23)
+
+Sopra ho scritto: *"La soglia si raggiunge dopo esattamente 8 secondi di download, qualunque sia la
+dimensione del buffer."* **E' vero solo a banda stabile.** La prova dell'OSD del 07/09 ha prodotto uno
+stallo di **58,95 secondi**, e la ragione sta nella stessa formula che avevo letto male.
+
+```
+03:23:33.607  CVideoPlayerAudio::Process - stream stalled
+03:23:33.739  CVideoPlayer::SetCaching - caching state 1     <- FULL
+   ... 59 s di CDVDVideoCodecAndroidMediaCodec::AddData state (2), ~770 al secondo,
+       nessuna riga CFileCache: nessun salto, nessun reset, solo attesa ...
+03:24:32.692  CVideoPlayer::SetCaching - caching state 2     <- INIT, 58,95 s dopo
+03:24:32.704  caching state 0
+03:24:41.617  caching state 1                                 <- di nuovo, dopo 8,9 s di film
+03:25:18      l'utente chiude: fermo da 37 s
+```
+
+**Il punto che mi era sfuggito: `currate` non e' il tasso di download di adesso.**
+
+`cache.time = cached / currate` (`VideoPlayer.cpp:1838`), e `currate = m_writeRateActual`, che e'
+`average.Rate(m_writePos, 1000)` -- una **media cumulativa dall'ultimo salto**. L'oggetto `average`
+viene azzerato in un solo punto, `FileCache.cpp:280`, dentro il ramo del seek. **Uno stallo non lo
+azzera.** Quindi la media si porta dietro tutto il periodo sano precedente.
+
+Se la banda crolla a una frazione `f` di quella media, `cached` cresce a `f * currate` e la soglia
+arriva dopo `8/f` secondi, non 8. Crollo a un settimo -> 56 secondi. E' quello che si e' visto.
+Il criterio punisce esattamente il caso per cui esiste: piu' la rete e' in crisi, piu' aspetta.
+
+**E la valvola di sicurezza era gia' chiusa.** Il ramo `cache.level < 0` (`VideoPlayer.cpp:1871`)
+esiste proprio per questo: mostra "la rete e' troppo lenta" e riparte subito. Ma dipende da `lowrate`,
+scritto solo dentro `if (m_bFilling && ...)` (`FileCache.cpp:433-441`), e `m_bFilling` diventa `true`
+**solo su un reset completo della cache** (cioe' un salto) e torna `false` **la prima volta che il
+buffer si riempie**. Dopo quel momento, per tutto il resto del segmento, `lowrate` resta 0 e il livello
+non puo' piu' andare negativo. Nel log infatti non c'e' una sola riga `Readrate ... was too low`,
+nonostante la condizione fosse manifesta per un minuto intero.
+
+Quindi restava un solo modo di uscire da FULL -- `cache.time > 8.0` -- calcolato su una media che
+mentiva.
+
+### Cosa NON era
+
+Il tetto di lettura non c'entra. Il log dice:
+
+```
+03:22:54.135  CFileCache::IoControl - setting maxRate to 9.85 Mbit/s
+03:22:54.135  CDVDInputStreamFile::SetReadRate - set cache throttle rate to 1290424 bytes per second
+```
+
+`maxrate = 1,1 x (dimensione/durata)` (`DVDInputStreamFile.cpp:161`, chiamato da `VideoPlayer.cpp:858`)
+-- il fattore di lettura 4,00x della GUI **non** entra qui. Entra nella soglia del freno
+(`FileCache.cpp:306`): si scarica a piena velocita' finche' il buffer in avanti sta sotto
+`m_writeRate * readFactor` = 5,16 MB. Con la cache vuota il freno non e' mai attivo. Non era lui.
+
+### Il file e la rete
+
+7,16 GB su ~100 minuti = **9,5 Mbit/s medi**. Il filtro sulla velocita' di linea a 11 aveva fatto il
+suo lavoro: la fonte stava sotto il tetto. Il collegamento no:
+
+```
+Frequency: 2437MHz (canale 6, 2,4 GHz)   Link speed: 72Mbps   RSSI: -51
+```
+
+Ancora 2,4 GHz. 72 Mbps nominali per 9,5 Mbit/s reali sembra abbondante, e infatti per un minuto ha
+retto; poi e' bastato un calo perche' il criterio di uscita si moltiplicasse per sette.
+
+**Conseguenza per la fase 4:** non basta scegliere una fonte che *entra* nella banda. Il margine deve
+essere largo, perche' Kodi paga un calo di banda piu' che proporzionalmente. Il tetto va scritto sulla
+banda **misurata sotto carico**, non su quella nominale, e con margine esplicito.
+
+---
+
+## Lotto 181 -- fase 3, l'OSD. Passo 3.1: lo zoom tolto dall'entrata
+
+`Animation_OSD_HideForInfoDialog` impilava una scala frazionaria (85 -> 100 in 300 ms, `center="auto"`)
+su tutto il sottoalbero dell'OSD. Una scala non intera manda ogni texture e ogni glifo su coordinate
+non intere: il sottoalbero non si copia 1:1, si ricampiona in bilineare per tutta la durata.
+
+**Scoperta che ha alzato la priorita':** nei log dei salti `VideoOSD.xml` risultava aperto **0 volte**,
+ma `DialogSeekBar.xml` **7 e 9 volte** -- una per salto -- e anche lei include quella animazione
+(`DialogSeekBar.xml:26`). Lo zoom quindi scattava a ogni salto, mentre il player rilegge la cache da
+zero. Non era un costo del menu: era un costo del salto.
+
+Sottoalberi coinvolti: `VideoOSD.xml` 19 controlli + 20 include, `DialogSeekBar.xml` 6 + 10,
+`Custom_1153_OSD_VideoInfoOverlayTop.xml` 3 + 4.
+
+**La modifica** toglie SOLO lo zoom, lasciando identici durata (300 ms), ritardo (200 ms) e curve.
+`Animation_Zoom_In` e `Animation_Zoom_Out` non sono toccate: restano in uso in `Includes_DialogInfo.xml`.
+
+**Il costo dell'animazione non e' misurabile dal log di Kodi**: non esiste una riga che riporti il tempo
+di disegno per fotogramma. Avevo provato a contare i fotogrammi in affanno attorno all'apertura della
+barra: i numeri sono dominati dal giro a vuoto del salto, non dall'animazione (p21: 4 dentro la
+finestra contro 918 di controllo; p22: 539 contro 1261). Dichiarato all'utente PRIMA di proporre la
+modifica che sarebbe stata una valutazione percettiva.
+
+**Verdetto dell'utente (07/09): "mi sembra leggermente piu' reattiva nel comparire".** Lieve,
+percettivo, non misurato. Si tiene.
+
+Distribuito come file singolo (mai l'intera cartella 1080i: sostituirebbe lo skinvariables generato
+per-dispositivo). md5 `7a2a7d0bff51d8ef493e8b8375015161` verificato su Mac e stick, con Kodi chiuso.
+
+### Cosa resta aperto della fase 3
+
+  - **3.2** -- il ritardo di 200 ms sull'entrata della barra di ricerca. Su `DialogSeekBar` non c'e'
+    niente che debba prima uscire di scena, quindi lo sfondo compare a 300 ms e il contenuto a 500.
+    Lasciato apposta per cambiare una variabile per volta. L'utente non ha segnalato il distacco.
+  - **3.3** -- "la navigazione tra i bottoni presenti nell'osd e' sempre un po' scattosa" (07/09).
+    E' altra cosa dall'entrata della finestra: sono le animazioni di fuoco sui pulsanti.
+  - **i pannelli lingua** -- misurati nel log del 07/09, sono il bersaglio con i numeri:
+
+    | pannello | apertura -> interprete chiuso |
+    |---|---|
+    | Audio (1a volta) | 527 ms |
+    | Sottotitoli (1a volta) | 485 ms |
+    | Audio (nuova riproduzione) | 367 ms |
+    | Audio (2a volta, stessa riproduzione) | ~0, nessuno script |
+
+    Ogni prima apertura avvia **un interprete Python intero** (`initializing python engine`) solo per
+    chiedere al player quali tracce ha: `script.skinvariables` con `?info=get_player_streams`. La
+    seconda apertura costa zero perche' il risultato e' in cache, quindi e' un costo di avvio a
+    freddo, uno per pannello per riproduzione, pagato durante la riproduzione.
+
+### La sfumatura di nero dietro la barra (chiuso senza modifiche)
+
+Domanda dell'utente: perche' il fondo nero si vede quando apre l'OSD e a volte no quando la barra
+compare da sola. Non si legge dal log, si legge dall'XML. `OSD_BackgroundFade_Seekbar`
+(`Includes_OSD.xml:317`) non e' un'immagine, sono **due**:
+
+  - una da 256 px, condizione `Window.IsActive(DialogSeekBar.xml)` -> sempre, anche con la barra sola
+  - una da 768 px, con un **secondo** `<visible>` che richiede videoosd o un pannello (1140-1149,
+    videobookmarks, upnext...)
+
+Kodi mette in AND i `<visible>` multipli, quindi con l'OSD aperto le due si sovrappongono: tre volte
+piu' alta e doppia opacita' in basso. Con la barra sola resta solo la velatura corta, che in una scena
+scura non si distingue. Non e' un difetto. L'utente: *"e' totalmente ininfluente per me, se non c'e'
+guadagno di prestazioni ed e' pura estetica lasciamo cosi'"*. **Chiuso senza modifiche.**
+
+---
+
+## Lotto 182 -- la sonda della cache smentisce l'ipotesi del salto, e l'indagine su Kodi 22
+
+### L'ipotesi che ho scritto il 07/09 e che era sbagliata
+
+Avevo dedotto dal sorgente: il buffer in avanti vale ~20 s di film, Kodi esce dallo stallo a
+`cached/currate > 8` cioe' ~8 s di contenuto, quindi **dopo un salto il margine non viene mai
+ricostruito** e il resto del film va a singhiozzo. Il log delle 13:02 sembrava confermarlo: 31 secondi
+puliti, poi il primo salto, poi 80 secondi di stallo su 310 (26%).
+
+Prima di scriverci sopra una correzione ho messo una sonda invece di fidarmi della deduzione.
+
+### La sonda
+
+`_campiona_cache` / `_riassunto_cache` in `player.py`, agganciate al giro da un secondo che il monitor
+gia' faceva. Campiona `Player.CacheLevel`, stampa la sequenza grezza ogni dieci campioni e un riassunto
+finale, separando **prima del primo salto** da **dopo** (il conteggio dei salti si alza in
+`onPlayBackSeek`). `Player.CacheLevel` e' `cached/maxforward` (`VideoPlayer.cpp`, `cacheLevel`), cioe'
+esattamente la frazione di riempimento del buffer in avanti.
+
+### Cosa ha detto
+
+**Dopo ogni salto il livello risale da 0 a 99% in 25-40 secondi, e ci resta.**
+
+```
+salto 1 -> 0-0-0-0-0-0-0-0-2-11-19-22-26-34-...-84-96-99-99-99...
+salto 2 -> 0-0-0-0-0-8-16-19-22-34-38-50-...-91-92-99-99-99...
+salto 3 -> 0-0-0-0-0-6-14-21-27-37-...-97-99-99-99...
+salto 4 -> 0-0-0-0-1-12-17-20-25-31-38-42-53-67-71-78-87-94-99-99...
+
+riassunto | salti 4 | prima del primo salto: 257 campioni, max 99%, media 45%
+                    | dopo: 429 campioni, max 99%, media 80%
+```
+
+**L'ipotesi e' falsificata.** Il margine viene ricostruito, ogni volta. E la seconda meta' della
+riproduzione -- quella CON i salti -- e' andata meglio della prima:
+
+| | durata | fermo | salti |
+|---|---|---|---|
+| 13:17:50 -> 13:20:05 | 135 s | **86 s = 64%** | 0 |
+| 13:20:05 -> 13:29:17 | 551 s | **2,8 s = 0,5%** | 4 |
+
+Stesso file (7163857793 byte, `throttle rate 1290424` identico), stessa sonda in entrambe le fasi.
+
+### La causa vera, misurata e non dedotta
+
+```
+13:20:15.827  Readrate 689000 was too low with 1290424 required
+```
+
+**689 KB/s consegnati contro 1290 KB/s necessari.** La rete dava poco piu' della meta'. Gli stalli
+avvenivano con il livello a **0**: byte che non arrivavano. E' la stessa conclusione della fase 2, ora
+con un numero diretto invece che per inferenza.
+
+### La sonda e' sospettata? No
+
+L'utente ha chiesto se la sonda stesse contribuendo. Prove contrarie: (a) girava identica nelle due
+fasi, con esiti opposti; (b) gli stalli hanno livello 0, e nessuna chiamata Python svuota un buffer di
+rete; (c) e' un `getInfoLabel` al secondo su un thread che gia' faceva due chiamate al player al
+secondo; (d) esiste la misura diretta della banda insufficiente. Non e' dimostrabile un costo esatto
+di zero, ma le prove indicano altrove senza ambiguita'.
+
+### Cosa sopravvive del lotto 180
+
+Il difetto di `currate` (media cumulativa dall'ultimo salto, mai azzerata da uno stallo) resta vero e
+resta la spiegazione del perche' i singoli stalli durino 17, 27, 30 s invece di 8. Cade solo il legame
+col salto. **E cade dal programma la "pausa dopo il salto finche' il buffer non si riempie":** non
+avrebbe curato niente. Sondare prima di scrivere e' costato una riproduzione e ha risparmiato una
+modifica inutile a `onPlayBackSeek`.
+
+### Kodi 22 "Piers" beta 2 -- vale la pena?
+
+Verificato sul tag `22.0b2-Piers`, non su master (master e' gia' oltre: FFmpeg 9.0.1 mentre gli
+annunci parlano di 8.1).
+
+**L'unica cosa che ci riguarda davvero.** In 21 la soglia di uscita dallo stallo e' cablata:
+
+```cpp
+if (cache.time > 8.0)                       // 21.1, VideoPlayer.cpp:1879
+if (cache.time > m_messageQueueTimeSize)    // 22.0b2, VideoPlayer.cpp:2121
+```
+
+`m_messageQueueTimeSize` viene da una **nuova impostazione utente**, `videoplayer.queuetimesize`,
+livello Avanzato, valori **0,5 / 1 / 2 / 4 / 8 / 16 s**, predefinito **4**. Dimensiona anche le code
+del demuxer (18 MB fissi in 21 -> proporzionali in 22). Seconda impostazione nuova:
+`videoplayer.queuedatasize`, 256 MB predefiniti.
+
+E' la leva che in Kodi 21 non esiste. **Ma il predefinito e' 4 s, cioe' meta' di oggi: appena
+installato sarebbe peggio finche' non si alza.**
+
+**Cosa NON cambia.** `FileCache.cpp` confrontato riga per riga fra 21.1 e beta 2: funzionalmente
+identico (cambiano `unique_lock` e un enum). Restano intatti il difetto di `currate` e la valvola
+"rete troppo lenta" armata solo al primo riempimento dopo un salto. **Kodi 22 non cura la causa, da'
+un manico piu' lungo.**
+
+**Compatibilita'** (tutto verificato, non supposto):
+
+| | 21.1 | 22.0b2 | esito |
+|---|---|---|---|
+| Python | 3.11.7 | **3.14.6** | tre versioni di salto |
+| FFmpeg | 6.0.1 | **9.0.1** | tre versioni di salto |
+| `xbmc.python` | 3.0.1 | 3.1.0, abi compat **3.0.0** | ok: FenLight chiede 3.0.0 |
+| `xbmc.gui` | 5.17.0 | 5.18.0, abi compat **5.17.0** | ok: Arctic Fuse chiede 5.17.0 |
+| ARM 32 bit | si' | `kodi-22.0-Piers_beta2-armeabi-v7a.apk`, 74 MB | esiste sul mirror |
+
+Lo stick e' `armeabi-v7a` puro (`ro.product.cpu.abilist = armeabi-v7a,armeabi`), Android 9, SDK 28.
+
+Il nostro codice regge Python 3.14: cercati tutti i moduli rimossi in 3.12/3.13/3.14 (`distutils`,
+`imp`, `cgi`, `telnetlib`, `pipes`, `crypt`, `asyncore`...) in FenLight e cocoscrapers -- **zero
+occorrenze**. Un solo `datetime.utcnow()` deprecato in `watched_status.py:93`, che avverte ma funziona.
+Il rischio e' nei moduli di terze parti (`requests`, `urllib3`, `certifi`, `chardet`, `idna`, `PIL`) e
+nei singoli scraper, che non controlliamo noi.
+
+**Rischio pratico.** Stesso pacchetto `org.xbmc.kodi`: l'installazione sostituisce Kodi 21 e migra i
+dati sul posto; Android non permette il downgrade, quindi tornare indietro significa disinstallare, e
+la disinstallazione cancella i **523 MB** di `.kodi` (274 userdata + 248 addon).
+
+**Anche 21.3 Omega esiste** (l'utente e' su 21.1) ma per noi non porta niente: `FileCache.cpp`
+identico, `VideoPlayer.cpp` 27 righe cambiate, nulla sulla cache.
+
+**Decisione dell'utente (07/09): si installa alla release ufficiale, non la beta.** Motivo suo, e
+corretto: Kodi 22 non cura nessun problema aperto, e le ottimizzazioni che stiamo facendo valgono
+comunque anche li'.
+
+---
+
+## Lotto 183 -- fase 3, l'OSD: tre difetti distinti dietro un solo sintomo
+
+L'utente segnalava "navigazione tra i bottoni scattosa" e "compaiono le tracce audio del media
+precedente". Erano tre guasti diversi.
+
+### 3.4a -- la chiave della cache delle tracce aveva sessanta valori
+
+`script.skinvariables` NON ha una cache propria: `playerstreams.py` interroga sempre il player vivo con
+una `Player.GetProperties`. La cache e' quella dei percorsi di Kodi, e la chiave e' **l'URL intero**.
+L'URL contiene `?reload=$INFO[Window.Property(UID)]` (`Includes_OSD.xml:471`), e UID era scritto in
+`VideoOSD.xml` come `Player.Title` + **`Player.Time(ss)`**: il titolo piu' il campo dei SECONDI.
+Sessanta valori in tutto.
+
+Due edizioni diverse dello stesso film hanno titolo identico e tracce completamente diverse. A ogni
+collisione Kodi **non richiamava nemmeno il plugin** e serviva la lista di prima. Nel log si vede: stesso
+URL, nessuno script eseguito.
+
+Chiave nuova, fatta di cio' che DEVE cambiarla e nient'altro:
+
+  - `fenlight.perf.playstart` -- `str(time())` scritto una volta per riproduzione da
+    `mark_playback_start()` prima di `self.play()` (`kodi_utils.py:863`). Non collide mai.
+  - `VideoPlayer.AudioLanguage` / `SubtitlesLanguage` -- cambiano se cambia la traccia in corso, anche
+    quando a cambiarla e' un dialogo di Kodi invece del nostro pannello.
+  - `Player.Title` -- non discrimina niente, resta perche' rende leggibili i log.
+
+**Effetto collaterale voluto, ed e' il piu' grosso:** dentro una riproduzione la chiave e' STABILE.
+
+| | aperture dei pannelli | avvii di interprete Python |
+|---|---|---|
+| prima (log 13:02) | 4 | 4 -- **100%** |
+| dopo (log 14:03) | **58** | 4 -- **7%** |
+
+Ogni avvio costa 644 ms misurati (Init 1146 alle 14:04:29.041, dati freschi alle 14:04:29.685). Prima
+si pagava a ogni apertura di pannello; e i pannelli si aprono **al passaggio del fuoco**
+(`VideoOSD.xml`, `<onfocus>ActivateWindow(114X)</onfocus>`), quindi si pagavano attraversando la fila
+dei bottoni. Era meta' della "navigazione scattosa".
+
+### 3.4b -- il lampo della lista vecchia
+
+Difetto diverso, e sopravvissuto alla correzione della chiave. Un `CDirectoryProvider` ricarica in
+sottofondo e nel frattempo **tiene a schermo quello che aveva**: 644 ms di lista sbagliata visibile, a
+ogni cambio di media. E' questo che l'utente vedeva anche fra film DIVERSI, dove la chiave non
+collideva. La lista ora si spegne mentre il contenitore aggiorna (`Container(id).IsUpdating`, gia' usato
+altrove nella skin): si vede il vuoto, non il dato sbagliato.
+
+### 3.3 -- il bottone info apriva una finestra che non puo' mostrare niente
+
+```
+14:07:12.200  Select
+14:07:12.786  RunScript di skinvariables finito     -> 586 ms, interprete Python compreso
+14:07:12.788  finestra 1193 aperta
+14:07:13.913  1193 si chiude da sola                -> 1,1 s di niente
+```
+
+1,7 secondi per zero risultato, e **nessuna chiamata di rete** (verificato filtrando curl/http/texture
+in quella finestra: solo tre JobWorker di caricamento immagini). Il contenitore 50 di
+`Custom_1193_VideoOSDInfo.xml` e' `Null.xsp` da quando TMDbHelper e' stato tolto, quindi NumItems=0 e il
+controllo 9002 fa `PreviousMenu`. Il ramo alternativo, pilotato da
+`Window(Home).Property(VideoOSD.InfoDialog.Path)`, e' **codice morto**: in tutto il repo quella
+proprieta' viene solo letta e cancellata, nessuno la scrive.
+
+Il clic e' ora condizionato alla presenza di quella proprieta'. Non e' stato rimosso niente: e' lo
+stesso punto di aggancio, e se un giorno qualcosa la scrivera' il bottone tornera' a funzionare da
+solo. Il pannello con logo, trama e frase celebre non passa di qui: e' la finestra 1145, aperta
+dall'`<onfocus>`, e continua a funzionare.
+
+### 3.2 -- lo sfasamento fra sfondo e contenuto NON esiste (mia ipotesi caduta)
+
+Avevo dedotto dall'XML che sulla barra di ricerca lo sfondo comparisse a 300 ms e il contenuto a 500,
+per via del `delay="200"` su `Animation_OSD_HideForInfoDialog`. **Falso.** All'apertura di una finestra
+Kodi chiama `SetInitialVisibility()` (`GUIWindow.cpp:555`, prima di `QueueAnimation(ANIM_TYPE_WINDOW_OPEN)`
+alla 558), che imposta la visibilita' **senza accodare l'animazione**; l'animazione `Visible` parte solo
+su una transizione (`GUIControl.cpp:613`). Quel ritardo non si applica mai all'apertura: serve al
+rientro dal dialogo informazioni, dove e' voluto.
+
+Esiste pero' un SECONDO ritardo di 200 ms, e quello si sente: `VideoOSD.xml:4-5` ha due animazioni
+`WindowOpen`, e quella con `delay="200"` scatta **solo se la barra di ricerca e' gia' a schermo**, per
+darle il tempo di scivolare via. E' il caso in cui l'utente percepisce input lag. Non toccato: una
+variabile per volta.
+
+### La sfumatura nera dietro la barra (chiuso senza modifiche)
+
+`OSD_BackgroundFade_Seekbar` (`Includes_OSD.xml:317`) non e' un'immagine, sono due: una da 256 px
+sempre visibile con la barra, una da 768 px con un SECONDO `<visible>` che richiede videoosd o un
+pannello. Kodi mette in AND i `<visible>` multipli, quindi con l'OSD aperto si sovrappongono. Non e' un
+difetto. L'utente: *"e' totalmente ininfluente per me... lasciamo cosi'"*.
+
+### Cosa resta aperto della fase 3
+
+  - **la catena di finestre a ogni passo di fuoco** (vedi sotto), non ancora corretta
+  - **la chiusura automatica dell'OSD tenendo premuta una freccia**: NON e' il timeout della skin
+    (`OSD_Timeout` e' vuoto nelle impostazioni, e in tutto il log non e' mai partito ne' un
+    `osd_timeout` ne' lo script `closeosd`). Ipotesi con meccanismo, da confermare con un log mirato.
+
+### Il meccanismo dietro "si muove tutto in una volta"
+
+Diagnosi statica, senza bisogno di prove. Dentro i dialoghi compagni (1143, 1145-1148) la fila dei
+bottoni e' riprodotta da `OSD_CustomDialog_GroupList`, i cui posti vuoti sono
+`OSD_CustomDialog_FakeButton`: bottoni con **lo stesso id** di quelli veri e con
+
+```xml
+<onfocus>Close</onfocus>
+<onfocus>SetFocus(600$PARAM[id])</onfocus>
+```
+
+Quindi **ogni passo di fuoco lungo la fila chiude una finestra e ne apre un'altra**: fuoco sul finto ->
+`Close` del dialogo -> `SetFocus` che ora risolve nella VideoOSD -> bottone vero -> `ActivateWindow` del
+dialogo successivo. Il `Close` ha le sue animazioni (1148 usa `Animation_SlideIn_Dialog` con
+`windowopen_delay` 400 e uno slide da 400 ms), quindi la catena **corre contro se stessa**.
+
+E il grouplist di quel dialogo ha `<onleft>6005</onleft>` e `<onright>6008</onright>` cablati: se un
+tasto arriva mentre il dialogo ha ancora il fuoco, il salto va **all'ultimo bottone**. E' esattamente
+cio' che si legge nel log:
+
+```
+14:49:59.364  right, window 11143
+14:49:59.366  right, window 11143      <- 2 ms dopo, ancora dentro il dialogo
+14:49:59.391  Deinit 1143
+14:49:59.392  Init Custom_1148         <- atteso 1145, arrivato 1148: tre bottoni saltati
+```
+
+Mappa dei bottoni, estratta da `VideoOSD.xml`: 6001, 6002, 6004 non aprono niente; 6003 -> 1143,
+6005 -> 1145, 6006 -> 1146, 6007 -> 1147, 6008 -> 1148. Serve a leggere qualunque log futuro: un tasto
+che non produce cambio di finestra puo' essere un input perso **oppure** il fuoco passato su 6001/6002/6004.
+
+---
+
+## Lotto 184 -- AV1: la stick non lo decodifica in hardware, e noi ne riconoscevamo il 61%
+
+### Il sintomo
+
+07/09, riproduzione di Dune. L'utente: *"laggava tantissimo e questo non era un problema solo video, ma
+si rifletteva anche sulla navigazione dell'osd, non si caricavano le finestre, gli fps erano bassi. Non
+sembrava un problema di banda, ma proprio di cpu."*
+
+Aveva ragione, ed e' **la sonda della cache del lotto 182** a dimostrarlo:
+
+```
+riassunto | salti 1 | prima del primo salto: 116 campioni, max 99%, media 78%
+                    | dopo: 69 campioni, max 99%, media 79%
+```
+
+Buffer al 78-79% di media per tutta la riproduzione. **La rete stava benissimo.** Senza la sonda questa
+sarebbe stata l'ennesima discussione senza prove.
+
+### La causa
+
+```
+14:58:20.938  Video: av1 (Main), yuv420p10le, 1920x1080, Film Grain, bt2020nc/bt2020/smpte2084
+14:58:22.537  CDVDVideoCodecAndroidMediaCodec::Open hints: ... CodecID 226 ...
+              (25 decoder provati, nessuno accettato)
+14:58:22.585  CDVDVideoCodecFFmpeg::Open() Using codec: dav1d AV1 decoder by VideoLAN
+```
+
+**AV1 1080p a 10 bit, HDR, con film grain, decodificato in SOFTWARE su quattro Cortex-A53.** Non e' un
+rallentamento: e' un compito impossibile, e si prende la CPU che serve a disegnare l'interfaccia. Ecco
+perche' il lag non era "solo video".
+
+Decoder hardware che la stick possiede, letti dal log: `avc`, `hevc`, `vp9`, `mpeg2`, `mpeg4`, `vc1`,
+`wmv3`, `h263`, `mjpeg`, `avs`. **AV1 non c'e'**, e non c'e' su nessun Mi TV Stick.
+
+Contorno, software anche quello: audio **Opus 7.1** con `no pass-through` (decodifica piu' rimissaggio a
+6 canali) e **38 tracce** nel file (16 audio, 22 sottotitoli quasi tutti PGS).
+
+Nell'intera sessione (6 riproduzioni) il ripiego software e' successo **una volta sola**: le altre 4
+sono andate tutte in hardware. Caso isolato, effetto catastrofico.
+
+### Il difetto nostro
+
+Fen Light SA gia' filtrare AV1 (`sources.py:46`, `filter_keys`). Ma il riconoscimento in
+`source_utils.py` era `elif '.av1.' in title`, che pretende un punto PRIMA e DOPO.
+
+Misurato sulle **2108 sorgenti** del log del 07/09:
+
+| | |
+|---|---|
+| file AV1 presenti | **41** |
+| riconosciuti | 25 |
+| **sfuggiti** | **16 -- il 39%** |
+
+I sedici hanno tutti un trattino dopo (`.av1-lazarus`, `.av1-alyh`, `.av1-r&h`) o una parentesi quadra
+prima (`[av1.2160p`, `[av1/1080p`).
+
+Ora il confine e' "qualunque cosa non sia lettera o cifra":
+
+```python
+AV1_RE = re.compile(r'(?<![a-z0-9])av1(?![a-z0-9])')
+```
+
+Compilata una volta sola: si valuta per ogni sorgente, e sono migliaia per ricerca. Accetta punto,
+trattino, parentesi e barra; continua a rifiutare i nomi di gruppo come `dAV1nci`, che altrimenti
+farebbero scartare file H.264 perfettamente riproducibili.
+
+`tests/test_184.py` fissa i nove casi sfuggiti presi alla lettera dal log, cinque falsi positivi da
+respingere, e verifica che l'etichetta arrivi davvero in `extraInfo` dove il filtro la cerca. 28 prove
+su 28.
+
+### Le impostazioni: sono dell'utente, non del codice
+
+Il codice riconosce, ma a scartare e' un'impostazione. Lette dal database di Fen Light il 07/09:
+
+```
+filter.av1              | 0   (Include)   <- spenta: ecco perche' Dune in AV1 e' stato offerto
+filter.hevc.max_quality | 1080p           <- gia' scarta il 4K, ma SOLO per HEVC
+results_quality_movie   | SD, 720p, 1080p, 4K
+results_quality_episode | SD, 720p, 1080p, 4K
+autoplay_quality_movie  | SD, 720p, 1080p  <- il 4K era gia' fuori dall'avvio automatico
+```
+
+L'utente ha acceso il filtro AV1 il 07/09 e ha confermato: *"il film in av1 effettivamente non compare
+piu' tra i riproducibili."*
+
+### Il principio, che e' materiale della fase 4
+
+Oggi "non offrire cio' che il dispositivo non sa riprodurre" e' sparso in **tre** impostazioni separate
+(elenco qualita', filtro AV1, tetto qualita' HEVC) che l'utente deve tenere coerenti a mano, e che
+descrivono le capacita' della macchina senza mai averle misurate. Kodi le stampa nel log a ogni
+apertura di file (`Testing codec: OMX.amlogic.*`): sono leggibili una volta e scritte nelle
+impostazioni. E' la stessa idea della calibrazione della banda, applicata ai codec.
+
+---
+
+## Lotto 185 — La navigazione dell'OSD: tre cause distinte, tutte nel log del 07/09
+
+Log `kodi.log` del 2026-09-07 (15:14:01 avvio → 15:32:07 uscita), riproduzione dalle
+15:28:56. Tre navigazioni fra i bottoni dell'OSD, la terza tenendo premuta la freccia
+destra. Kodi 21.1, Mi TV Stick.
+
+L'utente riporta: «le prime due volte che ho navigato tra i bottoni la selezione andava a
+scatti, poi subito sull'ultima voce e osd che si chiudeva da solo. terza navigazione,
+tengo premuto freccia a destra, osd si chiude e quindi quella freccia a destra fa andare
+avanti il film».
+
+Sono tre difetti diversi con tre meccanismi diversi. Nessuno dei tre e' "il telecomando".
+
+### La struttura, prima di tutto
+
+La fila di bottoni dell'OSD sta in `VideoOSD.xml` in **due** grouplist circolari:
+
+    6091 : 6001-6004   onleft 6008  onright 6005
+    6092 : 6005-6008   onleft 6004  onright 6001
+
+Cinque degli otto bottoni aprono un dialogo compagno: 6003→1143, 6005→1145, 6006→1146,
+6007→1147, 6008→1148. Gli altri tre (6001, 6002, 6004) non aprono nulla: un tasto che
+non produce un cambio di finestra puo' essere un input perso **oppure** semplicemente il
+fuoco che passa da uno di questi.
+
+Ogni dialogo compagno ridisegna l'intera fila con `OSD_CustomDialog_GroupList`, e i posti
+non suoi sono `OSD_CustomDialog_FakeButton`: bottoni con lo **stesso id** di quelli veri e
+con `<onfocus>Close</onfocus><onfocus>SetFocus(600N)</onfocus>`. Quindi **ogni passo di
+fuoco lungo la fila chiude una finestra e ne apre un'altra.** Non e' un effetto
+collaterale, e' il progetto.
+
+Costo misurato in questa sessione: **512 Init/Deinit di finestra** dopo le 15:29, con
+43 aperture per ciascuno dei cinque dialoghi. Tenendo premuta la freccia il ciclo completo
+1143→1145→1146→1147→1148→(6001,6002)→1143 dura ~420 ms, cioe' **circa 12 aperture o
+chiusure di finestra al secondo**.
+
+### Causa 1 — la prima navigazione: i cinque XML si caricano a riproduzione avviata
+
+I dialoghi compagni sono `KEEP_IN_MEMORY`, cioe' letti e analizzati **al primo uso**, che
+cade in mezzo al film:
+
+    15:29:08.867  Loading skin file: Custom_1143_OSD_NextOverlay.xml, load type: KEEP_IN_MEMORY
+    15:29:09.380  OutputPicture - timeout waiting for buffer          <-- il video si e' fermato
+    15:29:09.556  CDirectoryProvider[Null.xsp]: refreshing..
+    15:29:09.588  right, window 11143  |
+    15:29:09.589  right, window 11143  |  quattro tasti in 2 ms:
+    15:29:09.590  right, window 11143  |  la coda si scarica tutta insieme
+    15:29:09.590  right, window 11143  |
+    15:29:09.621  Init Custom_1148
+
+**721 ms** fra l'apertura di 1143 e lo smaltimento della coda, con tanto di stallo del
+decoder video. Gli altri quattro si caricano allo stesso modo (1148 alle 15:29:09.621,
+1145/1146/1147 alle 15:29:16). E' esattamente il «la prima apertura dell'osd e navigazione
+dei bottoni e' in assoluto molto piu' scattosa delle altre».
+
+Questo **corregge in parte** quanto avevo detto nel lotto 183, dove avevo misurato
+tasto→Window Init a 44 ms la prima volta e 45 ms in cache e ne avevo concluso che «il
+primo caricamento non e' costoso». Quella misura era su una finestra gia' precaricata.
+Sui dialoghi compagni il primo caricamento costa, e costa molto.
+
+Regola ricavata da questo stesso log, 4 su 4 in un verso e 4 su 4 nell'altro: **una
+finestra con un `<visible>` a livello di `<window>` viene precaricata (`LOAD_ON_GUI_INIT`),
+una senza viene caricata pigramente.** Precaricate: 1152, 1153, 1182, 1198 — tutte con
+`<visible>`. Pigre: 1101, 1170, 1143, 1145, 1146, 1147, 1148 — tutte senza.
+
+**Non corretto in questo lotto**: aggiungere un `<visible>` a livello finestra ai cinque
+dialoghi cambia la loro semantica di visibilita', non solo il momento del caricamento.
+Merita un lotto suo.
+
+### Causa 2 — «subito sull'ultima voce»: l'avvolgimento cablato era sbagliato
+
+`OSD_CustomDialog_GroupList` aveva:
+
+    <onleft>6005</onleft>
+    <onright>6008</onright>
+
+Ma nel dialogo compagno gli otto bottoni stanno in **un solo** grouplist, quindi
+l'avvolgimento corretto e' 6008 a sinistra e 6001 a destra (come nella fila vera). Con
+`onright 6008`, una freccia destra che esce dal grouplist salta **all'ultimo** bottone.
+
+Normalmente non si vede, perche' il `Close`+`SetFocus` del bottone finto arriva prima. Si
+vede quando i tasti si accumulano e vengono consumati nello stesso frame — cioe' proprio
+dopo il caricamento pigro della causa 1. Le quattro frecce delle 15:29:09.588-590 su 11143
+producono **Init 1148**: tre bottoni saltati in un colpo.
+
+**Corretto**: `<onleft>6008</onleft><onright>6001</onright>`.
+
+### Causa 3 — l'OSD che si chiude da solo: `Close` chiude il dialogo sbagliato
+
+Il builtin `Close` chiude **il dialogo in cima allo stack**, non quello che contiene il
+bottone. Quando due frecce arrivano nello stesso frame sull'ultimo dialogo, il primo
+`Close` chiude il dialogo compagno e il secondo — valutato quando in cima c'e' ormai la
+VideoOSD — **chiude la VideoOSD**.
+
+    15:30:05.725  long-right, window 11148   |  due frecce
+    15:30:05.726  long-right, window 11148   |  a 1 ms
+    15:30:05.759  Deinit Custom_1148
+    15:30:05.799  ignoring action 2, because topmost modal dialog closing animation is running
+    15:30:05.840  ignoring action 2   |
+    15:30:05.923  ignoring action 2   |
+    15:30:05.965  ignoring action 2   |  sette frecce buttate via
+    15:30:06.006  ignoring action 2   |  in 292 ms
+    15:30:06.055  ignoring action 2   |
+    15:30:06.091  ignoring action 2   |
+    15:30:06.104  Deinit VideoOSD                  <-- nessun tasto l'ha chiesto
+    15:30:06.176  long-right, window 12005, action is StepForward    <-- il film va avanti
+    15:30:06.184  Init DialogSeekBar
+
+I 292 ms di telecomando morto sono il fade `WindowClose` da 300 ms della VideoOSD stessa
+(`VideoOSD.xml` riga 6): la chiusura era gia' partita alle 15:30:05.799, la riga `Deinit`
+compare solo quando l'animazione finisce. Stessa cosa alle 15:31:16.665→16.970, di nuovo
+305 ms esatti.
+
+**Non e' un timeout.** `OSD_Timeout` e' vuoto e in tutto il log non parte ne' un
+`osd_timeout` ne' lo script `closeosd`. L'ipotesi del lotto 183 e' confermata dal log.
+
+Su **18 azioni scartate** in tutta la sessione, **15 seguono immediatamente un
+`Deinit Custom_1148`**. Il bottone 6008 e' l'ultimo della fila: e' li' che la corsa si
+chiude su se stessa.
+
+**Corretto**: `<onfocus>Dialog.Close($PARAM[dialog_id])</onfocus>`, con `dialog_id`
+propagato da ognuno dei cinque dialoghi attraverso il grouplist fino ai bottoni finti.
+`Dialog.Close(id)` e' idempotente: su un dialogo gia' chiuso non fa nulla, quindi la
+seconda freccia della raffica non ha piu' nessun bersaglio da abbattere.
+
+### Conferma del lotto 183 (tracce vecchie) — ora e' completa
+
+In tutta la riproduzione, **due soli** avvii dell'interprete Python per
+`script.skinvariables`, alle 15:29:16.931 e 15:29:16.989, cioe' la prima apertura in
+assoluto di 1146 e 1147. Poi **43 aperture di 1146 e 43 di 1147, zero avvii**.
+
+Prima del lotto 183 la chiave contava il `Player.Time(ss)`, quindi cambiava a ogni
+secondo: era 100 % di avvii. Nel lotto 183 avevo misurato 4 avvii su 58 aperture; qui il
+rapporto e' 2 su 86. La chiave e' corretta.
+
+### Bottone info
+
+Nessuna apertura della finestra 1193 in tutto il log. Le uniche occorrenze di "1193" sono
+identificativi di thread. Il bottone e' inerte, come voluto.
+
+### Impostazioni qualita': non erano oscurate per sbaglio
+
+`settings_manager.xml` righe 2318 e 2359: la voce **Limit Quality** (`results_quality_*`)
+e' condizionata a `String.IsEqual(...auto_play_*,false)`, mentre **Limit Auto Play
+Quality** (`autoplay_quality_*`) e' condizionata a `true`. Sono alternative, e stanno
+sotto **Playback**, non sotto Results.
+
+Sulla stick `auto_play_movie` e `auto_play_episode` sono entrambe `true`, quindi compare
+solo la seconda — che vale gia' `SD, 720p, 1080p`. Il 4K era gia' escluso dal percorso
+normale. `results_quality_*` (che contiene ancora `4K`) entra in gioco solo quando
+l'autoplay viene aggirato, per esempio con la selezione manuale della sorgente
+(`sources.py:91` e `sources.py:506`).
+
+### File toccati
+
+- `skin.arctic.fuse.3/1080i/Includes_OSD.xml` — `Dialog.Close(dialog_id)` al posto di
+  `Close`, nuovo parametro `dialog_id` propagato agli 8 bottoni finti, avvolgimento
+  6008/6001
+- `Custom_1143` / `1145` / `1146` / `1147` / `1148` — dichiarano il proprio `dialog_id`
+
+190/190 XML della skin validi. 6/6 hash verificati sulla stick a Kodi chiuso.
+
+### Da provare
+
+Riaprire l'OSD e **tenere premuta la freccia destra**. Attesa: la selezione gira in tondo
+senza chiudere l'OSD e senza saltare all'ultima voce. La prima navigazione dopo l'avvio
+restera' scattosa: quella e' la causa 1, non toccata.
+
+---
+
+## Lotto 186 — Il lotto 185 tiene, e la prima apertura non si cura precaricando
+
+Log del 2026-09-07, sessione 15:45:52 → 15:50:00, film "Minions & Monsters".
+
+### Verifica del lotto 185
+
+| | prima (log 15:14) | dopo (log 15:45) |
+|---|---|---|
+| azioni scartate da Kodi | 18 | **0** |
+| `StepForward` non voluti sul film | presenti | **0** |
+| chiusure spontanee della VideoOSD | 2 | **0** |
+| avvolgimento dopo 1148 | → 1148 (ultimo) | **→ 1143 (primo)** |
+
+Tenendo premuta la freccia il giro ora si chiude correttamente: 15:47:20.548 `Init 1148`
+→ 15:47:20.626 `Init 1143`. La VideoOSD si apre e si chiude solo su richiesta.
+
+La raffica di tasti in un solo frame c'e' ancora (11 frecce in 6 ms alle 15:47:20.026) ma
+non fa piu' danno: al peggio ripete un giro. Era il `Close` non mirato a trasformarla in
+una chiusura dell'OSD.
+
+### Quanto costa davvero l'OSD
+
+Misura: silenzio del thread GUI (T:16158) fra la riga `Loading skin file` e l'evento
+successivo dello stesso thread.
+
+    VideoOSD.xml                       55 ms
+    Custom_1145_OSD_InfoPanel          15 ms
+    Custom_1147_OSD_SubtitleStreams    56 ms
+    Custom_1146_OSD_AudioStreams       73 ms
+    Custom_1148_OSD_VideoStreams       77 ms
+    Custom_1143_OSD_NextOverlay       479 ms   <-- 68 % del totale
+    ----------------------------------------
+    totale                            755 ms
+
+Per confronto, finestre che Kodi gia' precarica all'avvio: 1152 = 77 ms, 1153 = 58 ms,
+DialogSeekBar = 21 ms, DialogBusy = 10 ms. **Quattro dialoghi su cinque dell'OSD sono
+leggeri quanto quelli.** Uno solo non lo e'.
+
+Non e' un effetto "primo caricamento": nel log precedente, dove l'ordine era diverso,
+1143 costava 689 ms e restava comunque il piu' caro di tutti; 1148 e' passato da 348 ms
+(caricato per terzo) a 77 ms (per sesto), 1143 da 689 a 479 restando sempre secondo.
+
+Non e' decodifica di texture: in tutto il log c'e' **una sola** riga `DoWork - took`
+(125 ms alle 15:46:02, una miniatura, altro contesto). Sono 479 ms di costruzione
+dell'albero dei controlli sul thread GUI, e bastano a far perdere il passo al video:
+
+    15:47:19.527  Loading skin file: Custom_1143_OSD_NextOverlay.xml
+                  (479 ms di silenzio totale sul thread GUI)
+    15:47:20.006  CDirectoryProvider[Null.xsp]: refreshing..
+    15:47:20.009  OutputPicture - timeout waiting for buffer
+
+### Perche' 1143 costa dieci volte gli altri
+
+Contiene il riquadro "prossimo elemento", che si appoggia al container 450. L'immagine di
+quel riquadro e' `$VAR[Image_OSD_UpNext_Playlist_Landscape]`, che ha **51 valori**
+condizionali, uno per posizione di playlist, ognuno dei quali rimanda a
+`$VAR[Image_Landscape_LIA_C450_N]` nel file generato da skinvariables. Ognuna di quelle ha
+a sua volta **10 valori**, con condizioni composte fino a 7 termini.
+
+    51 x 10 = 510 valori condizionali per la sola immagine
+    + Label_OSD_UpNext_Playlist_TopTitle   51 valori
+    + Label_OSD_UpNext_Playlist_SubTitle   51 valori
+
+Kodi registra tutte queste catene all'apertura della finestra, non alla prima volta che
+servono. Sono ~1300 infobool da agganciare per mostrare **un** riquadro.
+
+### E su questo impianto quel riquadro non compare mai
+
+`Path_OSD_NextRecommendation` (`Includes_Paths.xml:83`) da' `playlistvideo://` solo se
+`Integer.IsLess(VideoPlayer.PlaylistPosition,VideoPlayer.PlaylistLength)`, altrimenti
+ricade su `Null.xsp` — il ripiego lasciato dalla rimozione di TMDbHelper.
+
+Fen Light **non costruisce mai una playlist di Kodi**: `make_playlist()` esiste in
+`kodi_utils.py:703` e non ha **nessun chiamante** in tutta la libreria. Il prossimo
+episodio lo gestisce da se' in Python (`autoplay_nextep`). Quindi `PlaylistLength` vale
+sempre 1, la condizione e' sempre falsa, il container 450 e' sempre vuoto, e il gruppo e'
+comunque nascosto da `!Integer.IsEqual(Container(450).NumItems,0)`.
+
+**479 ms per costruire qualcosa che non viene mai disegnato, una volta per sessione, nel
+mezzo di un film.**
+
+### Perche' precaricare NON e' la strada
+
+1. **Non risparmierebbe memoria e non ne costerebbe.** Quei dialoghi sono `KEEP_IN_MEMORY`:
+   una volta aperti restano in memoria per tutta la sessione (43 aperture, 1 sola riga
+   `Loading skin file`). Precaricarli sposta l'allocazione dall'apertura dell'OSD
+   all'avvio: il picco e' identico. In questa sessione la memoria libera e' rimasta fra
+   301 e 396 MB, mai sotto.
+
+2. **La leva per farlo e' pericolosa.** La regola ricavata dal log (4 su 4 in entrambi i
+   versi) e' che una finestra con `<visible>` a livello di `<window>` viene precaricata.
+   Ma quel tag non e' un interruttore di caricamento: rende il dialogo ad
+   apparizione automatica, mostrato e nascosto da Kodi invece che da `ActivateWindow`. Va
+   bene per 1152/1153, che sono sovrapposizioni non focalizzabili. Su 1143-1148, che sono
+   dialoghi modali dentro la catena di fuoco appena sistemata, rischia di rompere di nuovo
+   la navigazione.
+
+3. **Sposterebbe il sintomo invece di togliere la causa.** 68 % del costo e' lavoro morto.
+
+### Proposta
+
+Non precaricare. Togliere il costo: il container 450 e le tre variabili da 51 rami
+servono a disegnare un riquadro che su questo impianto non compare mai.
+
+Alternativa se un giorno servisse davvero: il riquadro mostra **un solo** elemento, il
+prossimo. Non c'e' bisogno di 51 rami indicizzati sulla posizione di playlist — basta far
+tornare al container il solo elemento successivo e leggere `Container(450).ListItem(0)`.
+Sarebbe una riduzione di circa 50 volte mantenendo la funzione.
+
+Nessuna modifica applicata in questo lotto: e' una scelta di funzione, non un difetto.
+
+---
+
+## Lotto 187 — Potato il riquadro "prossimo elemento"
+
+Deciso dall'utente: «rimuovilo completamente. fen light non la usa. playlist non ne ho mai
+usate. e' sforzo computazionale assolutamente inutile, puoi potarlo totalmente».
+
+### Prima di tagliare: chi dipendeva da cosa
+
+Il container 450 **e' riusato** da `Custom_1117_Dialog_IconSelector.xml`, che legge
+`Container(450).ListItem.Icon` e `Container(450).IsUpdating`. Quindi le variabili generiche
+generate su quel container (`Image_MediaList_Thumb`, `Image_Icon`, `Label_Title`, ...)
+**restano**. Tagliato solo cio' che era esclusivo del riquadro:
+
+| elemento | usato da |
+|---|---|
+| `Path_OSD_NextRecommendation` | solo 1143 |
+| `Image_OSD_UpNext_Playlist_Landscape` (51 valori) | solo 1143 |
+| `Label_OSD_UpNext_Playlist_TopTitle` (51 valori) | solo 1143 |
+| `Label_OSD_UpNext_Playlist_SubTitle` (51 valori) | solo 1143 |
+| `Image_Landscape_LIA_C450_0..50` (51 var x 10 valori) | solo `Image_OSD_UpNext_Playlist_Landscape` |
+| `Label_Plot_Episode_Number_LIA_C450_0..50` (51 var) | solo `Label_OSD_UpNext_Playlist_SubTitle` |
+| valore 3 di `Action_OSD_SkipNext` | leggeva `Container(450)`, che in 1143 non esiste piu' |
+
+`Action_OSD_SkipNext` conserva i capitoli e `SkipNext`: se un giorno Kodi costruisse una
+playlist da sola (riproduzione di una cartella) il bottone si comporta come prima.
+
+Le altre variabili che contengono "UpNext" (`Image_UpNext`, `Label_OSD_UpNext_SubTitle`,
+`OSD_UpNext_*` in `Includes_OSD.xml`, `VideoOSDBookmarks.xml`) sono un'altra funzione: si
+appoggiano a `Window.Property(tvshowtitle)`, non al container 450. **Non toccate.**
+
+### Il doppio taglio sui file generati
+
+`Image_Landscape_LIA_C450_*` e `Label_Plot_Episode_Number_LIA_C450_*` nascono da
+`shortcuts/skinvariables-images.xml` e `shortcuts/skinvariables-labels.xml` e finiscono in
+`1080i/script-skinvariables-*-includes.xml`. Verificato che quei due generati **non sono
+per-dispositivo** (md5 identico fra repo e stick, e nessun `{skinuser}` nel nome), a
+differenza di `script-skinvariables-generator-includes-<utente>.xml`.
+
+Modificati **entrambi i lati**: la sorgente e il file generato. Cosi' il risultato e'
+corretto sia che la rigenerazione parta sia che non parta mai — che e' il modo in cui ci
+siamo gia' bruciati il 24-25/08 (vedi `shortcuts/generator/data/LEGGIMI-rigenerazione.md`).
+
+### Conto
+
+    Custom_1143_OSD_NextOverlay.xml              -58 righe
+    Includes_Paths.xml                            -8
+    Includes_Images.xml                          -54
+    Includes_Labels.xml                         -108
+    script-skinvariables-images-includes.xml    -612   (51 variabili)
+    script-skinvariables-labels-includes.xml    -255   (51 variabili)
+    -------------------------------------------------
+                                                -1095 righe, 102 variabili
+
+190/190 XML validi. 9/9 hash verificati sulla stick a Kodi chiuso.
+
+### Da misurare alla prossima riproduzione
+
+Nel log precedente `Custom_1143` bloccava il thread GUI per **479 ms** (689 ms nel log
+ancora prima). Attesa: che scenda in linea con gli altri quattro dialoghi (15-77 ms), e
+che sparisca l'`OutputPicture - timeout waiting for buffer` che lo accompagnava.
+
+Il costo totale dell'OSD passerebbe da ~755 ms a ~330 ms per sessione. A quel punto
+precaricare non avrebbe piu' nessun senso: sarebbe spostare 330 ms all'avvio con il rischio
+sulla catena di fuoco descritto nel lotto 186.
+
+---
+
+## Lotto 188 — Verifica della potatura: cosa e' migliorato e cosa avevo promesso male
+
+Log del 2026-09-07, sessione 16:04:23 → fine.
+
+### Quello che e' certo
+
+- `Null.xsp` **sparito** dal log (era 1 occorrenza in entrambe le sessioni precedenti,
+  ora 0): la query di directory morta non parte piu'.
+- Nessun errore di skin, nessuna variabile mancante.
+- La fila gira correttamente: 1143 → 1145 → 1146 → 1147 → 1148 → 1143, ripetuto.
+- Le correzioni del lotto 185 tengono: **0 azioni scartate, 0 StepForward non voluti.**
+
+### Il risultato piu' solido: lo stallo del video
+
+    log 15:14   OutputPicture - timeout  a 15:29:09.380   <-- DENTRO il caricamento di 1143 (08.867-09.588)
+    log 15:45   OutputPicture - timeout  a 15:47:20.009   <-- DENTRO il caricamento di 1143 (19.527-20.006)
+    log 16:05   OutputPicture - timeout  a 16:05:35.481   <-- 30 s DOPO, nessun rapporto con l'OSD
+
+Due volte su due il decoder perdeva il passo esattamente durante quel caricamento. Ora no.
+E' l'unico effetto che il log dimostra senza ambiguita', ed e' quello che si vedeva.
+
+### Dove avevo promesso male
+
+Avevo scritto: «attesa: che scenda in linea con gli altri quattro dialoghi (15-77 ms)».
+Misurato: **291 ms**, non 15-77.
+
+E soprattutto quella misura non e' affidabile con un campione solo. Fra il log 15:14 e il
+log 15:45 lo stesso `Custom_1143`, **senza nessuna modifica al suo contenuto**, e' passato
+da 689 a 479 ms. La latenza tasto→dialogo alla prima apertura ha fatto 248 → 541 → 209 ms
+nei tre log. La dispersione fra sessioni e' dello stesso ordine dell'effetto che volevo
+misurare: il caricamento costa meno, di quanto non lo so.
+
+### E soprattutto: la navigazione non e' piu' veloce, e non poteva esserlo
+
+Misure ripetute, non un campione solo:
+
+| | giro completo della fila | latenza tasto→dialogo (a regime) |
+|---|---|---|
+| 15:14 originale | 417 ms (n=37) | 47 ms |
+| 15:45 dopo lotto 185 | 417 ms (n=68) | 50 ms |
+| 16:05 dopo la potatura | 418 ms (n=8) | 44 ms |
+
+**Identiche.** Ed e' corretto che lo siano: i dialoghi sono `KEEP_IN_MEMORY`, l'albero dei
+controlli si costruisce **una volta per sessione**. Potarlo toglie un costo che si paga al
+primo passaggio e mai piu'. A regime conta la catena chiudi-apri con le sue animazioni, non
+la dimensione dell'albero.
+
+Quando ho proposto il taglio ho scritto «il costo totale dell'OSD passerebbe da ~755 ms a
+~330 ms per sessione» — vero come contabilita' del caricamento, ma **per sessione**, e non
+si traduce in navigazione piu' scorrevole. Andava detto allora.
+
+### Il taglio resta giusto
+
+102 variabili e ~1300 infobool registrati per disegnare qualcosa che su questo impianto non
+compariva mai, piu' una query di directory a ogni prima apertura. Sarebbe stato da togliere
+comunque. Ma il guadagno e' quello che e': **un blocco in meno alla prima navigazione di
+ogni sessione, e il video che non perde piu' il passo in quel momento.**
+
+### Cosa resta sul tavolo
+
+I 417 ms per giro (~45 ms per passo) sono la catena `Close` + `ActivateWindow` con le
+animazioni dei cinque dialoghi. E' li' che c'e' ancora margine, se serve. Ma la navigazione
+adesso e' corretta: nessun tasto perso, nessuna chiusura spontanea, avvolgimento giusto.
+
+---
+
+## Lotto 189 — Riscrivere l'OSD? No: e' gia' piu' veloce del telecomando
+
+Domanda: vale la pena rifare come e' fatto l'OSD per guadagnare fluidita'?
+
+### La misura che decide
+
+    Ripetizione del telecomando (CAndroidKey, code 22) : 51 ms  (n=570)
+    Intervallo fra tasti elaborati da Kodi             : 44-46 ms
+    Tasti arrivati in raffica (<10 ms, cioe' coda)     : ~2%
+
+Il telecomando consegna un tasto ogni **51 ms**. Kodi ne smaltisce uno ogni **44-46 ms**.
+**L'OSD e' gia' piu' veloce di quanto il telecomando sappia chiedere.**
+
+Il 2% di raffiche e' identico in tutti e tre i log — 1,9% / 2,5% / 2,2% — cioe' anche
+_prima_ di qualunque nostra modifica. Non e' una cosa che stiamo migliorando o peggiorando.
+E le due raffiche rimaste nell'ultimo log sono due pressioni a 1 ms di distanza che
+producono un passo in piu': innocue.
+
+### Cosa comprerebbe la riscrittura
+
+Fondere i cinque dialoghi compagni dentro la VideoOSD come gruppi a visibilita'
+condizionata toglierebbe il viavai di finestre (Deinit + Init a ogni passo di fuoco).
+Stima ottimistica del risparmio: 25-30 ms per passo, su un budget attuale di 44 ms
+(~2,6 fotogrammi a 60 Hz per chiudere una finestra, aprirne un'altra, attivare l'albero e
+disegnare — vicino al minimo fisico).
+
+**Ma il risparmio finirebbe sotto i 51 ms del periodo di ripetizione: invisibile.**
+
+### Cosa costerebbe
+
+Cinque finestre fuse in una; l'intera catena di fuoco da ricablare (i bottoni finti
+esistono proprio per fingere continuita' fra finestre diverse, sparirebbero — che sarebbe
+un bene); ogni `Window.IsVisible(114x)` sparso nella skin da ripuntare; e il rischio
+concreto di reintrodurre esattamente la classe di difetti dei lotti 185-186.
+
+### Decisione
+
+**Non si fa.** Alto costo, beneficio sotto la soglia di percezione. L'OSD adesso e'
+corretto: nessun tasto perso, nessuna chiusura spontanea, avvolgimento giusto, e sta al
+passo dell'ingresso.
+
+### L'unica cosa che resta da sistemare li' dentro, quando ci ripassiamo
+
+In `OSD_CustomDialog_GroupList` il bottone vero ha ancora `<param name="onup">Close</param>`:
+e' lo stesso `Close` non mirato che nel lotto 185 chiudeva la finestra sbagliata. Oggi non
+morde (0 azioni scartate), ma e' la stessa trappola. Una riga, da cambiare in
+`Dialog.Close($PARAM[dialog_id])` la prossima volta che si tocca quel file.
+
+Il resto dell'attenzione va sulla riproduzione (fase 4), non sull'OSD.
+
+---
+
+## Lotto 190 — Fase 3 chiusa
+
+Applicata l'ultima riga rimasta in sospeso: in `Custom_1143_OSD_NextOverlay.xml` il
+`<param name="onup">Close</param>` diventa `Dialog.Close(1143)`.
+
+Id **letterale** e non `$PARAM[dialog_id]`: quel punto e' la *chiamata* dell'include, fuori
+da ogni `<definition>`, dove `$PARAM` non si risolve. (I bottoni finti del lotto 185 stanno
+invece dentro la definizione, e li' `$PARAM[dialog_id]` e' corretto.)
+
+Unica occorrenza restante di `Close` non mirato nella catena OSD. L'altra (`Includes_OSD.xml:12`,
+`OSD_UpNext_Buttons`) appartiene a `VideoOSDBookmarks.xml`, un dialogo singolo senza catena
+di finestre compagne: li' `Close` e' corretto e resta.
+
+190/190 XML validi, hash verificato sulla stick a Kodi chiuso.
+
+**Stato della fase 3 (OSD):**
+
+| punto | esito |
+|---|---|
+| 3.1 animazione d'ingresso | fatto (lotto 181), verdetto utente «leggermente piu' reattiva» |
+| 3.2 sfasamento sfondo/barra | chiuso senza modifiche, scelta dell'utente |
+| 3.3 navigazione fra i bottoni | fatto (lotti 185, 189-190): 0 tasti persi, 0 chiusure spontanee, avvolgimento corretto |
+| 3.4a tracce del media precedente | fatto (lotto 183): da 100% a 2 avvii Python su 86 aperture |
+| 3.4b lampo delle tracce vecchie | fatto (lotto 183), gated su `Container.IsUpdating` |
+| bottone info rotto | fatto (lotto 183), reso inerte |
+| primo caricamento costoso | fatto (lotto 187): -102 variabili, sparito lo stallo del decoder |
+| riscrittura dell'OSD | **non si fa** (lotto 189): gia' piu' veloce del telecomando |
+
+Si passa alla fase 4.
+
+### Punto di partenza della fase 4, accertato prima di progettare
+
+**Il meccanismo del tetto di bitrate esiste gia'** ed e' attivo sulla stick:
+
+    results.filter_size_method = 1  ("Use Line Speed")
+    results.line_speed         = 11  (Mbit/s, messo a mano dall'utente)
+
+`sources.py:220-229`:
+
+    duration = self.meta['duration'] or (5400 se film, altrimenti 2400)   # secondi
+    max_size = ((0.125 * (0.90 * line_speed)) * duration) / 1000          # GB
+    results = [i for i in results if provider == 'folders' or min_size <= i['size'] <= max_size]
+
+Quindi con 11 Mbit/s: 1,2375 MB/s x durata. Su 90 minuti sono 6,68 GB.
+
+Verificato che `get_setting('results.line_speed', '25')` (senza prefisso `fenlight.`, a
+differenza delle righe vicine) **funziona lo stesso**: `get_setting` prova prima la
+proprieta' di finestra e poi il database, e nel database le chiavi sono senza prefisso.
+Non e' un difetto, sono due percorsi diversi che arrivano entrambi al valore giusto.
+
+**Quindi la fase 4 non deve costruire il meccanismo: deve misurare il numero.**

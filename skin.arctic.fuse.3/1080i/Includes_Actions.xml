@@ -66,7 +66,8 @@
     <variable name="Action_OSD_SkipNext">
         <value condition="!String.IsEmpty(Player.Chapter) + !String.IsEqual(Player.Chapter,00) + !String.IsEmpty(Player.ChapterCount) + !String.IsEqual(Player.ChapterCount,00) + !String.IsEqual(Player.Chapter,Player.ChapterCount)">ChapterOrBigStepForward</value>
         <value condition="Integer.IsLess(VideoPlayer.PlaylistPosition,VideoPlayer.PlaylistLength)">SkipNext</value>
-        <value condition="!String.IsEmpty(Container(450).ListItem.FileNameAndPath) + Integer.IsLess(Player.TimeRemaining(mins),10)">PlayMedia($ESCINFO[Container(450).ListItem.FileNameAndPath])</value>
+        <!-- LOTTO 186 :: tolto il valore che riproduceva il suggerimento del container 450:
+             quel container non esiste piu' in Custom_1143. Restano i capitoli e SkipNext. -->
         <value>ChapterOrBigStepForward</value>
     </variable>
 
@@ -193,9 +194,26 @@
         <onclick condition="!String.IsEmpty(Skin.String(OSD_Timeout)) + [Window.IsVisible(videoosd) | Window.IsVisible(musicosd)]">AlarmClock(osd_timeout,RunScript(script.skinvariables,run_executebuiltin=special://skin/shortcuts/builtins/skinvariables-closeosd.json,use_rules=True),$INFO[Skin.String(OSD_Timeout),00:,],silent)</onclick>
     </include>
 
+    <!-- LOTTO 183, passo 3.3 :: il clic sul bottone info non apre piu' una finestra che non puo'
+         mostrare niente.
+         Misura del 07/09: premuto Select alle 14:07:12.200, RunScript di skinvariables fino alle
+         14:07:12.786 (586 ms, interprete Python compreso), finestra 1193 aperta alle 14:07:12.788 e
+         chiusa da sola alle 14:07:13.913. Un secondo e sette decimi per zero risultato, e nessuna
+         chiamata di rete: e' tutto avvio di interprete e attesa.
+         Perche' non puo' mostrare niente: il contenitore 50 di Custom_1193_VideoOSDInfo.xml e'
+         special://skin/extras/playlists/Null.xsp da quando TMDbHelper e' stato tolto, quindi
+         NumItems=0 e il controllo 9002 fa PreviousMenu. Il ramo alternativo di quella finestra e'
+         pilotato da Window(Home).Property(VideoOSD.InfoDialog.Path), che in tutto il repo viene solo
+         LETTA e CANCELLATA: nessuno la scrive. Codice morto.
+         La condizione qui sotto non rimuove niente: e' lo stesso punto di aggancio di prima. Se un
+         giorno qualcosa scrivera' quella proprieta', il bottone tornera' a funzionare da solo. Finche'
+         nessuno la scrive, il clic non spende 1,7 s per chiudere una finestra vuota.
+         Il pannello con logo, trama e frase celebre NON passa di qui: e' la finestra 1145, aperta
+         dall'<onfocus> del bottone, e continua a funzionare. -->
     <variable name="Action_OSD_WikiInfo">
         <value condition="VideoPlayer.Content(livetv)">runscript(script.wikipedia,wikipedia=$INFO[VideoPlayer.Title])</value>
-        <value>RunScript(script.skinvariables,run_executebuiltin=special://skin/shortcuts/builtins/skinvariables-closeosd.json,use_rules=True,"command=ActivateWindow(1193)")</value>
+        <value condition="!String.IsEmpty(Window(Home).Property(VideoOSD.InfoDialog.Path))">RunScript(script.skinvariables,run_executebuiltin=special://skin/shortcuts/builtins/skinvariables-closeosd.json,use_rules=True,"command=ActivateWindow(1193)")</value>
+        <value>noop</value>
     </variable>
 
     <include name="_Action_Blur_Onload">

@@ -25,6 +25,14 @@ HDR = (
 '2160p.uhd.blu.ray', '2160p.us.bluray.hevc.truehd', '2160p.us.bluray.hevc.dts', '.hdr.', 'hdr10', 'hdr.10', 'uhd.bluray.2160p', 'uhd.blu.ray.2160p')
 HDR_TRUE = ('.hdr.', '.hdr10.', 'hdr.10')
 ENHANCED_UPSCALED = ('.enhanced.', '.upscaled.', '.enhance.', '.upscale.')
+# LOTTO 184 -- AV1 non ha decodifica hardware sulla Mi Stick, e il riconoscimento perdeva il 39%
+# dei casi. Il test era `'.av1.' in title`: pretende un punto PRIMA e DOPO, e nel 39% dei nomi veri
+# dopo c'e' un trattino (`.av1-lazarus`, `.av1-alyh`, `.av1-r&h`) oppure prima c'e' una parentesi
+# quadra (`[av1.2160p`, `[av1/1080p`). Misurato sulle 2108 sorgenti del log del 07/09: 41 file AV1,
+# 25 riconosciuti, 16 sfuggiti. Ora il confine e' "qualunque cosa non sia lettera o cifra", che
+# accetta punto, trattino, parentesi e barra e continua a rifiutare i nomi di gruppo come `dAV1nci`.
+# Compilata una volta sola: si valuta per ogni sorgente, e sono migliaia per ricerca.
+AV1_RE = re.compile(r'(?<![a-z0-9])av1(?![a-z0-9])')
 CODEC_H264 = ('avc', 'h264', 'h.264', 'x264', 'x.264')
 CODEC_H265 = ('h265', 'h.265', 'hevc', 'x265', 'x.265')
 CODEC_XVID = ('xvid', '.x.vid')
@@ -286,7 +294,7 @@ def get_info(title):
 		if any(i in title for i in HDR_TRUE) or 'hybrid' in title: info_append('[B]HDR[/B]')
 		if '[B]HDR[/B]' in info: info_append('[B]HYBRID[/B]')
 	if any(i in title for i in CODEC_H264): info_append('AVC')
-	elif '.av1.' in title: info_append('[B]AV1[/B]')
+	elif AV1_RE.search(title): info_append('[B]AV1[/B]')
 	elif any(i in title for i in CODEC_H265): info_append('[B]HEVC[/B]')
 	elif any(i in info for i in ('[B]HDR[/B]', '[B]D/VISION[/B]')): info_append('[B]HEVC[/B]')
 	if any(i in title for i in IMAX): info_append('IMAX')

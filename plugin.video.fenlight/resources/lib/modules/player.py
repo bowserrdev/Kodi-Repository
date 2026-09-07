@@ -14,6 +14,7 @@ auto_resume, auto_nextep_settings, store_resolved_to_cloud = st.auto_resume, st.
 set_bookmark, mark_movie, mark_episode = ws.set_bookmark, ws.mark_movie, ws.mark_episode
 PLAYBACK_ACTIVE_PROP = ku.PLAYBACK_ACTIVE_PROP
 mark_playback_start = ku.mark_playback_start
+perf_logger = ku.logger
 # Istante in cui lo stato locale (segnalibro o visto) e' stato scritto davvero. Non e' l'istante di
 # chiusura del player: fra i due passa il tempo del sondaggio piu' quello della scrittura, e in mezzo
 # Kodi ricostruisce. Solo una ricostruzione posteriore a QUESTO timbro ha potuto vedere il dato nuovo.
@@ -70,6 +71,10 @@ class FenLightPlayer(xbmc_player):
 	def onPlayBackSeek(self, time, seekOffset):
 		# Si aggiorna SOLO la posizione: nessuna chiamata a Trakt e nessuna marcatura qui.
 		# Trakt riceve uno scrobble start all'avvio e uno stop alla chiusura, niente altro.
+		# SONDA (lotto 182): il numero di salti serve a separare il livello di cache PRIMA del primo
+		# salto da quello DOPO l'ultimo. E' la sola cosa che questa richiamata aggiunge.
+		try: self._salti = getattr(self, '_salti', 0) + 1
+		except: pass
 		try:
 			if getattr(self, 'is_generic', True) or not getattr(self, '_av_started', False): return
 			total = getattr(self, 'total_time', 0) or 0
@@ -140,6 +145,54 @@ class FenLightPlayer(xbmc_player):
 		sleep(200)
 		close_all_dialog()
 
+	# --- SONDA CACHE (lotto 182) ----------------------------------------------------------------
+	# Serve a inchiodare con i numeri di Kodi cio' che il log del 07/09 lascia solo dedurre: che dopo
+	# un salto il buffer non torna mai pieno. Il criterio di uscita dallo stallo e' cached/currate > 8
+	# (VideoPlayer.cpp:1879), cioe' circa 8 secondi di contenuto; il buffer in avanti ne contiene ~20.
+	# Se la deduzione e' giusta, Player.CacheLevel tocca 100 prima del primo salto e poi resta basso
+	# per tutto il resto del film. E' una sonda: si toglie appena il numero e' in mano.
+	def _campiona_cache(self):
+		try:
+			_grezzo = get_infolabel('Player.CacheLevel')
+			if not _grezzo: return
+			_liv = int(float(_grezzo))
+		except: return
+		_dopo = getattr(self, '_salti', 0) > 0
+		self._cache_n = getattr(self, '_cache_n', 0) + 1
+		if _dopo:
+			self._cache_max_dopo = max(getattr(self, '_cache_max_dopo', 0), _liv)
+			self._cache_somma_dopo = getattr(self, '_cache_somma_dopo', 0) + _liv
+			self._cache_n_dopo = getattr(self, '_cache_n_dopo', 0) + 1
+		else:
+			self._cache_max_prima = max(getattr(self, '_cache_max_prima', 0), _liv)
+			self._cache_somma_prima = getattr(self, '_cache_somma_prima', 0) + _liv
+			self._cache_n_prima = getattr(self, '_cache_n_prima', 0) + 1
+		_tratto = getattr(self, '_cache_tratto', None)
+		if _tratto is None: _tratto = self._cache_tratto = []
+		_tratto.append(_liv)
+		# Una riga ogni dieci secondi: la forma a dente di sega si legge dalla sequenza, non da una media.
+		if len(_tratto) >= 10:
+			perf_logger('FenLight PERF CACHE', 'livello %s | salti finora %s'
+						% ('-'.join(str(_v) for _v in _tratto), getattr(self, '_salti', 0)))
+			self._cache_tratto = []
+
+	def _riassunto_cache(self):
+		try:
+			if not getattr(self, '_cache_n', 0): return
+			_tratto = getattr(self, '_cache_tratto', None)
+			if _tratto:
+				perf_logger('FenLight PERF CACHE', 'livello %s | salti finora %s'
+							% ('-'.join(str(_v) for _v in _tratto), getattr(self, '_salti', 0)))
+			def _media(_s, _n): return round(float(_s) / _n) if _n else 0
+			_np, _nd = getattr(self, '_cache_n_prima', 0), getattr(self, '_cache_n_dopo', 0)
+			perf_logger('FenLight PERF CACHE',
+						'riassunto | salti %s | prima del primo salto: %s campioni, max %s%%, media %s%% '
+						'| dopo: %s campioni, max %s%%, media %s%%'
+						% (getattr(self, '_salti', 0),
+							_np, getattr(self, '_cache_max_prima', 0), _media(getattr(self, '_cache_somma_prima', 0), _np),
+							_nd, getattr(self, '_cache_max_dopo', 0), _media(getattr(self, '_cache_somma_dopo', 0), _nd)))
+		except: pass
+
 	def monitor(self):
 		try:
 			ensure_dialog_dead, total_check_time = False, 0
@@ -204,6 +257,7 @@ class FenLightPlayer(xbmc_player):
 						Thread(target=auto_subtitle_check, args=(self,)).start()
 
 					sleep(1000)
+					self._campiona_cache()
 					self.current_point = round(float(self.curr_time/self.total_time * 100), 1)
 					# Durante la riproduzione non si tocca ne' Trakt ne' il database dei visti: niente
 					# rinvio periodico dello scrobble (era ogni 120s) e niente marcatura al 90%. Tutto
@@ -215,6 +269,7 @@ class FenLightPlayer(xbmc_player):
 						if round(self.total_time - self.curr_time) <= self.start_prep: self.run_next_ep(); break
 				except: pass
 			hide_busy_dialog()
+			self._riassunto_cache()
 			if not self.media_marked: self.media_watched_marker()
 			self.clear_playback_properties()
 			self.clear_playing_item()
