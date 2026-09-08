@@ -40,15 +40,20 @@ external_db = translatePath(path_join(database_path_raw, 'external.db'))
 settings_db = translatePath(path_join(database_path_raw, 'settings.db'))
 episode_groups_db = translatePath(path_join(database_path_raw, 'episode_groups.db'))
 dub_db = translatePath(path_join(database_path_raw, 'dub.db'))
+# LOTTO 201 -- misure delle riproduzioni, ingresso del wizard della banda. Database a se' e non una
+# tabella dentro maincache: e' l'unico dato che NON e' una cache (non scade e non si rigenera
+# leggendo di nuovo una API), e finirebbe cancellato dalle pulizie insieme al resto.
+playback_db = translatePath(path_join(database_path_raw, 'playback.db'))
 
 database_timeout = 20
 current_dbs = ('navigator.db', 'watched.db', 'favourites.db', 'traktcache.db', 'maincache.db', 'lists.db',
-				'discover.db', 'metacache.db', 'debridcache.db', 'external.db', 'settings.db', 'episode_groups.db', 'dub.db')
+				'discover.db', 'metacache.db', 'debridcache.db', 'external.db', 'settings.db', 'episode_groups.db', 'dub.db',
+				'playback.db')   # <- senza questa riga remove_old_databases() lo cancella al primo avvio
 database_locations = {
 	'navigator_db': navigator_db, 'watched_db': watched_db, 'favorites_db': favorites_db, 'settings_db': settings_db,
 	'trakt_db': trakt_db, 'maincache_db': maincache_db, 'metacache_db': metacache_db, 'debridcache_db': debridcache_db,
 	'lists_db': lists_db, 'discover_db': discover_db, 'external_db': external_db, 'episode_groups_db': episode_groups_db,
-	'dub_db': dub_db
+	'dub_db': dub_db, 'playback_db': playback_db
 }
 integrity_check = {
 	'settings_db': ('settings',),
@@ -63,7 +68,8 @@ integrity_check = {
 	'debridcache_db': ('debrid_data',),
 	'external_db': ('results_data',),
 	'episode_groups_db': ('groups_data',),
-	'dub_db': ('dubcache',)
+	'dub_db': ('dubcache',),
+	'playback_db': ('playback_stats',)
 }
 # LOTTO 133 -- lo stato di sincronizzazione e' una COLONNA, non piu' una deduzione.
 #   sync_state  'synced' | 'pending_put' | 'pending_delete'  (vedi caches/progress_sync)
@@ -113,7 +119,27 @@ table_creators = {
 	'episode_groups_db': (
 		'CREATE TABLE IF NOT EXISTS groups_data (tmdb_id text not null unique, data text)',),
 	'dub_db': (
-		'CREATE TABLE IF NOT EXISTS dubcache (id text unique, data text, expires integer)',)
+		'CREATE TABLE IF NOT EXISTS dubcache (id text unique, data text, expires integer)',),
+	# Una riga per riproduzione. Colonne separate e non un blob json: il wizard ci fa percentili e
+	# medie, e su un blob dovrebbe rileggere e decodificare tutto ogni volta.
+	# NULL dove la misura non c'e' (nessun salto, dimensione non ottenuta): il wizard deve poter
+	# distinguere 'non misurato' da 'misurato zero', ed e' la distinzione che nei lotti 191-198 mi e'
+	# costata due sonde.
+	'playback_db': (
+		'CREATE TABLE IF NOT EXISTS playback_stats ('
+		'  id integer primary key autoincrement,'
+		'  quando integer not null,'          # epoch
+		'  cdn text,'                         # nexus-226.nord.tb-cdn.st
+		'  dimensione integer,'               # byte veri dal Content-Range, NULL se non ottenuti
+		'  durata integer,'                   # secondi, da Kodi
+		'  bitrate real,'                     # Mbit/s = dimensione*8/durata
+		'  salti integer,'
+		'  portata_prima real,'               # Mbit/s sostenuti, surplus + bitrate
+		'  portata_dopo real,'
+		'  cache_media_prima integer, cache_max_prima integer,'
+		'  cache_media_dopo integer, cache_max_dopo integer,'
+		'  secondi_a_zero integer,'           # il piu' lungo tratto consecutivo di cache a 0
+		'  campioni integer)',)
 }
 
 media_prop = 'fenlight.%s'

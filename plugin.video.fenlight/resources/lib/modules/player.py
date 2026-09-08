@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+from time import perf_counter
 from threading import Thread
 from apis.trakt_api import make_trakt_slug, trakt_scrobble_start, trakt_scrobble_stop, trakt_official_status
 from caches.settings_cache import get_setting
@@ -73,6 +74,10 @@ class FenLightPlayer(xbmc_player):
 		# Trakt riceve uno scrobble start all'avvio e uno stop alla chiusura, niente altro.
 		# SONDA (lotto 182): il numero di salti serve a separare il livello di cache PRIMA del primo
 		# salto da quello DOPO l'ultimo. E' la sola cosa che questa richiamata aggiunge.
+		# La finestra scorrevole della portata si azzera qui: un salto resetta la cache di Kodi, e una
+		# finestra a cavallo della discontinuita' misurerebbe un dislivello, non una velocita'.
+		try: self._cache_serie = []
+		except: pass
 		try: self._salti = getattr(self, '_salti', 0) + 1
 		except: pass
 		try:
@@ -167,6 +172,39 @@ class FenLightPlayer(xbmc_player):
 			self._cache_max_prima = max(getattr(self, '_cache_max_prima', 0), _liv)
 			self._cache_somma_prima = getattr(self, '_cache_somma_prima', 0) + _liv
 			self._cache_n_prima = getattr(self, '_cache_n_prima', 0) + 1
+		# PORTATA (lotto 197, corretto al 198). Quando la cache sale, il collegamento consegna piu' di
+		# quanto il film consuma, e la pendenza dice di quanto. Tempo vero e non "un secondo": il ciclo
+		# fa sleep(1000) ma anche altro, e slitta.
+		#
+		# DUE FINESTRE, e la seconda e' quella che conta. Con la sola finestra da 5 campioni il lotto
+		# 197 leggeva il PICCO, e il picco non e' cio' che regge un film: la riproduzione 7 dell'08/09
+		# (13,72 Mbit/s) dava picco 21,4 Mbit/s -- verdetto "larghissimo" -- mentre la cache non
+		# passava mai il 21% e la media era 1%. Su 20 campioni la stessa riproduzione da' 15,8 Mbit/s,
+		# cioe' un margine di 1,15x, che e' il numero vero. Stesso errore delle sonde dei lotti 191 e
+		# 193, in un posto nuovo: misurare un massimo dove serve una portata sostenuta.
+		_serie = getattr(self, '_cache_serie', None)
+		if _serie is None: _serie = self._cache_serie = []
+		_serie.append((perf_counter(), _liv))
+		if len(_serie) > 20: _serie.pop(0)
+		# Prima e dopo il primo salto si tengono separate: il dato dell'08/09 dice che dopo un salto
+		# la cache non si riprende, ma senza la portata separata non si sa SE cala la consegna del cdn
+		# (offset freddo) o se semplicemente manca il margine per ricostruire il buffer. E' la
+		# domanda dell'obiettivo 1, e finora non era misurata.
+		_suff = '_dopo' if _dopo else '_prima'
+		for _w, _attr in ((5, '_cache_pend_picco' + _suff), (20, '_cache_pend_sost' + _suff)):
+			if len(_serie) < _w: continue
+			_a, _b = _serie[-_w], _serie[-1]
+			_dt, _dl = _b[0] - _a[0], _b[1] - _a[1]
+			if _dt > 0 and _dl > 0:
+				_pend = _dl / _dt
+				if _pend > getattr(self, _attr, 0): setattr(self, _attr, _pend)
+		# Il tratto consecutivo piu' lungo a zero. E' l'unico esito che si SENTE: la media della cache
+		# misura il margine (lotto 197), ma il film si ferma solo quando il buffer resta vuoto.
+		if _liv <= 0:
+			_run = getattr(self, '_cache_run_zero', 0) + 1
+			self._cache_run_zero = _run
+			if _run > getattr(self, '_cache_zero_max', 0): self._cache_zero_max = _run
+		else: self._cache_run_zero = 0
 		_tratto = getattr(self, '_cache_tratto', None)
 		if _tratto is None: _tratto = self._cache_tratto = []
 		_tratto.append(_liv)
@@ -175,6 +213,63 @@ class FenLightPlayer(xbmc_player):
 			perf_logger('FenLight PERF CACHE', 'livello %s | salti finora %s'
 						% ('-'.join(str(_v) for _v in _tratto), getattr(self, '_salti', 0)))
 			self._cache_tratto = []
+
+	def _misura_dimensione(self):
+		"""Dimensione VERA del file dal cdn, in un thread di sfondo a riproduzione gia' avviata.
+
+		Kodi scrive il bitrate del flusso (`setting maxRate`) solo nel log C++: Python non lo vede e
+		nessuna API lo espone. L'unico modo di conoscerlo e' dimensione x 8 / durata -- e la
+		dimensione dello scraper e' inaffidabile (lotto 192: 0,03 GB dichiarati contro 0,74 reali).
+		`Content-Range` la da' esatta al costo di UN byte e di un ttfb.
+
+		In sfondo e dopo l'avvio di proposito: il film sta gia' andando, quindi il costo visibile e'
+		zero. E' la differenza con la sonda dei lotti 191-195, che la stessa attesa la metteva PRIMA.
+		"""
+		try:
+			import http.client
+			from modules.http_client import _split_url
+			_url = getattr(self, 'url', None)
+			if not _url: return
+			# I redirect si seguono a mano: un cdn che rimandasse altrove darebbe, senza questo,
+			# silenziosamente nessuna misura per sempre. Tre salti bastano e chiudono il ciclo.
+			for _ in range(4):
+				scheme, host, port, path = _split_url(_url)
+				_cls = http.client.HTTPSConnection if scheme == 'https' else http.client.HTTPConnection
+				conn = _cls(host, port, timeout=10)
+				try:
+					conn.request('GET', path, headers={'Range': 'bytes=0-0', 'Accept-Encoding': 'identity',
+													   'User-Agent': 'Mozilla/5.0', 'Connection': 'close'})
+					resp = conn.getresponse()
+					if resp.status in (301, 302, 303, 307, 308):
+						_loc = resp.getheader('Location')
+						if not _loc: return
+						_url = _loc if not _loc.startswith('/') else '%s://%s:%s%s' % (scheme, host, port, _loc)
+						continue
+					# Il nodo si registra QUELLO FINALE, non quello di partenza: e' il nodo che ha
+					# davvero servito il file, ed e' il dato che serve al wizard.
+					self._cdn_host = host
+					_cr = resp.getheader('Content-Range')
+					if _cr and '/' in _cr:
+						_tot = _cr.rsplit('/', 1)[1].strip()
+						if _tot.isdigit(): self._dimensione_vera = int(_tot)
+					return
+				finally:
+					try: conn.close()
+					except: pass
+		except: pass
+
+	def _buffer_avanti_mb(self):
+		# filecache.memorysize e' in MB, e Kodi ne tiene un quarto per il buffer all'indietro:
+		# FileCache.cpp -> back = cacheSize / 4; front = cacheSize - back. Quindi in avanti va il 75%,
+		# ed e' su quel 75% che Player.CacheLevel calcola la percentuale (level = (writePos - readPos)
+		# / m_maxForward). Letto da Kodi e non messo a mano perche' memorysize e' una delle voci che
+		# un wizard dovra' cambiare: se resta scritta qui, la misura si sfalsa senza accorgersene.
+		try:
+			_r = ku.get_jsonrpc({'jsonrpc': '2.0', 'id': 1, 'method': 'Settings.GetSettingValue',
+								 'params': {'setting': 'filecache.memorysize'}})
+			_v = (_r or {}).get('value') or 0
+			return _v * 0.75 if _v else 0
+		except: return 0
 
 	def _riassunto_cache(self):
 		try:
@@ -191,10 +286,70 @@ class FenLightPlayer(xbmc_player):
 						% (getattr(self, '_salti', 0),
 							_np, getattr(self, '_cache_max_prima', 0), _media(getattr(self, '_cache_somma_prima', 0), _np),
 							_nd, getattr(self, '_cache_max_dopo', 0), _media(getattr(self, '_cache_somma_dopo', 0), _nd)))
+			# La media della cache e' una misura di MARGINE, non di qualita': se il collegamento
+			# consegna esattamente quanto il film consuma, la cache resta bassa e la riproduzione e'
+			# perfetta lo stesso. Evil Dead, 07/09: media 26%, 17 s a zero, e nessun problema visto.
+			# Il numero che serve per tarare results.line_speed e' questo qui sotto.
+			_mb = self._buffer_avanti_mb()
+			_c = (lambda _p: _p / 100.0 * _mb * 8) if _mb else None
+			for _et, _sf in (('prima del salto', '_prima'), ('DOPO il salto ', '_dopo')):
+				_pk, _so = getattr(self, '_cache_pend_picco' + _sf, 0), getattr(self, '_cache_pend_sost' + _sf, 0)
+				if not (_pk or _so): continue
+				if _c:
+					perf_logger('FenLight PERF CACHE',
+								'portata %s | SOSTENUTA (20 s) %.1f%%/s = %.1f Mbit/s di surplus | picco (5 s) %.1f%%/s = %.1f Mbit/s '
+								'| buffer in avanti %.0f MB | portata = surplus + bitrate (riga "setting maxRate"); per tarare usare la SOSTENUTA'
+								% (_et, _so, _c(_so), _pk, _c(_pk), _mb))
+				else:
+					perf_logger('FenLight PERF CACHE', 'portata %s | sostenuta %.1f%%/s | picco %.1f%%/s (filecache.memorysize non leggibile)' % (_et, _so, _pk))
+			self._registra_misura(_mb)
+		except: pass
+
+	def _registra_misura(self, buffer_mb):
+		"""Una riga nel database delle misure. Ingresso del wizard della banda (lotto 201).
+
+		Sta qui e non in un punto piu' alto perche' qui ci sono gia' tutti i numeri, e perche' il
+		riassunto gira una volta sola per riproduzione. Non solleva mai: una misura persa non deve
+		poter disturbare la chiusura di un film.
+		"""
+		try:
+			from caches import playback_stats
+			from time import time as _now
+			_dim = getattr(self, '_dimensione_vera', None)
+			_dur = getattr(self, 'total_time', 0) or 0
+			try: _dur = int(_dur)
+			except: _dur = 0
+			# NULL, non zero: il wizard deve poter distinguere "non misurato" da "misurato zero".
+			_bit = (_dim * 8.0 / _dur / 1000000.0) if (_dim and _dur) else None
+			def _porta(_sf):
+				_p = getattr(self, '_cache_pend_sost' + _sf, 0)
+				if not (_p and buffer_mb and _bit): return None
+				return _p / 100.0 * buffer_mb * 8 + _bit
+			_np, _nd = getattr(self, '_cache_n_prima', 0), getattr(self, '_cache_n_dopo', 0)
+			_media = lambda _s, _n: int(round(float(_s) / _n)) if _n else None
+			playback_stats.registra(
+				quando=int(_now()), cdn=getattr(self, '_cdn_host', None), dimensione=_dim,
+				durata=_dur or None, bitrate=_bit, salti=getattr(self, '_salti', 0),
+				portata_prima=_porta('_prima'), portata_dopo=_porta('_dopo'),
+				cache_media_prima=_media(getattr(self, '_cache_somma_prima', 0), _np),
+				cache_max_prima=getattr(self, '_cache_max_prima', None) if _np else None,
+				cache_media_dopo=_media(getattr(self, '_cache_somma_dopo', 0), _nd),
+				cache_max_dopo=getattr(self, '_cache_max_dopo', None) if _nd else None,
+				secondi_a_zero=getattr(self, '_cache_zero_max', 0),
+				campioni=getattr(self, '_cache_n', 0))
+			perf_logger('FenLight PERF CACHE',
+						'misura registrata | bitrate %s | portata prima %s dopo %s | zero piu\' lungo %s s | righe in archivio %s'
+						% ('%.2f' % _bit if _bit else 'n.d.',
+						   '%.1f' % _porta('_prima') if _porta('_prima') else 'n.d.',
+						   '%.1f' % _porta('_dopo') if _porta('_dopo') else 'n.d.',
+						   getattr(self, '_cache_zero_max', 0), playback_stats.quante()))
 		except: pass
 
 	def monitor(self):
 		try:
+			# La dimensione vera parte QUI, in sfondo: il film e' gia' partito, quindi non si aspetta.
+			try: Thread(target=self._misura_dimensione).start()
+			except: pass
 			ensure_dialog_dead, total_check_time = False, 0
 			if self.media_type == 'episode':
 				play_random_continual = self.sources_object.random_continual
