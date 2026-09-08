@@ -671,6 +671,12 @@ class Sources():
 						if self.progress_dialog.iscanceled() or monitor.abortRequested(): break
 						url = self.resolve_sources(item)
 						if url:
+							# LOTTO 195 :: sonda della banda STACCATA definitivamente. Due versioni, due sessioni di
+							# prova, otto riproduzioni: non predice. La v2 avrebbe scartato Evil Dead (regime 3,39
+							# Mbit/s contro 10,69 richiesti) mezzo secondo prima che Kodi, sullo STESSO nodo,
+							# consegnasse 11,16 Mbit/s riempiendo la cache al 99%. La sonda misura una connessione
+							# diversa da quella che riproduce, e la varianza fra due connessioni allo stesso nodo
+							# (3,3x misurata) e' piu' grande del segnale cercato. Codice e diagnosi in band_probe.py.
 							resolve_percent = 0
 							self.progress_dialog.busy_spinner('false')
 							self.progress_dialog.update_resolver(percent=resolve_percent)

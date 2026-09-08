@@ -23512,3 +23512,1720 @@ proprieta' di finestra e poi il database, e nel database le chiavi sono senza pr
 Non e' un difetto, sono due percorsi diversi che arrivano entrambi al valore giusto.
 
 **Quindi la fase 4 non deve costruire il meccanismo: deve misurare il numero.**
+
+---
+
+## Lotto 191 -- Fase 4, sonda 1: la banda sul link risolto (solo misura)
+
+### Perche' la misura sta dentro `play_file` e non in un test a se'
+
+Il vecchio `advanced_settings._speed_test_mbps` scaricava da una lista di URL fissi
+(`SPEEDTEST_URLS`) e ne ricavava un numero "della linea". Quel numero non serve, per due
+motivi che ha sollevato l'utente e che sono corretti entrambi:
+
+1. **Una misura per sessione arriva tardi.** Spesso Kodi si apre per vedere *un* film e si
+   chiude. Scrivere la misura per la sessione dopo rende la funzione quasi inutile.
+2. **TorBox assegna cdn diversi file per file.** Una misura fatta su un cdn non descrive la
+   riproduzione successiva, che puo' essere servita da un altro.
+
+Ne segue che l'unico punto in cui la misura vale e' quello in cui esiste **il link vero, sul
+cdn vero, del file che sta per partire**: dentro il ciclo di `play_file`, subito dopo
+`resolve_sources` e prima di `player.run`.
+
+E qui c'e' il guadagno che rende l'idea interessante: `play_file` **ha gia'** il ciclo che
+passa alla sorgente successiva quando una fallisce. Una sonda in quel punto non inventa un
+meccanismo, alimenta quello che c'e'. Osservazione dell'utente, decisiva: se una sorgente
+parte e si riproduce male, Fen Light **la rivaluterebbe come migliore anche la volta dopo**,
+costringendo a "seleziona sorgente" a mano ogni volta. Scartarla al momento giusto non
+migliora solo questa riproduzione: impedisce che l'errore si ripeta.
+
+### Perche' DUE finestre e non una
+
+Domanda dell'utente: puo' un file essere servito meglio all'inizio che dopo? Si', ed e' la
+norma. Un cdn non tiene i file interi sui nodi di bordo, tiene **i pezzi richiesti di
+recente**. L'inizio di un file e' il pezzo che chiedono tutti -- chi apre e chiude, chi
+sbaglia film, chi guarda due minuti -- quindi e' quasi sempre caldo e arriva a velocita' di
+rete locale. Il minuto 40 no: li' spesso non c'e' stato nessuno, e il nodo deve andarselo a
+prendere dall'origine.
+
+Misurare solo l'inizio darebbe **il numero migliore che quel file potra' mai dare**, e
+tarerebbe la soglia sul caso piu' fortunato -- proprio l'errore da evitare, visto che
+l'obiettivo dichiarato e' il **salto in avanti senza cache**. Quindi:
+
+| finestra | offset | cosa rappresenta |
+|---|---|---|
+| `inizio` | 0 | la riproduzione lineare, cdn caldo |
+| `dentro` | 45% del file | il salto in avanti, cdn tipicamente freddo |
+
+Il **rapporto fra le due** e' un dato che vale da solo: dice se il collo di bottiglia e' la
+banda della linea o il cdn.
+
+### Cosa e' stato scritto
+
+**Nuovo `modules/band_probe.py`.** Costruito su `http.client` diretto (non su `requests`:
+337 moduli per un GET; non su `modules.http_client`: legge il corpo intero con `raw.read()`
+e non permette una lettura a tempo). Riusa `_split_url` da `http_client` e segue i redirect
+a mano, al massimo 4.
+
+Per finestra: tetto di **1,5 s** e di **4 MB**, il primo che arriva. L'orologio del
+trasferimento parte **dopo** le intestazioni, cosi' la latenza del cdn (`ttfb`) resta un
+numero separato dalla velocita'. `conn.close()` senza drenare: abbandona il trasferimento
+invece di scaricare il resto del file.
+
+La dimensione totale si legge da `Content-Range` (risposta 206) o da `Content-Length`
+(risposta 200). **Senza dimensione dichiarata la finestra profonda non si fa e lo si dice**,
+invece di inventare un offset su una dimensione stimata.
+
+**Aggancio in `sources.py`**, dentro `if url:` e *prima* di `busy_spinner('false')` -- cosi'
+la rotellina resta in moto durante la misura invece di lasciare uno schermo fermo.
+
+**Interruttore: nessuna impostazione nuova.** La sonda e' strumentazione e vive con
+`fenlight.perf.instrumentation`, che esiste gia' (`modules/perf.py`). Il controllo sta anche
+al punto di chiamata, non solo dentro `probe()`, per non pagare nemmeno l'import quando la
+strumentazione e' spenta; `modules.perf` e' una foglia (importa solo `xbmc`/`xbmcgui`).
+
+### Cosa la sonda NON fa
+
+**Non scarta niente e non scrive nessuna impostazione.** Misura e registra. Il potere di
+scartare una sorgente si concede dopo, quando i dati avranno tarato la soglia. Modo
+concordato: propone e applica su conferma finche' la taratura non e' fidata.
+
+### Costi, detti prima e non dopo
+
+- **~3,5 s prima della riproduzione** nel caso peggiore (due ttfb piu' due finestre). E' il
+  prezzo della fase di misura, non della fase finale.
+- **fino a ~8 MB di traffico** che Kodi poi riscarica.
+- La finestra `inizio` su una linea veloce puo' esaurire il tetto di 4 MB in mezzo secondo,
+  e mezzo secondo cade dentro la partenza lenta del tcp: il numero esce **basso**. E' un
+  errore nella direzione prudente, e sulla stick a 11 Mbit/s comanda comunque il tetto di
+  tempo, non quello di byte.
+
+### Prova sul Mac prima del deploy
+
+Contro `releases.ubuntu.com` (redirect, `Range` onorato, 4,44 GB dichiarati):
+
+    inizio   offset 0          ttfb 271 ms | 4.00 MB in 0.65 s -> 51.75 Mbit/s
+    dentro   offset 2.00 GB    ttfb 228 ms | 4.00 MB in 0.59 s -> 56.69 Mbit/s
+    margine inizio 10.85x | margine salto 11.88x | sonda 1741 ms
+
+Contro un host irraggiungibile: registra il fallimento, non solleva, la riproduzione
+partirebbe lo stesso.
+
+### Deploy
+
+`resources/lib` intera (97 file), md5 verificati sul dispositivo:
+
+    band_probe.py  86542c47f0feba1e6bba38b58b0bedd2   OK
+    sources.py     d6c5375e732740ebb35b7e3fbb68969c   OK
+
+Stato letto da `settings.db` sulla stick: `perf.instrumentation=true`,
+`results.line_speed=11`, `results.filter_size_method=1`. La sonda quindi si accende da sola
+alla prossima riproduzione.
+
+### Sul punto 2 dell'utente: il log audio non si puo' isolare
+
+Richiesta: tenere acceso solo il log necessario alla sonda audio, mantenendo il livello
+info. **Non si puo'.** Censimento del log della stick: 2256 righe `debug <general>`, 1201
+`info <general>`, 16 `warning`, 2 `error` -- **tutte** sotto `<general>`. Sulla stick
+`debug.extralogging=false` e `debug.setextraloglevel` e' vuoto, quindi il log per componenti
+non e' in uso, e le righe `VerifySinkConfiguration` / `AESinkAUDIOTRACK - N supported` sono
+`LOGDEBUG` semplice: per averle servirebbe il debug completo.
+
+Il decoder video invece e' a livello **info** (`Mediacodec decoder: OMX.amlogic.*`), quindi
+quella sonda si puo' fare senza toccare niente.
+
+Strada alternativa per l'audio, **da verificare con una chiamata prima di prometterla**:
+JSON-RPC `Settings.GetSettings` riporta il campo `enabled` di ogni impostazione, e Kodi
+disabilita le voci passthrough dei formati che il sink non regge. Sulla stick sono presenti
+`audiooutput.ac3passthrough` (true), `eac3passthrough` (true, modificata), `dtspassthrough`
+(false), `truehdpassthrough` (false). Se `enabled` rispecchia davvero la capacita' del sink,
+il wizard audio legge la capacita' senza log e senza debug.
+
+
+---
+
+## Lotto 192 -- La sonda della banda non funziona, e il log dice cosa e' successo davvero
+
+Quattro riproduzioni del 07/09, 22:40-22:47. Kodi chiuso, log letto per intero.
+
+### Il confronto che chiude la questione
+
+`maxRate` e' il bitrate del flusso **misurato da Kodi stesso** sul file vero
+(`CFileCache::IoControl`). Media/max della cache vengono dalla sonda gia' esistente in
+`player.py`.
+
+| # | film | codec | maxRate Kodi | sonda inizio | sonda dentro | cache media | cache max | esito reale |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Simpson (ep) | h264 720p | 4,84 Mbit/s | **0,29** | **0,67** | 57% | 99% | **fluida** |
+| 2 | Toy Story | h264 1080p | 9,85 Mbit/s | 10,82 | 2,74 | 11% | 57% | stentata, poi ok |
+| 3 | Signore degli Anelli | **hevc** 1080p | 4,13 Mbit/s | **7,88** | **10,33** | 9% | 47% | **morta** |
+| 4 | Evil Dead Burn | h264 1080p | 11,16 Mbit/s | 6,89 | 1,02 | 71% | 99% | **fluida** |
+
+Le righe 1 e 3 sono l'inversione completa: il file coi numeri **peggiori** (0,29 Mbit/s, venti
+volte sotto tutti gli altri) e' andato benissimo, quello coi numeri **migliori** e' morto.
+La sonda del lotto 191 non misura la grandezza che serve. La sonda della cache, che c'era
+gia', invece segue l'esito perfettamente: 57 / 11 / 9 / 71.
+
+### Perche' la sonda sbaglia
+
+`resp.read(65536)` **blocca** finche' non ha 64 KB, e solo dopo il ciclo guarda il budget di
+tempo. Riproduzione 1: `0.06 MB in 1.80 s` -- sono **65 536 byte esatti**, cioe' un solo
+chunk. Il numero prodotto non e' una velocita': e' *quanto ci ha messo a consegnare i primi
+64 KB*.
+
+E quel tratto e' il peggiore della curva, per due motivi che il log quantifica:
+
+- **ttfb 1387 / 1817 / 2975 / 2462 ms** verso i nodi `nexus-NNN.ceur.tb-cdn.st`. Con una
+  latenza cosi', dentro una finestra di 1,5 s il tcp non esce dalla partenza lenta.
+- Una connessione **nuova e usa-e-getta** non e' il regime del lettore, che ne tiene aperta
+  **una** e legge a chunk di 128 KB con `readfactor` 4.
+
+Non si ripara allungando la finestra: allungarla vorrebbe dire attendere ancora di piu' prima
+di ogni riproduzione per avvicinarsi a un numero che **Kodi misura gia' da solo**, sul file
+vero, gratis.
+
+**Costo previsto contro costo reale.** Avevo detto ~3,5 s. Misurati: **6034, 7875, 8863,
+8410 ms**. Il doppio abbondante, e la causa e' proprio il ttfb che non avevo previsto.
+L'utente ha detto che non da' fastidio, ma il numero che avevo dato era sbagliato.
+
+### Cosa ha ucciso il Signore degli Anelli: non la banda
+
+    22:45:03.730  error  CCurlFile::CReadState::FillBuffer - (0xb982ed20) Failed: Timeout was reached(28)
+    22:45:03.731  error  CFileCache::Process - <https://nexus-188.ceur.tb-cdn.st/dld/42e175a7-...>
+                         source read didn't return any data before eof!
+    22:45:03.773   info  CVideoPlayer::OnExit()
+    22:45:03.774   info  VideoPlayer: eof, waiting for queues to empty
+
+La connessione verso `nexus-188` si e' **fermata del tutto**. curl ha aspettato il suo
+timeout, e **Kodi ha trattato un socket morto come fine del file**: `eof`, chiusura ordinata,
+`onPlayBackEnded`. Per Fen Light il film era finito normalmente, quindi il ciclo di
+`play_file` -- che sarebbe passato alla sorgente successiva -- non e' mai stato interpellato.
+
+Il profilo della cache lo conferma e permette di escludere il decodificatore:
+
+    22:44:37  22-31-39-46-47-43-40-36-30-28     sale a 47%
+    22:44:47  23-19-18-17-17-9-2-0-0-0          scende
+    22:44:57  0-0-0-0-0-0-0-0-0-0               a zero per 11 s, poi curl molla
+
+**Un decodificatore lento fa RIEMPIRE la cache; una sorgente lenta la fa SVUOTARE.** Qui si
+e' svuotata in modo monotono. E' la sorgente.
+
+E il file era **hevc** (gli altri tre h264), ma anche questo si esclude: e' il flusso col
+**bitrate piu' basso dei tre film** (4,13 Mbit/s contro 9,85 e 11,16). Nessun valore di
+`line_speed` lo avrebbe scartato, e nessuno avrebbe dovuto: era un nodo cdn morto.
+
+### Pesce preso per caso: `item['size']` e `meta['duration']` non sono affidabili
+
+La sonda leggeva anche la dimensione dichiarata dal cdn (`Content-Range`), e su 4 campioni:
+
+| # | `item['size']` dello scraper | dimensione vera dal cdn |
+|---|---|---|
+| 1 | **0,03 GB** | **0,74 GB** (25x) |
+| 2 | 6,67 GB | 6,67 GB |
+| 3 | 7,23 GB | 7,23 GB |
+| 4 | 7,64 GB | 8,22 GB |
+
+E la durata dell'episodio: Fen Light ha usato il ripiego `2400 s`, ma 0,74 GB a 4,84 Mbit/s
+sono ~1220 s. Sbagliata anche quella.
+
+**Questo tocca il meccanismo che l'utente usa gia'**: `filter_size_method=1` calcola
+`max_size = f(line_speed) * duration` e filtra su `i['size']`. Se `size` puo' sbagliare di
+25 volte e `duration` e' un ripiego, il tetto sta lavorando su due numeri che possono essere
+entrambi falsi. Tarare `line_speed` senza sistemare questo taterebbe una bilancia storta.
+
+### Impostazioni della cache: verificate sulla stick
+
+`advancedsettings.xml` **non ha** blocco `<cache>`, quindi valgono i valori della GUI:
+
+    filecache.buffermode  2
+    filecache.memorysize  32          (MB)
+    filecache.readfactor  400         (default)
+    filecache.chunksize   131072
+
+**`readfactor` non e' una leva: e' gia' al massimo.** Verificato sul sorgente Omega
+(`xbmc/filesystem/FileCache.cpp`):
+
+    float readFactor = settings->GetInt(SETTING_FILECACHE_READFACTOR) / 100.0f;
+    const bool useAdaptativeReadFactor = (readFactor < 1.0f);
+    ...
+    readFactor = level * -2.5 + 4.0;      // solo in modo adattivo, cioe' con l'impostazione < 100
+
+Con 400 il modo adattivo **non si attiva** e il fattore resta fisso a 4,0, che e' anche
+l'estremo superiore della forbice adattiva (1,5-4,0). Niente da guadagnare.
+
+Stesso sorgente, la riga che abbiamo usato come misura: `maxRate` **non e' un tetto**, e' il
+bitrate che il lettore comunica alla cache, usato solo per derivare il passo del ciclo:
+
+    m_writeRate = *static_cast<uint32_t*>(param);
+    const double mBits = m_writeRate / 1024.0 / 1024.0 * 8.0;
+    const int wait = std::clamp(static_cast<int>(110.0 - mBits), 30, 100);
+
+**`memorysize` invece e' una leva vera.** 32 MB a 11,16 Mbit/s sono **23 secondi** di
+autonomia; a 4,84 Mbit/s sono 53. Sulla stick restano 309-346 MB liberi durante la
+riproduzione. E' esattamente un numero da wizard -- da misurare, non da indovinare, perche'
+la memoria su questa macchina e' anche la causa dei riavvii del watchdog.
+
+### Decisione
+
+**Aggancio staccato** da `sources.py` (il modulo `band_probe.py` resta sul disco con la
+spiegazione in testa). Costava 6-9 s a riproduzione per misurare la salita del tcp.
+
+La misura giusta esiste gia' ed e' gratis: `maxRate` da' il bitrate reale del file, il
+profilo della cache da' se la rete lo regge, `CCurlFile ... Timeout` da' quando la sorgente
+muore. Sono verita' sul file vero invece che una stima su una connessione finta, e non
+costano un secondo di attesa.
+
+### Cosa diventa la fase 4 dopo questo log
+
+1. **La cosa piu' utile non e' scartare una sorgente prima, e' accorgersi che e' morta
+   dopo.** `onPlayBackEnded` a pochi minuti da un film di 3h21m e' una firma senza ambiguita'
+   -- Kodi distingue gia' `onPlayBackEnded` (eof) da `onPlayBackStopped` (utente), e
+   `player.py:55-59` le riceve entrambe e le manda nello stesso posto. Il ciclo per passare
+   alla sorgente successiva **esiste gia'** in `play_file`. Non serve un meccanismo nuovo:
+   serve collegare due cose che ci sono.
+2. **Prima di tarare `line_speed`, sistemare `size` e `duration`**, altrimenti si tara su una
+   bilancia storta.
+3. **`filecache.memorysize`** e' il numero da wizard piu' promettente, con il vincolo memoria
+   da misurare.
+4. La sonda del decodificatore resta valida e indipendente: `Mediacodec decoder:` e' a
+   livello **info**.
+
+
+---
+
+## Lotto 193 -- Sonda della banda v2. Correzione di una mia conclusione sbagliata
+
+### La conclusione sbagliata
+
+Nel lotto 192 avevo scritto che il caso prevenibile "e' gia' coperto da `line_speed`, che agisce
+al filtro della lista, cioe' prima". **E' falso, e l'obiezione dell'utente lo dimostra:**
+
+> «abbiamo appena notato che fonti con piu' alto Mbit/s girano a volte meglio di fonti con basso
+> Mbit/s e questo dipende dal cdn assegnato. a maggior ragione dovremmo sondare la sorgente
+> anziche' affidarci al numero della line speed che e' un tetto che si applica a tutti
+> indiscriminatamente»
+
+`line_speed` filtra sulla **dimensione** del file ed e' lo stesso tetto per ogni sorgente: non
+sa nulla di come consegna *quel* link. La sonda misura la consegna vera di *quella* sorgente.
+Non sono strumenti alternativi, rispondono a due domande diverse -- e la seconda e' quella che
+conta. Avevo confuso le due cose.
+
+I dati del lotto 192 sostengono la sonda, non il tetto:
+
+| | bitrate | esito | cosa avrebbe fatto un tetto statico |
+|---|---|---|---|
+| Toy Story | 9,85 Mbit/s | cache vuota per 60 s | lo lascia passare (e' sotto il tetto) |
+| Evil Dead | 11,16 Mbit/s | cache al 99% | lo **butta via** (e' sopra il tetto) |
+
+Esattamente il contrario di quello che serve. La sonda e' migliore del tetto statico in
+**entrambe** le direzioni.
+
+Resta valida solo la parte stretta della mia obiezione: una sonda **non puo'** vedere un nodo
+che muore al minuto uno (il Signore degli Anelli, al secondo zero, era la sorgente migliore
+della serata). Ma non ne segue che sia inutile.
+
+### Le quattro riparazioni
+
+Il difetto della v1: `resp.read(65536)` **blocca** finche' non ha 64 KB, e solo dopo si guardava
+il budget. Con ttfb 1,3-3,0 s, dentro 1,5 s si leggeva *un chunk*. Errore contro l'esito vero,
+sistematico e sempre verso il basso:
+
+    Simpson    sonda 0,29 Mbit/s  ->  consegnati 4,84   (17x)
+    Evil Dead  sonda 1,02 Mbit/s  ->  consegnati 11,16  (11x)
+
+1. **Letture da 8 KB**: comanda l'orologio, non il blocco. Si ottiene una curva, non un punto.
+2. **Si scarta la salita**: la velocita' si calcola solo dopo `RAMP_SECONDS` (1,2 s).
+3. **Fermata anticipata sulla stabilita'**: due bucket da mezzo secondo entro il 20% e si chiude.
+4. **La curva viene scritta nel log**, cosi' la forma della salita e' ispezionabile e la taratura
+   si valida invece di fidarsi.
+
+Effetto visibile sulla prova (`releases.ubuntu.com`):
+
+    inizio  curva  0.19 1.55 5.94 10.73 14.28 18.80      <- MB cumulativi ogni 0,5 s
+            lorda  52,50 Mbit/s   REGIME 73,57 Mbit/s    <- 40% di differenza, era il difetto della v1
+
+Il primo mezzo secondo consegna 0,19 MB, i successivi ~3,5. La salita c'e' ed e' misurabile.
+
+### Le costanti devono essere coerenti fra loro
+
+Prima taratura sbagliata anche questa, trovata in prova: con `MIN_SECONDS = 2,2` la finestra di
+regime non faceva in tempo ad aprirsi e la sonda dichiarava `?` dopo aver speso il tempo.
+I bucket cadono a 0,5-1,0-1,5 s, quindi il primo bucket oltre `RAMP_SECONDS` sta a ~1,5 s: per
+avere `MIN_STEADY_SECONDS` = 1,0 s di regime servono almeno 2,5 s. Valori finali:
+
+    READ_SIZE           8192      letture piccole: comanda l'orologio
+    BUCKET_SECONDS      0.5       passo della curva
+    RAMP_SECONDS        1.2       tratto scartato
+    MIN_STEADY_SECONDS  1.0       sotto e' rumore: si dichiara '?', non un numero inventato
+    MIN_SECONDS         3.0       = 1.5 + 1.0 con margine
+    MAX_SECONDS         5.0
+    MAX_BYTES           12 MB     vale solo da MIN_SECONDS in poi
+    HARD_MAX_BYTES      24 MB     vale sempre
+
+`MAX_BYTES` non puo' chiudere la finestra prima che esista un regime, altrimenti su una linea
+veloce si spende traffico senza produrre un numero -- successo in prova sul Mac.
+**La sonda e' tarata per la stick**: a ~10 Mbit/s i 24 MB richiederebbero 19 s e non si
+raggiungono mai, quindi comanda il tetto di tempo. Su una linea a 95 Mbit/s (il Mac) il tetto
+duro scatta prima del regime e la sonda dichiara `?` -- corretto, ma va saputo.
+
+### Economia: la finestra profonda si salta quando non serve
+
+La finestra profonda misura il caso del **salto**, che ha senso solo per una sorgente che gia'
+regge la riproduzione lineare. Se il regime dell'inizio e' sotto il bitrate richiesto, la
+sorgente e' gia' giudicata e i ~6 s della seconda finestra sarebbero spesi per niente. Si salta
+e si scrive perche'.
+
+### Guadagno accessorio: la sonda corregge la bilancia
+
+`Content-Range` da' la dimensione **vera**. Il bitrate richiesto ora si calcola su quella e non
+su `item['size']`, che il lotto 192 ha trovato sbagliato di 25 volte. La discrepanza si scrive
+nel log ogni volta che supera il 5%, cosi' si vede accumularsi campione dopo campione.
+Si segnala anche quando `duration` e' il ripiego (5400/2400 s) invece di un dato vero.
+
+### Costo, detto prima
+
+Sulla stick, con ttfb 1,3-3,0 s per finestra: **~9-14 s** nel caso di due finestre piene, ~5-8 s
+quando la seconda si salta. Piu' della v1 (6-9 s), e molto piu' dei 3,5 s che avevo previsto per
+la v1 e che erano sbagliati. Se e' troppo, la leva da tirare e' togliere la finestra profonda.
+
+### Modo
+
+**Solo misura.** Non scarta niente e non scrive impostazioni. Prima si confronta il verdetto
+della sonda con gli esiti veri sulle stesse quattro riproduzioni, poi le si da' il potere di
+scartare una sorgente -- e a quel punto il ciclo di `play_file` passa gia' da solo alla
+successiva, senza meccanismi nuovi.
+
+### Rimandato, per decisione dell'utente
+
+Memoria delle riproduzioni: blacklist dei nodi cdn morti e **whitelist dei season pack** (utile
+per le serie, per ritrovare la stessa qualita' fra un episodio e l'altro). Giudicato marginale
+rispetto al capire a priori se una sorgente girera' bene. Da riprendere dopo.
+
+### Deploy
+
+`resources/lib` intera (97 file), Kodi chiuso, md5 verificati:
+
+    band_probe.py  c72851588af5dccd6cdef954220edf5b   OK
+    sources.py     939d2dfeeb25854b9dac02721ef1a105   OK
+
+
+---
+
+## Lotto 194 -- Verdetto sulla sonda v2: strumento migliore, previsione ancora sbagliata
+
+Stessi quattro media, verificati dall'utente come gli stessi file (per il Signore degli Anelli
+controllato di proposito). Confermato dal log: i quattro bitrate misurati da Kodi sono
+**identici** alla sessione precedente -- 4,84 / 9,85 / 4,13 / 11,16 Mbit/s. Stavolta tutte e
+quattro fluide, zero errori di rete nel log.
+
+### Il confronto
+
+| # | media | richiesti | REGIME inizio | margine | verdetto sonda | cache media | esito reale |
+|---|---|---|---|---|---|---|---|
+| 1 | Simpson | 2,64 | 8,71 | 3,30x | passa | 83% | fluida |
+| 2 | Toy Story | 9,36 | **28,52** | 3,05x | passa | **27%** | fluida, ma la peggiore |
+| 3 | Signore Anelli | 5,15 | 7,55 | 1,47x | passa | 76% | fluida |
+| 4 | Evil Dead | 10,69 | **3,39** | **0,32x** | **SCARTA** | 50%, picco 99% | **fluida** |
+
+**Un falso scarto su quattro**, ed e' il tipo di errore peggiore: la sonda avrebbe buttato via
+il file che Kodi ha poi servito al bitrate piu' alto di tutti.
+
+E l'ordinamento e' di nuovo rovesciato agli estremi:
+
+    per la sonda:   Toy Story 28,52  >  Simpson 8,71  >  Anelli 7,55  >  Evil Dead 3,39
+    per la cache:   Simpson 83%      >  Anelli 76%    >  Evil Dead 50%  >  Toy Story 27%
+
+### La v2 e' uno strumento migliore. Non e' questo il problema.
+
+Il caso che la v1 sbagliava di 17 volte e' guarito:
+
+    Simpson    v1 0,29 Mbit/s  ->  v2 8,71 Mbit/s   (Kodi ha poi consegnato 4,84: plausibile)
+
+La correzione della salita funziona, le curve sono leggibili, la fermata anticipata scatta.
+**Lo strumento e' migliorato e la previsione no.** Questa e' la firma di una grandezza
+sbagliata, non di una misura fatta male.
+
+### La prova che chiude la questione
+
+Evil Dead, dal log, con i tempi:
+
+    23:24:17.755   la sonda chiude: REGIME 3,39 Mbit/s su nexus-192.ceur.tb-cdn.st
+    23:24:18.224   Kodi apre       nexus-192.ceur.tb-cdn.st        <- MEZZO SECONDO dopo, STESSO NODO
+    23:24:20.727   Kodi: maxRate 11,16 Mbit/s, e la cache sale al 99%
+
+Stesso nodo, stesso file, mezzo secondo di distanza: **3,39 Mbit/s alla connessione della sonda
+e almeno 11,16 alla connessione di Kodi** (almeno, perche' con readfactor 4 la cache si riempie
+tirando fino a 4x il bitrate). Verificato che i nodi coincidono in tutti e quattro i casi --
+sonda `182 / 056 / 182 / 192`, Kodi `182 / 056 / 182 / 192` -- quindi non e' un redirect verso
+un nodo diverso.
+
+**La sonda misura una connessione DIVERSA da quella che riprodurra' il film.** La varianza fra
+due connessioni allo stesso nodo (3,3x misurata) e' piu' grande del segnale che stiamo cercando
+di leggere (il margine e' sopra o sotto 1?). Nessuna raffinatezza sulla misura puo' recuperare
+questo: non e' rumore nella misura, e' che l'oggetto misurato non e' quello che conta.
+
+### Cosa NON si puo' fare per ripararla
+
+- **Allungare la finestra**: non e' un problema di campione corto. Le curve di Evil Dead sono
+  piatte per tutti e 3 i secondi (`0.12 0.21 0.42 0.56 0.74 0.95`), non stanno salendo.
+- **Connessioni in parallelo**: misurerebbero la capacita' aggregata, non quella che tocca a una
+  singola connessione -- cioe' allontanerebbero ancora la misura dall'oggetto.
+- **Sondare piu' sorgenti e scegliere la migliore**: 5-14 s per sorgente, inusabile.
+- **Passare la connessione a Kodi**: impossibile, Kodi apre la sua con curl.
+
+### La misura che invece ha sempre funzionato
+
+Il livello della cache di Kodi. E' la connessione **vera**, misurata dalla cosa che la sta
+usando, e costa zero secondi di attesa. Su otto riproduzioni fra le due sessioni ha descritto
+l'esito ogni volta:
+
+    sessione 1:  57%  11%   9%  71%   ->  fluida / stentata / morta / fluida
+    sessione 2:  83%  27%  76%  50%   ->  tutte fluide, la 2 la piu' incerta
+
+Con un vincolo pero', che il log rende evidente e che va detto: **tutte le riproduzioni partono
+con ~10 s di cache a zero**, comprese quelle perfette (la 1: `0-0-0-0-0-2-7-13-21-27`). Una
+regola del tipo "a 10 secondi la cache e' zero, scarto" scarterebbe tutto. Il segnale utile e'
+la **tendenza su ~30-40 s**, non il livello istantaneo.
+
+### Dove sono stato sbagliato due volte
+
+Ho costruito due volte un predittore su un'intuizione, e due volte i dati l'hanno smentito
+(lotto 191 e questo). Il passo onesto adesso non e' la v3: e' smettere di indovinare quale
+segnale predice, **raccogliere la verita' a costo zero** per un po' di riproduzioni -- bitrate
+reale, profilo della cache, nodo, ttfb, esito -- e poi cercare il predittore **dentro** quei
+dati invece che prima di averli.
+
+C'e' gia' un indizio che nessuno dei due predittori tentati aveva: il nodo `nexus-182` compare
+due volte e tutte e due le volte va bene. L'identita' del nodo potrebbe valere piu' di
+qualunque misura di banda -- ed e' esattamente la "memoria delle riproduzioni" che l'utente
+aveva proposto e che avevamo rimandato come marginale.
+
+### Stato del codice
+
+La sonda resta agganciata e in sola misura, in attesa della decisione dell'utente: costa 4-10,5
+s a riproduzione (misurati: 10551, 10145, 9022, 4051 ms) e la raccomandazione e' staccarla.
+Il salto della finestra profonda ha funzionato: su Evil Dead ha risparmiato ~6 s.
+
+
+---
+
+## Lotto 195 -- Sonda staccata. E la leva vera: la scelta del CDN su TorBox
+
+### 1. Si poteva far funzionare la sonda?
+
+Forse si', e il modo si vede nei dati -- ma il rimedio costa piu' della malattia.
+
+La curva di Evil Dead, in MB per mezzo secondo: `0.12 0.09 0.21 0.14 0.18 0.21`. **Sta ancora
+salendo alla fine dei 3 secondi.** Quindi e' possibile che TorBox salga a regime su 15-30 s
+invece che su 3, e che una finestra molto piu' lunga avrebbe letto gli 11 Mbit/s veri.
+
+Ma una sonda da 20-30 s prima di ogni riproduzione e' **piu' lunga che far partire il film e
+guardare la cache vera per lo stesso tempo**. Quando la simulazione corretta costa piu' della
+cosa simulata, la simulazione non ha piu' ragione di esistere. **Staccata.**
+
+### 2. Il livello della cache: cos'e' davvero, e cosa non e'
+
+Va detto con precisione, perche' "8 volte su 8" si presta a un equivoco. Il livello della cache
+**non e' un predittore che ha indovinato otto volte: e' l'osservazione diretta del sintomo.**
+Misura "il buffer sta stando dietro?", che e' praticamente la definizione di riproduzione
+fluida. Non puo' non essere d'accordo con l'esito. Il suo valore non e' la chiaroveggenza, e'
+essere **verita' sulla connessione vera a costo zero**.
+
+I suoi limiti, detti tutti:
+
+- **Si vede solo a riproduzione iniziata.** Vero, ed e' il prezzo.
+- **Ogni riproduzione parte con ~10 s di cache a zero**, comprese quelle perfette (Simpson:
+  `0-0-0-0-0-2-7-13-21-27`). Una regola sul livello istantaneo scarterebbe tutto: il segnale
+  utile e' la **tendenza su 30-40 s**.
+- **Dice che la sorgente sta fallendo adesso, non che fallira' fra 40 minuti** (il Signore
+  degli Anelli della prima sessione).
+
+Confronto onesto dei due costi:
+
+| | sonda | osservazione della cache |
+|---|---|---|
+| attesa su riproduzione BUONA | 4-10,5 s ogni volta | **zero** |
+| attesa su riproduzione CATTIVA | 4-10,5 s, poi verdetto sbagliato | il film parte, ~30-40 s poi si cambia |
+| cosa misura | una connessione che non verra' usata | la connessione vera |
+| traffico sprecato | fino a 24 MB | zero |
+
+### 3. La leva vera: TorBox permette di scegliere il CDN
+
+Osservazione dell'utente, ed e' quella giusta. I nodi visti nel log sono
+`nexus-NNN.ceur.tb-cdn.st`: e' **Hyperdrive**, il CDN proprietario di TorBox, in modalita'
+**Auto** (nodo piu' vicino, Europa centrale). Ed e' proprio la rotazione fra questi nodi la
+sorgente di varianza che ha fatto fallire entrambe le sonde.
+
+TorBox espone la scelta in **TorBox Settings -> Integration Settings -> CDN Selection**
+(`torbox.app/settings?section=integration-settings`), **per account**. La schermata vera
+(inviata dall'utente) offre piu' delle tre voci descritte nella documentazione:
+
+    Auto  <- selezionata          Cloudflare (ERTH)      BunnyCDN (HARE)
+    e poi le regioni esplicite: WNAM ENAM CNAM SNAM LATM WEUR CEUR NEUR SEUR
+                                NORD SLAV APAC SOCE INDI JAPN MEAS ZAFR
+
+**E qui c'e' il punto che cambia la mia analisi.** Accanto a **Central Europe (CEUR)** c'e' un
+segno di saetta -- verosimilmente "e' questa che ti sta servendo / e' la piu' veloce per te" --
+e infatti tutti gli host nel log sono `nexus-NNN.ceur.tb-cdn.st`. Quindi **fissare CEUR non
+cambierebbe quasi nulla**: e' gia' la regione che Auto sceglie, e dentro la regione i nodi
+`nexus-NNN` continuerebbero a ruotare. La rotazione che ha fatto fallire le sonde resterebbe.
+
+Gli unici due esperimenti a variabile singola che cambiano davvero il meccanismo di consegna
+sono **Cloudflare (ERTH)** e **BunnyCDN (HARE)**: reti di distribuzione diverse, anycast e flotte
+di bordo enormi, con un comportamento per connessione molto piu' uniforme di un insieme rotante
+di nodi propri.
+
+E la schermata offre gratis quello che abbiamo passato due lotti a costruire male: **un
+speedtest di TorBox stesso** ("Try a speedtest. It will tell you which one is best for you"),
+fatto da chi controlla i CDN e li puo' confrontare davvero. Va usato quello per scegliere il
+candidato, non una sonda nostra.
+
+Perche' e' promettente: Cloudflare e Bunny sono CDN commerciali grandi, con un comportamento per
+connessione molto piu' regolare di un insieme rotante di nodi propri. La varianza che abbiamo
+misurato -- **3,3x fra due connessioni allo stesso nodo a mezzo secondo di distanza** -- e'
+esattamente il tipo di cosa che dovrebbe migliorare.
+
+Cautela, per non venderla per piu' di quello che e': la documentazione TorBox le descrive come
+alternative di ripiego rispetto a Hyperdrive, quindi potrebbero essere **piu' regolari ma piu'
+lente in media**. E' un cambio a variabile singola, ed e' verificabile con la strumentazione che
+gia' abbiamo: il profilo della cache. Il cambio di CDN si vede subito nel log, perche' cambiano
+i nomi degli host.
+
+**E' un'impostazione dell'account TorBox, quindi la cambia l'utente, non io.**
+
+Nota sul codice, verificata: `apis/torbox_api.py:96-100` (`unrestrict_link`, il percorso dei
+torrent) **non** passa `user_ip`. Non serve: quel parametro esiste per le integrazioni dove a
+chiamare l'API e' un server per conto dell'utente, mentre qui e' la stick a chiamare TorBox
+direttamente e TorBox vede gia' l'IP giusto. Il percorso usenet (`unrestrict_usenet`, riga 104)
+lo passa come `True`, che e' sospetto ma e' un altro percorso e non tocca questo caso.
+
+### Stato
+
+Sonda staccata, `band_probe.py` resta sul disco con la diagnosi in testa (un risultato negativo
+vale solo se resta scritto accanto al codice). Deploy dell'intera `resources/lib`, Kodi chiuso,
+md5 verificati:
+
+    band_probe.py  5230c24a18e239d9fff6ee989aeedaa6   OK
+    sources.py     21a9c075e3a729126ec33cba881fceba   OK
+
+### 3-bis. Lo speedtest di TorBox smentisce la mia raccomandazione
+
+Misure fatte dall'utente dal **Mac** (connessione migliore della stick), 21:44:
+
+| CDN | multithread | media | max | ping |
+|---|---|---|---|---|
+| ERTH (Cloudflare) | si' | 0 Mbps | 0 Mbps | **1050 ms** |
+| ERTH (Cloudflare) | no | **9 Mbps** | 15 Mbps | 633 ms |
+| HARE (BunnyCDN) | si' | 0 Mbps | 0 Mbps | 417 ms |
+| HARE (BunnyCDN) | no | **43 Mbps** | 53 Mbps | 233 ms |
+| **NORD (Norvegia)** -- consigliato da TorBox | | **210 Mbps** | 302 Mbps | **83 ms** |
+
+**Avevo raccomandato ERTH o HARE** ragionando che due CDN commerciali grandi avrebbero avuto un
+comportamento per connessione piu' uniforme di un insieme rotante di nodi propri. Il
+ragionamento era plausibile e i dati lo bocciano: sono le **due opzioni peggiori** su questa
+linea -- ERTH a 9 Mbps con 633 ms di ping e' 23 volte sotto NORD. E le due prove multithread di
+entrambi tornano 0, che sa piu' di prova fallita che di misura, ma in nessuna lettura e' un buon
+segno.
+
+Da qui in avanti la scelta la decidono queste misure, non le mie congetture su come dovrebbero
+comportarsi i CDN.
+
+**NORD e' controintuitivo dalla geografia** (l'utente e' in Italia) e proprio per questo e'
+istruttivo: il percorso di rete e il peering contano piu' della distanza sulla mappa. E il ping
+e' il discriminante -- 83 ms contro 233 e 633 -- che e' la stessa grandezza che sulla stick
+vedevamo come `ttfb` di **1,3-3,0 s** verso i nodi `ceur`.
+
+### Cosa aspettarsi davvero dal cambio
+
+Non piu' velocita': **meno varianza.** La stick sulla sua rete ha mostrato un tetto intorno ai
+28 Mbit/s (regime piu' alto misurato dalla sonda) e Kodi ha consegnato 11,16 Mbit/s riempiendo
+la cache; i 210 Mbps di NORD sono ben oltre il soffitto della stick, quindi non si vedranno.
+Quello che si dovrebbe vedere e' il soffitto della stick raggiunto **in modo regolare** invece
+che a caso -- ed e' esattamente il problema che ha fatto fallire due sonde.
+
+Avvertenze, per non promettere piu' del dovuto:
+
+- Le misure sono del **Mac**, non della stick. Il valore assoluto non trasferisce; il confronto
+  fra CDN, che dipende dal percorso di rete e dal peering, dovrebbe trasferire.
+- Fissare una regione toglie il ripiego automatico: se NORD ha una giornata storta, Auto avrebbe
+  cambiato e una regione fissa no.
+- Non sappiamo se dentro NORD i nodi ruotino come dentro CEUR. Si vedra' nel log: gli host
+  dovrebbero passare da `nexus-NNN.ceur.tb-cdn.st` a qualcosa con `nord`.
+
+### Esperimento pulito gia' pronto
+
+Abbiamo **due basi di confronto** sugli stessi quattro file, stesso dispositivo, con i bitrate
+verificati identici (4,84 / 9,85 / 4,13 / 11,16 Mbit/s):
+
+    sessione 1 (Auto/CEUR)   cache media  57%  11%   9%  71%
+    sessione 2 (Auto/CEUR)   cache media  83%  27%  76%  50%
+
+Con NORD basta rifare gli stessi quattro. Una sola variabile cambiata, la misura la abbiamo gia'
+e non costa un secondo di attesa.
+
+
+---
+
+## Lotto 196 -- NORD: un solo nodo, e il sistema diventa prevedibile
+
+Stessi quattro file (bitrate verificati identici alle due sessioni precedenti: 4,84 / 9,85 /
+4,13 / 11,16 Mbit/s), stesso dispositivo, unica variabile cambiata: CDN da **Auto** a **NORD**.
+Zero errori di rete nel log.
+
+### Il fatto strutturale
+
+    sessione 1 (Auto)   nexus-182 / 068 / 188 / 184  ->  4 nodi distinti
+    sessione 2 (Auto)   nexus-182 / 056 / 182 / 192  ->  3 nodi distinti
+    sessione 3 (NORD)   nexus-226 / 226 / 226 / 226  ->  UN nodo, quattro volte
+
+Fissare la regione **ha eliminato la rotazione dei nodi**. E' esattamente la sorgente di
+varianza che aveva fatto fallire entrambe le sonde (3,3x fra due connessioni allo stesso nodo a
+mezzo secondo di distanza, lotto 194).
+
+### Il risultato che conta non e' "meglio", e' "ordinato"
+
+| media | bitrate | sess. 1 (Auto) | sess. 2 (Auto) | **sess. 3 (NORD)** |
+|---|---|---|---|---|
+| Signore Anelli | 4,13 | 9% | 76% | **80%** |
+| Simpson | 4,84 | 57% | 83% | **84%** |
+| Toy Story | 9,85 | 11% | 27% | **32%** |
+| Evil Dead | 11,16 | 71% | 50% | **26%** |
+
+Tre su quattro migliorano, e uno peggiora nettamente. Ma il numero singolo non e' il punto.
+**Il punto e' l'ordinamento**, cioe' se il livello della cache scende quando il bitrate sale:
+
+    sessione 1 (Auto)   4,13 -> 9%   4,84 -> 57%   9,85 -> 11%   11,16 -> 71%   caotico
+                        (il file PIU' PESANTE aveva la cache MIGLIORE)
+    sessione 2 (Auto)   4,13 -> 76%  4,84 -> 83%   9,85 -> 27%   11,16 -> 50%   quasi
+    sessione 3 (NORD)   4,13 -> 80%  4,84 -> 84%   9,85 -> 32%   11,16 -> 26%   MONOTONO
+
+Con un nodo fisso i due file leggeri stanno a 80-84% e i due pesanti a 26-32%, con una
+separazione netta fra 4,84 e 9,85. E' il profilo di un collegamento che **consegna una portata
+grosso modo costante**: chi chiede meno di quella tiene la cache piena, chi chiede di piu' la
+consuma.
+
+**Questa e' la conseguenza importante, ed e' piu' grande del guadagno di fluidita':** se la
+portata e' costante, allora il bitrate del file **predice** l'esito. E il bitrate si conosce
+prima di riprodurre, dalla dimensione del file. Cioe' la leva che l'utente ha gia' --
+`filter_size_method=1` con `results.line_speed` -- torna a significare qualcosa, senza nessuna
+sonda. Con i CDN che ruotavano non poteva funzionare per costruzione.
+
+Stima della portata del nodo, dai dati: 4,84 tiene, 9,85 fatica ma si riprende, 11,16 non
+regge mai del tutto. Il soffitto sta fra i **10 e i 12 Mbit/s** -- e `results.line_speed` e'
+gia' a **11**, messo a mano dall'utente. Bracket ancora largo, ma per la prima volta e' un
+numero misurabile invece che indovinato.
+
+### Il caso peggiore, da non nascondere
+
+Evil Dead (11,16 Mbit/s) e' l'unico peggiorato, e ha avuto una secca vera:
+
+    s  1-10   0-4-7-4-7-1-0-0-0-0
+    s 11-20   0-3-7-11-14-15-19-19-17-17
+    s 21-30   12-6-1-1-0-0-0-0-0-0        <- cache a zero
+    s 31-40   0-0-0-0-0-0-0-0-0-0         <- ancora zero
+    s 41-50   0-12-21-25-35-35-38-44-49-59   <- si riprende
+    poi       69-74-81-79-82-85 ... 88
+
+**Cache a zero per ~17 secondi fra il 24esimo e il 41esimo secondo di film**, poi recupero fino
+all'88%. L'utente non l'ha segnalato (ha segnalato l'apertura di Toy Story, quindi stava
+guardando): da chiedere se l'ha visto.
+
+Toy Story ha fatto la stessa cosa in apertura -- 60 s a zero, oscillazioni, poi 99% -- ed e'
+quello che l'utente ha descritto come "problemi di cache in apertura, poi si e' ripreso bene".
+
+### Auto conviene davvero come rete di sicurezza? No, non per il guasto che e' successo
+
+Motivo per cui l'utente teneva Auto: se un nodo ha problemi, Auto cambia. **Ma il log dice che
+non e' cosi'.** Auto sceglie il CDN quando si *richiede il link*; emesso il link, si resta su
+quel nodo per tutto il film. Nella sessione 1 il Signore degli Anelli e' morto a meta' su un
+nodo `ceur` e Auto non l'ha salvato -- non poteva, la scelta era gia' stata fatta.
+
+Quindi Auto non offre un ripiego **durante** la riproduzione: offre un nodo diverso **la volta
+dopo**. E "un nodo diverso la volta dopo" e' precisamente la varianza che rende il sistema
+imprevedibile.
+
+Cosa Auto protegge davvero: il caso in cui NORD come regione sia irraggiungibile al momento
+della richiesta. Reale ma raro, e il rimedio sono dieci secondi nelle impostazioni TorBox.
+
+**Raccomandazione: tenere NORD.** Il ripiego che si perde non copriva il guasto temuto, e la
+prevedibilita' guadagnata e' cio' che fa funzionare ogni leva a valle.
+
+### Conseguenza sul piano di lavoro
+
+Con un CDN stabile, ruotare la sorgente quando la cache fatica serve meno di quanto sembrava:
+la sorgente successiva esce dallo **stesso nodo**, quindi cambia solo se il file e' piu'
+leggero. Ma "scegliere un file piu' leggero" e' esattamente cio' che `line_speed` fa in
+anticipo, gratis e senza far partire niente.
+
+Ordine rivisto:
+1. **Sistemare `item['size']` e `meta['duration']`** (lotto 192: 0,03 GB contro 0,74 GB reali).
+   Senza questo la leva calcola su numeri falsi.
+2. **Misurare la portata del nodo** su piu' riproduzioni e tarare `line_speed`. Il dato serve
+   gia' dal log: bitrate contro profilo della cache, zero costo.
+3. La rotazione della sorgente sulla cache resta, ma come rete di sicurezza, non come strumento
+   principale.
+
+
+---
+
+## Lotto 197 -- Un errore mio di tre lotti, e la misura che ne esce
+
+L'utente: «tarerei pure line speed, ma sono riuscito a riprodurre bene anche file con Mbit/s
+maggiori di 11. quindi non sto veramente capendo come avere misure affidabili».
+Ha ragione a non capire, perche' gli stavo dando la grandezza sbagliata.
+
+### L'errore: la media della cache non e' una misura di qualita'
+
+Per tre lotti ho riportato "cache media" come se fosse un voto sulla riproduzione. **Non lo e'.
+E' una misura di MARGINE.**
+
+`Player.CacheLevel` e' `(writePos - readPos) / m_maxForward`, cioe' quanto surplus e' stato
+messo da parte. Se il collegamento consegna **esattamente** quanto il film consuma, la cache
+resta bassa e la riproduzione e' **perfetta lo stesso**: i dati arrivano appena in tempo. Uno
+stallo avviene solo se la consegna scende **sotto** il consumo abbastanza a lungo da svuotare
+buffer e code del demuxer.
+
+La prova sta nei dati: Evil Dead sulla sessione NORD ha avuto media 26% e **17 secondi di cache
+a zero**, e l'utente -- che stava guardando, tanto da segnalare l'apertura di Toy Story --
+**non ha visto nulla**. Cache a zero non vuol dire affamato: vuol dire senza margine.
+
+Da qui l'apparente contraddizione che ha sollevato: file sopra gli 11 Mbit/s che vanno bene.
+Non e' una contraddizione, e' che 11 non e' il limite del collegamento.
+
+### La misura giusta: la PENDENZA, non il livello
+
+Quando la cache **sale**, il collegamento sta consegnando piu' di quanto il film consuma, e la
+pendenza dice esattamente di quanto. Convertita con la dimensione del buffer in avanti da'
+Mbit/s di surplus; la portata totale e' surplus + bitrate del file.
+
+Il buffer in avanti, verificato sul sorgente Omega (`FileCache.cpp`):
+
+    const size_t back = cacheSize / 4;
+    const size_t front = cacheSize - back;      // -> il 75%
+    const double level = (m_writePos - m_readPos) / m_maxForward;
+
+Con `filecache.memorysize` = 32 MB il buffer in avanti e' **24 MB**, ed e' su quello che la
+percentuale e' calcolata.
+
+### Applicata ai log che avevamo gia': dodici misure
+
+Pendenza massima su finestra di 5 campioni, dai tre log:
+
+| media | bitrate | sess. 1 (Auto) | sess. 2 (Auto) | sess. 3 (NORD) |
+|---|---|---|---|---|
+| Simpson | 4,84 | 21,2 | 19,7 | 24,5 |
+| Toy Story | 9,85 | 20,9 | 28,1 | 28,1 |
+| Anelli | 4,13 | 18,0 | 20,9 | 19,0 |
+| Evil Dead | 11,16 | 23,2 | 24,1 | 28,0 |
+
+(portata stimata del collegamento, Mbit/s)
+
+**Tutte e dodici fra 18 e 28 Mbit/s.** Dopo quattro lotti di misure che si contraddicevano,
+questa e' stabile. E le medie per sessione seguono il cambio di CDN: Auto 20,8 e 23,2, NORD
+**24,9**.
+
+### Quali delle dodici sono fidate, e perche' le altre no
+
+Kodi limita il riempimento a `readFactor` (4) volte il bitrate, quando il buffer ha piu' di 4
+secondi di contenuto. Quindi per i **file leggeri** il tetto puo' mordere:
+
+    Anelli   4,13 Mbit/s -> tetto 16,5   misurato 18,0-20,9   <- vicino/sopra il tetto, sospetto
+    Simpson  4,84        -> tetto 19,4   misurato 19,7-24,5   <- idem
+
+Per i **file pesanti** il tetto e' lontano e non interferisce:
+
+    Toy Story  9,85 -> tetto 39,4   misurato 20,9-28,1   <- fidato
+    Evil Dead 11,16 -> tetto 44,6   misurato 23,2-28,0   <- fidato
+
+Le misure fidate sono quindi **20,9 / 23,2 / 24,1 / 28,0 / 28,1**, cioe' **21-28 Mbit/s**.
+Quelle sui file leggeri vanno lette come stime **per difetto**. (Che siano leggermente sopra il
+loro tetto teorico dice che il limitatore lavora sulla media e tollera i picchi, non che il
+conto sia sbagliato.)
+
+### Conseguenza su `results.line_speed`
+
+**11 Mbit/s e' circa la meta' del minimo mai misurato.** Sta scartando sorgenti perfettamente
+riproducibili -- ed e' esattamente quello che l'utente osservava.
+
+Regola di taratura che ne segue: `line_speed` va messo sotto il **minimo osservato**, non sotto
+la media, e ricavato da molte riproduzioni invece che da una. Con 21 Mbit/s come minimo fidato,
+un margine prudente porta intorno a **15-16**, non a 11. Ma prima servono piu' campioni, e da
+oggi arrivano da soli.
+
+**Non tocco l'impostazione: e' di Fen Light, la cambia l'utente.**
+
+### Cosa e' stato scritto
+
+`modules/player.py`, dentro la sonda della cache che esisteva gia' (lotto 182):
+
+- `_campiona_cache` tiene una finestra scorrevole di 5 campioni con il **tempo vero**
+  (`perf_counter`), non "un secondo": il ciclo fa `sleep(1000)` ma anche altro, e slitta.
+- `_buffer_avanti_mb` legge `filecache.memorysize` da Kodi via JSON-RPC e ne prende il 75%.
+  Letto e non scritto a mano di proposito: `memorysize` e' una delle voci che un wizard dovra'
+  cambiare, e se restasse una costante qui la misura si sfalserebbe in silenzio.
+- `_riassunto_cache` aggiunge una riga `portata | salita massima X%/s su buffer in avanti di
+  Y MB = Z Mbit/s di SURPLUS`.
+
+Zero costo: la sonda campionava gia' ogni secondo, si aggiunge una sottrazione.
+
+Deploy dell'intera `resources/lib`, Kodi chiuso, md5 verificato:
+
+    player.py  198959d783ae185f950e028297527507   OK
+
+
+---
+
+## Lotto 198 -- Otto riproduzioni: il picco mentiva, e `line_speed = 11` era gia' giusto
+
+Sessione dell'08/09, CDN su NORD, `results.line_speed` alzato da 11 a 25 a meta' sessione.
+
+| # | nodo | bitrate | cache | salti |
+|---|---|---|---|---|
+| 1 | nexus-226 | 6,77 | media 81%, max 99% | |
+| 2 | nexus-226 | 9,85 | media 47%, max 99% | |
+| 3 | nexus-226 | 9,08 | media 78%, max 99% | **1** -> dopo: media 5% |
+| 4 | nexus-226 | 3,32 | media 85%, max 99% | |
+| 5 | nexus-156 | 8,26 | media 82%, max 99% | |
+| 6 | nexus-226 | 7,68 | media 94%, max 100% | |
+| 7 | nexus-156 | **13,72** | **media 1%, max 21%** | |
+| 8 | nexus-156 | **13,96** | media 29%, max 89% | **1** -> dopo: media 1%, max 36% |
+
+I sei file sotto gli 11 Mbit/s stanno tutti fra 47% e 94% di media; i due sopra i 13 sono gli
+unici in difficolta'. La spaccatura cade esattamente sulla soglia, il che dice anche quali
+riproduzioni sono state fatte con quale impostazione: **1-6 a `line_speed` 11, 7-8 a 25**.
+
+### Il picco mentiva. Stesso mio errore, in un posto nuovo.
+
+La riproduzione 7 e' il controesempio che serviva:
+
+    finestra 5 campioni (picco)      -> surplus  7,7  portata 21,4 Mbit/s   "larghissimo"
+    finestra 20 campioni (sostenuta) -> surplus  2,1  portata 15,8 Mbit/s   margine 1,15x
+    realta'                          -> cache mai sopra il 21%, media 1%
+
+Il picco su 4 secondi cattura una raffica; un film si regge sulla portata **sostenuta**. E' lo
+stesso errore dei lotti 191 e 193 -- misurare un massimo dove serve una media -- commesso di
+nuovo, questa volta dentro la sonda della cache.
+
+Ricalcolo con finestra da 20 campioni:
+
+| # | bitrate | portata sostenuta | margine | cache |
+|---|---|---|---|---|
+| 1 | 6,77 | 13,5 | 1,99x | 81% |
+| 2 | 9,85 | 16,9 | 1,72x | 47% |
+| 3 | 9,08 | 19,1 | 2,10x | 78% |
+| 4 | 3,32 | 13,3 | (4,00x) | 85% |
+| 5 | 8,26 | 16,2 | 1,96x | 82% |
+| 6 | 7,68 | 17,8 | 2,32x | 94% |
+| 7 | **13,72** | **15,8** | **1,15x** | **1%** |
+| 8 | **13,96** | **21,4** | **1,53x** | **29%** |
+
+**Il margine spiega tutto.** Sopra 1,7x la cache si riempie sempre; a 1,15x non si riempie mai;
+a 1,53x sta a meta'. La soglia sta intorno a **1,5x**.
+
+Conferma incidentale del modello del `readfactor`: la riproduzione 4 (3,32 Mbit/s) da'
+esattamente 13,3 = **4 x 3,32**. Il tetto di Kodi morde al centesimo, quindi quel numero e' il
+limitatore e non il collegamento, e va escluso dalla statistica.
+
+### Conseguenza: `results.line_speed = 11` era gia' tarato bene. Ritiro il consiglio del 197.
+
+Nel lotto 197, sui numeri di picco, avevo scritto che 11 era «circa la meta' del minimo mai
+misurato» e suggerito **15-16**. Con la portata sostenuta il conto cambia:
+
+    portata sostenuta, escluso il caso limitato dal readfactor:  13,5-21,4 Mbit/s, mediana ~16,9
+    margine minimo necessario, misurato:                          ~1,5x
+    bitrate massimo consigliabile:                                16 / 1,5 = ~10,7 Mbit/s
+
+Che e' **11**, il valore che l'utente aveva messo a mano. Il consiglio del 197 era sbagliato
+perche' costruito su una misura di picco, e la prova sperimentale e' che alzando a 25 sono
+passati proprio i due file (13,72 e 13,96) che poi hanno faticato.
+
+### Primo dato sui SALTI, ed e' quello che serviva alla fase 1
+
+Due salti in questa sessione, i primi mai registrati. **In tutti e due la cache non si e' piu'
+ripresa:**
+
+    riprod. 3   prima: 102 campioni, media 91%   ->  dopo: 19 campioni, media 5%
+    riprod. 8   prima:  56 campioni, media 60%   ->  dopo: 62 campioni, media 1%, max 36%
+
+Conferma con i numeri l'ipotesi del lotto 182: **dopo un salto il buffer non torna piu' pieno.**
+Nella riproduzione 8 per un minuto intero dopo il salto la cache ha toccato il 36% una volta
+sola. E' esattamente l'obiettivo dichiarato numero 1 (salti in avanti senza cache), e per la
+prima volta e' misurato.
+
+Cautela: due soli salti, entrambi sui file piu' pesanti (13,72 e 13,96). Servono salti su file
+leggeri per separare "il salto fa male" da "il file pesante fa male".
+
+### Il CDN fisso NON toglie la rotazione dei nodi -- correzione al lotto 196
+
+Compaiono **due** nodi: `nexus-226` e `nexus-156`. Nel lotto 196, su quattro riproduzioni tutte
+su 226, avevo scritto che fissare la regione "ha eliminato la rotazione". Falso: la rotazione
+c'e' anche dentro NORD, il campione era troppo piccolo.
+
+Il guadagno pero' resta, ed e' di altra natura: i due nodi NORD si somigliano
+(226: 13,5/16,9/19,1/13,3/17,8 -- 156: 16,2/15,8/21,4), mentre i nodi `ceur` davano 3,3x di
+differenza fra due connessioni allo stesso nodo. **NORD non toglie la rotazione: la rende
+innocua.**
+
+### Cosa e' stato scritto
+
+`modules/player.py`, sonda della cache: due finestre invece di una, 5 campioni (picco) e 20
+(sostenuta), con la riga di riassunto che dice esplicitamente di usare la sostenuta per tarare.
+Deploy dell'intera `resources/lib`, Kodi chiuso, md5 verificato:
+
+    player.py  34c5cd030bd8d6b26265cd29e3ab148e   OK
+
+### Da chiedere all'utente
+
+Ha notato problemi sulla riproduzione a 13,72 Mbit/s (cache media 1%)? E dopo i due salti?
+Se non ha visto nulla nemmeno li', la soglia di 1,5x e' prudente e si puo' alzare `line_speed`.
+
+
+---
+
+## Lotto 199 -- Dead Man: un blocco di 77 secondi che non c'entra con la banda
+
+Sessione dell'08/09 notte, sette riproduzioni, `line_speed` a 11, CDN NORD, **salti in tutte**.
+Zero errori di rete in tutto il log (nessun `CCurlFile`, nessun timeout).
+
+### Il caso da attenzionare
+
+Riproduzione 7, *Dead Man*: matroska, h264 1920x1036, **5284 kb/s**, durata 2:01:29.
+
+    03:17:15.695  HandleKey: right -> StepForward     |
+    03:17:15.862  HandleKey: right -> StepForward     |  cinque pressioni
+    03:17:16.070  HandleKey: right -> StepForward     |  in 750 ms
+    03:17:16.237  HandleKey: right -> StepForward     |  (~170 ms l'una)
+    03:17:16.446  HandleKey: right -> StepForward     |
+    03:17:17.950  demuxer seek to: 436052.522755
+    03:17:17.953  CDVDAudio::Pause - pausing audio stream
+    ---- da qui, PER 77 SECONDI, nel log ci sono solo la sonda della cache e quella della memoria ----
+    03:17:19.497  PERF CACHE: livello 99-99-99-99-99-99-99-99-99-99
+    03:17:29.504  PERF CACHE: livello 99-99-99-99-99-99-99-99-99-99
+    ...  (sette righe identiche, tutte 99%)
+    03:18:31.899  HandleKey: right -> StepForward          <- l'utente riprova, nessuna risposta
+    03:18:34.818  HandleKey: backspace -> stop             <- l'utente ferma
+    03:18:34.830  SeekTime - seek ended up on time 144494
+    03:18:34.830  VideoPlayer: seek failed or hit end of stream
+    03:18:34.873  demuxer seek to: 446052.522755
+    03:18:34.873  ERROR ffmpeg[matroska,webm]: Read error at pos. 276812840 (0x107fd428)
+    03:18:34.873  SeekTime - seek ended up on time 144494
+    03:18:34.873  VideoPlayer: seek failed or hit end of stream
+
+**Il thread del demuxer si e' bloccato dentro il salto e non e' piu' tornato.** Il salto in
+sospeso e' stato lavorato -- e ha fallito -- solo durante lo smontaggio del player.
+
+### Perche' NON e' un problema di banda, e la prova e' netta
+
+- **La cache era al 99% per tutti i 77 secondi.** I dati c'erano, tutti.
+- **Zero errori di rete in tutto il log.** Nessun `CCurlFile`, nessun timeout, nessun eof.
+- **Il resto di Kodi era vivo**: la sonda Python ha continuato a campionare ogni secondo e la
+  memoria a oscillare di 1-2 MB. Si e' fermata solo la riproduzione.
+- `seek ended up on time 144494` **due volte**: il player e' rimasto dov'era (2:24), il salto
+  non si e' mai mosso.
+
+Nessun valore di `line_speed` e nessuna scelta di CDN avrebbe evitato questo. E' un blocco del
+demuxer matroska di ffmpeg su questo file.
+
+Da verificare, perche' n=1: se lo stesso file allo stesso punto rifa' la stessa cosa e'
+riproducibile e si puo' indagare; se no e' stato un episodio. Nota che il blocco arriva subito
+dopo una **raffica di cinque pressioni in 750 ms**, che Kodi fonde in un solo salto -- la stessa
+famiglia di problemi del lotto 185 (l'OSD che perdeva azioni sotto la ripetizione del tasto),
+anche se qui il meccanismo e' un altro.
+
+**La lezione generale: non tutti i problemi di riproduzione sono di banda.** Fin qui ogni
+guasto era stato di rete e il riflesso e' diventato cercare li'. Questo no.
+
+### I salti, finalmente su un campione decente
+
+Sette riproduzioni, tutte con salti. Margine = portata sostenuta / bitrate.
+
+| # | bitrate | margine prima | margine dopo | cache prima | cache dopo |
+|---|---|---|---|---|---|
+| 1 | 6,77 | 1,53x | 1,35x | 43% | **14%** |
+| 2 | 9,17 | 2,00x | 1,39x | 70% | **9%** |
+| 3 | 3,65 | 3,00x | 3,74x | 85% | 83% |
+| 4 | 4,06 | 2,35x | 3,34x | 72% | 82% |
+| 5 | 3,91 | 3,35x | 3,56x | 92% | 95% |
+| 6 | 8,84 | 1,97x | 1,93x | 80% | 54% |
+| 7 | 5,54 | 2,55x | -- | 61% | 98% |
+
+**Non e' vero che "il salto fa male".** I file leggeri (3,65 / 3,91 / 4,06) dopo il salto
+tornano a 83-95%, cioe' come prima o meglio. Crollano solo i pesanti. E' la separazione che il
+lotto 198 chiedeva e non aveva i dati per fare: **il salto fa male quando il margine e' sottile.**
+
+E risponde anche alla domanda aperta -- il cdn consegna meno da un offset freddo, oppure manca
+il surplus per ricostruire? **Soprattutto la seconda.** La riproduzione 6 tiene la portata quasi
+identica dopo il salto (17,0 contro 17,4) e la cache scende lo stesso da 80% a 54%: non e'
+crollata la consegna, e' che ricostruire 24 MB richiede tempo. Solo la 2 perde davvero portata
+(-30%).
+
+### Il numero che serve non e' un margine, e' un TEMPO
+
+Il margine e' astratto. Quello che si sente e' **quanto ci mette il buffer a tornare pieno dopo
+un salto**, e si calcola:
+
+    secondi di ricostruzione = 24 MB x 8 / surplus in Mbit/s
+
+Su un file da 9 Mbit/s:
+
+    margine 1,5x -> surplus  4,5 Mbit/s -> **43 secondi** senza rete di sicurezza
+    margine 2,0x -> surplus  9,0        -> **21 secondi**
+    margine 3,0x -> surplus 18,0        -> **11 secondi**
+
+Torna sui dati: la riproduzione 2 (9,17 Mbit/s, margine dopo 1,39x, surplus 3,6) avrebbe avuto
+bisogno di **53 secondi**, e infatti su 210 campioni dopo i salti la media e' 9%.
+
+**Questa e' la domanda giusta da fare all'utente in un wizard**, al posto di un margine
+astratto: *dopo un salto, quanti secondi accetti di stare senza buffer di sicurezza?*
+
+### L'utente ha ragione: i salti sono l'eccezione
+
+Osservazione sua, ed e' una correzione di impostazione: non si tara il caso comune su quello
+raro. Se senza salti si regge fino a 18 e con i salti fino a 12, il numero da mettere e' un
+compromesso spostato verso il caso comune -- perche' un salto andato male costa qualche secondo
+di ricostruzione, non un guasto. Il wizard deve **esporre questa scelta**, non deciderla.
+
+### Il CDN: nel log NON c'e' nessun `ceur`
+
+Domanda dell'utente. Tutti e sette i nodi di questa sessione sono `.nord`:
+
+    nexus-156 / 226 / 226 / 156 / 226 / 226 / 156   -- tutti .nord.tb-cdn.st
+
+`ceur` compare solo nei lotti 191-196, che descrivono le sessioni **precedenti** al cambio.
+L'impostazione NORD sta funzionando; dentro NORD ruotano due nodi (156 e 226), come gia' detto
+nella correzione del lotto 198.
+
+### La persistenza serve al wizard, non a noi
+
+Altra domanda dell'utente. Sono lo stesso dato usato due volte: **adesso** serve a noi per
+trovare le soglie, **dopo** serve al wizard in permanenza, perche' senza uno storico dovrebbe
+rimisurare da zero ogni volta -- cioe' o far aspettare l'utente, o indovinare. E' esattamente
+cio' che vogliamo evitare.
+
+
+---
+
+## Lotto 200 -- Disegno del wizard della banda
+
+### 1. Il database e' PERMANENTE, non un'impalcatura
+
+Risposta netta a una domanda a cui nel lotto 199 avevo risposto "tutti e due", che era una
+risposta molle.
+
+Il motivo: **le misure esistono solo durante una riproduzione.** Il wizard non puo' misurare su
+richiesta -- se lo facesse dovrebbe o far aspettare l'utente (ed e' esattamente la sonda che
+abbiamo buttato nei lotti 191-195) o indovinare. Quindi lo storico non e' un comodo: **e'
+l'organo di senso del wizard.** Toglierlo dopo la taratura vuol dire tornare a un numero fisso
+che invecchia, e i dati dicono che invecchia: portata sostenuta misurata fra 13,5 e 21,4 Mbit/s,
+e il cdn e' cambiato una volta gia' in questo mese.
+
+**Ma non e' un archivio: e' una finestra scorrevole delle ultime ~50 riproduzioni.** Una misura
+di tre mesi fa, con un altro cdn e un altro wi-fi, non descrive piu' niente e sporcherebbe il
+percentile. Vecchie righe si buttano.
+
+### 2. Il problema che il disegno deve risolvere: Python non conosce il bitrate
+
+`setting maxRate` e' una riga di log C++ di Kodi: **Python non la vede**, e nessuna API la
+espone (`Player.GetProperties` e `streamdetails` non danno il bitrate del flusso). Finora l'ho
+letto io dal log a mano. Il wizard non puo'.
+
+Soluzione, e viene dall'unica cosa buona uscita dalla sonda buttata: `Content-Range` da' la
+dimensione **vera** del file. Quindi, **in un thread di sfondo dopo che la riproduzione e' gia'
+partita** (costo visibile: zero):
+
+    GET con  Range: bytes=0-0   ->   Content-Range: bytes 0-0/TOTAL
+    durata   da Kodi (getTotalTime())
+    bitrate  = TOTAL x 8 / durata
+
+Un solo ttfb, un byte di traffico, e nessuna attesa perche' il film sta gia' andando. E lo
+stesso numero corregge `item['size']`, che il lotto 192 ha trovato sbagliato di 25 volte.
+
+### 3. Struttura
+
+**Raccolta** -- automatica, dentro la sonda della cache che esiste gia'. Una riga per
+riproduzione in una tabella nuova dello schema esistente (`caches/base_cache.py` ha gia'
+`connect_database` e il dizionario delle tabelle: nessun meccanismo nuovo, solo una tabella):
+
+    quando | nodo cdn | dimensione vera | durata | bitrate
+    portata sostenuta PRIMA del primo salto | portata sostenuta DOPO
+    cache media/max prima | cache media/max dopo | numero di salti
+    la cache e' mai stata a 0 per piu' di N secondi consecutivi?  (l'unico esito binario che conta)
+
+**Il wizard**, quando l'utente lo apre:
+
+1. Legge le ultime N righe. **Se sono meno di ~10 non propone niente**: dice "servono ancora X
+   riproduzioni". Un percentile su tre campioni e' un numero inventato, ed e' l'errore che ho
+   gia' fatto due volte in questa fase.
+2. Calcola la portata sostenuta al **percentile 20** -- la serata sfortunata ma non l'estremo --
+   separatamente per le riproduzioni **senza salti** e per il **dopo-salto**.
+3. Fa UNA domanda, e non e' un margine astratto ma il tempo che si sente:
+   *dopo un salto, quanti secondi accetti di stare senza buffer di sicurezza?*
+   con le opzioni tradotte in secondi reali tramite `secondi = 24 MB x 8 / surplus`, e una
+   quarta opzione **"i salti non mi interessano, ottimizza la riproduzione lineare"** -- perche'
+   l'utente ha fatto notare, correttamente, che i salti sono l'eccezione e non si tara il caso
+   comune su quello raro.
+4. Converte in `line_speed = portata_p20 / margine`.
+5. **Mostra prima di scrivere**: valore attuale, valore proposto, su quante misure e di che
+   periodo, e -- se e' economico -- quante sorgenti in piu' o in meno passerebbero sull'ultima
+   ricerca.
+6. Applica su conferma. Scrive **solo** `results.line_speed`, che e' una leva che esiste e
+   funziona.
+
+### 4. Abbiamo abbastanza dati per procedere?
+
+**Per costruirlo si', per tararlo no -- e non e' un problema, perche' la taratura si accumula
+da sola.**
+
+Cosa i ~20 campioni su 5 sessioni gia' dicono con sicurezza:
+
+- il metodo di misura funziona (dopo due che non funzionavano);
+- la portata sostenuta sta fra 13,5 e 21,4 Mbit/s;
+- il legame margine -> esito: sopra 1,7x la cache si riempie sempre, a 1,15x mai;
+- i salti fanno male **solo** quando il margine e' sottile (lotto 199).
+
+Cosa non dicono:
+
+- un percentile 20 affidabile (20 campioni sono pochi);
+- come varia la portata per ora del giorno -- **tutte** le nostre sessioni sono di sera o di
+  notte.
+
+Ed e' proprio per questo che il pezzo da costruire per primo e' **la raccolta**: da quel momento
+i campioni arrivano dall'uso normale, gratis, e il wizard dira' da solo quando ne ha abbastanza.
+Continuare con sessioni di prova manuali sarebbe piu' lento e meno rappresentativo.
+
+### Ordine
+
+1. **Raccolta** (tabella + dimensione vera in sfondo + scrittura a fine riproduzione).
+2. Lasciar accumulare durante l'uso normale.
+3. **Wizard**, che a quel punto e' un percentile, una domanda e una finestra di conferma.
+4. Poi `filecache.memorysize`, la leva ancora intatta.
+
+
+---
+
+## Lotto 201 -- La raccolta delle misure
+
+Primo pezzo del wizard della banda: la raccolta. Il wizard vero viene dopo, quando i campioni
+si saranno accumulati dall'uso normale.
+
+### `results.line_speed`: come e' fatta oggi, e cosa NON va toccato
+
+Domanda dell'utente. Verificato il codice (`sources.py:225-227`):
+
+    duration = self.meta['duration'] or (5400 se film, altrimenti 2400)
+    max_size = ((0.125 * (0.90 * line_speed)) * duration) / 1000
+    results = [i for i in results if ... min_size <= i['size'] <= max_size]
+
+**L'impostazione in se' va bene e non va cambiata**: e' un numero in Mbit/s, il wizard ci scrive
+dentro e basta. Ma nell'uso ci sono due difetti da mettere a verbale.
+
+**1. Il fattore effettivo non e' 0,90, e' 0,966.** `i['size']` e' in **GiB** -- verificato nei
+tre scraper del cloud, tutti fanno `/1073741824` -- mentre `max_size` divide per **1000**, cioe'
+e' in GB decimali. Confrontare GiB con GB decimali gonfia la soglia del 7,4%, che mangia quasi
+tutto il margine di sicurezza del `0,90` messo apposta:
+
+    0,90 x 1,0737 = 0,966
+
+Su `line_speed` = 11 il tetto vero e' **10,63 Mbit/s**, non i 9,9 che il codice sembra volere.
+Non e' grave in se' -- ma se il wizard propone un numero e il codice ne applica in silenzio un
+altro, il numero perde di significato, che e' esattamente il valore del wizard.
+
+**Non l'ho corretto**: correggerlo cambia il filtraggio dell'utente *oggi*, e la scelta e' sua.
+Le due strade sono sistemare le unita' (effettivo -> 0,90) o togliere lo 0,90 (effettivo ->
+1,07). Nel frattempo il wizard terra' conto del fattore 0,966 noto.
+
+**2. Il ripiego sulla durata.** Quando `meta['duration']` manca si usano 5400 s (film) o 2400 s
+(episodio). Per l'episodio dei Simpson la durata vera era ~1220 s e il ripiego 2400: **il tetto
+era quasi il doppio del dovuto**. Anche qui non ho cambiato il comportamento -- prima va contato
+quanto spesso accade, e da oggi la raccolta lo dice, perche' registra la durata vera.
+
+Una cosa che **non si puo'** sistemare: `i['size']` al momento del filtro. Il filtro gira sui
+risultati della ricerca, prima di risolvere; la dimensione vera si conosce solo dopo, dal
+`Content-Range` del link risolto. Quello che si puo' fare e' misurare quanto sbaglia lo scraper
+e tenerne conto nel margine -- ed e' un altro motivo per raccogliere.
+
+### Cosa e' stato scritto
+
+**`caches/base_cache.py`** -- nuovo `playback.db` con la tabella `playback_stats`, registrato in
+tutti e quattro i posti dello schema. Attenzione: `remove_old_databases()` cancella qualunque
+`.db` non elencato in `current_dbs`, quindi senza quella riga il file sarebbe sparito al primo
+avvio.
+
+Database a se' e non una tabella dentro `maincache`: e' l'unico dato che **non e' una cache**
+(non scade e non si rigenera rileggendo un'API), e verrebbe cancellato dalle pulizie.
+
+Colonne separate e non un blob json, perche' il wizard ci fa percentili e medie.
+
+**`caches/playback_stats.py`** -- `registra()`, `recenti()`, `quante()`, `svuota()`.
+Finestra scorrevole di **50 righe**, potata dentro la stessa transazione dell'inserimento: cosi'
+non esiste un percorso in cui la tabella cresce senza limite.
+
+**Regola scritta nel modulo: NULL vuol dire "non misurato", mai zero.** E' la distinzione che
+nei lotti 191-198 e' costata due sonde e una raccomandazione sbagliata.
+
+**`modules/player.py`**
+
+- `_misura_dimensione()`: `GET` con `Range: bytes=0-0` sul link risolto, in un **thread di
+  sfondo lanciato all'inizio di `monitor()`**, cioe' a film gia' partito. Costo visibile: zero.
+  E' la differenza con la sonda dei lotti 191-195, che la stessa attesa la metteva *prima*.
+  Misurato sul Mac: **343 ms e un byte** per la dimensione esatta. Segue i redirect (max 3) e
+  registra il nodo **finale**, che e' quello che ha davvero servito il file.
+- Tratto consecutivo piu' lungo con cache a zero: e' l'unico esito che si *sente*, visto che la
+  media misura il margine e non la qualita' (lotto 197).
+- `_registra_misura()`: scrive la riga alla fine del riassunto, piu' una riga di log con il
+  riepilogo e quante righe ci sono in archivio.
+
+### Prove
+
+Schema verificato creando davvero la tabella in sqlite. Modulo provato contro lo schema di
+produzione: righe complete e parziali, **i valori mancanti restano `None` e non diventano 0**,
+potatura verificata (20 inserimenti con finestra 5 -> restano le 5 piu' recenti, nell'ordine
+giusto). Lettura della dimensione provata contro un cdn reale.
+
+Deploy dell'intera `resources/lib` (98 file), Kodi chiuso, md5 verificati:
+
+    player.py           8e15f9db2277b59132bba2db049c2c31   OK
+    base_cache.py       9698b1c656cdfad9777b1efa0cb3cc64   OK
+    playback_stats.py   d00435e8b524059cd696018e3b227b2a   OK
+
+### Sui dati raccolti, e su quali serviranno davvero
+
+Osservazione dell'utente: alcune colonne si riveleranno ridondanti, altre correlate con la
+qualita'. E' il motivo per cui si raccoglie **piu' del necessario adesso** -- `cdn`, `salti`,
+`secondi_a_zero`, massimi *e* medie -- invece di decidere in anticipo. Togliere una colonna dopo
+costa niente; accorgersi fra un mese che serviva vuol dire ricominciare a raccogliere da zero.
+
+
+---
+
+# Sessione avvio (08/09/2026) -- da quando sparisce il logo a quando la home e' piena
+
+Obiettivo dichiarato dall'utente: ridurre al minimo il tempo fra la scomparsa del logo di Kodi e la
+fine del caricamento dei widget della home. Vincoli invariati: `reuselanguageinvoker=false` e
+`cacheToDisc=false` restano, quindi ogni invocazione ha il suo interprete e Kodi non mette in cache
+i widget.
+
+## La diagnosi, e perche' questa volta e' aritmetica
+
+Log di riferimento: stick, **08/09 03:42:25 -> 03:48:06**, avvio pulito. Verificato prima di usarlo
+che **nessun `.pyc` fosse stato ricompilato** (zero file con mtime successiva alle 03:30): non e' il
+caso viziato del lotto 74, i tempi di import sono caricamento puro.
+
+    Home init (03:42:29.909) -> ultimo widget consegnato (03:42:37.464) = 7,56 s
+
+Dentro quella finestra vivevano **sei interpreti Python**:
+
+| # | interprete | vivo | cosa faceva li' dentro |
+|---|---|---|---|
+| 0,1,2 | le tre build dei widget | 30.33 -> 37.46 | 2,25 s di CPU in tutto: **l'unico lavoro voluto** |
+| 3 | `service.py` di Fen Light | 30.48 -> oo | import 2,9 s, DatabaseMaintenance 795 ms, SyncSettings 325 ms, client http 1679 ms |
+| 4 | **cocoscrapers** | 30.49 -> 35.88 | **5,1 s di soli import**, poi due controlli di manutenzione |
+| 5 | **versioncheck** | 30.49 -> 39.47 | **9,0 s** per chiedersi se esiste un Kodi piu' recente |
+
+I widget della home sono **3**, cioe' esattamente il tetto cablato di Kodi (lotto 75): nessun quarto
+in coda. Il problema non era la coda dei widget.
+
+**La misura che chiude il discorso**, tutta dentro lo stesso log, stesso codice, stesso bytecode:
+
+| contesto | interpreti | `build_continue_watching` | import | CPU |
+|---|---|---:|---:|---:|
+| avvio | 6 | 5639 ms | 3859 ms | **16%** |
+| due build insieme | ~3 | 1793-1963 ms | ~910 ms | 48% |
+| da sola, dopo la tempesta | 1 | **742-1081 ms** | 460-563 ms | **83-86%** |
+
+E sul singolo modulo: `apis.trakt_api` costa **181 ms a CPU 21%** all'avvio e **34 ms a CPU 89%**
+venti secondi dopo. Il tempo di CPU e' quasi identico (38 ms contro 30): non e' lavoro in piu', e'
+coda. La quota di CPU segue **1/N** con N il numero di interpreti vivi -- 1 -> 86%, 2-3 -> 48%,
+6 -> 12% -- ed e' il modello "un core solo" del lotto 117 messo in forma aritmetica.
+
+Questa e' la ragione per cui il capitolo "potare l'albero degli include" (lotto 154) e quello
+"togliere file di import" (lotto 74) erano finiti in negativo: **non era li'.**
+
+## Lotto 202 -- i tre interpreti estranei alla home. Misurato: 7,56 s -> 5,08 s
+
+Tre interventi, nessuna logica di Fen Light toccata.
+
+**1a -- Version Check disattivato** (fatto dall'utente). Prima si e' chiarito un equivoco che stava
+per far prendere la decisione sbagliata: `service.xbmc.versioncheck` e' di Team Kodi e controlla se
+esiste una versione piu' recente **di Kodi**. Gli aggiornamenti del repo dell'utente li gestisce
+`CRepositoryUpdater`, che e' **C++** e nel log fa gia' la cosa giusta:
+
+    03:42:30.477  CRepositoryUpdater: closest next update check at 08.09.2026 04:38:45 (in 3375 s)
+
+Al boot non controlla niente: vede che il controllo precedente e' recente e si riprogramma fra 56
+minuti. Zero interpreti, zero rete. Quindi spegnere versioncheck non toglie nulla di voluto.
+
+Trappola registrata: l'impostazione `versioncheck_enable` **non basta**. `runner.py` e'
+`from version_check import service` + `service.run()`, e `version_check/service.py` importa in testa
+tutto il suo albero (su Android anche il pacchetto `distro`) **prima** che qualcuno legga
+l'impostazione. Spegnerla eviterebbe il controllo, non l'interprete. Verificato nel database:
+prima `enabled=1`, dopo l'intervento dell'utente `enabled=0`.
+
+**1b -- cocoscrapers, estensione di servizio disattivata.** Nel nostro fork (`script.module.cocoscrapers/addon.xml`)
+le due estensioni sono indipendenti:
+
+    xbmc.python.pluginsource | lib/default.py
+    xbmc.service             | lib/service.py   <- commentata
+    xbmc.python.module       | lib              <- questa e' quella che usa Fen Light
+
+Verificato che Fen Light lo importi **solo** in `modules/sources.py:312` (`import_external_scrapers`,
+percorso di riproduzione) e che non lo dichiari nemmeno fra i `requires`. Il servizio faceva
+CheckSettingsFile, CheckUndesirablesDatabase e un osservatore delle impostazioni: nulla che serva
+alla home. Conseguenza dichiarata: `SettingsMonitor` non gira piu', quindi un cambio delle
+impostazioni di cocoscrapers non aggiorna piu' da solo il dizionario in memoria.
+
+**1c -- il blur fuori dalla testa del servizio.** `service.py:5` era
+`from modules.blur_service import BlurService`, import di **livello modulo**: girava a ogni avvio
+del servizio anche col blur spento dal 23/08. E `blur_service.py:5` importa `urllib.parse`, cioe'
+proprio la catena che il lotto 74 aveva tolto dal percorso di Fen Light portandosi in casa
+`urlencode`/`parse_qsl`/`unquote`. Rientrava dalla finestra. Sceso dentro `_delayed_blur_start`,
+l'unico punto che lo usa.
+
+### Il risultato, due avvii
+
+| | prima (03:42) | boot1 (04:35) | boot2 (04:36) |
+|---|---|---|---|
+| **Home init -> ultimo widget** | **7,56 s** | **5,12 s** | **5,04 s** |
+| interpreti nella finestra | 6 | 4 | 4 |
+
+**-2,45 s, -33%**, riproducibile.
+
+La quota di CPU sulla fase di import -- che e' a thread singolo, quindi qui il rapporto vale come
+prova e non come indizio:
+
+| build | prima | boot1 | boot2 |
+|---|---|---|---|
+| continue_watching | 16% | **25%** | **27%** |
+| mdblist 91378 | 17% | **24%** | **24%** |
+| mdblist 101881 | 17% | **24%** | **26%** |
+
+**La previsione era 17% -> 25%** passando da 6 a 4 contendenti, fatta prima di deployare. Misurato
+24-27%. Il modello 1/N ha superato una verifica predittiva, non solo una a posteriori.
+
+Invocazioni intere: `continue_watching` 5639 -> 2376 ms, `mdblist` 6446 -> 4037 e 6485 -> 4225.
+
+### Verifiche
+
+- XML valido dopo la modifica a cocoscrapers, e le tre estensioni superstiti elencate leggendo il
+  DOM, non a occhio. La prima stesura del commento era **XML non valido** (doppi trattini dentro un
+  commento): scoperta dal validatore, non dalla lettura.
+- `service.py`: simboli di primo livello 25 -> 25, metodi 27 -> 27, nessuno perso
+  ([[scripted-edits-verify-symbols]]).
+- Deploy a Kodi fermo, md5 verificati 3 su 3.
+- **Zero eccezioni Python** nei due avvii; unico errore il `CPeripheralJoystick` preesistente.
+
+### Trovato per strada: la stick aveva cocoscrapers 1.2, il repo 1.3
+
+Lo scarto reale era **un solo file**, `lib/cocoscrapers/sources_cocoscrapers/torrents/dmm.py` (~100
+righe: il proof-of-work crittografico lato client sostituito da un endpoint `api/challenge`). Il
+resto della differenza erano i due `.zip` di pacchettizzazione, che sul dispositivo non devono
+stare. Non era stato spinto insieme al lotto per non confondere un eventuale guasto di riproduzione
+con la misura dell'avvio; spinto e verificato subito dopo, su richiesta dell'utente. Senza,
+il dispositivo si sarebbe dichiarato 1.3 avendo codice 1.2 -- l'ibrido del lotto 49.
+
+### Cosa NON e' migliorato, e va detto
+
+La fase `indexer` di mdblist e' scesa molto meno delle altre: ~3,1 s -> ~2,2 s. Dentro, `PERF FASI`
+dice dove sta adesso il lavoro vero:
+
+    55 elementi | somma thread 813 ms | infotag 186ms (23%) + ctxmenu 396ms (49%)
+    47 elementi | somma thread 607 ms | infotag 143ms (24%) + ctxmenu 302ms (50%)
+
+**Meta' del lavoro di costruzione degli elementi e' il menu contestuale**, ~700 ms di CPU su un core
+solo. Il vecchio punto #20 risulta "fatto", ma evidentemente non fino in fondo. E' lavoro, non
+attesa: non lo sistema il rinvio di nessun servizio.
+
+Osservazione non spiegata, registrata per non arrotondarla: `continue_watching` importa **49**
+moduli invece di 52, e non puo' essere il blur (quello sta nel processo del servizio). Da chiarire
+col profilatore.
+
+## Lotto 203 -- il lavoro di avvio di Fen Light aspetta che la home sia piena. 5,08 s -> 3,75 s
+
+### Cosa occupava la finestra
+
+Dal log 04:36 (finestra 19.356 -> 24.397, cioe' 5,04 s), il servizio come **quarto contendente**:
+
+| | quando | durata |
+|---|---|---|
+| import del servizio | 19.865 -> 21.183 | 1,32 s (era 2,9 col blur in testa) |
+| `SetAddonConstants` | 21.353 -> 21.358 | 5 ms |
+| `DatabaseMaintenance` | 21.358 -> 21.930 | **572 ms** |
+| `SyncSettings` | 21.930 -> 22.277 | **347 ms** |
+| `AutoStart` | 22.323 -> 22.498 | 175 ms |
+| import del client http (primo giro TraktMonitor) | -> 24.010 | **1172 ms**, finisce 0,4 s prima dell'ultimo widget |
+
+Oltre due secondi di lavoro che nessuno stava aspettando, sottratti a chi invece si stava
+aspettando -- e che spostato fuori costa meno anche a se stesso, come i 5500 ms contro 592 del
+controllo template nel lotto 151.
+
+### La forma dell'intervento
+
+`SetAddonConstants` **resta sempre in sincrono**: 5 ms, e la skin legge `fenlight.addon_path` e
+compagne appena disegna. Tutto il resto passa da `_start_remaining_services`, che e' la vecchia coda
+di `startServices` **riga per riga** -- verificato meccanicamente che la sequenza delle nove
+chiamate sia identica a `HEAD`. Cambia solo QUANDO parte.
+
+### Il cancello: il registro delle costruzioni, non un timer
+
+`_deferred_services` legge `kodi_utils.build_log_rows` -- una riga per ogni cartella consegnata,
+gia' scritta da `end_directory` -- e aspetta che il numero **smetta di crescere**. Il timer misura
+solo la quiete fra una consegna e l'altra: non indovina quanto dura l'avvio, e non serve sapere
+quanti widget abbia la home. E' la regola di [[stato-condiviso-non-toppe]] applicata: il dato c'e'
+gia', non serve una stima.
+
+Il registro si legge **da zero e non da t0**, e la ragione e' una corsa: il servizio nasce 1,3 s
+dopo i provider, ma su una macchina piu' svelta l'ordine si inverte e le consegne arriverebbero
+prima che questo thread esista. Contando da t0 non ne vedrebbe nessuna e aspetterebbe il tetto
+intero con Trakt e paginazione fermi. Le proprieta' di finestra muoiono con Kodi, quindi all'avvio
+ogni riga del registro e' di questo avvio: leggere da zero e' corretto ed elimina la corsa.
+
+### La taratura, e un banco di prova che ha bocciato la prima stesura
+
+`BOOT_DEFER_SETTLE` va sopra il buco piu' largo fra due consegne, o la quiete scatta a meta'
+finestra. I buchi misurati:
+
+    03:42 (6 interpreti)  36.36 / 37.26 / 37.44  ->  0,90 e 0,18
+    04:35 (4 interpreti)  57.89 / 59.26 / 59.57  ->  1,37 e 0,31
+    04:36 (4 interpreti)  22.42 / 24.16 / 24.40  ->  1,74 e 0,24
+
+La prima stesura aveva **1,5 s**, cioe' sotto il peggiore osservato -- e il commento che l'accompagnava
+conteneva gia' la propria smentita ("distanti al massimo 1,8 s"). Un banco di prova con orologio
+finto, alimentato con i buchi reali dei tre avvii, l'ha bocciata: **sarebbe ripartita dopo un widget
+su tre**. Portata a **3,0 s**, 1,7 volte il peggiore osservato, perche' sbagliare per eccesso non
+costa nulla e sbagliare per difetto annulla il lotto. Sette casi su sette passati, inclusi i due
+alimentati coi buchi reali; se un widget arrivasse comunque oltre i 3 s il rinvio degrada al
+comportamento precedente per quel solo widget: si perde guadagno, non si rompe niente.
+
+Uscite di sicurezza: `BOOT_DEFER_CAP` (20 s) perche' una home senza widget Fen Light e' legittima e
+non deve lasciare Trakt fermo per sempre, e `waitForAbort` perche' una chiusura di Kodi durante
+l'attesa non lasci il thread appeso.
+
+### Il cancello che protegge il primo avvio, e perche' non e' "i database esistono?"
+
+Il rinvio **non si applica** in due casi, gli unici in cui `make_databases` e `sync_settings` fanno
+qualcosa di piu' che confermare l'esistente: primo avvio o profilo azzerato, e **primo avvio dopo un
+aggiornamento dell'addon** (tabella nuova da creare, impostazione nuova da inserire).
+
+Il secondo non e' teorico, ed e' il motivo per cui non basta controllare se i database ci sono.
+`get_setting` e' `get_property(id) or settings_cache.get(id) or fallback`: un'impostazione che
+`sync_settings` non ha ancora inserito **non torna il suo default dichiarato, torna il fallback di
+chi chiama**. Sarebbe un widget costruito con un valore diverso da quello configurato, per un solo
+avvio, senza una riga di errore -- il guasto silenzioso che questo progetto continua a scovare mesi
+dopo.
+
+Il dato che risponde e' la **versione**, non un orologio: tabelle e impostazioni nuove arrivano solo
+con una versione nuova. Il segnalibro e' un file nel profilo (`addon_data/plugin.video.fenlight/boot_ready`)
+e **non** una riga nella cache delle impostazioni, perche' `sync_settings` pota le righe che non
+stanno in `default_settings` e se la mangerebbe a ogni giro. Si scrive in coda a
+`_start_remaining_services`, cioe' solo a lavoro finito: se l'avvio si interrompe prima, il
+segnalibro resta vecchio e il prossimo avvio rifa' tutto in sincrono. E' il verso giusto in cui
+sbagliare, e vale anche per qualunque eccezione: si risponde "non si puo' rinviare" e si lavora come
+prima del lotto.
+
+### Conseguenza sulla prima misura, da non confondere con un fallimento
+
+Il segnalibro non esiste ancora sul dispositivo (verificato dopo il deploy). Quindi **il primo avvio
+dopo questo deploy prende la via sincrona** e deve somigliare al lotto 202, ~5 s. Il guadagno si
+vede dal **secondo avvio in poi**.
+
+### Verifiche fatte
+
+- Sintassi valida; simboli di primo livello 25 -> 28 (le tre costanti nuove), metodi 27 -> 33 (i sei
+  nuovi), **nessuno perso**.
+- Sequenza delle nove chiamate di avvio confrontata con `HEAD`: identica.
+- Dipendenze lette nel sorgente e non supposte: `make_databases` (creazione tabelle + migrazione
+  schema) e `sync_settings` (inserimento dei default, potatura degli obsoleti, semina della cache in
+  memoria), piu' il comportamento di `get_setting` sopra descritto.
+- `stamp_startup_rebuild` verificato: scrive su `_stamp_refresh('*')`, **non** su `BUILD_LOG_PROP`,
+  quindi non sporca il contatore delle consegne.
+- Deploy a Kodi fermo, md5 verificato.
+
+### Il risultato, due avvii dopo quello sincrono
+
+Il primo avvio dopo il deploy ha preso la via sincrona come previsto e ha scritto il segnalibro
+(`boot_ready`, contenuto `3.0.27`, ore 04:51:31). I due successivi sono quelli differiti.
+
+| | originale | 202 b1 | 202 b2 | **203 b2** | **203 b3** |
+|---|---|---|---|---|---|
+| Home init -> ultimo widget | 7,56 s | 5,12 s | 5,04 s | **3,77 s** | **3,73 s** |
+
+**Dall'inizio della sessione: -3,8 s, -51%.** E' anche leggermente sotto il pavimento stimato (~4 s).
+
+Il cancello ha fatto esattamente quello per cui e' stato scritto, in entrambi gli avvii:
+
+    ###Fen Light###: Avvio differito: 3 costruzioni viste, parto dopo 4.9 s
+    ###Fen Light###: Avvio differito: 3 costruzioni viste, parto dopo 5.0 s
+
+**3 costruzioni viste su 3.** Con il SETTLE della prima stesura avrebbe scritto 1. Verificato inoltre
+che fra `SetAddonConstants` e l'ultimo widget il servizio non scriva **una sola riga**: zero righe
+sue nella finestra 24.522 -> 26.250 del terzo avvio.
+
+### Il rinvio non sposta il costo: lo taglia
+
+Lo stesso lavoro, dentro la finestra (log 04:36) e fuori (log 04:52, terzo avvio):
+
+| | dentro | fuori | |
+|---|---:|---:|---|
+| `DatabaseMaintenance` | 572 ms | **192 ms** | 3,0x |
+| `SyncSettings` | 347 ms | **50 ms** | 6,9x |
+| `AutoStart` | 175 ms | 31 ms | 5,6x |
+| import del client http | 1172 ms | **540 ms** | 2,2x |
+| **totale** | **2266 ms** | **813 ms** | **2,8x** |
+
+E' la firma del lotto 151 (5500 ms dentro la tempesta, 592 fuori) ripresa su un altro carico, e vale
+come misura indipendente del modello 1/N: non e' che il lavoro sia diminuito, e' che non deve piu'
+aspettare il proprio turno.
+
+### La quota di CPU dice una cosa che non avevo previsto, e va scritta
+
+| | originale | lotto 202 | lotto 203 |
+|---|---|---|---|
+| `continue_watching`, totale | 13% | 28-30% | **31-32%** |
+| `mdblist`, totale | 11-12% | 15-17% | **21-22%** |
+| **fase di import, tutte** | 16-17% | 24-27% | **24-28%, invariata** |
+| fase indexer, `continue_watching` | 7% | 38% | **44-46%** |
+
+**La quota sulla fase di import non e' salita.** Il motivo sta nel log ed e' un limite del lotto, non
+un errore di misura: il rinvio sposta il lavoro che viene **dopo** gli import del servizio, ma gli
+import del servizio no. `service.py` nasce alle 23.011 e arriva alla prima riga di log alle 24.339,
+**1,33 s che cadono in pieno dentro la fase di import dei widget**. Durante gli import i contendenti
+sono ancora 4; solo dopo scendono a 3. La conferma e' la riga dell'indexer, che infatti sale a 44-46%.
+
+Quindi il quarto interprete non e' stato tolto dalla finestra: gli e' stato tolto tutto tranne la
+propria nascita. Quel che resta e' il bersaglio del lotto 204.
+
+### Verifiche
+
+- Segnalibro `boot_ready` creato al primo avvio col valore giusto, e i due successivi hanno preso la
+  via differita: il cancello di versione funziona in entrambi i versi.
+- Zero eccezioni Python nei due avvii; unico errore il `CPeripheralJoystick` preesistente, come nei
+  due avvii del lotto 202.
+
+### Cosa resta nella finestra, e da dove ripartire
+
+Nei 3,73 s residui: il parse di `Home.xml`, la creazione dei tre interpreti, i tre build veri, e
+**gli 1,33 s di nascita del servizio**. Su quest'ultimo blocco non abbiamo ancora una scomposizione:
+il profilatore degli import gira in `fenlight.py`, non in `service.py`. E' il lotto 204, ed e' solo
+diagnosi.
+
+Un'ipotesi da verificare li' dentro, non da dare per buona: Kodi esegue `service.py` come `__main__`,
+quindi Python **non ne mette in cache il bytecode** -- e infatti `resources/lib/` non ha
+`__pycache__`, mentre tutti i sottopacchetti ce l'hanno. Sono 76 KB di sorgente ricompilati a ogni
+avvio. Quanto pesi davvero lo dira' la misura; se pesasse, il rimedio e' noto e piccolo (un guscio
+sottile che importa un modulo vero, che il `.pyc` invece ce l'ha).
+
+L'altro fronte, gia' misurato nel lotto 202 e indipendente da tutto questo, resta il **menu
+contestuale**: meta' del lavoro di costruzione degli elementi, ~700 ms di CPU. Quello e' lavoro vero,
+e non lo sistema nessun rinvio.
+
+## Lotto 204 -- la nascita del servizio, misurata invece che indovinata. 976 ms -> 436 ms
+
+Il lotto 203 aveva lasciato un solo blocco estraneo dentro la finestra dei widget: **1,33 s** fra la
+nascita dell'interprete del servizio e la sua prima riga di log. Questo lotto lo scompone.
+
+### Meta' della risposta era gia' nel log, gratis
+
+Prima di scrivere una riga di strumentazione, le righe di Kodi (avvio 04:52):
+
+    23.011  start processing
+    23.363  Python Interpreter Initialized   ->   352 ms   motore CPython, non nostro
+    24.339  Main Monitor Service Starting    ->   974 ms   caricare ed ESEGUIRE service.py
+
+Il bersaglio non era 1,33 s ma **974 ms**. Le due ipotesi in campo erano opposte e volevano rimedi
+diversi: l'albero degli import da potare, oppure la **compilazione** -- Kodi esegue `service.py` come
+`__main__`, quindi Python non ne mette in cache il bytecode, e infatti `resources/lib/` e' l'unica
+cartella senza `__pycache__` mentre tutti i sottopacchetti ce l'hanno. 76 KB ricompilati a ogni avvio.
+
+### Lo strumento, e tre scelte che non sono ovvie
+
+Gemello del profilatore in cima a `fenlight.py` (lotto 54), con tre differenze che vengono dal fatto
+che questo script non finisce mai:
+
+1. la patch a `__import__` si toglie **subito dopo il corpo del modulo**, non a fine script: questo
+   interprete vive quanto Kodi, e lasciarla su vorrebbe dire profilare ogni import pigro di ogni
+   servizio per tutta la sessione;
+2. non c'e' un punto di uscita dove stampare, quindi si stampa dentro `_start_remaining_services`;
+3. la **stampa e' rinviata** insieme al lavoro del lotto 203. Sono ~40 righe di log piu' l'import del
+   rendicontatore: stamparle alla nascita vorrebbe dire aggiungere carico proprio alla finestra che
+   la misura serve a capire. I numeri si prendono subito, si scrivono dopo.
+
+**Un bug scritto e trovato prima del deploy.** Avevo messo `import sys` DENTRO `_timed_import`. Ma li'
+`__import__` e' gia' patchato, quindi quella riga avrebbe richiamato `_timed_import`, che avrebbe
+rifatto `import sys`: ricorsione infinita al primo import, cioe' un servizio che non parte proprio.
+`fenlight.py` importa `sys` in cima esattamente per questo. Corretto, e poi il blocco e' stato
+**eseguito davvero fuori da Kodi** invece che riletto: 16 moduli profilati, padri e CPU registrati,
+ripristino riuscito, nessuna ricorsione.
+
+### Il referto (avvio 05:03)
+
+    nascita del servizio | import 864 ms + corpo 2 ms = 866 ms | cpu 211/866 ms (24%)
+    service.boot | 23 moduli | totale 863 ms | di cui Fen Light 0 ms | resto 863 ms
+
+**L'ipotesi della compilazione e' morta.** 976 misurati da Kodi meno 866 misurati da dentro = **110 ms**
+di compilazione. Spostare 1100 righe in un modulo col `.pyc` per recuperarli non vale il
+rimaneggiamento: ipotesi **valutata e scartata, con un numero sotto**. E' il valore di questo lotto
+tanto quanto il taglio che segue -- una strada che sembrava promettente e' stata chiusa prima di
+spenderci sopra.
+
+`di cui Fen Light 0 ms`: dopo il lotto 202 il servizio non importa piu' nulla di nostro a livello di
+modulo. Gli 864 ms erano `json` e `threading` con il loro albero.
+
+### Il taglio, e perche' il grafo dei padri da solo avrebbe mentito
+
+`json` e' usato in **un punto solo di tutto il file**, dentro `WidgetRefresher.condition_check`, in un
+`try`, su un metodo che gira a widget gia' costruiti.
+
+Il grafo dei padri del profilatore (`collections <- functools <- enum <- re <- json.decoder`)
+suggeriva che togliendo json sarebbero usciti ~640 ms. **Sarebbe stato sbagliato**, ed e' la stessa
+trappola del lotto 74: togliere un file sposta il costo se qualcun altro lo importa lo stesso.
+Verificato importando i due moduli isolati invece di dedurlo:
+
+    threading tira:  collections, functools, operator, itertools, keyword, reprlib,
+                     heapq, types, _weakrefset, _collections ...
+    json tira:       tutto quello + json.decoder/encoder/scanner, _json,
+                     re + tabelle, enum, copyreg
+
+Stima corretta a **~373 ms**, cioe' solo cio' che pende esclusivamente da json.
+
+### L'esito misurato (avvio 05:08): meglio della stima
+
+| | prima | dopo |
+|---|---|---|
+| nascita del servizio | 866 ms | **333 ms** |
+| moduli | 23 | **12** |
+| compilazione (per differenza) | ~110 ms | ~103 ms |
+| totale letto nel log di Kodi | 976 ms | **436 ms** |
+
+**-533 ms**, contro i ~373 stimati: erano usciti anche i 98 ms di import relativi e le voci sotto la
+soglia degli 8 ms. La stima era conservativa, ed e' il verso giusto.
+
+Finestra Home init -> ultimo widget: **3,605 s**, contro 3,765 / 3,734 / 3,783 dei tre avvii del
+lotto 203. **Circa -150 ms**, dentro la forbice 100-250 ms dichiarata prima della misura. Va detto
+che e' **un solo avvio**: i tre precedenti stavano in 49 ms l'uno dall'altro e questo ne sta 129-178
+sotto tutti, quindi il segno e' probabilmente vero, ma la taglia va confermata.
+
+### Cosa resta, e perche' il capitolo si chiude qui
+
+I 12 moduli superstiti sono l'albero di `threading` (~310 ms) piu' `xbmcgui`. `Thread` serve
+**subito**, per far partire il rinvio del lotto 203, e non si toglie senza cambiare il modo in cui il
+servizio genera lavoro. Il profilatore e' stato **rimosso** (era dichiarato diagnostico) e il referto
+e' finito in testa a `service.py`, perche' la domanda non si riapra fra sei mesi.
+
+### Verifiche
+
+- Sintassi valida; zero simboli e zero metodi persi; ordine delle nove chiamate di avvio invariato.
+- `json` verificato come unica occorrenza residua nel file, e solo dentro il metodo che lo usa.
+- Zero eccezioni Python nei due avvii; unico errore il `CPeripheralJoystick` preesistente.
+- Deploy a Kodi fermo, md5 verificati a ogni passaggio.
+
+### Bilancio della sessione avvio
+
+| | finestra Home init -> ultimo widget |
+|---|---|
+| partenza (03:42) | **7,56 s** |
+| lotto 202, tre interpreti estranei | 5,04-5,12 s |
+| lotto 203, lavoro del servizio rinviato | 3,73-3,78 s |
+| lotto 204, `json` pigro nel servizio | **3,605 s** |
+
+**-3,96 s, -52%.** Il prossimo fronte non e' piu' la contesa ma il lavoro vero: il **menu
+contestuale**, meta' del tempo di costruzione degli elementi (~700 ms di CPU, lotto 202).
