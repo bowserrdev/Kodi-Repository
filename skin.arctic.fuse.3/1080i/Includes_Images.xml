@@ -281,7 +281,27 @@
         <value condition="Integer.IsEqual(Window(Home).Property(TMDbHelper.WidgetContainer),550)">$INFO[Container(550).ListItem.Art(fanart)]</value>
     </variable>
 
+    <!-- LOTTO 212. I cinque valori in testa valgono solo per la ricerca testuale e sono li' perche'
+         tutto il resto di questa variabile risponde alla domanda sbagliata quando la finestra non e' la
+         Home:
+           - il primo valore di Image_Foreground_NoService legge Container.ListItem, cioe' il contenitore
+             CHE HA IL FUOCO. Nella 1105 il fuoco sta nella barra di ricerca finche' l'utente non scende
+             nella riga, quindi all'arrivo dei risultati non c'e' nessuna landscape; e spostando il fuoco
+             sul nome del widget ('Film', contenitore 601) l'elemento a fuoco diventa la linguetta, che
+             non ha fanart -> l'immagine spariva. Sono i due difetti segnalati dall'utente.
+           - la catena numerata sotto legge Window(HOME).Property(TMDbHelper.WidgetContainer), mentre chi
+             la scrive (Hub_Combined_Widget e la linguetta, via SetProperty senza finestra) la scrive
+             sulla finestra CORRENTE, che qui e' la 1105. Su Home le due coincidono e infatti li' funziona.
+         La risposta giusta senza fuoco e' la stessa usata dal pannello info: in combinata e' visibile un
+         solo row della ricerca, quello della linguetta selezionata. Vedi Hub_Combined_Info.
+         Gli id sono letterali per la ragione di sempre (Kodi non risolve Container($INFO[...])) e
+         l'intervallo 502-506 e' quello di Exp_Search_Row_Spinner. -->
     <variable name="Image_Foreground">
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(502)">$INFO[Container(502).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(503)">$INFO[Container(503).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(504)">$INFO[Container(504).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(505)">$INFO[Container(505).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(506)">$INFO[Container(506).ListItem.Art(fanart)]</value>
         <value condition="$EXP[Exp_BackgroundArtwork_IsSimple]">$INFO[Window(Home).Property(TMDbHelper.SimpleBackground.BlurImage.Original)]</value>
         <value condition="!$EXP[Exp_TMDbHelper_IsBlur]">$VAR[Image_Foreground_NoService]</value>
         <value condition="!String.IsEmpty(Window.Property(TMDbHelper.ListItem.BlurImage.Original))">$INFO[Window.Property(TMDbHelper.ListItem.BlurImage.Original)]</value>

@@ -26577,3 +26577,117 @@ nessun `pack_cache` in `sources.py`, e `_durata_filtro` che non prende piu' i ri
 `pack_cache` continua a servire in `external.py`. Mezza funzione tolta e' peggio di una funzione
 sbagliata. `_durata_filtro` e' estratta ed eseguita su sei casi. Simboli di `sources.py` 75 -> 74,
 **PERSI: solo quello voluto**. `compileall` pulito.
+
+## Lotto 212 -- La ricerca chiedeva "chi ha il fuoco" quando la domanda era "cosa sto mostrando"
+
+Quattro difetti segnalati il 09/09 sulla ricerca testuale. Tre sono lo stesso guasto.
+
+    1. durante 'Ricerca in corso' compare la rotellina della paginazione
+    2. all'arrivo dei risultati il logo del primo risultato non c'e'; compare solo scendendo nella riga
+    3. l'immagine in primo piano non compare la prima volta, E sparisce quando il fuoco passa dagli
+       elementi al nome del widget ('Film', il contenitore 601)
+    4. chiudendo il player il fuoco finisce sulla barra di ricerca, non sull'elemento riprodotto
+
+Il log della stick (18:10-18:15, ricerca "dark") e le impostazioni della skin sono bastati: non ho
+avviato niente io.
+
+### Il difetto 2 e il 3 sono la stessa domanda sbagliata
+
+Nella 1105 **i risultati arrivano mentre il fuoco e' ancora nella barra di ricerca**. Fino a quel
+momento nessun `onfocus` ha dichiarato niente, e i due consumatori che disegnano quello spazio vuoto
+fra la barra e la riga chiedono entrambi "chi ha il fuoco":
+
+| consumatore | cosa legge | cosa vale nella 1105 all'arrivo dei risultati |
+|---|---|---|
+| `Hub_Combined_Info` (il logo) | `Window.Property(TMDbHelper.WidgetContainer)` | `505`, scritto da `Hub_Onload`: e' il row Discover |
+| `Image_Foreground_NoService` (l'immagine) | `Container.ListItem`, cioe' il contenitore a fuoco | niente: il fuoco e' su un controllo `edit` |
+
+Da cui la differenza esatta che l'utente ha descritto e che conferma la diagnosi: sceso nella riga, il
+logo **resta** anche spostando il fuoco sulla linguetta (la linguetta scrive la proprieta' nel suo
+onfocus, `Includes_Lists.xml:512`), mentre l'immagine **sparisce**, perche' li' `Container.ListItem`
+diventa la linguetta, che non ha `fanart`.
+
+L'immagine ha in piu' un secondo guasto suo, ed e' il motivo per cui la catena di ripiego non la
+salvava: i cinquanta valori numerati di `Image_Foreground_NoService` leggono
+`Window(HOME).Property(TMDbHelper.WidgetContainer)`, mentre chi la scrive -- `Hub_Combined_Widget` e
+la linguetta, via `SetProperty` senza finestra -- la scrive sulla finestra **corrente**, che qui e' la
+1105. Su Home le due coincidono, ed e' per questo che il difetto si vede solo nella ricerca. Con
+`TMDbHelper.EnableBlur = false` (l'impostazione sulla stick, verificata in `settings.xml`) quella
+catena e' l'unica strada che resta.
+
+**La risposta giusta esisteva gia' e non ha bisogno del fuoco**: in modalita' combinata e' *visibile*
+un solo row della ricerca, quello della linguetta selezionata, perche' il suo `<visible>` confronta
+gia' il guid della linguetta. `Control.IsVisible(id)` legge quel confronto. Non aggiunge stato: ne
+legge uno che c'era.
+
+Non si poteva invece confrontare `ListItem.Property(widget_id)`: il generatore lo scrive come
+`$NUMBER[502]` e quel confronto non e' mai vero. E' il muro contro cui aveva sbattuto il lotto 169.
+
+### Il difetto 1: alla prima pagina la rotellina non ha niente da dire
+
+`Exp_Search_Row_Spinner` era `Container(502..506).IsUpdating`, che durante la prima costruzione e'
+vero: la rotellina compariva accanto a una riga di linguette ancora vuota, sopra la scritta 'Ricerca
+in corso / Attendi il caricamento dei risultati' che dice gia' tutto.
+
+Il segnale che distingue le due cose c'era gia': **Settled**, la query i cui risultati sono a schermo
+adesso (`router._text_search_done`, scritta a costruzione finita, non all'inizio -- lotto 168).
+`Settled == testo vivo` vuol dire "c'e' gia' una lista di questa ricerca, quello che sta costruendo e'
+una pagina in piu'". E' lo stesso cancello che i row usano per decidere se il loro contenuto
+appartiene al testo vivo.
+
+La rotellina della meta' Discover ('Risultati') **non e' stata toccata**: li' non c'e' nessuna scritta
+di attesa, e toglierla lascerebbe l'utente senza alcun segnale.
+
+### Il difetto 4: l'onload che scavalca il ripristino
+
+Andando a schermo intero la 1105 viene **chiusa** e al ritorno **riaperta** -- `Window Deinit` /
+`Window Init` -- quindi l'`<onload>` riparte e il suo `SetFocus(3001)` scavalca il controllo che Kodi
+ha appena ripristinato. Nel log si vede anche solo passando dalla Home:
+
+    18:12:41.607  watcher idle cur_ctrl=3004        <- il fuoco prima di uscire
+    18:12:41.627  Window Deinit (Custom_1105_Search.xml)
+    18:12:43.206  Window Init  (Custom_1105_Search.xml)
+    18:12:43.290  watcher idle cur_ctrl=3000        <- 3001 -> onfocus SetFocus(3000), non il ripristino
+
+Il segnale si prende **all'uscita, non all'entrata**: allo Deinit verso il player `Player.HasMedia` e'
+gia' vero, mentre al rientro la riproduzione e' finita e non c'e' piu' niente da leggere. La
+proprieta' e' indirizzata alla `1105` in tutti e tre i punti che la toccano, perche' durante un Deinit
+la "finestra corrente" di `SetProperty` puo' essere gia' quella nuova. Vale per entrambe le meta',
+testuale e Discover: la finestra e' la stessa.
+
+### Il difetto che non c'era piu'
+
+Il 'nessun risultato per <ricerca>' che lampeggiava prima dei risultati e' gia' chiuso dal **lotto
+168**: la scritta ora vuole `State == done` **e** i due `HasResults == false`, e `State` torna
+'loading' solo per una query nuova, non per una ricostruzione di pagina. Niente da fare.
+
+### Verifica
+
+`test_212.py`, **40 asserzioni, tutte OK**. Le condizioni non sono cercate come stringa: la prova
+contiene un **valutatore delle condizioni di Kodi** (`+` `|` `!` `[]`, `$EXP` espansi dal file vero) e
+ogni asserzione gli passa uno stato del mondo -- quali contenitori costruiscono, quali row sono
+visibili, dove sta il fuoco, il valore delle etichette. `Image_Foreground` viene **risolta** come fa
+Kodi, prendendo il primo `<value>` la cui condizione e' vera, e le azioni di `<onload>`/`<onunload>`
+vengono **eseguite** nei due scenari (rientro dal player, apertura normale).
+
+Un atomo che il valutatore non conosce solleva un errore invece di valere 'falso': e' esattamente il
+modo in cui il 169 era passato inosservato, e infatti ha gia' fermato la prova una volta
+(`Window.IsMedia`). Il valutatore stesso ha otto asserzioni sue, compresa quella che verifica che un
+atomo ignoto sia un errore.
+
+Nessun `.xmltemplate` toccato, quindi **nessuna rigenerazione di skinvariables e nessun `buildv` da
+alzare**: le quattro modifiche stanno tutte in file scritti a mano (`Includes_Search.xml`,
+`Includes_Hubs.xml`, `Includes_Images.xml`, `Custom_1105_Search.xml`). `test_162`/`163`/`164`/`166`/
+`167`/`168`/`170`/`176`/`177`/`178`/`179`/`184`/`207`/`208`/`209`/`210` tutti verdi.
+
+### Cosa resta aperto
+
+- **Con il blur acceso** (`TMDbHelper.EnableBlur`) l'immagine in primo piano passa da
+  `FenLight.Background.Fanart`, che pubblica `blur_service` risolvendo su
+  `Window.Property(TMDbHelper.WidgetContainer)`: il ramo nuovo di `Image_Foreground` lo precede e
+  corregge anche quel caso, ma il *blur* dietro resterebbe quello del contenitore dichiarato. Non
+  misurato: sulla stick il blur e' spento.
+- **La meta' Discover** ha lo stesso buco della prima comparsa (nessuno dichiara 505 finche' non ci si
+  entra), ma non e' stato segnalato e non l'ho toccato.
+- Il difetto 4 va confermato sul campo: nel log del 09/09 non c'e' nessuna riproduzione, quindi la
+  catena e' dedotta dal codice e dal comportamento identico osservato rientrando dalla Home.
