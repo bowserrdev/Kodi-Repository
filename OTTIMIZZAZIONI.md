@@ -26818,7 +26818,7 @@ contestuale dell'addon: *Auto-update: No*.
 
 ### Verifica
 
-`test_206.py`, **44 asserzioni, tutte OK**, e sono prove **funzionali** su alberi veri in una sandbox,
+`test_206.py`, **57 asserzioni, tutte OK**, e sono prove **funzionali** su alberi veri in una sandbox,
 non ispezioni del sorgente:
 
 - i tre file generati sopravvivono allo scambio **e contengono ancora quelli del dispositivo**, non
@@ -26889,6 +26889,53 @@ maniera, cioe' riprodurre il 09/09 con le nostre mani. In quel solo caso si aspe
 freddo avviene comunque in quella sessione, e gli altri addon li prende il giro dopo.
 `_ensure_no_auto_update` torna `True` se la riga c'era *gia'* quando Kodi e' partito, ed e' quella
 risposta a governare il cancello.
+
+### Il primo giro sul campo: `make_session` non e' `requests`
+
+Prima prova vera (09/09, skin 3.3.14 pubblicata, Fen Light 3.1 arrivato sulla stick dal canale
+nativo). Il servizio ha fatto tutto giusto fino all'ultimo passo, e il log lo dice in tre righe:
+
+```
+20:19:43  SkinUpdater Service Starting
+20:21:14  SkinUpdater: skin.arctic.fuse.3 3.3.13 -> 3.3.14, preparo lo scambio
+20:21:21  SkinUpdater: giro fallito ('Response' object has no attribute 'iter_content')
+```
+
+con uno `skin.arctic.fuse.3-3.3.14.zip` da **0 byte** lasciato in `temp/fenlight_skinswap/`. Il repo
+era a posto, il confronto delle versioni pure: si e' rotto il download.
+
+**La causa e' un pezzo di storia del progetto che avevo davanti e non ho letto.** Dal lotto 84
+`make_session` **non torna piu' `requests`**: torna `modules.http_client`, scritto apposta per pesare
+66 moduli invece di 337. Quel client legge la risposta **tutta in una volta** -- perfetto per i 10 KB
+di `addons.xml`, che infatti erano stati letti benissimo, inutilizzabile per 5,9 MB da leggere a
+blocchi. `iter_content` non esiste su `http_client.Response`, e non e' una dimenticanza: e' la
+differenza fra i due client. Il progetto aveva gia' un precedente esatto, `import_requests_real`,
+usato da `advanced_settings._speed_test_mbps` **per questo identico motivo** e con un commento che lo
+dice ("l'unico uso che il nostro client non copre: iter_content"). `_download` ora lo usa, `_fetch`
+resta sul client leggero -- sono 10 KB, non 5,9 MB.
+
+Due difetti di contorno, entrambi visibili nella stessa cattura e entrambi chiusi:
+
+- **un giro fallito costava sei ore.** `next_check` veniva spostato *prima* di `_prepare()`, quindi un
+  errore che si sarebbe ripresentato identico mandava il servizio a dormire fino al `RECHECK`
+  successivo. Ora il ramo di errore usa `RETRY_AFTER_ERROR` (600 s): abbastanza per distinguere un
+  guasto passeggero da uno vero, non abbastanza per perdere una serata.
+- **lo zip da 0 byte restava in `temp`.** Il ramo di errore non ripuliva. Ora c'e' `_clean_work`: un
+  file troncato lasciato in giro e' il genere di residuo che al giro dopo si prende per buono.
+
+**Perche' le 44 prove non l'avevano preso.** Provavano `_carry_over`, `_sanity`, `_swap`, il confronto
+delle versioni e la sveglia -- cioe' tutto tranne l'unico metodo che parla con la rete. `_download`
+non era mai stato eseguito. Adesso lo e', su un doppio con la superficie di `requests` (dimensione,
+byte identici, piu' blocchi, una pausa per blocco, interruzione alla chiusura di Kodi), e soprattutto
+**le due librerie vengono interrogate davvero**: la prova asserisce che `http_client.Response` *non*
+ha `iter_content` e che `_download` chiede `import_requests_real` mentre `_fetch` no. Se un domani
+qualcuno riporta il download su `make_session`, si ferma li'.
+
+**Prova end-to-end contro il GitHub vero**, in sandbox, senza toccare nessun dispositivo: controllo,
+download dello zip reale, md5 verificato, 339 file scompattati piu' il file generato riportato dentro
+(340), scambio, versione installata `3.3.14`, la home della finta stick ancora al suo posto, area di
+lavoro ripulita, e il secondo giro che non fa niente. E' il percorso completo, quello che sul
+dispositivo non era mai arrivato in fondo.
 
 ### Vincolo: `general.addonupdates` deve restare su *installa automaticamente*
 
