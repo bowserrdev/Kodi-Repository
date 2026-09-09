@@ -40,15 +40,20 @@ external_db = translatePath(path_join(database_path_raw, 'external.db'))
 settings_db = translatePath(path_join(database_path_raw, 'settings.db'))
 episode_groups_db = translatePath(path_join(database_path_raw, 'episode_groups.db'))
 dub_db = translatePath(path_join(database_path_raw, 'dub.db'))
+# LOTTO 201 -- misure delle riproduzioni, ingresso del wizard della banda. Database a se' e non una
+# tabella dentro maincache: e' l'unico dato che NON e' una cache (non scade e non si rigenera
+# leggendo di nuovo una API), e finirebbe cancellato dalle pulizie insieme al resto.
+playback_db = translatePath(path_join(database_path_raw, 'playback.db'))
 
 database_timeout = 20
 current_dbs = ('navigator.db', 'watched.db', 'favourites.db', 'traktcache.db', 'maincache.db', 'lists.db',
-				'discover.db', 'metacache.db', 'debridcache.db', 'external.db', 'settings.db', 'episode_groups.db', 'dub.db')
+				'discover.db', 'metacache.db', 'debridcache.db', 'external.db', 'settings.db', 'episode_groups.db', 'dub.db',
+				'playback.db')   # <- senza questa riga remove_old_databases() lo cancella al primo avvio
 database_locations = {
 	'navigator_db': navigator_db, 'watched_db': watched_db, 'favorites_db': favorites_db, 'settings_db': settings_db,
 	'trakt_db': trakt_db, 'maincache_db': maincache_db, 'metacache_db': metacache_db, 'debridcache_db': debridcache_db,
 	'lists_db': lists_db, 'discover_db': discover_db, 'external_db': external_db, 'episode_groups_db': episode_groups_db,
-	'dub_db': dub_db
+	'dub_db': dub_db, 'playback_db': playback_db
 }
 integrity_check = {
 	'settings_db': ('settings',),
@@ -60,10 +65,11 @@ integrity_check = {
 	'metacache_db': ('metadata', 'season_metadata', 'function_cache'),
 	'lists_db': ('lists',),
 	'discover_db': ('discover',),
-	'debridcache_db': ('debrid_data',),
+	'debridcache_db': ('debrid_data', 'pack_files'),
 	'external_db': ('results_data',),
 	'episode_groups_db': ('groups_data',),
-	'dub_db': ('dubcache',)
+	'dub_db': ('dubcache',),
+	'playback_db': ('playback_stats', 'sorgenti_bocciate')
 }
 # LOTTO 133 -- lo stato di sincronizzazione e' una COLONNA, non piu' una deduzione.
 #   sync_state  'synced' | 'pending_put' | 'pending_delete'  (vedi caches/progress_sync)
@@ -102,7 +108,12 @@ table_creators = {
 		'CREATE TABLE IF NOT EXISTS season_metadata (tmdb_id text not null unique, meta text, expires integer)',
 		'CREATE TABLE IF NOT EXISTS function_cache (string_id text not null unique, data text, expires integer)'),
 	'debridcache_db': (
-		'CREATE TABLE IF NOT EXISTS debrid_data (hash text not null, debrid text not null, cached text, expires integer, unique (hash, debrid))',),
+		'CREATE TABLE IF NOT EXISTS debrid_data (hash text not null, debrid text not null, cached text, expires integer, unique (hash, debrid))',
+		# LOTTO 207 -- l'elenco dei file di un torrent. Non ha `expires` e non e' un errore:
+		# l'infohash E' il contenuto, quindi la lista dei file non puo' cambiare. Sta accanto a
+		# `debrid_data` ma ha vita opposta: quella scade a 24 h perche' l'ESSERE IN CACHE cambia,
+		# questa non scade mai. Cresce a limite: ci pensa pack_cache.manutenzione().
+		'CREATE TABLE IF NOT EXISTS pack_files (hash text primary key, files text, quando integer)',),
 	'lists_db': (
 		'CREATE TABLE IF NOT EXISTS lists (id text unique, data text, expires integer)',),
 	'external_db': (
@@ -113,7 +124,58 @@ table_creators = {
 	'episode_groups_db': (
 		'CREATE TABLE IF NOT EXISTS groups_data (tmdb_id text not null unique, data text)',),
 	'dub_db': (
-		'CREATE TABLE IF NOT EXISTS dubcache (id text unique, data text, expires integer)',)
+		'CREATE TABLE IF NOT EXISTS dubcache (id text unique, data text, expires integer)',),
+	# Una riga per riproduzione. Colonne separate e non un blob json: il wizard ci fa percentili e
+	# medie, e su un blob dovrebbe rileggere e decodificare tutto ogni volta.
+	# NULL dove la misura non c'e' (nessun salto, dimensione non ottenuta): il wizard deve poter
+	# distinguere 'non misurato' da 'misurato zero', ed e' la distinzione che nei lotti 191-198 mi e'
+	# costata due sonde.
+	'playback_db': (
+		'CREATE TABLE IF NOT EXISTS playback_stats ('
+		'  id integer primary key autoincrement,'
+		'  quando integer not null,'          # epoch
+		'  cdn text,'                         # nexus-226.nord.tb-cdn.st
+		'  dimensione integer,'               # byte veri dal Content-Range, NULL se non ottenuti
+		'  durata integer,'                   # secondi, da Kodi
+		'  bitrate real,'                     # Mbit/s = dimensione*8/durata
+		'  salti integer,'
+		'  portata_prima real,'               # Mbit/s sostenuti, surplus + bitrate
+		'  portata_dopo real,'
+		'  cache_media_prima integer, cache_max_prima integer,'
+		'  cache_media_dopo integer, cache_max_dopo integer,'
+		'  secondi_a_zero integer,'           # il piu' lungo tratto consecutivo di cache a 0
+		'  campioni integer,'
+		# LOTTO 202. Il guasto dell'08/09 non era di banda: 2,1 Mbit/s su cache piena, e nessuna delle
+		# colonne qui sopra lo avrebbe distinto da una riproduzione riuscita. Il file era HEVC 10 bit
+		# 1920x1456, e il decoder della stick dichiara max="1920x1088" (/vendor/etc/media_codecs.xml):
+		# la misura che mancava era la forma del flusso, non la sua velocita'.
+		'  larghezza integer, altezza integer,'
+		'  codec text,'                        # hevc, h264, av1 ... da Player.GetProperties
+		'  esito text,'                        # NULL = normale; 'mai_partito' / 'bloccato' = cambio sorgente
+		# Identita' della sorgente. `nome` non serve alla banda: serve a poter riscegliere lo stesso
+		# season pack o lo stesso gruppo di rilascio per gli episodi successivi.
+		'  nome text,'
+		# `dimensione_dichiarata` e' cio' su cui il filtro di results.line_speed decide, in GiB, ed e'
+		# il terzo sospetto del conto (gli altri due: le unita' GiB/GB e il ripiego sulla durata).
+		# Da sola pero' NON si legge: significa tre cose diverse a seconda di chi l'ha prodotta, e
+		# provider+pacchetto sono le due colonne che la rendono interpretabile.
+		#   cloud (tb_cloud, rd_cloud, ...)  byte veri del file / 1073741824      -> deve combaciare
+		#   external, singolo                la taglia dell'indicizzatore         -> approssimata
+		#   external, pacchetto              taglia del pacco / numero episodi    -> una STIMA, e per
+		#                                    i provider fuori da correct_pack_sizes e' l'unica che c'e'
+		'  dimensione_dichiarata real,'
+		'  provider text,'
+		'  pacchetto text)',
+		# LISTA NERA -- tabella A PARTE, e la separazione e' il punto. playback_stats e' una finestra
+		# scorrevole di 50 righe che si pota a ogni scrittura: una bocciatura messa li' sparirebbe
+		# dopo cinquanta riproduzioni, cioe' proprio quando comincia a servire. Stesso database --
+		# resta lo storico delle riproduzioni -- ma senza potatura.
+		'CREATE TABLE IF NOT EXISTS sorgenti_bocciate ('
+		'  chiave text primary key,'         # provider|nome: il link risolto cambia a ogni giro, il nome no
+		'  nome text, provider text,'
+		'  quando integer,'
+		'  motivo text,'                     # mai_partito / bloccato
+		'  volte integer)')
 }
 
 media_prop = 'fenlight.%s'
@@ -161,6 +223,7 @@ def make_databases():
 		for command in table_creators[database_name]:
 			dbcon.execute(command)
 	migrate_progress_schema()
+	migrate_playback_schema()
 
 def migrate_progress_schema():
 	"""Porta la tabella `progress` allo schema del lotto 133. Gira una volta per sessione.
@@ -194,6 +257,31 @@ def migrate_progress_schema():
 					% (database_name, 'tabella rifatta' if ricostruibile else 'colonne aggiunte'))
 		except Exception as e:
 			kodi_utils.logger('Fen Light', 'progress: migrazione di %s FALLITA: %s' % (database_name, e))
+
+def migrate_playback_schema():
+	"""Aggiunge a `playback_stats` le colonne nate dopo la prima stesura (lotto 202).
+
+	CREATE TABLE IF NOT EXISTS non tocca una tabella che esiste gia': su un dispositivo che ha gia'
+	raccolto qualche riga le colonne nuove non comparirebbero mai, e registra() fallirebbe in
+	silenzio a ogni riproduzione -- fallisce zitta di proposito, quindi il guasto non si vedrebbe.
+	Qui non c'e' il dilemma di migrate_progress_schema: queste sono misure, non lo stato dell'utente.
+	Si aggiungono e basta, le righe vecchie restano con NULL, che e' esattamente il loro valore --
+	quelle misure non sono state prese.
+	"""
+	nuove = (('larghezza', 'integer'), ('altezza', 'integer'), ('codec', 'text'), ('esito', 'text'),
+			 ('nome', 'text'), ('dimensione_dichiarata', 'real'), ('provider', 'text'), ('pacchetto', 'text'))
+	try:
+		dbcon = connect_database('playback_db')
+		cols = {r[1] for r in dbcon.execute('PRAGMA table_info(playback_stats)')}
+		if not cols: return
+		aggiunte = [n for n, t in nuove if n not in cols]
+		for nome, tipo in nuove:
+			if nome in cols: continue
+			dbcon.execute('ALTER TABLE playback_stats ADD COLUMN %s %s' % (nome, tipo))
+		if aggiunte:
+			kodi_utils.logger('Fen Light', 'playback_stats: colonne del lotto 202 aggiunte (%s)' % ', '.join(aggiunte))
+	except Exception as e:
+		kodi_utils.logger('Fen Light', 'playback_stats: migrazione FALLITA: %s' % e)
 
 def remove_old_databases():
 	try:
@@ -265,7 +353,17 @@ def clean_databases():
 		))
 	return show_text('Cache Clean Results', text='[CR]----------------------------------[CR]'.join(results), font_size='large')
 
-def clear_cache(cache_type, silent=False):
+def clear_cache(cache_type, silent=False, clear_hashes=True):
+	"""LOTTO 205 -- `clear_hashes` esiste per il rescrape di UN titolo.
+
+	La cache degli hash (hash -> e' gia' in cache sul debrid?) NON e' per titolo: e' una tabella di
+	consultazione globale, e svuotarla per rifare la ricerca di un episodio costava, misurato l'08/09,
+	`TB_check: hash_list: 110, already_cached: 0, unchecked: 110` -- centodieci hash richiesti da capo
+	alla rete per un titolo solo, piu' la stessa perdita per ogni altro titolo mai cercato.
+	Non serviva nemmeno a tenerla fresca: `debrid_cache` scrive `expires = get_timestamp(24)`, quindi
+	si rinnova da sola ogni ventiquattro ore. Chi vuole ricontrollare gli hash di QUESTO titolo usa la
+	bandiera `fs_rescrape`, che salta la consultazione senza cancellare niente a nessuno.
+	"""
 	def _confirm(): return silent or confirm_dialog()
 	success = True
 	if cache_type == 'meta':
@@ -276,7 +374,7 @@ def clear_cache(cache_type, silent=False):
 		from apis import easynews_api
 		results = [easynews_api.clear_media_results_database()]
 		for item in ('pm_cloud', 'rd_cloud', 'ad_cloud', 'oc_cloud', 'ed_cloud', 'tb_cloud', 'folders'):
-			results.append(clear_cache(item, silent=True))
+			results.append(clear_cache(item, silent=True, clear_hashes=clear_hashes))
 		success = False not in results
 	elif cache_type == 'external_scrapers':
 		from caches.external_cache import external_cache
@@ -292,27 +390,27 @@ def clear_cache(cache_type, silent=False):
 	elif cache_type == 'pm_cloud':
 		if not _confirm(): return
 		from apis.premiumize_api import PremiumizeAPI
-		success = PremiumizeAPI().clear_cache()
+		success = PremiumizeAPI().clear_cache(clear_hashes=clear_hashes)
 	elif cache_type == 'rd_cloud':
 		if not _confirm(): return
 		from apis.real_debrid_api import RealDebridAPI
-		success = RealDebridAPI().clear_cache()
+		success = RealDebridAPI().clear_cache(clear_hashes=clear_hashes)
 	elif cache_type == 'ad_cloud':
 		if not _confirm(): return
 		from apis.alldebrid_api import AllDebridAPI
-		success = AllDebridAPI().clear_cache()
+		success = AllDebridAPI().clear_cache(clear_hashes=clear_hashes)
 	elif cache_type == 'oc_cloud':
 		if not _confirm(): return
 		from apis.offcloud_api import OffcloudAPI
-		success = OffcloudAPI().clear_cache()
+		success = OffcloudAPI().clear_cache(clear_hashes=clear_hashes)
 	elif cache_type == 'ed_cloud':
 		if not _confirm(): return
 		from apis.easydebrid_api import EasyDebridAPI
-		success = EasyDebridAPI().clear_cache()
+		success = EasyDebridAPI().clear_cache(clear_hashes=clear_hashes)
 	elif cache_type == 'tb_cloud':
 		if not _confirm(): return
 		from apis.torbox_api import TorBoxAPI
-		success = TorBoxAPI().clear_cache()
+		success = TorBoxAPI().clear_cache(clear_hashes=clear_hashes)
 	elif cache_type == 'folders':
 		if not _confirm(): return
 		from caches.main_cache import main_cache

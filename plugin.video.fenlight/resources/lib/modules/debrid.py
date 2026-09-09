@@ -28,6 +28,12 @@ def manual_add_magnet_to_cloud(params):
 	else: notification('Success')
 
 def query_local_cache(hash_list):
+	# Con fs_rescrape si salta la consultazione: gli hash di QUESTA ricerca vengono ricontrollati sul
+	# debrid e riscritti freschi, senza cancellare la cache di nessun altro titolo (lotto 205).
+	try:
+		from modules.kodi_utils import get_property
+		if get_property('fs_rescrape') == 'true': return []
+	except: pass
 	return debrid_cache.get_many(hash_list) or []
 
 def add_to_local_cache(hash_list, debrid):

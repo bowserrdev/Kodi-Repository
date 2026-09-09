@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 
-import math
 import time
-import secrets
 import requests
 import queue as queue_module
-from threading import Thread
+from threading import Thread, Lock
 from cocoscrapers.modules import source_utils, log_utils
 from cocoscrapers.modules.control import setting as getSetting
 from cocoscrapers.sources_cocoscrapers.base_scraper import BaseTorrentScraper
@@ -23,40 +21,45 @@ _HEADERS = {
 }
 
 
-class _DMMCrypto:
-	SALT = 'debridmediamanager.com%%fe7#td00rA3vHz%VmI'
+_CHALLENGE_URL = '%s/api/challenge' % _BASE_URL
+# Il client del sito rinnova a 120s; stiamo sotto per non correre sul filo.
+_CHALLENGE_TTL = 90
 
-	@staticmethod
-	def _js_imul(a, b):
-		return (a * b) & 0xFFFFFFFF
+_challenge_lock = Lock()
+_challenge_cache = {}
 
-	@staticmethod
-	def _urshift(val, n):
-		return (val & 0xFFFFFFFF) >> n
 
-	@staticmethod
-	def _hash_func(s):
-		i = 0xdeadbeef ^ len(s)
-		t = 0x41c6ce57 ^ len(s)
-		for ch in s:
-			l = ord(ch)
-			xi = _DMMCrypto._js_imul(i ^ l, 0x9e3779b1)
-			i = ((xi << 5) & 0xFFFFFFFF | _DMMCrypto._urshift(xi, 27)) & 0xFFFFFFFF
-			xt = _DMMCrypto._js_imul(t ^ l, 0x5f356495)
-			t = ((xt << 5) & 0xFFFFFFFF | _DMMCrypto._urshift(xt, 27)) & 0xFFFFFFFF
-		i = (i + _DMMCrypto._js_imul(t, 0x5d588b65)) & 0xFFFFFFFF
-		t = (t + _DMMCrypto._js_imul(i, 0x78a76a79)) & 0xFFFFFFFF
-		return format(_DMMCrypto._urshift(i ^ t, 0), 'x')
+def _get_challenge(proxy=None):
+	"""Restituisce (dmmProblemKey, solution) chiesti a /api/challenge.
 
-	@staticmethod
-	def solve():
-		rand_hex = format(secrets.randbits(32), 'x')
-		key = '%s-%s' % (rand_hex, int(time.time()))
-		ha = _DMMCrypto._hash_func(key)
-		hb = _DMMCrypto._hash_func('%s-%s' % (_DMMCrypto.SALT, rand_hex))
-		half = math.floor(len(ha) / 2)
-		interleaved = ''.join(ha[x] + hb[x] for x in range(half))
-		return key, interleaved + hb[half:][::-1] + ha[half:][::-1]
+	Da agosto 2026 DMM non usa piu' una proof-of-work calcolabile in locale: il
+	`solution` e' un hash firmato dal server. Il token NON e' legato all'IP ne'
+	alla sessione, quindi uno solo vale per tutte le pagine e per tutti gli IP
+	del proxy rotante: va chiesto una volta e riusato.
+	"""
+	with _challenge_lock:
+		cached = _challenge_cache.get('data')
+		if cached and time.time() < cached[2]:
+			return cached[0], cached[1]
+		# Diretta prima: misurata ~0,23s contro ~0,75s via proxy.
+		attempts = [None, proxy] if proxy else [None]
+		for attempt_proxy in attempts:
+			try:
+				proxies = {'http': attempt_proxy, 'https': attempt_proxy} if attempt_proxy else None
+				resp = _session.get(_CHALLENGE_URL, headers=_HEADERS, timeout=(2, 15), proxies=proxies)
+				if not resp.ok:
+					log_utils.log('DMM challenge HTTP %s proxy=%s' % (resp.status_code, bool(attempt_proxy)))
+					continue
+				data = resp.json()
+				key, solution = data.get('token'), data.get('hash')
+				if not key or not solution:
+					log_utils.log('DMM challenge malformato: %s' % str(data)[:200])
+					continue
+				_challenge_cache['data'] = (key, solution, time.time() + _CHALLENGE_TTL)
+				return key, solution
+			except:
+				source_utils.scraper_error('DMM')
+		return None, None
 
 
 class source(BaseTorrentScraper):
@@ -105,7 +108,9 @@ class source(BaseTorrentScraper):
 		headers['Referer'] = ref_url
 
 		def _build_params(page):
-			key, solution = _DMMCrypto.solve()
+			key, solution = _get_challenge(self._proxy)
+			if not key:
+				return None
 			p = {'imdbId': imdb_id, 'dmmProblemKey': key, 'solution': solution,
 				 'onlyTrusted': 'false', 'maxSize': 0, 'page': page}
 			if api_type == 'tv' and season is not None:
@@ -114,7 +119,11 @@ class source(BaseTorrentScraper):
 
 		def _fetch_page(page, retries=1):
 			for attempt in range(retries + 1):
-				data = self._get(api_url, _build_params(page), headers, use_proxy=bool(self._proxy))
+				params = _build_params(page)
+				if params is None:
+					log_utils.log('DMM page %s: nessun token di challenge' % page)
+					return None
+				data = self._get(api_url, params, headers, use_proxy=bool(self._proxy))
 				if data is not None:
 					raw_count = len(data.get('results', []))
 					page_results = []
@@ -133,6 +142,9 @@ class source(BaseTorrentScraper):
 			return None
 
 		results = []
+		if not _get_challenge(self._proxy)[0]:
+			log_utils.log('DMM: challenge non ottenibile, ricerca annullata')
+			return results
 		page_results = _fetch_page(0)
 		if page_results is None:
 			log_utils.log('DMM pagination stopped on failed page: 0')

@@ -298,8 +298,9 @@ class TVShows:
 			info_tag.setTvShowStatus(meta_get('status')), info_tag.setRating(meta_get('rating'))
 			# Niente setCast: la skin del cast legge solo i nomi. Vedi kodi_utils.cast_label.
 			_b6 = _perf()
+			# 'Aggiungi ai preferiti' via: vedi il commento esteso in indexers/movies.py.
 			_cast_props = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
-							'fenlight.more_like_this_params': more_like_this_params}
+							'fenlight.more_like_this_params': more_like_this_params, 'hide_add_remove_favourite': 'true'}
 			cast_names = cast_label(meta_get('cast'))
 			if cast_names: _cast_props['fenlight.cast'] = cast_names
 			set_properties(_cast_props)

@@ -38,6 +38,76 @@ def change_image_resolution(image, replace_res):
 def append_module_to_syspath(location):
 	sys.path.append(translate_path(location))
 
+def install_lazy_chardet():
+	"""Rimanda chardet finche' qualcuno non lo usa davvero. Lotto 178, gemello del lotto 84.
+
+	Il lotto 84 tolse `requests` da DENTRO Fen Light e lo sostitui' con http_client, misurando 337
+	moduli contro 66. Ma cocoscrapers continua a importarlo (`modules/client.py:8`), e con lui arriva
+	chardet, che sulla stick pesa 1 107 804 byte di sorgente su 48 file: piu' di requests (179 KB) e
+	urllib3 (394 KB) messi insieme.
+
+	Come ci entra, e perche' e' sprecato:
+
+	    requests/compat.py:11     import chardet
+	    chardet/__init__.py:24    from .universaldetector import UniversalDetector
+
+	e universaldetector tira dentro ogni modello di lingua -- langbulgarianmodel, langgreekmodel,
+	langhebrewmodel, langrussianmodel, langthaimodel, langturkishmodel, johabfreq -- che sono tabelle
+	di frequenza enormi. Servono a UNA cosa sola: `Response.apparent_encoding`
+	(requests/models.py:793), cioe' indovinare la codifica quando la risposta non la dichiara. E'
+	esattamente cio' che il commento in cima a http_client.py chiamava "quello che si paga per
+	niente".
+
+	Misura del 07/09, log delle 01:3x, `playback.media`: 284 moduli, 2592 ms, cpu 89%. La riga
+	'quando' del profilatore dice che il 75% del costo sta dopo il modulo 77, cioe' dopo tutto
+	l'albero di Fen Light, e le tappe si chiamano `zstandard` e `codingstatemachine` -- quest'ultimo
+	e' chardet.
+
+	COSA FA. Mette in sys.modules un modulo finto PRIMA che cocoscrapers importi requests. Espone
+	__version__ (che requests legge subito, per il controllo di compatibilita' in __init__.py:53) e
+	__path__, e delega qualunque altro attributo al chardet vero, importandolo in quel momento. Se
+	un giorno una risposta senza charset arriva davvero, `chardet.detect` lo carica e funziona come
+	prima: si sposta il costo, non si toglie una funzione.
+
+	La versione si legge da chardet/version.py senza eseguire __init__.py -- find_spec localizza il
+	pacchetto e basta. Se qualcosa non torna la funzione NON installa niente e si resta come prima:
+	non e' un percorso su cui valga la pena essere coraggiosi.
+	"""
+	if 'chardet' in sys.modules: return False
+	try:
+		import re as _re
+		from importlib.util import find_spec
+		spec = find_spec('chardet')
+		if not spec or not spec.submodule_search_locations: return False
+		cartella = list(spec.submodule_search_locations)[0]
+		with open(os.path.join(cartella, 'version.py'), encoding='utf-8') as f:
+			trovato = _re.search(r"__version__\s*=\s*[\"']([^\"']+)", f.read())
+		if not trovato: return False
+		versione = trovato.group(1)
+	except Exception: return False
+	try:
+		from types import ModuleType
+		vero = []
+		def _carica():
+			if not vero:
+				from importlib import import_module
+				sys.modules.pop('chardet', None)
+				modulo = import_module('chardet')
+				sys.modules['chardet'] = modulo
+				vero.append(modulo)
+			return vero[0]
+		finto = ModuleType('chardet')
+		finto.__version__ = versione
+		finto.VERSION = versione.split('.')
+		finto.__path__ = [cartella]
+		finto.__file__ = os.path.join(cartella, '__init__.py')
+		finto.__getattr__ = lambda nome: getattr(_carica(), nome)
+		sys.modules['chardet'] = finto
+		return True
+	except Exception:
+		sys.modules.pop('chardet', None)
+		return False
+
 def manual_function_import(location, function_name):
 	from importlib import import_module
 	return getattr(import_module(location), function_name)
