@@ -99,6 +99,11 @@ class SkinUpdater:
 	# committare a meta' pomeriggio significherebbe aspettare il riavvio successivo per il solo
 	# CONTROLLO, non per l'applicazione.
 	RECHECK = 6 * 3600
+	# Un giro fallito non deve costare come un giro riuscito. Il 09/09 il difetto di `iter_content` ha
+	# mandato il servizio a dormire per sei ore su un errore che si sarebbe ripresentato identico:
+	# nessun danno, ma nessuna diagnosi prima del riavvio manuale. Dieci minuti bastano a distinguere
+	# un guasto passeggero (rete assente, GitHub lento) da uno vero, senza martellare.
+	RETRY_AFTER_ERROR = 600
 	POLL = 20.0
 	# Quanto deve essere ferma la stick prima di scambiare le cartelle. Alto di proposito: lo scambio
 	# non e' urgente (si vede al riavvio, comunque), e in cambio si evita di far sparire per qualche
@@ -142,6 +147,8 @@ class SkinUpdater:
 			except Exception as e:
 				logger('Fen Light', 'SkinUpdater: giro fallito (%s)' % e)
 				staged = None
+				next_check = time() + self.RETRY_AFTER_ERROR
+				self._clean_work()
 			if wait_for_abort(self.POLL): break
 		return self._finish()
 
@@ -232,6 +239,14 @@ class SkinUpdater:
 		logger('Fen Light', 'SkinUpdater: %s pronta in temp, aspetto %s s di inattivita\'' % (remote, self.IDLE_BEFORE_SWAP))
 		return staged
 
+	def _clean_work(self):
+		"""L'area di lavoro non deve sopravvivere a un errore. Non e' pulizia estetica: uno zip
+		troncato o vuoto lasciato li' -- come quello da 0 byte del 09/09 -- e' esattamente il genere di
+		residuo che al giro dopo si prende per buono."""
+		import shutil
+		try: shutil.rmtree(self._paths()[1], ignore_errors=True)
+		except Exception: pass
+
 	def _repo_urls(self):
 		"""Legge gli URL dall'addon.xml del repo installato invece di ripeterli qui: se un giorno il
 		repo cambia indirizzo, cambia in un posto solo e questo modulo lo segue."""
@@ -303,10 +318,20 @@ class SkinUpdater:
 		finally: session.close()
 
 	def _download(self, url, dest):
-		from modules.kodi_utils import make_session
-		session = make_session(url)
-		try:
-			response = session.get(url, stream=True, timeout=60)
+		"""Scarica a blocchi. Vuole `requests` VERO, non `make_session`.
+
+		Costato un giro a vuoto il 09/09 (`SkinUpdater: giro fallito ('Response' object has no
+		attribute 'iter_content')`, log 20:21:21, con uno zip da 0 byte lasciato in temp). Dal lotto
+		84 `make_session` non torna piu' requests ma `modules.http_client`, che legge la risposta
+		**tutta in una volta**: ottimo per i 10 KB di `addons.xml`, inutilizzabile per 5,9 MB che si
+		vogliono leggere a blocchi. E' lo stesso motivo per cui `advanced_settings._speed_test_mbps`
+		usa `import_requests_real`, ed e' l'unico altro punto del progetto che lo fa.
+
+		Il prezzo (337 moduli contro 66) si paga solo quando c'e' davvero un aggiornamento da
+		prendere, cioe' quasi mai, e comunque almeno 90 s dopo l'avvio."""
+		from modules.kodi_utils import import_requests_real
+		requests = import_requests_real('skin_updater')
+		with requests.get(url, stream=True, timeout=60) as response:
 			response.raise_for_status()
 			with open(dest, 'wb') as output:
 				for chunk in response.iter_content(chunk_size=self.CHUNK):
@@ -315,7 +340,6 @@ class SkinUpdater:
 					# waitForAbort e non sleep: se Kodi chiude a meta' download il thread non resta
 					# appeso su 5,9 MB di rete.
 					if self.monitor.waitForAbort(self.CHUNK_PAUSE): raise InterruptedError('chiusura di Kodi durante il download')
-		finally: session.close()
 
 	def _md5(self, path):
 		import hashlib
