@@ -26890,6 +26890,34 @@ freddo avviene comunque in quella sessione, e gli altri addon li prende il giro 
 `_ensure_no_auto_update` torna `True` se la riga c'era *gia'* quando Kodi e' partito, ed e' quella
 risposta a governare il cancello.
 
+### Vincolo: `general.addonupdates` deve restare su *installa automaticamente*
+
+Domanda naturale dopo il lotto: adesso che se ne occupa Fen Light, si possono spegnere gli
+aggiornamenti degli addon dalle impostazioni di Kodi? **No, e spegnerli romperebbe tutto il resto in
+silenzio.** Fen Light non *aggiorna* gli addon: per la skin fa tutto lui, per gli altri suona il
+campanello e basta. L'installazione resta di `CAddonInstaller`, che obbedisce a quell'impostazione.
+In `RepositoryUpdater.cpp` `AUTO_UPDATES_NEVER` fa due danni distinti: `ScheduleUpdate()` esce subito
+(niente controlli periodici) e `OnJobComplete()` non installa cio' che trova. `UpdateAddonRepos`
+scavalca il primo ma **non il secondo**: il campanello suonerebbe, il repo verrebbe riletto, e non si
+installerebbe niente. Fen Light e cocoscrapers resterebbero fermi per sempre -- **compreso il canale
+che consegna Fen Light stesso**, cioe' il servizio che aggiorna la skin: un errore in
+`skin_updater.py` non sarebbe piu' correggibile via repo, solo via adb.
+
+Tenerli accesi non costa quasi niente, ed e' misurato: il controllo non avviene a ogni avvio, Kodi
+guarda `nextcheck` e se non e' scaduto programma soltanto un timer -- `closest next update check at
+21:39:37 (in 10268 s)` nel boot delle 18:48, zero rete e zero disco. Il lavoro pesante era
+l'installazione della skin, e quella non passa piu' di li'.
+
+Configurazione della stick al 09/09, che e' quella corretta e va lasciata com'e':
+```
+general.addonupdates       = 0       (installa automaticamente)
+general.addonnotifications = false   (senza dirlo all'utente)
+```
+La regola per-addon della skin e' piu' specifica e vince sull'impostazione globale: la skin resta
+esclusa, tutto il resto continua per la via nativa. **Se un giorno quell'impostazione passa a
+*Notifica* o *Mai*, `_wake_kodi_for_the_others` diventa muto e Fen Light smette di aggiornarsi senza
+un errore in log.**
+
 ### Cosa resta all'utente
 
 Il servizio e' scritto e provato, ma **non e' stato consegnato a nessun dispositivo**: la versione di
