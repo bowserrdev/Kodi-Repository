@@ -114,6 +114,26 @@
 
     <expression name="Exp_AllowExpandedContextMenu">[!$EXP[Exp_InfoDialogs] + !Window.IsVisible(1160)]</expression>
 
+    <!-- DOVE 'TMDbHelper.ListItem.base_*' E' ANCORA VERA.
+         Quelle proprieta' su Window(Home) sono uno STATO RICORDATO, non l'elemento a fuoco: le scrive
+         un solo posto in tutta la skin, l'onfocus del pulsante nascosto delle righe widget
+         (Includes_Lists.xml, List_Widget_Row_HiddenButton_OnFocus), usato solo da home, hub, ricerca e
+         addons. L'altro scrittore storico, il ciclo di blur_service.py, e' spento dal lotto 48
+         (service.py:1100 commentata), quindi non ripara piu' niente.
+         Fuori da quelle finestre nessuno le riscrive: restavano quelle dell'ultimo elemento di widget
+         messo a fuoco, e il menu contestuale aperto su una cartella di Fen Light o su un addon
+         mostrava nome e poster di un film che non c'entrava niente (misurato il 09/09: menu aperto
+         alle 19:38:53 su 'Movies' in MyVideoNav e alle 19:41:30 sulla repository in AddonBrowser).
+         Nelle finestre media il ricordo non serve: sono CGUIMediaWindow, hanno un elemento corrente
+         vero, e dentro il dialogo 'ListItem' nudo risolve proprio su quello (e' la stessa risoluzione
+         su cui si regge gia' la condizione ListItem.IsFolder nelle voci di questo menu). Il ricordo serve
+         SOLO nelle finestre qui sotto, dove l'elemento visibile sta in un contenitore che non ha il
+         fuoco (il fuoco ce l'ha il pulsante nascosto) e 'ListItem' nudo non lo vede.
+         L'elenco non e' a occhio: e' esattamente l'esito di 'grep -l Hub_Onload *.xml' (Home, 1101-1104
+         hub, 1105 ricerca, 1108 addons, 1109 impostazioni). Se una finestra nuova adotta le righe
+         widget va aggiunta qui, altrimenti il suo menu contestuale perde l'intestazione. -->
+    <expression name="Exp_ContextMenu_UsesBaseProperties">[Window.IsVisible(home) | Window.IsVisible(1101) | Window.IsVisible(1102) | Window.IsVisible(1103) | Window.IsVisible(1104) | Window.IsVisible(1105) | Window.IsVisible(1108) | Window.IsVisible(1109)]</expression>
+
     <expression name="Exp_PlainBackgroundWindows">[Window.IsVisible(SettingsCategory.xml) | Window.IsVisible(SkinSettings.xml) | Window.IsVisible(SettingsProfile.xml) | Window.IsVisible(SettingsSystemInfo.xml) | Window.IsVisible(addonbrowser) | Window.IsVisible(filemanager) | Window.IsVisible(1115) | Window.IsVisible(Settings.xml) | Window.IsVisible(eventlog) | Window.IsVisible(SettingsScreenCalibration.xml) | Window.IsVisible(MyMusicPlaylistEditor.xml)]</expression>
 
     <!-- =============== -->

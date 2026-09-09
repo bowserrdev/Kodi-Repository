@@ -1,12 +1,65 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <includes>
 
+    <!-- L'INTESTAZIONE DEVE DESCRIVERE L'ELEMENTO SU CUI IL MENU E' STATO APERTO, non l'ultimo
+         elemento di widget messo a fuoco. Vedi Exp_ContextMenu_UsesBaseProperties per il perche' le
+         due cose coincidono su home/hub/ricerca/addons e NON coincidono in nessun'altra finestra:
+         li' 'base_label' era un residuo che nessuno riscriveva piu', e tenendo premuto su una
+         cartella di Fen Light o su un addon usciva il titolo di un film scorso mezz'ora prima.
+         Nelle finestre media si legge dal vivo l'elemento corrente della finestra. Se anche quello
+         e' vuoto (finestre che non sono ne' widget ne' media: impostazioni, scorciatoie...) resta
+         il titolo generico, che e' la risposta onesta.
+         L'ordine dei valori conta: il primo che soddisfa la condizione vince. -->
+    <!-- VISTA COMBINED: IL PANNELLO A FUOCO NON E' L'ELEMENTO DELLA FINESTRA.
+         Nella Combined la finestra media espone come elemento corrente la lista STAGIONI (il suo
+         view control), mentre il fuoco puo' stare sul pannello EPISODI, che e' un contenitore della
+         skin alimentato da <content>. Con il solo 'ListItem' nudo l'intestazione mostrava quindi la
+         stagione anche quando il menu si apriva su un episodio: e' il difetto 1 del lotto 64, la cui
+         correzione viveva in blur_service ed e' morta con lui al lotto 48.
+         Chi ha il fuoco lo dichiara gia' il pannello stesso, con
+         SetProperty(TMDbHelper.WidgetContainer,53X) sulla finestra media, e il selettore stagioni la
+         cancella quando il fuoco risale. Qui la si rilegge nominando la finestra, Window(videos),
+         perche' un 'Window.Property' nudo, dentro un dialogo, interroga il dialogo.
+         Gli id sono letterali per la ragione di sempre: Kodi non risolve Container($INFO[...]).
+         Sono i sei possibili 53$PARAM[id] di View_Combined_Row_Horz/List_Horz (id 0-4 e 8).
+         Ogni riga porta anche !String.IsEmpty(Container(53X)...): se un Container(id) non si
+         risolvesse dallo scope del dialogo la condizione e' falsa e si ricade sul ramo sotto, cioe'
+         sul comportamento di oggi. Puo' migliorare, non puo' peggiorare.
+         Solo Window(videos): la Combined con stagioni ed episodi e' una vista video. MyPrograms usa
+         gli stessi include ma li' il pannello elenca cartelle di addon, e ricade sul ramo generico. -->
     <variable name="DialogContextMenu_HeaderLabel">
-        <value condition="!String.ISEmpty(Window(Home).Property(TMDbHelper.ListItem.base_label)) + $EXP[Exp_AllowExpandedContextMenu]">$INFO[Window(Home).Property(TMDbHelper.ListItem.base_label)]</value>
+        <value condition="!$EXP[Exp_AllowExpandedContextMenu]">$LOCALIZE[10106]</value>
+        <value condition="$EXP[Exp_ContextMenu_UsesBaseProperties] + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.base_label))">$INFO[Window(Home).Property(TMDbHelper.ListItem.base_label)]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),530) + !String.IsEmpty(Container(530).ListItem.Label)">$INFO[Container(530).ListItem.Label]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),531) + !String.IsEmpty(Container(531).ListItem.Label)">$INFO[Container(531).ListItem.Label]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),532) + !String.IsEmpty(Container(532).ListItem.Label)">$INFO[Container(532).ListItem.Label]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),533) + !String.IsEmpty(Container(533).ListItem.Label)">$INFO[Container(533).ListItem.Label]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),534) + !String.IsEmpty(Container(534).ListItem.Label)">$INFO[Container(534).ListItem.Label]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),538) + !String.IsEmpty(Container(538).ListItem.Label)">$INFO[Container(538).ListItem.Label]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + !String.IsEmpty(ListItem.Label)">$INFO[ListItem.Label]</value>
         <value>$LOCALIZE[10106]</value>
     </variable>
 
-    <expression name="DialogContextMenu_HasArtwork">[!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.base_poster)) + $EXP[Exp_AllowExpandedContextMenu] + !Skin.HasSetting(ContextMenu.DisableArtwork)]</expression>
+    <!-- Stessa sorgente dell'intestazione, per lo stesso motivo. Una cartella o un addon NON hanno
+         poster: qui il ramo dal vivo esce vuoto, DialogContextMenu_HasArtwork diventa falsa e il
+         dialogo si monta nella forma stretta senza spazio artwork, che e' esattamente quello che
+         deve succedere quando non c'e' niente da mostrare. Prima l'espressione trovava sempre
+         popolata la proprieta' ricordata e apriva il pannello grande con il poster sbagliato. -->
+    <variable name="DialogContextMenu_Poster">
+        <value condition="$EXP[Exp_ContextMenu_UsesBaseProperties]">$INFO[Window(Home).Property(TMDbHelper.ListItem.base_poster)]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),530) + !String.IsEmpty(Container(530).ListItem.Art(poster))">$INFO[Container(530).ListItem.Art(poster)]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),531) + !String.IsEmpty(Container(531).ListItem.Art(poster))">$INFO[Container(531).ListItem.Art(poster)]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),532) + !String.IsEmpty(Container(532).ListItem.Art(poster))">$INFO[Container(532).ListItem.Art(poster)]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),533) + !String.IsEmpty(Container(533).ListItem.Art(poster))">$INFO[Container(533).ListItem.Art(poster)]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),534) + !String.IsEmpty(Container(534).ListItem.Art(poster))">$INFO[Container(534).ListItem.Art(poster)]</value>
+        <value condition="!$EXP[Exp_ContextMenu_UsesBaseProperties] + Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),538) + !String.IsEmpty(Container(538).ListItem.Art(poster))">$INFO[Container(538).ListItem.Art(poster)]</value>
+        <value condition="!String.IsEmpty(ListItem.Art(poster))">$INFO[ListItem.Art(poster)]</value>
+        <value>$INFO[ListItem.Art(tvshow.poster)]</value>
+    </variable>
+
+    <expression name="DialogContextMenu_CombinedPanel_HasArtwork">[[Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),530) + [!String.IsEmpty(Container(530).ListItem.Art(poster)) | !String.IsEmpty(Container(530).ListItem.Art(tvshow.poster))]] | [Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),531) + [!String.IsEmpty(Container(531).ListItem.Art(poster)) | !String.IsEmpty(Container(531).ListItem.Art(tvshow.poster))]] | [Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),532) + [!String.IsEmpty(Container(532).ListItem.Art(poster)) | !String.IsEmpty(Container(532).ListItem.Art(tvshow.poster))]] | [Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),533) + [!String.IsEmpty(Container(533).ListItem.Art(poster)) | !String.IsEmpty(Container(533).ListItem.Art(tvshow.poster))]] | [Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),534) + [!String.IsEmpty(Container(534).ListItem.Art(poster)) | !String.IsEmpty(Container(534).ListItem.Art(tvshow.poster))]] | [Integer.IsEqual(Window(videos).Property(TMDbHelper.WidgetContainer),538) + [!String.IsEmpty(Container(538).ListItem.Art(poster)) | !String.IsEmpty(Container(538).ListItem.Art(tvshow.poster))]]]</expression>
+
+    <expression name="DialogContextMenu_HasArtwork">[$EXP[Exp_AllowExpandedContextMenu] + !Skin.HasSetting(ContextMenu.DisableArtwork) + [[$EXP[Exp_ContextMenu_UsesBaseProperties] + !String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.base_poster))] | [!$EXP[Exp_ContextMenu_UsesBaseProperties] + [$EXP[DialogContextMenu_CombinedPanel_HasArtwork] | !String.IsEmpty(ListItem.Art(poster)) | !String.IsEmpty(ListItem.Art(tvshow.poster))]]]]</expression>
 
     <variable name="DialogContextMenu_OnUp">
         <value condition="Control.IsVisible(1020)">SetFocus(1020)</value>
@@ -60,8 +113,17 @@
                         <!-- <right>0</right>
                         <include condition="$PARAM[has_artwork]">Part_Panel</include> -->
                         <include condition="$PARAM[has_artwork]">Size_LeftGroup_Large</include>
+                        <!-- square_icon e c_logo_icon sono sovrascritti a vuoto di proposito: i
+                             default di DialogPlot_Artwork sono TMDbHelper.ListItem.Base_Icon e
+                             Base_Clearlogo, due proprieta' che nessuno scrive piu'. Erano quindi
+                             gia' vuote e il risultato a schermo non cambia; cambia che questo
+                             dialogo non le nomina piu'. I default restano dove sono perche' sono
+                             il contratto di DialogPlot_Artwork, condiviso con la scheda trama e
+                             con DialogSelect. -->
                         <include content="DialogPlot_Artwork" condition="$PARAM[has_artwork]">
-                            <param name="poster_icon">$INFO[Window(Home).Property(TMDbHelper.ListItem.base_poster)]</param>
+                            <param name="poster_icon">$VAR[DialogContextMenu_Poster]</param>
+                            <param name="square_icon" />
+                            <param name="c_logo_icon" />
                             <param name="hidden_icon">$PARAM[hidden_icon]</param>
                         </include>
                     </control>
@@ -147,37 +209,19 @@
         </definition>
     </include>
 
-    <!-- Variables -->
-    <variable name="DialogContextMenu_Wiki_Title">
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.base_tvshowtitle))">$ESCINFO[Window(Home).Property(TMDbHelper.ListItem.base_tvshowtitle)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.base_title))">$ESCINFO[Window(Home).Property(TMDbHelper.ListItem.base_title)]</value>
-        <value condition="!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.base_label))">$ESCINFO[Window(Home).Property(TMDbHelper.ListItem.base_label)]</value>
-    </variable>
-
-    <variable name="DialogContextMenu_Wiki_Type">
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),tvshow) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),season) | String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),episode)"> tv series</value>
-        <value condition="String.IsEqual(Window(Home).Property(TMDbHelper.ListItem.base_dbtype),movie)"> film</value>
-    </variable>
-
-
     <!-- Items -->
     <include name="DialogContextMenu_Items">
-        <item>
-            <label>$LOCALIZE[207]</label>
-            <icon>resource://resource.images.arcticfuse/icons/quote.png</icon>
-            <onclick>Close</onclick>
-            <onclick>ActivateWindow(1113)</onclick>
-            <visible>[!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.base_plot))]</visible>
-            <selected>$EXP[Exp_TMDbHelper_IsData]</selected>
-        </item>
-        <item>
-            <label>Wiki</label>
-            <icon>resource://resource.images.arcticfuse/icons/globe.png</icon>
-            <visible>[!String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.base_title))]</visible>
-            <onclick>Dialog.Close(contextmenu,true)</onclick>
-            <onclick>runscript(script.wikipedia,wikipedia=$VAR[DialogContextMenu_Wiki_Title]$VAR[DialogContextMenu_Wiki_Type])</onclick>
-            <selected>$EXP[Exp_TMDbHelper_IsData]</selected>
-        </item>
+        <!-- TOLTE DA QUI DUE VOCI, ENTRAMBE GIA' INVISIBILI (vedi TMDBHELPER-RIMOZIONI.md).
+             'Trama' ($LOCALIZE[207] -> ActivateWindow(1113)): la sua <visible> dipendeva da
+             base_plot, che nessuno scrive da quando TMDbHelper non c'e' piu'. E il dialogo 1113 che
+             apriva e' vuoto a sua volta: tagline, trama, regia, sceneggiatura e cast di
+             Label_Overlay_PlotBox stanno tutti dietro !$EXP[Exp_TMDbHelper_IsData], costante FALSA
+             da quando il lotto 152 ha congelato quell'espressione a [true].
+             'Wiki': <visible> su base_title, anch'essa senza scrittore, e comunque
+             script.wikipedia non e' installato, quindi il runscript avrebbe aperto il prompt
+             d'installazione di Kodi. Con la voce se ne vanno le sue due variabili
+             DialogContextMenu_Wiki_Title/_Type, che non avevano altri consumatori.
+             Nessuna delle due era raggiungibile: il vassoio resta quello che si vedeva prima. -->
         <item>
             <label>$LOCALIZE[15019]</label>
             <icon>resource://resource.images.arcticfuse/icons/circle-plus.png</icon>

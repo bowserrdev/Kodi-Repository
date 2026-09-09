@@ -55,6 +55,14 @@
         <onload>AlarmClock(refocus_window,SetFocus(500),00:00,silent)</onload>
         <onload>ClearProperty(TMDbHelper.ListItem.BlurImage)</onload>
         <onload>ClearProperty(TMDbHelper.ListItem.BlurImage.Original)</onload>
+        <!-- La finestra entra SEMPRE senza il ricordo di un pannello a fuoco. Quella proprieta' la
+             scrive il pannello episodi della vista Combined e la cancella il selettore stagioni
+             quando il fuoco risale (Includes_Views_Combined.xml), ma uscendo dalla finestra col
+             fuoco ancora sul pannello restava scritta: e' un oggetto finestra, non muore al Deinit.
+             Il menu contestuale ora la legge (DialogContextMenu_HeaderLabel) e un ricordo stantio
+             li' e' esattamente il difetto del lotto 214. Il fuoco all'ingresso va sul controllo 500,
+             cioe' la vista principale, quindi vuota e' anche il valore giusto. -->
+        <onload>ClearProperty(TMDbHelper.WidgetContainer)</onload>
     </include>
 
     <variable name="Action_OSD_SkipPrev">
