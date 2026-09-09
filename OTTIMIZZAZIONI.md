@@ -26691,3 +26691,213 @@ alzare**: le quattro modifiche stanno tutte in file scritti a mano (`Includes_Se
   entra), ma non e' stato segnalato e non l'ho toccato.
 - Il difetto 4 va confermato sul campo: nel log del 09/09 non c'e' nessuna riproduzione, quindi la
   catena e' dedotta dal codice e dal comportamento identico osservato rientrando dalla Home.
+
+## Lotto 213 -- La skin si aggiorna a Kodi spento: scambio a freddo invece di ReloadSkin
+
+Il 09/09 alle 18:49 un aggiornamento della skin ha lasciato la stick a schermo nero. Il canale degli
+aggiornamenti centralizzati -- commit sul Mac, GitHub Pages, Kodi che scarica al boot -- funziona per
+Fen Light e per cocoscrapers e non ha mai funzionato per la skin. Questo lotto lo chiude, e non lo
+chiude alleggerendo il pacchetto: il peso non c'entrava piu' da tempo.
+
+### Cosa dice il log
+
+Sono **due guasti**, indipendenti fra loro, nella stessa finestra di quindici secondi.
+
+**1. Lo schermo nero: `ReloadSkin` non ha riattivato nessuna finestra.** Al boot, dieci minuti prima,
+la sequenza e' completa (18:48:28):
+
+```
+skin loaded...
+Activating window ID: 12997  ->  ------ Window Init () ------
+Activating window ID: 12999  ->  ------ Window Init (Startup.xml) ------
+Activating window ID: 10000  ->  ------ Window Init (Home.xml) ------
+```
+
+Dopo l'aggiornamento, alle 18:49:35, arriva solo la prima riga:
+
+```
+18:49:35.019  skin loaded...
+18:49:35.024  ------ Window Init () ------      <- e basta. Nessun "Activating window ID".
+```
+
+Kodi e' rimasto sulla finestra di caricamento vuota (id 12997) e non ne e' piu' uscito. Da li' in poi
+ogni tasto finisce su una finestra che non esiste -- `HandleKey: backspace (0xf008) pressed, window
+9999` alle 18:49:41 -- e il campionatore di Fen Light registra `finestra 9999` per i tre minuti
+successivi, fino alla chiusura dell'app alle 18:52:47. Nessun crash: `onPause` -> `onDestroy` ->
+`Exiting the application`, uscita pulita di un'applicazione che non mostrava piu' niente.
+
+Contributo probabile, e vale come regola: l'utente era **dentro l'Addon Browser** e stava premendo
+tasti mentre la skin veniva smontata sotto di lui. `Window Deinit (AddonBrowser.xml)` alle
+18:49:26.921, un Down alle 18:49:26.974 e un Select alle 18:49:27.186, entrambi consegnati a
+`window 9999`. `Load Skin XML` e' durato 67 ms contro i 103 del boot: la skin si e' caricata, la GUI
+no.
+
+**2. L'aggiornamento cancella la home del dispositivo.** Alle 18:49:34.326, mentre la nuova skin si
+carica:
+
+```
+Error loading include file .../1080i/script-skinvariables-generator-includes-.xml: Failed to open file
+```
+
+`CAddonInstaller` **rimpiazza la cartella dell'addon**. I file che il dispositivo genera e che il
+pacchetto non contiene non vengono sovrascritti: vengono cancellati. Sono i tre della tabella
+`EXCLUDE` di `generate_repo.py`, e non sono nel pacchetto per una ragione giusta -- spedirli
+sovrascriverebbe la home di ogni dispositivo con quella della macchina che ha generato lo zip
+(31/08). Verificato sulla stick a Kodi fermo: dei quattro `script-skinvariables-*` in `1080i/` ne
+restano tre, tutti con mtime 18:49 perche' arrivati dallo zip; il quarto, quello generato, non c'e'
+piu'. **Questo secondo guasto avveniva a ogni aggiornamento della skin, anche quando non si vedeva.**
+
+La configurazione vera dei widget non e' persa: vive in
+`addon_data/script.skinvariables/nodes/skin.arctic.fuse.3/skinvariables-shortcut-{home,1101}widgets.json`,
+che l'installer non tocca. E l'impronta che governa la rigenerazione include *il contenuto del file
+generato*, che ora e' assente: al prossimo avvio il generatore dovrebbe ripartire da solo. Da
+confermare sul campo.
+
+### Cosa non era il problema
+
+Lo zip da 5,9 MB e' stato scaricato in 11 secondi (18:49:19 -> 18:49:26), l'md5 pubblicato dal repo
+e' stato risolto e verificato (`hash 50a25eec5c292d577ae6db83d4058889` -- lo stesso che
+`test_206.py` ricalcola oggi sul file nel repo), lo unzip di 3583 file e' durato 2,3 secondi,
+`CAddonMgr: skin.arctic.fuse.3 successfully loaded`. **Il canale di consegna funziona.** Il
+partizionamento del 31/08 (52,6 MB -> 5,9) ha fatto il suo lavoro. Cio' che non funziona e'
+l'**applicazione** del pacchetto a una skin viva, e nessuna riduzione di peso la aggiusta.
+
+### La soluzione: non dire niente a Kodi
+
+Kodi legge gli XML della skin **all'avvio** -- Home.xml e compagnia sono `KEEP_IN_MEMORY` /
+`LOAD_ON_GUI_INIT`, ed e' lo stesso fatto che il 05/09 aveva spiegato tre rotelline "che non
+funzionavano". Una cartella cambiata a meta' sessione **non esiste per la sessione in corso**. Quindi
+si scrive la versione nuova sul disco e non si avvisa nessuno: la sessione prosegue con gli XML che ha
+gia' in memoria, e al boot successivo `FindAddons` legge `addon.xml`, trova la versione nuova e la
+carica per la via normale. Nessun `ReloadSkin`, nessuna finestra distrutta, nessuna notifica.
+
+`modules/skin_updater.py`, avviato da `FenLightMonitor._start_skin_updater` insieme agli altri servizi
+differiti. Il ciclo e' in tre tempi:
+
+- **controlla** (90 s dopo l'avvio, poi ogni 6 ore): legge gli URL dall'`addon.xml` del repo
+  installato -- non ripetuti nel codice -- scarica `addons.xml`, confronta le versioni;
+- **prepara**: scarica lo zip a blocchi da 64 KB con 50 ms di pausa fra l'uno e l'altro (5 s in piu'
+  su 11, la banda della stick resta libera), verifica l'md5, scompatta sotto `special://temp/`,
+  **riporta dentro i file generati dal dispositivo**, controlla che ci siano `addon.xml`,
+  `Includes.xml`, `Home.xml` e `Textures.xbt` e che la versione dichiarata sia quella attesa;
+- **scambia**, ma solo quando `getGlobalIdleTime() >= 120` e non si sta riproducendo: due rename di
+  cartella e una cancellazione.
+
+Tre scelte che vale la pena motivare.
+
+**Un rename di cartella, non una copia file per file.** O c'e' la vecchia o c'e' la nuova, mai un
+ibrido: una copia interrotta a meta' lascerebbe una skin che al boot dopo non parte, che e' il guasto
+peggiore di tutti quelli che stiamo chiudendo. Se il secondo rename fallisce si rimette a posto il
+vecchio e si riprova al prossimo avvio.
+
+**L'area di lavoro sta sotto `special://temp/` e non sotto `addons/`.** `CAddonMgr::FindAddons`
+cammina `addons/` e legge ogni `addon.xml` che trova: una copia della skin li' dentro sarebbe un
+secondo addon con lo stesso id. Stesso filesystem (entrambe sotto `.kodi/`), quindi il rename resta un
+rename -- verificato sulla stick: `/data/media` montato sdcardfs, rename fra le due riuscito.
+
+**Lo scambio si fa a stick ferma, non appena il download finisce.** Fra lo scambio e il riavvio la
+sessione e' ibrida: XML vecchi in memoria, file nuovi su disco. Conta solo per cio' che Kodi carica su
+richiesta (le texture sciolte), ma fra i due rename il percorso della skin non esiste per qualche
+millisecondo, e non e' una cosa da fare mentre l'utente scorre una lista.
+
+### L'auto-update nativo, spento per la sola skin
+
+Lo scambio a freddo pretende che `CAddonInstaller` non rifaccia il danno per conto suo. Kodi ha un
+interruttore **per addon**: la tabella `update_rules` di `Addons33.db`, che gia' conteneva
+`service.xbmc.versioncheck`. Il servizio ci scrive `('skin.arctic.fuse.3', 1)` --
+`USER_DISABLED_AUTO_UPDATE` -- in modo idempotente al primo avvio utile. **Fen Light e cocoscrapers
+restano sul canale nativo**: il loro codice viene riletto solo al boot, li' l'aggiornamento a caldo non
+fa danni, ed e' anche il canale che deve continuare a funzionare per consegnare questo servizio.
+
+Le regole Kodi le carica in memoria all'avvio, quindi una riga scritta oggi vale dal boot successivo:
+c'e' una finestra di **un** avvio in cui Kodi potrebbe ancora aggiornare la skin alla vecchia maniera.
+Sulla stick quella finestra e' stata chiusa a mano il 09/09 a Kodi fermo (backup in
+`Addons33.db.bak-preskinrule`, hash del file spedito riverificato sul device). Sugli altri dispositivi
+si chiude da se' al secondo avvio dopo l'arrivo di questa versione di Fen Light -- o subito, dal menu
+contestuale dell'addon: *Auto-update: No*.
+
+### Verifica
+
+`test_206.py`, **44 asserzioni, tutte OK**, e sono prove **funzionali** su alberi veri in una sandbox,
+non ispezioni del sorgente:
+
+- i tre file generati sopravvivono allo scambio **e contengono ancora quelli del dispositivo**, non
+  quelli del pacchetto; i pattern di `PRESERVE` sono verificati contro i nomi esatti cancellati il
+  09/09;
+- un pacchetto senza `Includes.xml`, senza `Home.xml`, senza `Textures.xbt` o con una versione diversa
+  da quella promessa dal repo viene rifiutato **e la skin installata resta la 3.3.13, intatta**;
+- lo scambio con il secondo rename che fallisce lascia la skin precedente al suo posto con tutto il
+  suo contenuto;
+- **un file tenuto aperto durante lo scambio continua a leggere il vecchio contenuto** mentre chi lo
+  apre dopo legge il nuovo: e' il `Textures.xbt` del log, ed e' la garanzia POSIX su cui poggia tutto
+  il lotto;
+- lo zip **vero** nel repo ha l'md5 che dichiara (lo stesso del log delle 18:49), passa il controllo di
+  sanita', e non contiene nessuno dei tre file conservati;
+- l'URL costruito dai dati del repo installato e' carattere per carattere quello che Kodi ha scaricato
+  alle 18:49:19.
+
+Il confronto delle versioni e' numerico e non lessicografico: `3.3.9 < 3.3.13`, che come stringhe
+sarebbe il contrario, e sarebbe un aggiornamento saltato in silenzio.
+
+### Il ritardo di 24 ore, e chi lo paga
+
+Domanda arrivata dopo il lotto: `service.xbmc.versioncheck` c'entra con gli aggiornamenti degli
+addon? **No, e il sorgente sulla stick lo dice in dieci righe.** `version_check/service.py` fa
+`get_version_file_list()` (le versioni di *Kodi* pubblicate) piu' `get_installed_version()` (la
+versione di *Kodi* installata via JSON-RPC `Application.GetProperties`) e le confronta. Non nomina mai
+un repository, non tocca `CAddonInstaller`, non ha accesso ad `Addons33.db`. Spegnerlo non ha nessun
+effetto sugli aggiornamenti degli addon: aveva gia' `updateRule = 1` nella tabella, e resta la sola
+riga insieme a quella della skin.
+
+Il meccanismo vero e' `CRepositoryUpdater` nel core, governato dall'impostazione
+*Sistema -> Add-on -> Aggiornamenti* e da un orologio. **E quell'orologio e' il problema.** Kodi non
+ricontrolla i repo a ogni avvio: rilegge quando scade il `nextcheck` scritto nella tabella `repo` di
+`Addons33.db`, e quel valore arriva dall'header HTTP `X-Kodi-Recheck-After` della risposta al
+checksum, con **default 24 ore** se l'header non c'e' (`Repository.cpp`, limitato a [1 ora, 1
+settimana]). I due casi si vedono affiancati nella stessa tabella, sulla stessa stick, lo stesso
+giorno:
+
+```
+repository.xbmc.org   lastcheck 2026-09-09 15:39:37   nextcheck 2026-09-09 21:39:37   (+6 h)
+repository.bowserr    lastcheck 2026-09-09 18:49:12   nextcheck 2026-09-10 18:49:12   (+24 h)
+repository.jurialmunkey                               nextcheck 2026-09-10 15:39:37   (+24 h)
+```
+
+e i due server spiegano la differenza:
+
+```
+mirrors.kodi.tv              X-Kodi-Recheck-After: 21600      <- 6 ore, chieste dal redirector dei mirror
+raw.githubusercontent.com    (nessun header)                  <- 24 ore, il default di Kodi
+                             cache-control: max-age=300       <- che Kodi non guarda
+```
+
+GitHub non permette header propri, quindi **quelle 24 ore non si accorciano dal lato server**. E'
+esattamente la ragione per cui un commit va a mano dal browser degli addon: chi aggiorna sa che c'e'
+un aggiornamento, chi usa il dispositivo no.
+
+**Chiuso con `_wake_kodi_for_the_others`.** Il servizio ha gia' scaricato `addons.xml` per la skin: le
+versioni di tutti gli altri addon del repo sono li' dentro, gratis. Le confronta con gli `addon.xml`
+installati e, se qualcuno e' indietro, fa il **gesto manuale** -- `UpdateAddonRepos`, lo stesso
+*Controlla aggiornamenti* del browser degli addon. Kodi da li' in poi fa il lavoro per la via nativa,
+che per Fen Light e cocoscrapers e' quella giusta: il loro codice viene riletto solo al boot. Mai a
+vuoto: se nessuno e' indietro non si sveglia nessuno.
+
+Un cancello, ed e' il punto delicato del lotto. Le regole di update Kodi le legge in memoria
+all'avvio, quindi **nell'avvio in cui la riga viene scritta per la prima volta la skin non e' ancora
+protetta**: svegliare l'aggiornatore proprio li' significherebbe farsi installare la skin alla vecchia
+maniera, cioe' riprodurre il 09/09 con le nostre mani. In quel solo caso si aspetta -- lo scambio a
+freddo avviene comunque in quella sessione, e gli altri addon li prende il giro dopo.
+`_ensure_no_auto_update` torna `True` se la riga c'era *gia'* quando Kodi e' partito, ed e' quella
+risposta a governare il cancello.
+
+### Cosa resta all'utente
+
+Il servizio e' scritto e provato, ma **non e' stato consegnato a nessun dispositivo**: la versione di
+Fen Light non e' stata alzata, gli zip non sono stati rigenerati e non e' stato fatto nessun commit --
+la pipeline del repo resta sua. Perche' il lotto arrivi sui dispositivi serve alzare
+`plugin.video.fenlight/addon.xml` oltre 3.0.28 (i dispositivi che hanno gia' scaricato la 3.0.28 non
+riceverebbero il codice nuovo a parita' di numero), rigenerare con `generate_repo.py` e committare.
+
+Aperto e da confermare al prossimo avvio della stick: che `script.skinvariables` rigeneri da solo il
+`script-skinvariables-generator-includes-.xml` cancellato stasera, e che la home torni quella
+configurata nei `.json` di `addon_data` invece che quella dei template.
