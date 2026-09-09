@@ -25229,3 +25229,1351 @@ e' finito in testa a `service.py`, perche' la domanda non si riapra fra sei mesi
 
 **-3,96 s, -52%.** Il prossimo fronte non e' piu' la contesa ma il lavoro vero: il **menu
 contestuale**, meta' del tempo di costruzione degli elementi (~700 ms di CPU, lotto 202).
+
+## Lotto 205 -- il menu contestuale: una voce di Kodi tolta, due che non si possono togliere
+
+Richiesta dell'utente, dopo la chiusura della sessione avvio: Kodi mette da se' *Informazioni*,
+*Segna come gia' visto* e *Aggiungi ai preferiti*. Le ultime due non fanno nulla -- il tracking passa
+da Trakt via Fen Light, e i preferiti di Kodi sono un elenco suo. Idea dell'utente: collegare le voci
+native ai percorsi di Fen, cosi' da togliere le doppie di Fen Light e avere un menu piu' pulito.
+
+### Prima cosa: il menu contestuale NON e' piu' un costo d'avvio
+
+Nel lotto 202 avevo scritto che il `ctxmenu` era "meta' del lavoro di costruzione, ~700 ms, lavoro
+vero che nessun rinvio tocca". **Sbagliato, e smentito dalla stessa riga di log dopo il lotto 204:**
+
+| | somma thread | ctxmenu |
+|---|---|---|
+| 03:42, 6 interpreti, 47 elementi | 413 ms | **177 ms (43%)** |
+| 03:42, 6 interpreti, 55 elementi | 602 ms | **200 ms (33%)** |
+| 05:08, dopo il lotto 204, 47 el. | **190 ms** | **27 ms (14%)** |
+| 05:08, dopo il lotto 204, 55 el. | **195 ms** | **38 ms (19%)** |
+
+Da ~380 a 65 ms. Non era lavoro: `addContextMenuItems` e' UNA chiamata al C++ per riga, e stava in
+coda sul core come tutto il resto. Il vecchio log lo diceva gia' -- la stessa build a macchina quieta
+faceva `ctxmenu 12 ms` su 47 elementi. **Togliere una voce su sette varrebbe oggi ~5 ms**: questo
+lotto e' pulizia dell'interfaccia, non ottimizzazione, e va letto cosi'.
+
+### Il rimedio "storico" non esiste piu'
+
+`addContextMenuItems(items, replaceItems)` sostituiva anche le voci native. Letto il sorgente della
+branch **Omega** (la 21 che gira sulla stick), `xbmc/interfaces/legacy/ListItem.cpp`: il corpo della
+funzione **non legge nemmeno** `replaceItems`, scrive solo le proprieta'
+`contextmenulabel(N)`/`contextmenuaction(N)`. Deprecato da Krypton, inerte da Matrix in poi.
+
+### Cosa si puo' togliere, e cosa no -- letto nel sorgente, non supposto
+
+| voce | classe | condizione | esito |
+|---|---|---|---|
+| Aggiungi ai preferiti | `CAddRemoveFavourite` | `if (item.GetProperty("hide_add_remove_favourite").asBoolean()) return false;` | **TOLTA** |
+| Segna come gia' visto | `CVideoMarkWatched` | elemento non-cartella con video info tag e playcount 0 | **non togliibile** |
+| Informazioni | `CVideoInfo` | `IsVisible` parte da `HasVideoInfoTag()` | **non togliibile** |
+
+Le ultime due dipendono dall'esistenza del video info tag, che e' esattamente cio' che la skin legge
+per disegnare: l'unico modo di nasconderle sarebbe consegnare listitem senza metadati.
+
+### L'intervento
+
+`'hide_add_remove_favourite': 'true'` aggiunta ai dizionari di proprieta' **gia' sempre eseguiti** dei
+cinque costruttori di listitem (`movies`, `tvshows`, `seasons`, `episodes` in due punti). Una chiave
+in piu' in un dizionario che si compone in Python e attraversa il confine C++ una volta sola:
+**zero attraversamenti aggiunti**.
+
+### Perche' l'idea di collegare le voci native e' impraticabile, e perche' NON va inseguita
+
+`CVideoMarkWatched::Execute` sta nel C++ di Kodi e scrive nel **database video di Kodi**: non e'
+reindirizzabile verso i percorsi di Fen Light da un addon.
+
+E c'e' un motivo in piu' per non provarci. Sulla stick quella voce non fa nulla per una causa
+precisa, verificata in `userdata/profiles.xml`:
+
+    <canwritedatabases>false</canwritedatabases>
+
+E' la stessa impostazione del lotto 177: e' **cio' che impedisce l'invalidazione globale dei widget
+al rientro dal player**. Accenderla per far funzionare una voce di menu rimetterebbe in piedi la
+ricostruzione che il lotto 177 ha tolto. Il gioco non vale la candela, ed e' registrato qui perche'
+la tentazione tornera'.
+
+### Conseguenza sul primo avvio successivo
+
+I quattro indexer toccati hanno i `.pyc` piu' vecchi dei sorgenti: **il primo avvio dopo questo
+deploy li ricompila**, e i suoi numeri di import non sono confrontabili. E' la lezione del lotto 74;
+`__pycache__` NON e' stata cancellata in blocco, si lascia fare a Python.
+
+### Verifiche
+
+- Sintassi valida sui quattro file; def/class invariati (20/21/11/4, nessuno perso).
+- Cinque punti di inserimento contati uno per uno.
+- Deploy a Kodi fermo, md5 verificati 4 su 4.
+- **Da confermare a schermo dall'utente**: la voce sparita, e le altre due ancora li'.
+
+### Lotto 205 bis -- la prova sul campo: 'Segna come gia' visto' di Kodi e' un vicolo cieco
+
+L'utente ha chiesto di non fermarsi al "non si puo'". Giusto: la prima meta' della risposta veniva da
+un riassunto del sorgente, non dal codice. Rifatta come si deve, e poi provata sul dispositivo.
+
+**Nascondere la voce: impossibile, verificato verbatim.** `CVideoMarkWatched::IsVisible` (branch
+Omega), per un elemento NON cartella, e' tre righe:
+
+    else if (!item.HasVideoInfoTag())
+      return false;
+    return item.GetVideoInfoTag()->GetPlayCount() == 0;
+
+Nello stesso file ci sono dodici `GetProperty(...)` -- `watchedepisodes`, `totalepisodes`, `watched`,
+`total`, `IsVideoFolder`, `CheckAutoPlayNextItem`, `original_listitem_url`,
+`needs_resolved_video_asset`, `video_asset_type`, `has_resolved_video_asset`, `playlist_type_hint`,
+`check_resume` -- e **nessuna** governa quella visibilita' per un film. Il `hide_add_remove_favourite`
+che ha funzionato sui preferiti non ha un fratello qui.
+
+**Agganciarla: provato, e non c'e' niente da agganciare.** La catena e'
+`Execute -> CVideoLibraryQueue::MarkAsWatched -> db.IncrementPlayCount(item)`. Un addon non puo'
+reindirizzarla, ma restava una speranza: se quella scrittura emettesse un annuncio, il monitor di Fen
+Light (che esiste gia', `FenLightMonitor.onNotification`) potrebbe intercettarlo e rispecchiare
+l'azione su Trakt. `VideoDatabase.cpp` e' troppo grande per leggerlo a distanza, quindi la domanda e'
+stata girata al dispositivo.
+
+**Il test (log 08/09 05:43-05:44, canale annunci acceso dall'utente).** Quattro aperture del menu
+contestuale sullo stesso film. Le due in cui e' stata scelta la voce di Fen Light:
+
+    CScriptRunner: running add-on script Fen Light('...', '?mode=watched_status.mark_movie...')
+
+Le due in cui e' stata scelta la voce di Kodi -- e la scelta e' deliberata, si legge nei tasti:
+
+    HandleKey: down ... action is Down        (sette volte)
+    HandleKey: return (0xf00d) ... action is Select
+    ------ Window Deinit (DialogContextMenu.xml) ------
+
+e poi **nulla**. Nessuno script, nessun annuncio, nessuna riga di database, nessun job.
+
+**L'assenza vale come prova perche' il canale funzionava**: nello stesso log ci sono
+`CAnnouncementManager - Announcement: OnQuit from xbmc` e `GOT ANNOUNCEMENT, type: System, from xbmc,
+message OnQuit`, cioe' l'annuncio di spegnimento catturato sia dal manager sia dal lato Python. Se un
+`VideoLibrary.OnUpdate` fosse partito, sarebbe li'.
+
+**Verdetto: la voce non si nasconde e non si aggancia. Fronte chiuso**, con la prova, cosi' non si
+riapre.
+
+### Coda: `watched_title` e' calcolata cinque volte e non la legge nessuno
+
+Cercando dove intervenire e' saltata fuori una variabile morta:
+
+    indexers/movies.py:353    self.watched_title = 'Trakt' if self.watched_indicators == 1 else 'Fen Light'
+    indexers/tvshows.py:329   idem
+    indexers/seasons.py:121   idem
+    indexers/episodes.py:142  idem
+    indexers/episodes.py:430  idem
+
+Nessun lettore in tutto l'albero. Serviva evidentemente a etichettare proprio quelle voci di menu,
+prima che le etichette venissero fissate a stringa in italiano. Dato che la voce di Kodi non si puo'
+togliere, l'unica cosa che resta in mano nostra e' far si' che la nostra non le somigli: *Segna come
+visto* contro *Segna come gia' visto* si leggono come un doppione, mentre *Segna come visto su Trakt*
+dice cosa fa davvero e usa la variabile che c'e' gia'. In attesa della decisione dell'utente.
+
+---
+
+## Lotto 202 -- Una sorgente che non si riproduce: riconoscerla e cambiarla
+
+L'utente prova a riprodurre un episodio di SpongeBob, non parte niente, e dopo un po' Kodi muore.
+Chiede il log. Non era la banda, e la cosa importante e' *perche'* non poteva esserlo.
+
+### Il guasto
+
+    Stream #0:0: Video: hevc (Main 10), yuv420p10le, 1920x1456 [DAR 120:91], 23.98 fps
+    Duration: 00:23:43, bitrate: 2103 kb/s        (video: 1589 kb/s)
+
+2,1 Mbit/s in tutto, e la cache si e' riempita senza fatica (`SetCaching - caching state 0` alle
+13:08:37). Il file e' pero' **1920x1456**, e il decoder della stick dichiara, in
+`/vendor/etc/media_codecs.xml`:
+
+    <MediaCodec name="OMX.amlogic.hevc.decoder.awesome" type="video/hevc">
+        <Limit name="size" min="64x64" max="1920x1088" />
+
+L'altezza sfora del 34%, e non c'e' ripiego: anche `OMX.google.hevc.decoder` si ferma a 1920x1088.
+Kodi ha aperto il codec lo stesso (`Open Using codec: OMX.amlogic.hevc.decoder.awesome`, nessun
+errore), gli ha passato **tre** unita' di accesso, e il componente OMX e' morto:
+
+    13:08:33.588  dequeueOutputBuffer failed
+    13:08:33.595  dequeueInputBuffer failed
+       ... 44.055 righe identiche in 67 secondi (5,6 MB di log) ...
+
+A fallire e' anche l'**ingresso**, e gli input buffer non hanno niente a che vedere con la surface:
+se fallisce anche quello, il decoder e' in stato di errore, non sta faticando. Infatti c'e'
+`player started 1` (audio) e **mai `player started 2`**, e `Player.OnAVStart` non e' mai stato
+emesso.
+
+### Il crash e' secondario, ed e' un bug di Kodi
+
+    13:09:40.246  CVideoPlayer::CloseFile()                      <- stop dell'utente
+    13:09:40.321  SignalEndOfStream: dequeueInputBuffer failed
+    13:09:40.337  F libc: assertion "terminating with uncaught exception of type
+                          fmt::v9::format_error: argument not found" failed
+    13:09:40.338  Fatal signal 6 (SIGABRT) in tid 6464, pid 6203 (org.xbmc.kodi)
+                  #06 pc 009c277c  libkodi.so
+
+`fmt::format_error: argument not found` e' una stringa di log con un `{}` in piu' degli argomenti:
+`fmt` solleva, nessuno cattura, `std::terminate`. **La riga che doveva raccontare il guasto e' essa
+stessa rotta.** Kodi 21.1, non correggibile da qui.
+
+### Perche' nessuna delle nostre misure poteva accorgersene
+
+Tutte le colonne raccolte nel lotto 201 descrivono la *velocita'* del collegamento. Questa
+riproduzione, su quelle colonne, e' indistinguibile da una riuscita: bitrate basso, cache piena,
+zero errori di rete. Mancava la **forma** del flusso, non la sua velocita'. E nessun filtro per nome
+avrebbe potuto salvarla: i filtri leggono il titolo del rilascio, e nessun nome scrive "1456".
+
+### Due interventi
+
+**1. Colonne nuove in `playback_stats`** -- `larghezza`, `altezza`, `codec`, `esito`.
+
+`CREATE TABLE IF NOT EXISTS` non tocca una tabella che esiste gia': su un dispositivo che ha gia'
+raccolto righe le colonne non comparirebbero mai e `registra()` fallirebbe **in silenzio** a ogni
+riproduzione -- fallisce zitta di proposito, quindi il guasto non si vedrebbe. Serve percio' una
+migrazione, `migrate_playback_schema()`, sullo stesso stampo di `migrate_progress_schema` ma senza
+il suo dilemma: queste sono misure, non lo stato dell'utente. Si aggiungono e basta, le righe vecchie
+restano a NULL, che e' esattamente il loro valore.
+
+Provata sulla copia vera del database della stick (1 riga): colonne aggiunte, riga vecchia a NULL,
+seconda passata innocua, e lo schema che ne esce e' **identico, colonna per colonna e nello stesso
+ordine**, a quello che `CREATE TABLE` produce su un'installazione nuova.
+
+**2. Cambio sorgente automatico** -- `_controlla_avanzamento` + `_cambia_sorgente` in `player.py`.
+
+Il criterio e' **la posizione, non la cache e non il codec**. Un decoder morto, un demuxer congelato
+e un collegamento che smette di consegnare hanno tre cause diverse e un solo sintomo osservabile da
+Python: `getTime()` non avanza. Guardare il sintomo li copre tutti e tre senza doverli distinguere --
+ed e' decisivo, perche' l'08/09 la causa vera da Python non era osservabile in nessun modo.
+
+Due soglie, perche' sono due guasti diversi:
+
+| | soglia | perche' |
+|---|---|---|
+| `mai_partito` | 15 s | non e' mai avanzata di un secondo. Non e' una riproduzione lenta: e' una sorgente che questa macchina non sa riprodurre. |
+| `bloccato` | 60 s | qui l'ambiguita' c'e': un buco di banda blocca la posizione allo stesso modo, ma si riprende. Il congelamento di *Dead Man* del 07/09 e' durato 77 s e non si e' ripreso mai. |
+
+**"Mai partito" e' una storia, non una posizione.** La prima stesura diceva `if _pos <= 1.0`: con un
+punto di ripresa la posizione parte da 1200 s, e lo stesso identico guasto sarebbe finito in
+`bloccato`, facendo aspettare 60 secondi invece di 15 proprio nei film ripresi a meta'. Conta se la
+posizione e' *mai* avanzata, non quanto segna il cronometro.
+
+**Tre trappole trovate scrivendo:**
+
+- `_kill_progress_dialog` mette `progress_dialog` a `None`, e `play_file` apre ogni giro con
+  `if not self.progress_dialog: break`. Senza ricreare la finestra il ciclo esce e **non esiste
+  nessuna sorgente successiva**: il meccanismo non funzionerebbe affatto.
+- `self.stop()` fa scattare `onPlayBackStopped`, che scriverebbe un punto di ripresa a zero su un
+  film mai visto -- peggio del guasto, perche' resterebbe nel *continua a guardare*. Guardia in
+  `_playback_finished`, non solo in `monitor()`: e' una richiamata di Kodi, arriva anche per strade
+  che `monitor()` non controlla.
+- La misura si scrive **prima** del cambio: dopo `self.stop()` il riassunto troverebbe
+  `getTotalTime()` gia' morto.
+
+`flush_pending_refresh` **non** si chiama nel cambio sorgente, e non e' una dimenticanza:
+ricostruirebbe i widget proprio mentre `play_file` risolve la sorgente successiva, cioe' esattamente
+cio' che il presidio del lotto 111 esiste per impedire.
+
+### Provato
+
+Dodici scenari simulati sul metodo vero estratto dal file (`tests/test_202.py`), soglie lette dal
+sorgente e non riscritte: decoder morto da zero e **su ripresa**, riproduzione normale di 300 giri,
+pausa di 300 giri, blocco a meta', singhiozzo di 45 giri che riparte, salto all'indietro, avvio lento
+di 10 giri, pausa seguita da blocco vero, avanzamento rallentato a 0,6 s/giro, `curr_time` a `None`.
+Nessun falso positivo, nessun falso negativo.
+
+### Quel che resta in mano all'utente
+
+Il livello di cache non decide niente ma finisce nel log e nella riga: sara' quello a dire, rileggendo
+le righe raccolte, se un cambio sorgente e' scattato su un decoder morto (cache alta) o su un
+collegamento semplicemente lento (cache bassa). Se comparisse il secondo caso, la soglia dei 15
+secondi va alzata.
+
+### Coda: identita' della sorgente nella raccolta
+
+Alla prima riproduzione dopo il deploy (log 13:40-13:42) tutto il lotto ha funzionato -- migrazione
+all'avvio, `flusso video | 1920x1080 | codec h264`, riga scritta -- ma **il meccanismo non e'
+scattato**: l'autoplay ha scelto un'altra sorgente e il film e' partito subito. Non e' stato risolto
+niente, e' andata bene. I due elenchi di risultati sono 110 e 110, 55 in cache e 55 in cache, ma
+**sei dei 55 sono diversi**: lo scraping non e' deterministico e il primo della lista non e' stabile.
+
+La riga raccolta ha pero' detto una cosa:
+
+    dimensione 2.221.344.786 byte   durata 1417 s   bitrate 12,54 Mbit/s
+    portata sostenuta 17,14 Mbit/s  cache media 87%, max 99%
+
+**12,54 Mbit/s con `line_speed` a 11.** Col conto del filtro sui numeri veri:
+
+    tetto = 0,125 x 0,90 x 11 x 1417 / 1000 = 1,75      file = 2,07 GiB   ->  scartato
+
+Non e' stato scartato, quindi la durata usata era almeno 1672 s invece dei 1417 reali: il ripiego a
+2400 s. Prima conferma sul campo del difetto segnalato nel lotto 201. E il risvolto conta piu' del
+difetto: **quel file ha girato benissimo**, 17,1 Mbit/s sostenuti e cache al 99%. Il filtro
+"corretto" avrebbe buttato via una sorgente ottima. Il tetto giusto non e' quello che il conto da'
+oggi, ed e' il genere di cosa che solo la raccolta puo' dire.
+
+Su richiesta dell'utente si aggiungono quindi quattro colonne, per due domande diverse:
+
+| colonna | a cosa serve |
+|---|---|
+| `nome` | non alla banda. Serve a poter riscegliere lo stesso season pack o lo stesso gruppo di rilascio per gli episodi successivi -- la *memoria delle riproduzioni* rimandata nel lotto 192. |
+| `dimensione_dichiarata` | e' il dato su cui il filtro decide davvero, ed e' il terzo sospetto del conto insieme alle unita' GiB/GB e al ripiego sulla durata. |
+| `provider`, `pacchetto` | **senza queste due la precedente non si legge.** |
+
+L'ultima riga non e' zelo. `item['size']` significa tre cose diverse:
+
+    cloud (tb_cloud, rd_cloud, ...)   byte veri / 1073741824        -> deve combaciare col misurato
+    external, file singolo            la taglia dell'indicizzatore  -> approssimata
+    external, pacchetto               taglia del pacco / n. episodi -> una STIMA (external.py:241)
+
+Per i provider fuori da `correct_pack_sizes` -- cioe' tutti tranne torrentio, knightcrawler e comet
+-- la taglia di un pacchetto e' *sempre* quella divisione. Registrare `dimensione_dichiarata` senza
+sapere quale dei tre casi sia vuol dire mettere in colonna tre grandezze diverse e non accorgersene.
+
+Nel log finisce anche lo scarto fra dichiarata e vera, in percentuale, cosi' si legge senza aprire il
+database.
+
+**Trappola trovata dal controllo di sintassi**, non dagli occhi: la riga di commento della nuova
+colonna conteneva `'season' / 'show'` e la stringa SQL era stata aperta con le virgolette doppie per
+evitarli -- ma il commento sta *fuori* dalla stringa, e le doppie restavano aperte fino a fine riga.
+`base_cache.py` non compilava. E' il motivo per cui ogni modifica scriptata passa da `ast.parse` e
+dal confronto dei simboli prima del deploy.
+
+### Come ritrovare il file cattivo
+
+L'utente non riesce a rintracciarlo nell'elenco. Dal log del crash la taglia si ricava esatta: ffmpeg
+apre cercando la coda del matroska a 374.131.715 e va in eof chiedendo 374.261.456, quindi il file sta
+fra i due -- **0,35 GB nell'etichetta di Fen Light**, con `[B]HEVC[/B]` in extraInfo, per un episodio
+da 23 minuti con audio inglese e polacco.
+
+---
+
+## Lotto 203 -- Non aprirlo: la dimensione del fotogramma letta prima di play()
+
+Il lotto 202 non e' scattato. L'utente ritrova il file, lo riavvia a mano, e Kodi muore di nuovo.
+
+### Perche' il rilevatore non e' mai girato
+
+`monitor()` non e' mai partito. `check_playback_start` promuove una riproduzione a "riuscita" solo
+qui:
+
+    elif self.isPlayingVideo():
+        if self.getTotalTime() not in total_time_errors and get_visibility('Window.IsActive(fullscreenvideo)'):
+
+e la finestra `fullscreenvideo` (12005) **non si apre mai** con il decoder morto: zero occorrenze in
+entrambe le sessioni fallite. La guardia del lotto 202 era stata messa *dopo* il punto che il guasto
+blocca.
+
+Il "timer" che l'utente vedeva e' quello di FenLight: `resolve_percent >= 100`, incrementato di
+`round(x + 0.26, 1)` -- che per l'arrotondamento fa +0,3 -- con `sleep(200)`. Circa 334 giri, e i
+numeri lo confermano: `OpenFile` -> `CloseFile` misura **72,100 s** il 08/09 alle 13:08 e **71,916 s**
+alle 14:41. Fra i due eventi, **zero pressioni di tasto**: l'utente non ha mai fermato niente.
+(Correzione di quanto scritto nel lotto 202, dove avevo attribuito lo stop all'utente.)
+
+### La cosa che cambia il quadro
+
+Quando `check_playback_start` si arrende, `play_video` va nel ramo `else` e `play_file` prosegue con
+la sorgente successiva: **la rotazione per questo caso esisteva gia'**. Non arriva mai perche' sulla
+strada c'e' `self.stop()`, ed e' li' che Kodi muore:
+
+    13:09:40   fmt::v9::format_error: argument not found ... pc ea9dde72
+    14:43:02   fmt::v9::format_error: argument not found ... pc ea9dde72
+
+Stessa firma, **stesso indirizzo**, entrambe subito dopo `deleting video codec`. Una volta che il
+file e' stato APERTO non esiste modo di chiuderlo senza uccidere Kodi. Accorciare il timer avrebbe
+solo fatto crashare prima. L'unica difesa e' non aprirlo.
+
+### La prova che e' la dimensione, e non altro
+
+L'utente ha posto la domanda giusta: *se non sei sicuro che sia quello, la sonda toglierebbe sorgenti
+buone*. La risposta viene dal registro di Android, non da noi -- `dumpsys media.metrics` conserva ogni
+sessione del decoder. Dal boot del 07/09 ce ne sono **45**, tutte di Kodi:
+
+| altezza | sessioni | esito |
+|---|---|---|
+| 720 … 1080 | **43** | tutte riuscite, da 34 a 4273 fotogrammi |
+| 1456 | **2** | `errcode=0x80001001` (OMX_ErrorUndefined), `errstate=STARTED`, **zero fotogrammi** |
+
+Non e' "hevc": lo stesso decoder ha fatto 12 sessioni riuscite, fino a **1920x1080 con 1224
+fotogrammi**. Non e' il collegamento, il cdn, il contenitore o l'app: sono le stesse in tutte e 45.
+L'unica variabile che separa i due gruppi e' l'altezza, e il confine cade esattamente dove il
+dispositivo lo dichiara da solo: `max="1920x1088"`.
+
+**Cosa resta aperto, detto per intero.** I due fallimenti sono lo stesso file: 2 osservazioni, 1
+campione distinto. E le metriche non registrano la profondita' di colore, quindi con i dati di questa
+macchina non si puo' dimostrare che un HEVC **Main 10** a 1080p funzioni: nel file rotto "Main 10" e
+"alto 1456" sono confusi insieme.
+
+**Ma il margine non va nella direzione temuta.** Se la causa vera fosse il Main 10, la regola
+sbaglierebbe per DIFETTO -- si lascerebbe sfuggire un futuro Main 10 a 1080p. Il rischio di togliere
+sorgenti buone e' un falso positivo, e su questo dispositivo la regola ne fa **zero su 43**.
+
+### Come e' fatto
+
+**`modules/decoder_limits.py`** legge i limiti dal dispositivo. Niente numeri scritti nel codice:
+1088 e' un limite di questa stick, non del mondo. Si leggono tutti i `media_codecs*.xml` sotto
+`/vendor/etc`, `/system/etc`, `/odm/etc` (verificati `-rw-r--r--`, nessun root), seguendo gli
+`<Include>`, e si tiene la LISTA delle coppie ammesse per codec -- non il massimo, perche' un file e'
+riproducibile se ESISTE un decoder che lo regge, e collassare due decoder in una coppia sola
+inventerebbe una capacita' che nessuno dei due ha.
+
+Tre trappole:
+
+- **`media_codecs_performance.xml` va escluso.** Contiene le stesse voci con `update="true"` e senza
+  limite di dimensione: letto come gli altri avrebbe fatto credere ogni codec illimitato e **spento
+  il controllo per intero**, silenziosamente.
+- **Decoder senza limite dichiarato = codec illimitato.** Sconosciuto significa permesso, sempre.
+- **I decoder `.secure` si saltano**: servono ai flussi protetti e la loro capacita' non e' nostra.
+
+**`modules/stream_header.py`** legge larghezza, altezza e codec dai primi 128 KB del file, con una
+richiesta sola (`Range: bytes=0-131071`) che dal `Content-Range` porta a casa **anche la dimensione
+vera**, che finora costava un secondo giro dentro `monitor()`. Parser EBML per matroska e box-walker
+per mp4. Tetto di 8 secondi sul totale, redirect compresi: un controllo che deve costare mezzo
+secondo non puo' avere una coda da 24.
+
+Non e' la sonda dei lotti 191-195, e la differenza non e' di grado: quelle misuravano la **banda**,
+che fra due connessioni allo stesso nodo variava di 3,3x, piu' del segnale cercato. Questa legge un
+**numero scritto nel file**, che non varia e non dipende dalla rete.
+
+**L'aggancio sta in `play_video`, prima di `play()`** -- e restituendo li' senza aver mai chiamato
+`play()`, `play_file` trova `playback_successful` False e passa da solo alla sorgente dopo: la
+rotazione non si scrive, esiste gia'.
+
+### Lista nera: tabella a parte, e la separazione e' il punto
+
+L'utente proponeva una colonna in `playback_stats`. Non funziona: quella tabella e' una **finestra
+scorrevole di 50 righe che si pota a ogni scrittura**, quindi una bocciatura sparirebbe dopo
+cinquanta riproduzioni, cioe' proprio quando comincia a servire. Stesso database -- resta lo storico
+delle riproduzioni -- ma tabella `sorgenti_bocciate` senza potatura. Provato: dopo 60 righe di storico
+la lista nera e' ancora li'.
+
+Chiave `provider|nome` e non il link: lo stesso file e' arrivato come `.../dld/f6445631-...` e poi
+`.../dld/f2f629a4-...`, il link risolto cambia a ogni giro, il nome no.
+
+Si scrive **prima di `self.stop()`**, e non e' pignoleria: se il file e' di quelli che uccidono il
+decoder, `stop()` fa abortire il processo e nulla di cio' che sta sotto viene mai eseguito. E' il
+motivo per cui l'08/09 non e' rimasta traccia di niente. E si scrive solo per il caso "si e' aperta e
+non e' mai partita" (`_scaduto_in_avvio`), non per un annullamento dell'utente o un link morto.
+`riabilita()` la svuota: una lista nera senza modo di tornare indietro e' una trappola.
+
+### Provato
+
+`tests/test_203.py`, con i `media_codecs.xml` **veri** della stick e campioni mkv/mp4 generati dalla
+specifica -- generatore scritto a parte dal parser, cosi' le due strade si incontrano al centro.
+
+- il file del guasto viene scartato, in mkv e in mp4;
+- **tutto cio' che ha funzionato davvero continua a passare**: hevc 1920x1080, 1452x1080, 1920x808,
+  h264 1904x1072, presi dalle righe riuscite di `media.metrics`;
+- si fallisce in favore della riproduzione in sei modi: moov in coda, contenitore sconosciuto,
+  intestazione troncata, rete muta, rumore, numeri fuori scala;
+- **dispositivo che non pubblica i limiti** (Fire Stick, Mac): `limiti()` restituisce `{}` e il
+  meccanismo e' spento, il file passa;
+- lista nera: conteggio, riabilitazione, e la prova che la potatura dello storico non la tocca.
+
+I parser sono anche stati passati su spazzatura (vuoto, troncato, rumore, magic senza corpo) senza
+mai sollevare. Il parser mp4 e' stato provato contro i `.mov` di sistema: hanno il `moov` in coda e
+il parser si arrende, che e' il comportamento voluto.
+
+**Quello che NON ho potuto provare in locale:** un matroska vero, perche' su questa macchina non ce
+n'e' e non c'e' ffmpeg. Il rischio non e' teorico -- un parser che legge numeri SBAGLIATI ma
+plausibili scarterebbe file buoni. Due difese: la guardia di plausibilita' (fuori da 16..16384 si
+butta la lettura), e soprattutto la **verifica sul campo**: per ogni file che si riproduce, Kodi
+misura larghezza e altezza per conto suo (`Player.GetProperties`, riga `flusso video`) e la sonda
+scrive le sue nella riga `intestazione letta`. Le due devono coincidere. Le prime riproduzioni vanno
+guardate proprio per questo.
+
+### Coda: verifica sul campo (log 08/09 15:22-15:27)
+
+Quattro riproduzioni piu' uno scarto. **Zero righe `dequeue`, zero crash.**
+
+**Le due misure indipendenti coincidono 4 su 4**, dimensioni e codec:
+
+| sonda (prima di play) | Kodi (Player.GetProperties) | ffmpeg |
+|---|---|---|
+| h264 1280x720 | 1280x720 h264 | -- |
+| hevc 1918x802 | 1918x802 hevc | hevc **(Main 10)** |
+| hevc 1920x1080 | 1920x1080 hevc | hevc (Main) |
+| hevc 1438x1080 | 1438x1080 hevc | hevc **(Main 10)** |
+
+Il parser EBML e' quindi confermato su contenuto vero, che era l'unica cosa non provabile in locale.
+
+**Lo scarto:**
+
+    15:26:34.826  intestazione letta in 571 ms | hevc 1920x1456 | oltre il massimo 1920x1088 | SCARTATA
+    15:26:41.105  intestazione letta in 625 ms | hevc 1438x1080 | entro 1920x1088 | si riproduce
+    15:26:47.513  OnAVStarted
+
+6,3 secondi dallo scarto alla sorgente successiva, contro 72 secondi di nero e un crash. Il nome del
+file colpevole e' ora agli atti -- `SpongeBob.SquarePants.S01E11.[10Bit].[1080p.WEB-DL.H265-AS76-FT].[ENG-Dubbing.PL].[Alusia].mkv`
+-- ed e' esattamente il rilascio dedotto dalla traccia audio polacca. La dimensione vera registrata,
+374.262.787 byte, cade dove l'avevano collocata i seek di ffmpeg.
+
+**IL DUBBIO DICHIARATO APERTO SOPRA E' CHIUSO.** Due delle quattro riproduzioni riuscite sono hevc
+**Main 10** (`yuv420p10le`), a 1918x802 e a 1438x1080. Il 10 bit su questa stick funziona: resta solo
+l'altezza. La regola guarda la causa, non un correlato.
+
+**Il costo era sottostimato.** Avevo detto ~400 ms partendo dai 343 ms del `Range: bytes=0-0`.
+Misurato: 1114 ms la prima (include l'import di http.client/ssl nel processo), poi 560, 571, 625 ms,
+**mediana ~625**, con un caso isolato a 2924 ms che non si spiega dal log -- e quella stessa
+riproduzione ha poi avuto l'apertura piu' veloce delle quattro (1,8 s da OpenFile a OnAVStarted). Per
+contesto il lato Kodi dell'apertura e' stato 3,6 / 1,8 / 7,1 / 6,1 s: la sonda aggiunge un 10-25%.
+
+**Le taglie dello scraper, prima misura:**
+
+    I.Simpson.7x05...T7ST.mkv                   dichiarata 0.74 GiB  reali 0.74   +0.4%
+    Mayday.2026...H265-TBK                      dichiarata 4.98      reali 4.98   +0.0%
+    The.Shawshank.Redemption...Paso77.mkv       dichiarata 8.24      reali 8.24   -0.0%
+    SpongeBob...S01...RCVR  (pacchetto season)  dichiarata 0.25 GiB  reali 0.48  -48.4%
+
+Tre su quattro esatte allo 0,4%. Il quarto -- l'unico dove il divisore dei pacchetti conta davvero --
+dichiara meno della meta'. Il rapporto e' 0,52, cioe' il divisore usato e' quasi esattamente il
+DOPPIO del numero di file nel pacco: e' la firma di SpongeBob, dove ogni episodio contiene due
+segmenti e TMDb li conta separatamente. Quel pacco entra quindi sotto il tetto di `line_speed` con
+una taglia dimezzata. Terzo sospetto del conto del lotto 201, adesso misurato invece che ipotizzato.
+
+---
+
+## Lotto 204 -- La sonda: un difetto, tre sprechi, e la portabilita' provata
+
+Domanda dell'utente dopo il collaudo riuscito: *ha inefficienze o cose migliorabili? si puo'
+velocizzare senza perdere efficacia? funziona bene anche con dispositivi diversi?* Rivista con
+questo taglio, e no, perfetta non era.
+
+### Il difetto: un elemento tagliato a meta' veniva letto lo stesso
+
+`resp.read(128 KB)` puo' chiudere il buffer in mezzo a un valore EBML. Il parser leggeva comunque i
+byte rimasti, e `int.from_bytes` su un valore mozzato da' un numero **piu' piccolo** del vero:
+`0x05B0` (1456) tagliato a un byte diventa 5.
+
+Fin qui non aveva fatto danni, e per un motivo che non e' merito del progetto: si perdono i byte
+**bassi**, quindi l'errore cadeva sempre verso il piccolo, cioe' verso "si riproduce", e la guardia
+di plausibilita' (>= 16) buttava via il residuo. **Fortuna, non struttura** -- e con la lettura a
+pezzi introdotta qui sotto sarebbe diventato sistematico. Adesso un valore si accetta solo se
+l'elemento e' **interamente** dentro il buffer.
+
+### Tre sprechi
+
+**1. 128 KB letti sempre, anche quando ne bastano 16.** Il Tracks di un matroska sta quasi sempre nei
+primi kilobyte. Ora si legge a pezzi da 16 KB e ci si ferma appena l'intestazione ha risposto
+(`_basta`): nella prova, un pezzo solo invece di otto. Il tetto resta per i file che l'intestazione
+ce l'hanno lontana.
+
+**2. Il costo vero e' andata e ritorno, non byte.** Con `Range: bytes=0-0` il solo ttfb su questo cdn
+misura 343 ms, e i 128 KB ne aggiungono una sessantina: ridurre i byte, da solo, non sposta quasi
+niente. L'unico modo di guadagnare tempo davvero e' **non aspettare fermi**. Fra la risoluzione del
+link e `play()`, `play_file` fa gia' due aggiornamenti della finestra piu' un `sleep(200)`: la
+richiesta parte li' (`stream_header.avvia`), e quel tempo si paga una volta sola invece che due.
+`leggi()` raccoglie il risultato se c'e' e rilegge da se' se manca: l'anticipo e' un risparmio, mai
+una dipendenza.
+
+**3. L'XML dei codec riletto a ogni riproduzione.** Fen Light gira con `reuselanguageinvoker` a
+false, quindi ogni azione e' un processo Python nuovo e la cache di modulo non sopravvive. La parte
+cara non e' il parse (0,25 ms per i tre file) ma **l'import di ElementTree**: 6,1 ms su questo Mac, e
+la stick sugli import va circa dieci volte piu' piano -- nei log `ssl` le costa 89-147 ms contro i
+~10 del Mac. Il risultato ora sta in una proprieta' di finestra: si paga una volta per sessione di
+Kodi. I file da cui esce sono immutabili, quindi la cache non puo' invecchiare male.
+
+Somma attesa: dai ~625 ms mediani misurati a **~350-400 ms**, senza toccare la copertura.
+
+### Portabilita': provata, non sperata
+
+Il modulo era stato scritto guardando i file di UNA macchina. `tests/test_204.py` gli mette davanti
+le forme che hanno le altre:
+
+| dispositivo simulato | esito |
+|---|---|
+| AOSP con `<Include href="media_codecs_google_video.xml">` | l'Include viene seguito, e i limiti dei due file si sommano |
+| Codec2 (Android 12+), nomi `c2.amlogic.*` / `c2.android.*` | riconosciuto: si va per **mime**, mai per nome del codec |
+| decoder 4K (3840x2176) | il 4K passa, l'8K no, e h264 col limite piu' basso viene scartato lo stesso |
+| nessun limite `size` dichiarato | il codec sparisce dal dizionario: tutto passa |
+| un decoder col limite e uno senza | vince il "non so": tutto passa |
+| due decoder, uno grande | basta che **uno** regga |
+| `media_codecs_performance.xml` presente | il limite sopravvive (era la trappola che spegneva tutto) |
+| `update="true"` fuori dal file delle prestazioni | ignorato |
+| commenti XML che contengono un `<MediaCodec>` finto, e decoder `.secure` | non contano |
+
+Piu' l'anticipo in tutti e tre gli stati (assente, presente, fallito) e il taglio dentro
+`PixelHeight`, che ora restituisce `None` invece di un numero sbagliato.
+
+### Quel che resta scoperto, detto per intero
+
+- **matroska con Tracks oltre i 128 KB**: si riproduce senza controllo. Si potrebbe risolvere usando
+  il SeekHead per andare all'offset esatto con una seconda richiesta mirata -- costo solo per quei
+  file. Non fatto.
+- **mp4 col `moov` in coda**: idem, e qui la dimensione del file la conosciamo gia' dal
+  `Content-Range`, quindi basterebbe una lettura della coda. Non fatto.
+- **avi, ts, m2ts, wmv**: non li parsiamo. La lista nera e' la rete.
+- **si controlla solo la dimensione del fotogramma**, non profilo, livello, bitrate o
+  `blocks-per-second`. Su questa stick l'XML non dichiara limiti di profilo, quindi non ci sarebbe
+  comunque altro da leggere; su un dispositivo che li dichiara sarebbe un controllo in piu' possibile.
+- **dispositivi che dichiarano le capacita' per profile-level invece che con un `Limit name="size"`**:
+  il controllo si spegne per quel codec. Corretto, ma senza protezione.
+
+---
+
+## Lotto 205 -- Rescrape mirato, VACUUM tolto, e una riga sola per ogni sorgente
+
+Tre difetti trovati leggendo il log del 08/09 sera, tutti e tre in codice originale di Fen Light.
+
+### 1. "Rescrape & Select Source" distruggeva la cache di tutti i titoli
+
+Misurato: **13,54 s di rotellina** (19:50:15.333 -> 19:50:28.873), contro nessun DialogBusy sopra i
+2 s in tutta la sessione precedente. La differenza e' la voce scelta dal menu, e il codice e' questo:
+
+    if choice in ('clear_and_rescrape', 'scrape_with_custom_values'):
+        clear_cache('internal_scrapers', silent=True)
+        ExternalCache().delete_cache_single(media_type, str(meta['tmdb_id']))
+
+**Due sprechi, uno dentro l'altro.**
+
+`delete_cache_single` cancellava una riga e poi faceva `VACUUM`. VACUUM riscrive l'intero file, e
+`external.db` su questa stick pesa **53,41 MB**: sono i 13,5 secondi, tutti li'. Non serviva a
+niente, perche' SQLite riusa da solo le pagine liberate e VACUUM serve solo a rimpicciolire il file.
+Tolto da qui, lasciato dov'e' giusto -- nello svuotamento totale.
+
+`clear_cache('internal_scrapers')` chiamava `clear_cache()` su tutti e sette i provider, e ognuno di
+quelli, per difetto, fa anche `debrid_cache.clear_debrid_results(...)`. Quella non e' una cache per
+titolo: e' la tabella globale hash -> e' gia' in cache sul debrid. Rifare la ricerca di un episodio
+la buttava per **ogni titolo mai cercato**, e nel log si vede il conto:
+
+    19:50:53.116  TB_check: hash_list: 110, already_cached: 0, unchecked: 110
+
+Centodieci hash richiesti da capo alla rete. E non serviva nemmeno a tenerla fresca: `debrid_cache`
+scrive `expires = get_timestamp(24)`, quindi **si rinnova da sola ogni ventiquattro ore**.
+
+La correzione tiene l'intenzione dell'utente senza il danno. `clear_cache` prende ora
+`clear_hashes`, passato fino alle sei API debrid, e il rescrape lo mette a `False`. Restano svuotati
+gli elenchi dei cloud -- e' li' che compaiono i file nuovi, ed e' il motivo per cui si rifa' la
+ricerca -- e i risultati esterni di quel solo `tmdb_id`. Per ricontrollare gli hash *di questo
+titolo*, che e' l'unica cosa che si voleva davvero, si accende `fs_rescrape`: `query_local_cache`
+salta la consultazione locale per quella ricerca e i risultati vengono riscritti freschi, **senza
+cancellare niente a nessuno**. Stesso schema di `fs_filterless_search`, che esisteva gia'.
+
+### 2. Una riga di log per OGNI sorgente, accettata o scartata
+
+L'utente ne aveva viste passare tre e il log ne mostrava una. Il motivo: delle quattro vie d'uscita,
+due erano mute. `play_file`, quando il provider non restituiva un link, faceva `else: continue` senza
+dire niente; e `check_playback_start` aveva quattro esiti diversi che finivano tutti nello stesso
+`playback_successful = False`, indistinguibili da fuori.
+
+Ora c'e' `nota_sorgente()`, una funzione di modulo chiamata da tutte le strade, con un formato solo:
+
+    ###FenLight SORGENTE###: 03/57 SCARTATA [risoluzione] hevc 1920x1456 letti in 571 ms, oltre il massimo del dispositivo 1920x1088 | torrentio | SpongeBob...mkv
+    ###FenLight SORGENTE###: 04/57 SCARTATA [non risolta] il provider non ha restituito nessun link | knightcrawler | ...
+    ###FenLight SORGENTE###: 05/57 ACCETTATA [riproducibile] h264 1440x1080 letti in 490 ms, entro 1920x1088 | torrentio | ...
+    ###FenLight SORGENTE###: 06/57 SCARTATA [aperta ma mai partita] scaduto il tempo di avvio (72 s) | ... | ...
+
+`grep SORGENTE` racconta l'intero giro, con la posizione nell'elenco. E siccome adesso ogni scarto e'
+raccontato per iscritto, **la notifica a schermo e' stata tolta**: diceva una cosa sola per un caso
+solo, e l'utente non deve essere avvisato di un lavoro che il meccanismo fa da se'.
+
+I motivi mappati: `risoluzione`, `lista nera`, `non risolta`, `saltata`, `annullata`,
+`errore di Kodi`, `aperta ma mai partita`, `mai_partito`, `bloccato`.
+
+### 3. Il provider registrato era la famiglia, non l'indicizzatore
+
+Nelle righe di misura si scriveva `item['scrape_provider']`, che per tutti i risultati esterni vale
+`external`. L'indicizzatore vero sta in `item['provider']`. Senza, una taglia sbagliata non si puo'
+attribuire a nessuno -- ed e' esattamente il muro contro cui si e' fermata l'analisi della taglia
+qui sotto. Corretto in tutti e cinque i punti: `item.get('provider') or item.get('scrape_provider')`.
+
+### La taglia sbagliata: diagnosticata, non ancora corretta
+
+Il database ha lo stesso file due volte, e che sia lo stesso lo dice la dimensione vera, uguale al
+byte:
+
+| ora | pacchetto | dichiarata | reale |
+|---|---|---|---|
+| 15:26 | *(file singolo)* | 0,35 GiB | 0,35 GiB (374.262.787 byte) |
+| 19:51 | `season` | **2,91 GiB** | 0,35 GiB (374.262.787 byte) |
+
+Due taglie a **8,3x** di distanza per lo stesso file, piu' il **-48,4%** del pacco RCVR del lotto
+203: due errori di segno opposto sullo stesso numero. E la direzione conta -- una taglia gonfiata fa
+scartare a `line_speed` sorgenti buone, una sgonfiata gliene fa passare di cattive.
+
+**Non l'ho corretta, e il motivo e' che non so ancora a chi attribuirla.** In `external.py` la
+divisione per il numero di episodi si applica solo se `provider not in correct_pack_sizes`, quindi
+il verso dell'errore dipende da QUALE indicizzatore ha risposto -- e fino a questo lotto registravamo
+`external` per tutti. Dal prossimo scarto il nome ci sara'. Correggere adesso vorrebbe dire indovinare.
+
+**Il caso -48,4% pero' e' chiuso, e non per deduzione.** Letti i metadati veri dalla
+`metacache.db` della stick:
+
+    titolo: SpongeBob | tmdb 387
+    total_aired_eps (show_divider): 650
+    stagione 1 -> episode_count (season_divider): 41
+
+Il divisore e' **41**. Il pacco RCVR ha **20** file, uno per episodio doppio da ~0,48 GiB, perche'
+ogni episodio di SpongeBob contiene due segmenti e TMDb li conta separatamente. Quindi:
+
+    dichiarata = (20 x 0,48) / 41 = 0,234 GiB   ->  il database dice 0,25
+    reale      = 0,48 GiB
+    rapporto   = 0,52                           ->  il -48,4% misurato
+
+Non e' un'imprecisione dell'indicizzatore: e' che `season_divider` conta gli episodi secondo TMDb e
+il pacco conta i file, e per ogni serie a segmenti i due numeri differiscono di un fattore due. Il
+divisore non e' una misura sbagliata, e' una misura che non esiste al momento in cui serve.
+
+Le due modifiche possibili sono entrambe cambi di comportamento del filtro, quindi decisione
+dell'utente: **(a)** l'incoerenza GiB/GB del lotto 201, per cui il fattore di sicurezza effettivo e'
+0,966 invece dello 0,90 scritto nel codice; **(b)** smettere di inventare un numero per i pacchetti
+dove il divisore e' una stima, lasciando decidere l'impostazione "includi taglie sconosciute".
+
+
+---
+
+## Lotto 206 -- Lo stop rimandato, e la dimensione vera chiesta a TorBox
+
+### Parte 1 -- Kodi congelato per sempre: un'attesa circolare, non un crash
+
+**Sintomo.** 08/09, ore 20:57. Riproduzione avviata, Indietro premuto dopo 2,2 secondi, Kodi
+completamente fermo: nessun disegno, nessun crash, nessun tombstone. Uscendo, sul launcher Xiaomi
+compare il banner "Casa dolce ananas" -- una cosa mai vista prima. Alle 21:00:43 Android lo uccide.
+
+**Diagnosi, con le due pile una di fronte all'altra.** Non e' un crash: e' un *deadlock* fra i due
+fili di Kodi. Dalla traccia ANR `/data/anr/anr_2026-09-08-21-00-38-624`, recuperata con
+`dumpsys dropbox --print`:
+
+    thread 15723 (interfaccia)
+      CApplication::Run -> OnMessage -> StopPlaying -> CApplicationPlayer::CloseFile
+        -> CVideoPlayer::CloseFile -> CThread::StopThread -> futex_wait
+      ...aspetta che il filo del player muoia.
+
+    thread 16106 (player, "Thread-19")
+      CThread::Action -> CVideoPlayer::Process -> Prepare -> OpenDefaultStreams
+        -> OpenVideoStream -> CGraphicContext::SetVideoResolution
+        -> CApplicationMessenger::SendMsg -> CEvent::Wait
+      ...aspetta che il filo dell'interfaccia gli cambi la risoluzione.
+
+Il filo dell'interfaccia e' l'unico autorizzato a toccare lo schermo. Il player, mentre apre il
+file, ha bisogno di 1920x1080 @ 23.976 e lo chiede con un messaggio **bloccante**. Se nel frattempo
+arriva uno stop, e' l'interfaccia a eseguirlo, e da quel momento smette di leggere i messaggi
+finche' il player non muore. Attesa circolare perfetta.
+
+Cronologia al millisecondo, dal `kodi.log`:
+
+    20:57:31.202  VideoPlayer::OpenFile (pack torrentio S01E10-E11)
+    20:57:33.365  Indietro (code 4)
+    20:57:33.620  Window Deinit (sources_playback.xml, finestra 13000)
+    20:57:33.639  ###FenLight SORGENTE###: 01/47 SCARTATA [annullata]
+    20:57:33.649  CVideoPlayer::CloseFile()          <- lo stop di FenLight, 10 ms dopo
+    20:57:33.655  "VideoPlayer: waiting for threads to exit"
+    20:57:33.955  Display resolution ADJUST          <- il player entra nella trappola
+                  (da qui in poi, niente.)
+
+Lo stop e' arrivato **306 ms prima** che il player raggiungesse il cambio di risoluzione:
+`StopThread` alza la bandiera di uscita e poi si mette in attesa, ma il player era dentro
+`avformat_find_stream_info` e la bandiera l'avrebbe controllata dopo. La finestra pericolosa e'
+quindi **l'intera apertura**, da `OpenFile` al cambio di risoluzione: **2,75 s** in questo avvio,
+**2,37 s** in quello delle 20:56.
+
+**Perche' non si sblocca da solo.** I tasti premuti dopo ci sono tutti nel log (il filo dell'input
+e' un terzo, ed era vivo), ma per fare qualsiasi cosa dovevano passare dalla stessa coda. Uscendo
+su Android, anche il filo Java si e' accodato (`surfaceDestroyed -> XBMC_DestroyDisplay -> SendMsg
+-> CEvent::Wait`), e da li' Android non e' piu' riuscito a servire `SyncChannelJobService`:
+"Timeout executing service" -> ANR -> `Killing 15705 (adj 0): user request after error`.
+
+**Il banner.** Kodi annuncia la MediaSession all'apertura del file e la ritira dentro `CloseFile`,
+che non e' mai arrivato in fondo. `dumpsys media_session` alla morte del processo:
+
+    NowPlayingMediaController {packageName = org.xbmc.kodi, state = 3,
+                               metadata = Casa dolce ananas}
+
+`state = 3` e' PLAYING. Per Android Kodi stava ancora suonando il secondo episodio del pack.
+
+**La correzione: `_stop_sicuro()` in `player.py`.** Dopo il cambio di risoluzione fermare e'
+sicuro, e la finestra 12005 si apre solo dopo. Quindi non si anticipa lo stop: se qualcosa e'
+ancora in apertura si aspetta che arrivi a schermo intero -- o che sparisca da se' -- e solo allora
+si ferma. Tetto `TETTO_STOP_SICURO = 20` secondi, perche' un link morto non deve tenere in ostaggio
+un annullamento.
+
+Il segnale d'uscita e' `isPlaying()`, **non** `isPlayingVideo()`: il secondo diventa vero solo
+quando il flusso video e' gia' aperto, cioe' DOPO il punto pericoloso, e uscirebbe subito proprio
+nel caso che si vuole coprire. `isPlaying()` e' vero da `OpenFile` in poi.
+
+Sostituito **un solo** `self.stop()`, quello di `play_video`. Gli altri tre non corrono il rischio:
+`_cambia_sorgente` parte da `monitor()`, che gira solo a riproduzione confermata; i due in
+`sources.py` stanno nel dialogo next-up, a riproduzione avviata.
+
+Effetto collaterale accettato: annullando durante l'apertura, il video puo' comparire per un paio
+di secondi prima di fermarsi. Rischio residuo: un'apertura impantanata sulla rete oltre i 20 s
+riapre la corsa. Oggi quella corsa e' persa nel 100% dei casi.
+
+**Il difetto e' di Kodi 21.1, non di FenLight.** FenLight ci arriva piu' facilmente solo perche'
+offre una finestra annullabile proprio mentre l'apertura e' in corso.
+
+### Parte 2 -- TorBox espone la dimensione del singolo file, e nella chiamata che facciamo gia'
+
+**La domanda.** Il divisore di `external.py` (`pack_size / season_divider`) non e' migliorabile:
+va sostituito. TorBox lo sa, il vero numero? E si puo' chiedere insieme alla domanda "e' in cache",
+che gia' facciamo in un unico POST per tutti gli hash?
+
+**Risposta: si', a entrambe.** `POST torrents/checkcached?format=list&list_files=true` restituisce,
+per ogni hash in cache, l'elenco dei file con `short_name`, `size` in byte, `id` e `mimetype` --
+gli stessi campi che `resolve_magnet` usa gia' con `seas_ep_filter`. Nessuna nuova euristica da
+inventare: la funzione di corrispondenza episodio esiste gia' e lavora sugli stessi dati.
+
+Misure sui 110 hash veri della stick (mediana di 5 chiamate, `Accept-Encoding: gzip` come manda
+`requests`):
+
+    senza list_files :   506 ms |   3.674 byte sul filo |     7.932 espansi
+    con   list_files : 1.877 ms | 339.282 byte sul filo | 2.520.074 espansi  (55 in cache, 8.073 file)
+
+Il costo non e' il trasferimento (339 KB) ma il lavoro del server: **+1,37 s**. E una seconda
+chiamata mirata ai soli pack non conviene -- 10 hash 994 ms, 20 hash 1.256 ms, 30 hash 1.649 ms: e'
+la latenza a dominare, non il numero di hash. Quindi **non** "una chiamata o due", ma: **chiedere i
+file solo per gli hash di cui non conosciamo gia' l'elenco, e non chiederli mai due volte.**
+L'elenco dei file di un torrent e' immutabile per definizione, quindi la memoria non scade mai --
+al contrario di `debrid_cache`, che scade a 24 h perche' la *cache* cambia. A regime la seconda
+chiamata sparisce.
+
+**Perche' nessun divisore puo' funzionare -- misurato, non argomentato.** Applicando il divisore
+TMDb (41) ai 31 pacchetti di sola stagione 1 realmente in cache, e confrontandolo con la dimensione
+vera del file:
+
+    file nel pacco | rapporto dichiarato/reale | quanti
+    41             | 0,89 - 1,30 (mediana 1,00) |  8   <- il divisore azzecca
+    40             | 1,00                       |  1
+     5             | 0,96                       |  1
+    20             | 0,40 - 0,54 (mediana 0,50) | 17   <- sbagliato di un fattore 2
+     1             | 0,02 - 0,03                |  4   <- sbagliato di 30-50 volte
+
+    entro +/-10% dal vero: 8 su 31.
+
+Per **la stessa serie e la stessa stagione** il divisore giusto e' 41 per alcuni torrent e 20 per
+altri, perche' meta' dei gruppi impacchetta i due segmenti di un episodio in un file solo e meta'
+no. Non e' un divisore da correggere: **l'informazione non esiste nei metadati**, sta solo
+nell'elenco dei file.
+
+**E il 2,91 GiB e' spiegato.** Era rimasto senza attribuzione nel lotto 205. E' questo torrent:
+
+    nome:   SpongeBob.SquarePants.S01E12 [10Bit] [1080p.WEB-DL.H265-AS76-FT] [Alusia].mkv
+    hash:   a8ce25fe4d0c3230c3dec47661a60ac08a6dd72d
+    reale:  119,26 GiB, 318 file video (tutte le stagioni, con un nome da singolo episodio)
+
+    119,26 / 41 (season_divider) = 2,91 GiB   <- quello che si vedeva dopo il rescrape
+    file S01E11 vero             = 0,35 GiB   <- quello che si vedeva prima
+
+Stesso torrent, due indicizzatori: uno dentro `correct_pack_sizes` che restituisce la dimensione
+del file (0,35), uno fuori che restituisce la dimensione del torrent e lascia dividere a FenLight
+(2,91). E il file S01E11 di questo torrent e' proprio l'HEVC 1920x1456 che uccide il decoder della
+stick: il cerchio si chiude.
+
+### Verifica
+
+`test_206.py` 21 asserzioni, tutte OK; `test_202` e `test_205` OK; `compileall` pulito; simboli di
+`player.py` confrontati con HEAD, **PERSI: nessuno**. Kodi non in esecuzione al momento del push.
+100 file spinti, **100 hash md5 identici**.
+
+Due asserzioni del test cercavano nel testo del metodo e hanno pescato i commenti che spiegano
+perche' *non* si usa `isPlayingVideo`: portate sull'albero sintattico. E' lo stesso inciampo del
+lotto 205 con la docstring, e la lezione e' la stessa: su un codice che si commenta molto, una
+prova non deve mai cercare in una stringa.
+
+### Parte 1 RITIRATA (09/09)
+
+Provato sul campo, `_stop_sicuro()` non e' piaciuto: annullare e vedere il video comparire per un
+paio di secondi prima che si fermi e' peggio del problema che risolve. **Rimosso per intero** --
+costante, metodo e chiamata -- su richiesta esplicita dell'utente, che preferisce non avere misure
+di sicurezza su questo percorso. `player.py` torna a `self.stop()` diretto in `play_video`:
+46 simboli, PERSI nessuno, `test_202` e `test_205` OK, 100 hash md5 identici sulla stick.
+
+Resta valida e agli atti la **diagnosi** della Parte 1: premere Indietro entro i ~2,4 s
+dell'apertura blocca Kodi per sempre. E' un difetto di Kodi 21.1 e ora sappiamo esattamente
+cos'e'; se ricapita, il log e la traccia ANR diranno la stessa cosa.
+
+### Parte 2, precisazione (09/09): la chiamata a TorBox di solito NON si fa
+
+Domanda dell'utente: se la dimensione arriva dalla stessa chiamata che gia' facciamo, una tabella
+in piu' non e' inutile? No, per due ragioni, e la seconda e' decisiva.
+
+**Non e' gratis.** 506 ms -> 1.877 ms sul Mac (+1,37 s); sulla stick la stessa chiamata *senza*
+`list_files` costa gia' 1,30 s misurati (log 08/09: `20:56:07.068` la richiesta,
+`20:56:08.370` la risposta), piu' il costo di masticare 2,5 MB di JSON su quella CPU.
+
+**Ma soprattutto: quella chiamata di solito non parte.** `debrid.py:119` fa `if unchecked_hashes:`
+-- TorBox viene interrogato solo per gli hash che la cache locale non conosce. Dal log dell'08/09,
+tre scrape dello stesso titolo:
+
+    20:54:53.232  hash_list: 110, already_cached: 55, unchecked:   0   -> nessuna chiamata
+    20:56:07.068  hash_list: 110, already_cached:  0, unchecked: 110   -> chiamata (1,30 s)
+    20:57:05.738  hash_list: 110, already_cached: 55, unchecked:   0   -> nessuna chiamata
+
+Senza un posto dove scriverle, le dimensioni esisterebbero solo nei rari istanti in cui si chiama.
+Per averle sempre bisognerebbe **forzare la chiamata a ogni scrape**, cioe' aggiungere 1,3-4 s dove
+oggi ce ne sono zero. La tabella non e' contabilita' in piu': e' cio' che permette di continuare a
+non chiedere niente.
+
+E non puo' stare dentro `debrid_cache`: li' c'e' un booleano che **deve** scadere a 24 h, perche'
+se un torrent sia in cache cambia nel tempo. L'elenco dei file di un torrent non cambia mai --
+l'hash *e'* il contenuto. Due vite diverse, due tabelle diverse.
+
+---
+
+## Lotto 207 -- Una sola unita' di misura, e la dimensione vera del file dentro il pacco
+
+### Parte 1 -- GiB contro GB
+
+Le taglie degli **elementi** arrivano sempre in GiB: ogni scraper le costruisce come
+`byte/1073741824` (`tb_cloud.py:41`, `rd_cloud.py:37`, `easynews.py:35`, `folders.py:99`). Anche
+gli indicizzatori esterni, verificato sul file vero invece che dedotto:
+
+    SpongeBob.SquarePants.S01E11 [AS76-FT]  ->  374.262.787 byte
+    / 2**30 = 0,3486  -> 0,35   <- quello che l'indicizzatore dichiarava
+    / 10**9 = 0,3743  -> 0,37
+
+Le **soglie** invece nascevano decimali: le impostazioni sono in MB e venivano divise per 1000
+(cioe' portate in GB), e `line_speed` e' in Mbit/s, per cui `0,125 x Mbit/s x secondi` da' MB
+decimali, di nuovo divisi per 1000. Confrontare GiB con GB rende la soglia effettiva **piu' alta
+del 7,4%** di quella scritta: il fattore di sicurezza di `line_speed` valeva 0,966 invece dello
+0,90 dichiarato, e un tetto di 10.000 MB lasciava passare 10,74 GB.
+
+Correzione: si converte **una volta la soglia, non 47 volte l'elemento**. `MB_PER_GIB =
+1073.741824` (10^6/2^30) sostituisce i tre `/1000` di `filter_results`. Stesso numero di
+operazioni di prima. Con `line_speed` a 11 il tetto vale ora 9,90 Mbit/s invece di 10,63.
+
+### Parte 2 -- `pack_files`: l'elenco dei file, chiesto una volta sola
+
+**Perche' una tabella, se la dimensione arriva dalla chiamata che gia' facciamo.** Perche' quella
+chiamata **di solito non parte**: `debrid.py:119` fa `if unchecked_hashes:`, e nei tre scrape
+dell'08/09 e' partita una volta su tre. Senza un posto dove scriverle, le dimensioni esisterebbero
+solo in quel terzo dei casi.
+
+**E perche' non si svuota ogni 24 ore.** Il ragionamento "tanto `debrid_data` scade e ricontrolliamo
+tutto" e' corretto **solo se si chiede `list_files` sulla chiamata unica**: allora si', il maglio
+ripassa ogni 24 h e la tabella sarebbe solo un cuscinetto. Ma quella chiamata costa 506 ms ->
+1.877 ms e 3,7 KB -> 339 KB. Tenendo la mappa **permanente** si evita del tutto: al rinnovo delle
+24 ore parte la chiamata leggera di sempre per il verdetto di cache, e i file si chiedono solo per
+gli hash mai visti -- che a regime sono zero. Svuotare la tabella significherebbe **scegliere di
+pagare la chiamata pesante ogni 24 ore**.
+
+E' legittimo perche' l'infohash **e'** il contenuto: se i file cambiassero cambierebbe l'hash.
+Quindi la riga non e' mai stantia. Contro la crescita non serve una scadenza ma un tetto:
+`MAX_RIGHE = 800` con potatura delle righe toccate meno di recente. Niente `VACUUM` (lotto 205).
+
+**Come si legge.** La corrispondenza episodio la fa `seas_ep_filter`, **la stessa funzione** che
+`resolve_magnet` usa per scegliere quale file del pacco sbloccare: se ne usassimo un'altra
+mostreremmo la dimensione di un episodio e ne riprodurremmo un altro. Costo misurato: 13,3 ms per
+20 torrent e 3.166 file sul Mac, e solo per le sorgenti candidate.
+
+**Ripiego.** Se l'episodio non si riconosce nei nomi, si divide per il numero **vero** di file
+invece che per il conteggio TMDb. Sui 28 torrent dove la corrispondenza esiste:
+
+    diviso per i file veri       mediana 1,000 | entro +/-15% dal vero: 18 su 28
+    diviso per il conteggio TMDb mediana 2,024 | entro +/-15% dal vero:  4 su 28
+
+**Cablaggio.** `process_sources` conserva `dimensione_pacchetto` prima di dividere;
+`_impara_pacchetti` parte in **parallelo** al controllo cache (le due domande sono indipendenti,
+quindi il costo e' il massimo dei due e non la somma) e chiede a TorBox solo gli hash ignoti;
+`_dimensioni_vere` sostituisce `size` e `size_label` prima che `filter_results` decida.
+
+### Verifica
+
+`test_207.py`, 33 asserzioni, **TUTTE OK**. Non e' solo lettura dell'albero: importa il vero
+`pack_cache` e il vero `seas_ep_filter` e lavora sulla risposta autentica di TorBox
+(`tests/pacchi_torbox.json`, 3 torrent, 379 file). Il caso centrale, dal vivo:
+
+    hash a8ce25fe... -> 318 file conservati
+    S01E11 trovato -> 374.262.787 byte -> 0,35 GiB
+    divisore TMDb  -> 2,91 GiB  (sbaglia di 8,3 volte)
+
+`test_202` e `test_205` OK, `compileall` pulito, simboli confrontati con HEAD su `external.py`
+(21->24), `sources.py` (73->73), `base_cache.py`, `torbox_api.py` (27->28): **PERSI: nessuno**.
+Kodi non in esecuzione, 101 file spinti, **101 hash md5 identici**.
+
+### Prova sul campo (09/09, 03:29-03:33) e un difetto trovato subito
+
+Cinque ricerche su serie diverse. Il meccanismo ha funzionato in tutte e cinque:
+
+    03:29:12  50 pacchetti,  50 ignoti -> 14 elenchi imparati in 3975 ms | corrette:  8 esatte + 6 stimate
+    03:30:25  19 pacchetti,  19 ignoti -> 10 elenchi imparati in 3071 ms | corrette: 10 esatte
+    03:31:01  64 pacchetti,  64 ignoti ->  8 elenchi imparati in 2815 ms | corrette:  8 esatte
+    03:32:29 178 pacchetti, 178 ignoti -> 17 elenchi imparati in 2464 ms | corrette: 16 esatte + 1
+    03:32:59  83 pacchetti,  83 ignoti -> 15 elenchi imparati in 1463 ms | corrette: 14 esatte + 1
+
+Nessuna eccezione. Tabella sul dispositivo: 64 righe, 6.334 file, **501 KB** -- media 8 KB a riga,
+quindi con `MAX_RIGHE = 800` il tetto e' circa 6 MB, accanto ai 53 MB che `external.db` occupa gia'.
+
+**Costo reale in parallelo**, misurato come distanza fra la risposta del controllo cache e la fine
+della richiesta pacchetti:
+
+    ricerca 1  TB_check 03:29:10.583 | PACCHI 03:29:12.635  ->  +2,05 s
+    ricerca 2  TB_check 03:30:25.114 | PACCHI 03:30:25.129  ->  +0,02 s
+    ricerca 3  TB_check 03:31:01.295 | PACCHI 03:31:01.596  ->  +0,30 s
+    ricerca 4  TB_check 03:32:28.592 | PACCHI 03:32:29.111  ->  +0,52 s
+    ricerca 5  PACCHI   03:32:59.555 | TB_check 03:33:00.840 ->   0    (finito PRIMA)
+
+Mediana **+0,30 s** su ricerche che durano 25-32 s. Il parallelismo fa il suo mestiere.
+
+**Il difetto.** "50 pacchetti, 50 ignoti" a ogni ricerca, ma solo 14 elenchi imparati: TorBox
+risponde **solo per i torrent che ha in cache**, e gli altri 36 sarebbero stati richiesti di nuovo
+a ogni ricerca successiva della stessa serie, per sempre, con una chiamata che torna vuota. Sulla
+stick il caso e' la maggioranza: `debrid_data` conta **926 hash, 541 non in cache -- il 58%**.
+
+Correzione: `_impara_pacchetti` riceve `cached_hashes` (che il chiamante ha gia' letto dalla cache
+locale, senza nessuna chiamata in piu') e salta gli hash il cui verdetto locale dice gia'
+`cached='False'`. Il salto dura esattamente quanto il verdetto che lo giustifica -- `debrid_data`
+scade a 24 h e allora si torna a chiedere. `test_207` sale a 37 asserzioni, tutte OK; simboli di
+`external.py` 21 -> 24, PERSI nessuno; 101 hash md5 identici.
+
+---
+
+## Lotto 208 -- La durata giusta, e l'impostazione che vale quello che dice
+
+### `episode_run_time`: non e' una categoria di serie, e' un campo vuoto
+
+Domanda dell'utente: cosa sono le "serie senza episode_run_time", come divergono dalle normali?
+**Non divergono in niente.** `episode_run_time` e' un campo a livello di SERIE che TMDb ha
+deprecato -- la durata sta sugli episodi -- e che i collaboratori spesso non compilano. Nella
+metacache della stick:
+
+    serie TV in cache: 334 | senza duration: 256 (77%)
+    anni CON durata  : mediana 2025, dal 1989 al 2026
+    anni SENZA durata: mediana 2025, dal 1989 al 2026
+
+Nessun rapporto con l'anno, il genere o la popolarita': Wonder Man, Marvel Zombies, DAHMER, The
+Wire e I Simpson stanno tutti nel gruppo "senza". `metadata.py:902` fa
+`min(data_get('episode_run_time'))*60` dentro un try, e su una lista vuota l'eccezione porta a
+`duration = 0`. Zero e' falso, quindi `filter_results` ripiegava su **2400 s fissi**.
+
+La durata per EPISODIO invece c'e' sempre. Su tutte le stagioni in cache, **zero valori nulli**:
+
+    Smiling Friends      serie 0 s  ->  episodi [660, 720]
+    I Simpson            serie 0 s  ->  episodi [1380, 1440]
+    The Wire             serie 0 s  ->  episodi [3480, 3540, 3780]
+    Futurama             serie 0 s  ->  episodi [1320]
+    SpongeBob            serie 0 s  ->  episodi [180, 540, 660, 720]
+
+`get_meta()` la scaricava gia' -- copiava nel meta titolo, trama, miniatura, tipo di episodio -- e
+la durata no. Ora la copia in `duration_episodio`.
+
+### Ma la durata TMDb non e' la durata del file
+
+Guarda l'ultima riga: SpongeBob ha episodi da 180-720 secondi, perche' TMDb conta i **segmenti**.
+I file misurati sulla stick durano **1417-1424 s**. Prendere per buoni i 660 s avrebbe portato il
+tetto a 0,845 GiB contro file da 1,5-2,1 GiB: **tagliati tutti**. Da troppo largo a troppo stretto.
+
+E' la stessa malattia del divisore dei pacchetti, e si cura con la stessa medicina: la tabella
+`pack_files` del lotto 207. Se la stagione dichiara 41 episodi e i pacchi ne contengono 20 di file,
+un file vale 2,05 episodi. `_fattore_segmenti` lo misura, con tre difese contro l'invenzione:
+almeno **tre** pacchetti (uno incompleto da solo mentirebbe), la **mediana** e non la media (i
+pacchi tagliati e quelli da un file solo stanno alle estremita'), e il risultato **arrotondato a un
+intero** perche' un file contiene un numero intero di episodi. Sotto 1,5 non si corregge nulla.
+
+    SpongeBob:  660 s x 2  = 1.320 s   (misurati sul file: 1.424 s, scarto 7,3%)
+    The Wire:  3480 s x 1  = 3.480 s   (nessuna correzione)
+
+### Via lo 0,90
+
+Era un margine di sicurezza scritto a mano e invisibile: chi impostava 11 otteneva 9,9 senza che
+nulla glielo dicesse. Tolto su decisione dell'utente, con una ragione precisa: il wizard di
+`line_speed` ricavera' il numero dal **percentile 20** della portata misurata, cioe' un valore che
+il margine ce l'ha gia' dentro per costruzione. Applicargliene un altro lo conterebbe due volte.
+
+Adesso l'impostazione vale quello che dice:
+
+    serie normale (The Wire, 3480 s)  tetto 4,456 GiB  ->  11,00 Mbit/s esatti
+    SpongeBob (1320 s corretti)       tetto 1,690 GiB  ->  10,20 Mbit/s sul file vero da 1424 s
+
+E sulle riproduzioni realmente misurate, con `line_speed = 11`:
+
+    9,33 Mbit/s  S01E11 WEB-DL      1,547 GiB  ->  passa
+    9,73 Mbit/s  MuscleBob          1,611 GiB  ->  passa
+    12,54 Mbit/s Schwammkopf        2,069 GiB  ->  TAGLIATA   (prima passava: il tetto era 16,69)
+
+### Verifica
+
+`test_208.py`, 21 asserzioni, tutte OK. I due metodi non sono ispezionati ma **estratti dal
+sorgente ed eseguiti** su un oggetto finto con un `pack_files` vero, e i tetti sono confrontati con
+i bitrate realmente misurati in `playback_stats`. `test_202`, `test_205`, `test_207` OK;
+`compileall` pulito; simboli di `sources.py` 73 -> 75, **PERSI: nessuno**; Kodi non in esecuzione,
+101 file spinti, **101 hash md5 identici**.
+
+## Lotto 209 -- Il cancello esatto: byte veri diviso secondi veri
+
+Il lotto 208 ha reso la stima della durata *misurata* invece che inventata, ma restava una stima.
+La domanda dell'utente e' stata quella giusta: **perche' dedurre un numero che il file contiene?**
+
+### Perche' TorBox non puo' darla
+
+Verificato campo per campo sull'intera risposta salvata -- 55 torrent in cache, **8.073 file**:
+
+    campi del TORRENT : ['files', 'hash', 'name', 'size']
+    campi del FILE    : ['id', 'mimetype', 'name', 'opensubtitles_hash', 'short_name', 'size']
+    duration: assente   runtime: assente   length: assente   bitrate: assente
+
+TorBox e' un magazzino: sa quanti **byte** occupa un file, non quanto **dura**. Non lo apre mai.
+La durata sta dentro il contenitore, e li' bisogna andare a prenderla.
+
+### I due livelli, e perche' non sono lo stesso problema
+
+|                                | dimensione                     | durata                       |
+|--------------------------------|--------------------------------|------------------------------|
+| **elenco** (47 sorgenti)       | **esatta** (TorBox, lotto 207) | non disponibile -> stimata   |
+| **sonda** (1 sorgente scelta)  | esatta (Content-Range)         | **esatta, e non la leggevamo**|
+
+All'elenco la durata non e' ottenibile: servirebbe un URL sbloccato per sorgente, cioe' 47
+risoluzioni sul debrid prima di mostrare la lista. Alla sonda invece l'intestazione **la stiamo gia'
+scaricando** per leggere codec e risoluzione.
+
+### Tre strade valutate, due scartate dall'utente
+
+1. **Retrocessione invece di scarto** -- tenere le sorgenti sopra soglia in fondo alla lista.
+   *Scartata, e la ragione e' buona*: se per quella linea non esiste **nessuna** sorgente
+   riproducibile ma ne esistono cento troppo grosse, si finirebbe per provarle e fallirle tutte,
+   una dopo l'altra. Oggi Fen Light dice subito "nessuna sorgente per le tue impostazioni", ed e'
+   un comportamento migliore di un ciclo lungo e inutile.
+2. **Imparare la durata vera per serie** dalle riproduzioni passate (`playback_stats.durata` c'e'
+   gia'). *Scartata, e anche qui la ragione e' buona*: dentro SpongeBob stesso alcune sorgenti
+   contengono la puntata da due segmenti e altre il segmento singolo. **Non esiste una costante per
+   serie da imparare**, perche' la durata dipende dalla confezione, non dal titolo.
+3. **Leggere la durata dall'intestazione, alla sonda.** Fatta.
+
+Decisione dell'utente, per esteso: il calcolo dell'elenco resta con la durata TMDb, che su film ed
+episodi normali e' vicina al vero, **accettando** che una serie a segmenti perda qualche sorgente
+buona -- perche' per quel caso non esiste una cura sensata -- e mettendo un cancello esatto dove i
+numeri veri ci sono.
+
+### Cosa legge adesso `stream_header`
+
+Matroska: `TimecodeScale` (0x2AD7B1) e `Duration` (0x4489) dentro `Info` (0x1549A966), che e'
+fratello di `Tracks` e **viene prima**. MP4: `mvhd` dentro `moov`, che precede i `trak`. In
+entrambi i casi la durata sta **nei byte che stavamo scaricando comunque**: nessuna richiesta in
+piu', nessun byte in piu', 0,021 ms di parsing su un matroska da 40 KB.
+
+Un dettaglio che conta: `_basta()` -- la condizione che ferma lo scaricamento appena la risposta
+c'e' -- guarda **solo i primi tre valori**, non la durata. Metterla nella condizione avrebbe
+significato che un file senza durata leggibile scarica tutti i 128 KB invece di fermarsi ai primi
+kilobyte. Il lotto non deve costare byte.
+
+Bordi, con la stessa regola di sempre -- *ogni dubbio vale come si'*: durata fuori da 1 s - 24 h
+buttata (un `mvhd` con `duration = 0xFFFFFFFF` significa "sconosciuta"), float EBML solo a 4 o 8
+byte, e la guardia `intero` gia' esistente impedisce di leggere mezzo campo. Un valore letto a meta'
+sarebbe **peggio di nessun valore**: farebbe scartare una sorgente buona con un bitrate che nessun
+file ha mai avuto.
+
+### Il cancello
+
+`_banda_sufficiente()` in player.py, terzo controllo di `_esamina_sorgente` dopo lista nera e
+limiti del decoditore. Una divisione:
+
+    Mbit/s = byte x 8 / secondi / 10**6
+
+**Mbit/s decimali**, come li vendono: una linea da 25 Mbit/s consegna 25.000.000 bit al secondo,
+non 26.214.400. Qui i GiB del lotto 207 non c'entrano -- quelli confrontavano due *dimensioni*,
+questo confronta due *velocita'*.
+
+Vincoli deliberati:
+
+- **Solo con `filter_size_method = 1`.** Con 0 l'utente ha scelto di non filtrare sulla banda, con 2
+  filtra su una dimensione fissa che col tempo non c'entra. In nessuno dei due casi si puo'
+  introdurre qui uno scarto che dall'elenco non sarebbe mai arrivato.
+- **Nessuna lista nera.** Non e' un guasto, e' una scelta di politica: il file e' sano, semplicemente
+  non entra in questa linea. Si scarta, si registra, si passa alla successiva con la rotazione del
+  lotto 202.
+- La riga di `playback_stats` di uno scarto porta adesso `durata` e `bitrate` **misurati**. Senza,
+  non si potrebbe verificare a posteriori se il cancello sta togliendo roba buona -- che e' l'unica
+  domanda che conta su un filtro.
+
+Nel log, una riga sola:
+
+    FenLight SORGENTE 3/47 SCARTATA [banda] hevc 1920x1080 letti in 412 ms, entro 1920x1088,
+      12.7 Mbit/s veri (4.29 GB in 45:00), oltre i 11 impostati | torrentio | Nome.Del.File.mkv
+
+### Verifica
+
+`test_209.py`, **48 asserzioni, tutte OK**. I campioni matroska e mp4 sono costruiti byte per byte
+dalla specifica -- niente ffmpeg su questa macchina, e un campione preso da un altro parser
+proverebbe solo che i due sbagliano allo stesso modo. `_banda_sufficiente` e `_mmss` non sono
+ispezionati ma **estratti con ast da player.py ed eseguiti**, che e' la lezione dei lotti 205 e 206:
+su codice cosi' commentato, una prova che cerca una stringa trova il commento che spiega il codice,
+non il codice.
+
+Coperti: durata da matroska con `TimecodeScale` standard e non standard, `mvhd` versione 0 e 1,
+risoluzione e codec ancora letti (nessuna regressione dal passaggio a quattro valori), `_basta` che
+si ferma esattamente dove si fermava prima, intestazione tagliata dopo l'`Info` (la durata si legge
+lo stesso) e tagliata dentro il float (si rifiuta di indovinare), i confini del cancello al byte, e
+i tre casi in cui il cancello **non deve** intervenire.
+
+L'ultimo gruppo e' SpongeBob: segmento da 11 minuti e puntata da 23:44, entrambi a 3 Mbit/s, **il
+cancello li tratta uguali** perche' i secondi li ha misurati. Il tetto d'elenco, con i 660 s di
+TMDb, avrebbe tagliato il secondo -- per un errore di durata, non di bitrate. E' esattamente il
+caso che resta scoperto all'elenco e coperto qui.
+
+Simboli: `player.py` +2 (`_banda_sufficiente`, `_mmss`), `stream_header.py` +2 (`_ebml_float`,
+`_mvhd`), **PERSI: nessuno**. `test_202`/`203`/`204`/`205` erano gia' rotti prima di questo lotto --
+vogliono percorsi su `sys.argv` e un modulo `campioni` che non e' piu' sul disco; non li ho toccati.
+
+## Lotto 210 -- La rotella tornata su tutti i widget, e i due modi in cui ci arrivava
+
+Prova sul campo del lotto 209, 09/09: due volte lo stesso episodio -- una sorgente con la puntata
+intera, una col solo segmento -- piu' un film. Il cancello ha funzionato:
+
+    15:41:37  01/49 ACCETTATA  9.7 Mbit/s veri (1.73 GB in 23:43)   comet      MuscleBob.BuffPants...
+    15:43:02  01/44 ACCETTATA  9.6 Mbit/s veri (0.85 GB in 11:50)   knaben     S01E11.Home.Sweet.Pineapple...
+    15:47:03  01/72 ACCETTATA  6.5 Mbit/s veri (5.34 GB in 110:24)  torrentio  Mayday.2026...
+
+**23:43 = 1423 s**, contro i 1424 misurati: l'intestazione la da' esatta. E le due confezioni dello
+stesso episodio -- 1,73 GB in 23:43 e 0,85 GB in 11:50 -- danno **9,7 e 9,6 Mbit/s**, cioe' lo stesso
+numero. E' il caso che il filtro d'elenco non sa trattare e che il cancello tratta bene. Sonda 388 /
+2018 / 1414 ms; i 2018 non sono un difetto, su quella sorgente la risoluzione del link e' finita piu'
+tardi e l'anticipo di `avvia()` si e' sovrapposto per meno tempo.
+
+Ma alla chiusura di **entrambi gli episodi** e' comparsa la rotella su tutti i widget, e alla
+chiusura del film no. Non e' un difetto degli episodi: sono due guasti distinti, e il film e' stato
+solo fortunato.
+
+### Guasto A -- due definizioni di "sta riproducendo" nello stesso percorso
+
+Il monitor Trakt si sospende in riproduzione, e la guardia c'era:
+
+    while is_playing() or window.getProperty(pause_services_prop) == 'true': wait_for_abort(10)
+
+`isPlayingVideo()` pero' diventa vero solo quando Kodi ha davvero un flusso video, cioe' a
+`Player.OnAVStart`. Fra la scelta della sorgente e quell'istante passano secondi -- il 09/09
+**15:42:58 (Select) -> 15:43:11.9 (OnAVStart), quattordici** -- e in quella finestra la guardia
+rispondeva "non si sta riproducendo".
+
+    15:43:03.216  Player.OnPlay
+    15:43:08.866  TraktMonitor Service Update Success       <- il monitor si e' svegliato QUI
+    15:43:08.891  DIAG refresh: RIMANDATO (kodi_refresh), riproduzione in corso
+    15:43:11.921  Player.OnAVStart
+    15:43:52.968  Player.OnStop
+    15:43:54.105  DIAG refresh: GLOBALE (UpdateLibrary)
+
+A valle `_defer_refresh_if_busy` usa `Player.HasVideo`, che li' era gia' vero: ha rimandato
+**buttando id e azioni**, e un rinvio senza canali significa "ricostruisci tutto".
+
+La cura non e' tenere gli id -- la ragione per cui si buttano e' buona, un film dura ore e un elenco
+vecchio ricaricherebbe i contenitori sbagliati. La cura e' **non far nascere quel rinvio**:
+`playback_running()` legge `fenlight.playback.active`, che il player alza **prima di `play()`**
+(player.py:159, *"l'unico istante che non e' una corsa"*) e abbassa alla chiusura. E' l'unico dei tre
+segnali che copre anche l'apertura del file.
+
+Corretta in due punti, entrambi capaci di ordinare un `UpdateLibrary`: la guardia del monitor Trakt e
+`WidgetRefresher.condition_check`. Le altre quattro guardie su `is_playing()` -- CustomFonts,
+WidgetPaginator, DubResolver, il campionatore di carico -- **non sono state toccate**: nessuna di
+quelle ordina una ricostruzione, e il loro comportamento in quella finestra e' un'altra domanda.
+
+### Guasto B -- un rinvio azzerato a meta', e una corsa fra due thread
+
+`player._order_refresh_after_write` azzerava `PENDING_REFRESH_PROP` ma **lasciava scritti** i due
+canali; li azzerava `kodi_refresh_ids` qualche centinaio di millisecondi dopo. WidgetRefresher gira
+ogni secondo e legge le due cose in momenti diversi: prima la chiave per decidere *se* consumare,
+poi i canali per decidere *cosa*. Cadere in mezzo significava trovare "c'e' un rinvio" con "nessun
+id, nessuna azione", che in service.py vuol dire ricostruisci tutto.
+
+    15:42:32.293  T:32303  DIAG refresh: MIRATO 1 contenitori | id=1 azioni=1
+    15:42:32.293  T:31994  WidgetRefresher: rinvio consumato dopo 74.3s
+    15:42:32.304  T:31853  running ?mode=refresh_widgets&coalesce=false
+    15:42:33.303           DIAG refresh: GLOBALE (UpdateLibrary)
+
+Stesso millisecondo, due thread. Il commento sopra quella riga dichiarava testualmente di esistere
+perche' *"la rete di sicurezza di WidgetRefresher (che ordinerebbe un GLOBALE)"* non partisse sopra:
+azzerava una proprieta' su tre e otteneva l'opposto.
+
+**Azzerarle tutte e tre non basta, ed e' stata la prova a dirlo.** La prima stesura del test
+fotografava lo stato dopo ogni scrittura e chiedeva che non esistesse mai la combinazione pericolosa:
+ne ha trovate due. Tre proprieta' di finestra non si azzerano atomicamente e non lo possono
+diventare. Restringere la finestra da 300 ms a due istruzioni abbassa la probabilita', non la
+elimina -- ed e' una toppa, non uno stato condiviso.
+
+L'informazione per chiuderla c'era gia' e la buttavamo noi: il **tipo** del rinvio. Chi accoda
+`kodi_refresh_ids` ha sempre almeno un canale pieno -- lo garantiscono i quattro punti che lo
+scrivono -- quindi quel tipo con entrambi i canali vuoti **non puo' essere** "ricostruisci tutto":
+puo' solo essere una lettura strappata. La decisione e' uscita dal ciclo ed e' diventata pura:
+
+    decide_pending_refresh(kind, ids, actions, inutile) -> 'niente' | 'mirato' | 'globale' | 'strappata'
+
+`'strappata'` non ricostruisce niente e scrive una riga: chi stava azzerando lo faceva perche' stava
+gia' ridisegnando lui. Per rendere l'invariante esatto, il ramo della riproduzione in
+`_defer_refresh_if_busy` adesso accoda `'kodi_refresh'` invece di tramandare `kind`: dichiara di
+essere globale invece di lasciarlo dedurre dai canali vuoti.
+
+### Il fattore segmenti adesso parla
+
+Era muto: dal log non si poteva dire se fosse entrato in funzione, quale mediana avesse visto, o se
+si fosse fermato per mancanza di pacchetti noti. Una riga per ricerca -- non per sorgente -- su
+**ogni** uscita, compreso l'`except`, perche' un fattore 1 per "non serve correggere" e un fattore 1
+per "il controllo e' andato storto" si leggevano uguali:
+
+    FenLight SEGMENTI: fattore 2 | mediana 2.05 su 3 pacchetti (rapporti 2.05-2.05-2.05)
+                       | stagione 1: 41 episodi dichiarati, 20-20-20 file per pacco
+    FenLight SEGMENTI: nessuna correzione: 0 pacchetti noti su 3 (ne servono 3) | ...
+    FenLight SEGMENTI: nessuna correzione: nessun season pack fra le 44 sorgenti | ...
+    FenLight SEGMENTI: nessuna correzione: controllo fallito (...)
+
+### Verifica
+
+`test_210.py`, **44 asserzioni, tutte OK**. Niente cercato come stringa: `_order_refresh_after_write`
+e `_fattore_segmenti` sono estratti con ast ed **eseguiti** su ambienti finti, le due guardie dei
+servizi sono estratte come espressioni e **valutate** con i tre segnali a valori diversi, e
+`decide_pending_refresh` si importa e si chiama.
+
+Due cose che la prova ha trovato e che io non avevo visto:
+
+1. **`test_208` passava per caso.** Aggiunta la riga di log, la funzione estratta non aveva piu'
+   `kodi_utils` nel suo spazio dei nomi: il `logger` sollevava `NameError`, l'`except` lo inghiottiva
+   e il valore restava giusto perche' era gia' stato assegnato. Il test verificava il numero, non il
+   fatto che la riga uscisse. `test_210` inietta un `kodi_utils` finto e **raccoglie le righe**.
+2. **Il primo rimedio al guasto B era insufficiente**, come sopra. Senza la fotografia degli stati
+   intermedi avrei chiuso il lotto convinto di aver risolto una corsa che avevo solo accorciata.
+
+Simboli: `kodi_utils.py` +1 (`decide_pending_refresh`), gli altri invariati, **PERSI: nessuno**.
+`compileall` pulito su tutta la lib. `test_202`/`203`/`204`/`205` erano gia' rotti prima -- vogliono
+percorsi su `sys.argv` e un modulo `campioni` che non e' piu' sul disco.
+
+## Lotto 211 -- Via il fattore segmenti: l'ultimo punto che guardava dentro un pacchetto
+
+Il lotto 208 moltiplicava la durata TMDb per un fattore stimato sui pacchetti conosciuti -- episodi
+dichiarati diviso file nel pacco -- per curare le serie che TMDb conta a segmenti. Il lotto 210 gli
+ha aggiunto una riga di log, e quella riga ha fatto esattamente il suo mestiere:
+
+    SpongeBob S1 (41 ep):  291-20-20-20-1-41-20-20      -> mediana 2.05 -> fattore 2
+    Simpson S7   (25 ep):  25-25-683-25-288-123-787-25  -> mediana 0.20 -> fattore 1
+    The Wire S2  (12 ep):  60-60-60-60-60-60-60-60      -> mediana 0.20 -> fattore 1
+
+Pacchetti etichettati `season` da **291, 683, 787 file**: serie intere. Uno da **1 file**: un
+episodio singolo. Su The Wire stagione 2 **tutti e sedici** i pacchetti misurati erano la serie
+completa -- il fattore veniva deciso da una popolazione in cui non un solo campione era valido. I
+tre risultati erano giusti, ma per fortuna, non per costruzione.
+
+La cura sarebbe stata leggere i nomi dei file per contare le stagioni contenute. L'utente l'ha
+respinta con l'argomento giusto: **i nomi spesso mentono**, e sarebbe stata una toppa sopra una
+toppa. Ed e' stato lui a riportare la questione al punto: si riproduce **un solo file**, quello
+dell'episodio chiesto, e di quello ci serve la durata -- che TMDb da' correttamente.
+
+### Cosa resta in piedi, e perche' basta
+
+| | dimensione | durata |
+|---|---|---|
+| film | esatta | TMDb, ottima |
+| episodio singolo | esatta | TMDb, ottima |
+| **pacco in cache TorBox** | **esatta** (lotto 207: file trovato per nome, niente divisioni) | TMDb, ottima |
+| pacco NON in cache | `pacco / episodi_TMDb` | TMDb, ottima |
+
+E la riga del log che chiude la questione:
+
+    52 pacchetti: 14 gia' noti, 37 saltati (non in cache), 1 chiesti a TorBox -> 0 imparati
+    taglie corrette: 8 esatte, 6 dal numero vero di file, su 52
+
+**Quattordici conosciuti, quattordici corretti.** Le trentotto non corrette sono esattamente quelle
+che TorBox non ha in cache, cioe' quelle che non si possono riprodurre subito. Su tutto cio' che e'
+riproducibile la dimensione e' esatta -- misurato -0,1%, +0,4%, +0,1% su tre pacchi diversi -- e le
+quattro classi di risultato che uno scraper restituisce (serie intera, stagione, pacco parziale,
+episodio singolo) danno tutte i byte dello stesso file, perche' il file si cerca per nome invece di
+dedurlo da una divisione.
+
+Resta scoperta la sola serie a segmenti, **per decisione esplicita**: e' un'eccezione della
+struttura di TMDb, non un difetto del filtro. Con i 660 s di TMDb il tetto su SpongeBob e' 0,845 GiB
+contro file da 1,5-2,1 GiB: tagliati, e lo sappiamo. A recuperarli non e' piu' una stima ma il
+cancello esatto del lotto 209, che su quei tre file misura 9,33 / 9,73 / 12,54 Mbit/s.
+
+`pack_cache` resta e serve piu' di prima: e' cio' che rende esatta la dimensione. Quello che sparisce
+e' l'unico uso che ne faceva un'inferenza -- `sources.py` non lo importa piu'.
+
+### Verifica
+
+`test_208` riscritto (24 asserzioni) e `test_210` aggiornato (26): entrambi provano ora che il
+fattore **non c'e' piu'** -- niente `_fattore_segmenti`, nessun riferimento residuo a `_segmenti`,
+nessun `pack_cache` in `sources.py`, e `_durata_filtro` che non prende piu' i risultati -- e che
+`pack_cache` continua a servire in `external.py`. Mezza funzione tolta e' peggio di una funzione
+sbagliata. `_durata_filtro` e' estratta ed eseguita su sei casi. Simboli di `sources.py` 75 -> 74,
+**PERSI: solo quello voluto**. `compileall` pulito.

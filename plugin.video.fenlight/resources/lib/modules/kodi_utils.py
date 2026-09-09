@@ -909,6 +909,35 @@ def modal_dialog_open():
 	# nemmeno, ed e' li' che prendere il lock grafico da un thread di plugin fa danno (lotto 111).
 	return get_visibility('System.HasActiveModalDialog')
 
+# TIPO DI RINVIO CHE NOMINA UN INSIEME DI TITOLI. L'invariante del lotto 210: chi accoda con questo
+# tipo ha SEMPRE almeno un id o un'azione -- lo garantiscono i quattro punti che lo scrivono
+# (_defer_refresh_if_busy sul ramo del dialogo, kodi_refresh_ids in due punti, il riarmo a mano in
+# player._order_refresh_after_write) -- quindi trovarlo con entrambi i canali vuoti significa aver
+# letto mentre qualcuno stava azzerando, non 'ricostruisci tutto'.
+KIND_MIRATO = 'kodi_refresh_ids'
+
+
+def decide_pending_refresh(kind, ids, actions, inutile):
+	"""Cosa fare di un rinvio maturo: 'niente' | 'mirato' | 'globale' | 'strappata'. Pura.
+
+	Vive qui e non dentro il ciclo di WidgetRefresher per la stessa ragione di decide_refresh: e' la
+	riga che decide se ricostruire UN widget o TUTTA l'interfaccia, ed era l'unica di quel percorso
+	che nessuna prova poteva eseguire.
+
+	LA LETTURA STRAPPATA. Il ciclo legge il tipo del rinvio e i due canali in momenti diversi, e fra
+	le due letture qualcun altro puo' averli azzerati: azzerarne tre non e' un'operazione atomica e
+	non lo puo' diventare -- sono tre proprieta' di finestra. Prima il caso finiva nel ramo 'canali
+	vuoti = ricostruisci tutto', ed e' cosi' che il 09/09 alle 15:42:32 un refresh MIRATO su un
+	episodio e' diventato un UpdateLibrary globale: il thread 32303 stava azzerando mentre il 31994
+	leggeva, nello stesso millisecondo. Restringere la finestra non basta, perche' una finestra
+	stretta e' comunque una finestra; qui si distingue per TIPO, che e' un dato e non un tempo.
+	"""
+	if inutile: return 'niente'
+	if ids or actions: return 'mirato'
+	if kind == KIND_MIRATO: return 'strappata'
+	return 'globale'
+
+
 def queue_pending_refresh(kind, ids=(), actions=(), scope=None, nochange=None):
 	"""Mette in coda un rinvio sul canale che WidgetRefresher raccoglie, SOMMANDO cio' che c'e' gia'.
 
@@ -1018,8 +1047,13 @@ def _defer_refresh_if_busy(kind, ids=(), actions=()):
 	    UpdateLibrary su tutto per il solo fatto che l'utente aveva un menu aperto.
 	"""
 	if playback_active():
-		queue_pending_refresh(kind, scope='')
-		logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), riproduzione in corso' % kind)
+		# LOTTO 210 -- si accoda 'kodi_refresh', non `kind`. Qui gli id si buttano di proposito (vedi
+		# sotto), e un rinvio senza id e' un 'ricostruisci tutto': dirlo esplicitamente invece di
+		# lasciarlo dedurre dai canali vuoti e' cio' che rende esatto l'invariante su cui si regge
+		# decide_pending_refresh -- 'kodi_refresh_ids' implica SEMPRE almeno un canale pieno, e
+		# quindi due canali vuoti sotto quel tipo non possono essere altro che una lettura strappata.
+		queue_pending_refresh('kodi_refresh', scope='')
+		logger('Fen Light', 'DIAG refresh: RIMANDATO (%s -> kodi_refresh), riproduzione in corso' % kind)
 		return True
 	if modal_dialog_open():
 		_kind = 'kodi_refresh_ids' if (ids or actions) else kind

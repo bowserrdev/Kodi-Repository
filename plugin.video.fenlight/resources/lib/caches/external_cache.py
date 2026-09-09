@@ -32,9 +32,15 @@ class ExternalCache:
 		except: pass
 
 	def delete_cache_single(self, media_type, tmdb_id):
+		"""Cancella i risultati esterni di UN titolo. Niente VACUUM (lotto 205).
+
+		VACUUM riscrive l'intero file da capo, e su questa macchina external.db pesa 53 MB: misurati
+		l'08/09 **13,5 secondi di rotellina** per cancellare una riga. Non serviva a niente -- SQLite
+		riusa da solo le pagine liberate, e VACUUM serve solo a rimpicciolire il file su disco. Resta
+		dov'e' giusto che sia, cioe' nello svuotamento totale qui sotto.
+		"""
 		try:
 			connect_database('external_db').execute(SINGLE_DELETE, (media_type, tmdb_id))
-			connect_database('external_db').execute('VACUUM')
 			return True
 		except: return False
 

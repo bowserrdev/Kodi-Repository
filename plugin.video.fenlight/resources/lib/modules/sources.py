@@ -8,7 +8,7 @@ from caches.episode_groups_cache import episode_groups_cache
 from caches.settings_cache import get_setting
 from scrapers import external, folders
 from modules import debrid, kodi_utils, settings, metadata, watched_status
-from modules.player import FenLightPlayer
+from modules.player import FenLightPlayer, nota_sorgente
 from modules.source_utils import get_cache_expiry, make_alias_dict
 from modules.utils import clean_file_name, string_to_float, safe_string, remove_accents, get_datetime, append_module_to_syspath, manual_function_import, manual_module_import, install_lazy_chardet
 # logger = kodi_utils.logger
@@ -45,6 +45,9 @@ int_window_prop = 'fenlight.internal_results.%s'
 scraper_timeout = 25
 filter_keys = {'hevc': '[B]HEVC[/B]', '3d': '[B]3D[/B]', 'hdr': '[B]HDR[/B]', 'dv': '[B]D/VISION[/B]', 'av1': '[B]AV1[/B]', 'enhanced_upscaled': '[B]AI ENHANCED/UPSCALED[/B]'}
 preference_values = {0:100, 1:50, 2:20, 3:10, 4:5, 5:2}
+
+# 10**6 / 2**30: quanti MB decimali stanno in un GiB. Vedi filter_results.
+MB_PER_GIB = 1073.741824
 
 class Sources():
 	def __init__(self):
@@ -182,6 +185,9 @@ class Sources():
 		return self.prescrape_sources
 
 	def process_results(self, results):
+		# Sempre, non solo in un ramo: la bandiera del rescrape ha gia' fatto il suo lavoro dentro
+		# query_local_cache e non deve sopravvivere alla ricerca che l'ha accesa (lotto 205).
+		clear_property('fs_rescrape')
 		if self.prescrape: self.all_scrapers = self.active_internal_scrapers
 		else:
 			self.all_scrapers = list(set(self.active_internal_scrapers + self.remove_scrapers))
@@ -212,6 +218,50 @@ class Sources():
 		results = self._sort_uncached_results(results)
 		return results
 
+	def _durata_filtro(self):
+		"""La durata del file che si riprodurra\'. Di TMDb, e basta.
+
+		LOTTO 211 -- VIA IL FATTORE SEGMENTI. Il lotto 208 moltiplicava questa durata per un numero
+		stimato dai pacchetti conosciuti -- episodi dichiarati da TMDb diviso file nel pacco --  per
+		curare le serie che TMDb conta a segmenti mentre i file li impacchettano a coppie (SpongeBob).
+		E' stato tolto, e la ragione non e' che funzionasse male: e' che era l'ULTIMO punto del codice
+		che guardava come e\' COMPOSTO un pacchetto, e quella domanda non ha una risposta affidabile.
+		Il log del 09/09 lo mostra: fra i pacchetti etichettati `season` ce ne sono da 291, 683 e 787
+		file -- serie intere -- e da 1 solo file, e la mediana usciva giusta per fortuna, non per
+		costruzione. Su The Wire stagione 2 tutti e sedici i pacchetti misurati erano la serie
+		completa: il fattore veniva deciso da una popolazione in cui non un solo campione era valido.
+		Curarla voleva dire leggere i nomi dei file per capire quante stagioni contengono, cioe'
+		fidarsi di nomi che spesso mentono: una toppa sopra una toppa.
+
+		Cosa resta, e perche' basta. La DIMENSIONE e\' esatta (lotto 207): per ogni pacchetto che
+		TorBox ha in cache si prende il file dell'episodio cercandolo per nome, senza dividere niente
+		-- misurato -0,1%, +0,4%, +0,1% su tre pacchi il 09/09. La DURATA e\' quella dell'episodio
+		secondo TMDb, che su film ed episodi normali e\' vicina al vero. E cio\' che sfugge lo prende
+		il cancello esatto del lotto 209, che i secondi li legge dentro il file.
+
+		Resta scoperta la sola serie a segmenti, per decisione esplicita: e\' un'eccezione della
+		struttura di TMDb, non un difetto del filtro, e non esiste un modo di coprirla che non sia
+		indovinare.
+		"""
+		if self.media_type == 'movie':
+			return self.meta.get('duration') or 5400
+		return self.meta.get('duration_episodio') or self.meta.get('duration') or 2400
+
+	# LOTTO 207 -- GiB contro GB: due unita' diverse confrontate come se fossero una sola.
+	#
+	# Le taglie degli ELEMENTI arrivano sempre in GiB. Ogni scraper le costruisce come
+	# byte/1073741824 (tb_cloud.py:41, rd_cloud.py:37, easynews.py:35, folders.py:99) e gli
+	# indicizzatori esterni fanno lo stesso: verificato sul file S01E11 di AS76-FT, 374.262.787
+	# byte dichiarati 0,35 -- 374262787/2**30 = 0,3486 -> 0,35, mentre /10**9 darebbe 0,37.
+	#
+	# Le SOGLIE invece nascevano decimali: le impostazioni sono in MB e venivano divise per 1000
+	# (cioe' portate in GB), e line_speed e' in Mbit/s, per cui 0,125 x Mbit/s x secondi da' MB
+	# decimali, di nuovo divisi per 1000. Confrontare GiB con GB rende la soglia effettiva piu'
+	# alta del 7,4% di quella scritta: il fattore di sicurezza di line_speed valeva 0,966 invece
+	# dello 0,90 dichiarato, e un tetto di 10.000 MB lasciava passare 10,74 GB.
+	#
+	# Si converte UNA volta la soglia, non 47 volte l'elemento: i MB decimali diventano GiB
+	# dividendo per 10**6/2**30 = 1073,741824. Stesso numero di operazioni di prima.
 	def filter_results(self, results):
 		if self.folders_ignore_filters:
 			folder_results = [i for i in results if i['scrape_provider'] == 'folders']
@@ -219,13 +269,18 @@ class Sources():
 		else: folder_results = []
 		results = [i for i in results if i['quality'] in self.quality_filter]
 		if self.filter_size_method:
-			min_size = string_to_float(get_setting('fenlight.results.%s_size_min' % self.media_type, '0'), '0') / 1000
+			min_size = string_to_float(get_setting('fenlight.results.%s_size_min' % self.media_type, '0'), '0') / MB_PER_GIB
 			if min_size == 0.0 and not self.include_unknown_size: min_size = 0.02
 			if self.filter_size_method == 1:
-				duration = self.meta['duration'] or (5400 if self.media_type == 'movie' else 2400)
-				max_size = ((0.125 * (0.90 * string_to_float(get_setting('results.line_speed', '25'), '25'))) * duration)/1000
+				duration = self._durata_filtro()
+				# LOTTO 208 -- niente piu' 0,90. Era un margine di sicurezza scritto a mano, invisibile
+				# nell'impostazione: chi scriveva 11 otteneva 9,9 senza che nulla glielo dicesse. E il
+				# wizard di line_speed, che ricava il numero dal percentile 20 della portata misurata,
+				# il margine ce l'ha gia' dentro per costruzione: applicarne un altro lo conterebbe
+				# due volte. Adesso l'impostazione vale quello che dice.
+				max_size = ((0.125 * string_to_float(get_setting('results.line_speed', '25'), '25')) * duration) / MB_PER_GIB
 			elif self.filter_size_method == 2:
-				max_size = string_to_float(get_setting('fenlight.results.%s_size_max' % self.media_type, '10000'), '10000') / 1000
+				max_size = string_to_float(get_setting('fenlight.results.%s_size_max' % self.media_type, '10000'), '10000') / MB_PER_GIB
 			results = [i for i in results if i['scrape_provider'] == 'folders' or min_size <= i['size'] <= max_size]
 		results += folder_results
 		return results
@@ -532,6 +587,13 @@ class Sources():
 				episode_data = [i for i in episodes_data if i['episode'] == self.episode][0]
 				ep_thumb = episode_data.get('thumb', None) or self.meta.get('fanart') or ''
 				episode_type = episode_data.get('episode_type', '')
+				# LOTTO 208 -- la durata dell'episodio era gia' qui dentro e si buttava via. `self.meta`
+				# e' la scheda della SERIE, la cui `duration` nasce da `min(episode_run_time)*60`
+				# (metadata.py:902): un campo che TMDb ha deprecato e che su 334 serie in cache manca
+				# 256 volte (77%), senza nessun rapporto con l'anno. Quando manca vale 0, e
+				# filter_results ripiegava su 2400 s fissi. La durata per episodio invece c'e'
+				# sempre: zero valori nulli in tutte le stagioni in cache.
+				self.meta.update({'duration_episodio': episode_data.get('duration') or 0})
 				self.meta.update({'season': episode_data['season'], 'episode': episode_data['episode'], 'premiered': episode_data['premiered'], 'episode_type': episode_type,
 								'ep_name': episode_data['title'], 'ep_thumb': ep_thumb, 'plot': episode_data['plot'], 'tvshow_plot': self.meta['plot'],
 								'custom_season': self.custom_season, 'custom_episode': self.custom_episode})
@@ -670,6 +732,9 @@ class Sources():
 					try:
 						if self.progress_dialog.iscanceled() or monitor.abortRequested(): break
 						url = self.resolve_sources(item)
+						# La posizione nell'elenco serve alla riga di diagnosi: senza, non si sa
+						# quante sorgenti Fen Light abbia provato prima di arrivare a quella buona.
+						self._posizione_sorgente = '%02d/%02d' % (count, len(items))
 						if url:
 							# LOTTO 195 :: sonda della banda STACCATA definitivamente. Due versioni, due sessioni di
 							# prova, otto riproduzioni: non predice. La v2 avrebbe scartato Evil Dead (regime 3,39
@@ -677,12 +742,26 @@ class Sources():
 							# consegnasse 11,16 Mbit/s riempiendo la cache al 99%. La sonda misura una connessione
 							# diversa da quella che riproduce, e la varianza fra due connessioni allo stesso nodo
 							# (3,3x misurata) e' piu' grande del segnale cercato. Codice e diagnosi in band_probe.py.
+							# LOTTO 204 :: la lettura dell'intestazione parte QUI, non dentro il player.
+							# Il suo costo e' quasi tutto andata e ritorno (343 ms di solo ttfb misurati su
+							# questo cdn), e le tre righe qui sotto -- due aggiornamenti della finestra piu'
+							# un sleep(200) -- sono tempo che passa comunque. Avviandola prima, quel tempo si
+							# paga una volta sola. Se fallisce non cambia niente: player.run rilegge da se'.
+							try:
+								from modules import stream_header
+								stream_header.avvia(url)
+							except: pass
 							resolve_percent = 0
 							self.progress_dialog.busy_spinner('false')
 							self.progress_dialog.update_resolver(percent=resolve_percent)
 							sleep(200)
 							player.run(url, self)
-						else: continue
+						else:
+							# Prima taceva. Era il buco per cui, l'08/09, di tre sorgenti provate se ne
+							# vedeva una sola nel log.
+							nota_sorgente(item, 'SCARTATA', 'non risolta',
+										  'il provider non ha restituito nessun link', self._posizione_sorgente)
+							continue
 						if self.cancel_all_playback: break
 						if self.playback_successful: break
 						if count == len(items):
