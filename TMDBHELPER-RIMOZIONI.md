@@ -617,3 +617,45 @@ Rinominarla e' un lotto a se'.
 
 Riferimenti `themoviedb.helper` in `1080i/`: **8**, invariati -- sono tutti in
 `Dialog_DialogCustom.xml` e vanno con il lotto D.
+
+---
+
+## Lotto 9 -- il menu contestuale, i suoi ultimi rami morti (lotto 215)
+
+Richiesta dell'utente dopo la prova del lotto 214: *"togli dal menu contestuale tutti i rami relativi
+a tmdb helper, non li usiamo"*.
+
+| dove | cosa | regola applicata |
+|---|---|---|
+| `Dialog_DialogContextMenu.xml` | voce **Trama** (`$LOCALIZE[207]` -> `ActivateWindow(1113)`) | **voce rimossa**: `<visible>` su `base_plot`, senza scrittore |
+| `Dialog_DialogContextMenu.xml` | voce **Wiki** | **voce rimossa**: `<visible>` su `base_title`, senza scrittore, e `script.wikipedia` non e' installato |
+| `Dialog_DialogContextMenu.xml` | `DialogContextMenu_Wiki_Title`, `DialogContextMenu_Wiki_Type` | **eliminate**: leggevano `base_tvshowtitle`/`base_title`/`base_dbtype` e il loro unico consumatore era la voce Wiki |
+| `Dialog_DialogContextMenu.xml` | i due `<selected>$EXP[Exp_TMDbHelper_IsData]</selected>` | via con le voci che li contenevano (erano due dei 21 gate costanti-veri segnalati dal lotto 152) |
+| `Dialog_DialogContextMenu.xml` | `square_icon`/`c_logo_icon` di `DialogPlot_Artwork` | **sovrascritti a vuoto in loco**: i default sono `TMDbHelper.ListItem.Base_Icon` e `Base_Clearlogo`, senza scrittore. I default restano nel loro file perche' sono il contratto di un include condiviso con la scheda trama e con `DialogSelect` |
+
+### Perche' la voce Trama non e' stata invece riparata
+
+Non era solo nascosta: era anche **senza destinazione**. Il dialogo 1113 che apriva compone il testo
+con `Label_Overlay_PlotBox`, e le sue sei parti (tagline, trama, critica, regia, sceneggiatura, cast)
+stanno tutte dietro `!$EXP[Exp_TMDbHelper_IsData]`, che il **lotto 152** ha congelato a costante
+falsa. Il pannello si sarebbe aperto vuoto. Sono esattamente i *"12 rami `!$EXP[Exp_TMDbHelper_IsData]`
+ora costanti-falsi"* che quel lotto aveva segnalato come decisione a se': **questa e' la decisione,
+presa per i due che vivevano nel menu contestuale**. Gli altri restano dove sono.
+
+Il dialogo 1113 non e' orfano: resta raggiungibile da `Includes_DialogInfo.xml:1027` (scheda info).
+
+### Cosa NON e' stato tolto, e non e' un'omissione
+
+`TMDbHelper.ListItem.base_label` e `base_poster` **restano**, e sono le due proprieta' su cui poggia
+l'intestazione del menu. Nonostante il nome **non sono di TMDbHelper**: le scrive la skin, in
+`Includes_Lists.xml:671-681`, e sono l'unico modo di sapere quale elemento e' a fuoco nelle finestre
+a widget, dove `ListItem` nudo non vede dentro i contenitori (lotto 214). Toglierle spegnerebbe
+l'intestazione su home, hub e ricerca, cioe' proprio dove funziona.
+
+Stesso discorso per `TMDbHelper.WidgetContainer`, gia' registrato nel lotto 8: nome vecchio,
+meccanismo vivo e tutto della skin. Il lotto 215 ne aggiunge un consumatore (il pannello episodi
+della vista Combined). **Rinominare le tre resta un lotto a se'**, ed e' l'ultima cosa che tiene il
+nome TMDbHelper dentro questo file.
+
+Riferimenti `themoviedb.helper` in `1080i/`: **8**, invariati (sempre `Dialog_DialogCustom.xml`,
+lotto D).

@@ -26929,3 +26929,259 @@ riceverebbero il codice nuovo a parita' di numero), rigenerare con `generate_rep
 Aperto e da confermare al prossimo avvio della stick: che `script.skinvariables` rigeneri da solo il
 `script-skinvariables-generator-includes-.xml` cancellato stasera, e che la home torni quella
 configurata nei `.json` di `addon_data` invece che quella dei template.
+
+---
+
+## Lotto 214 -- Il menu contestuale mostrava l'ultimo film a fuoco su cartelle e addon
+
+Sintomo dell'utente: tenendo premuto su una cartella di Fen Light (Film, Serie TV...) o su un addon,
+il menu contestuale si apre con **nome e poster dell'ultimo media che aveva avuto il fuoco**. Su un
+elemento che non e' un media non ha nessun senso: tenendo premuto sulla propria repository il dialogo
+si chiamava come un film. Scorrendo fra i media, invece, sembrava giusto.
+
+### Le due proprieta' e il loro unico scrittore
+
+L'intestazione e lo spazio artwork del dialogo leggono due proprieta' di `Window(Home)`:
+
+```
+Dialog_DialogContextMenu.xml:5   $VAR[DialogContextMenu_HeaderLabel] -> TMDbHelper.ListItem.base_label
+Dialog_DialogContextMenu.xml:9   $EXP[DialogContextMenu_HasArtwork]  -> TMDbHelper.ListItem.base_poster
+Dialog_DialogContextMenu.xml:64  <param name="poster_icon">         -> TMDbHelper.ListItem.base_poster
+```
+
+Sono uno **stato ricordato**, non l'elemento a fuoco. In tutta la skin le scrive un solo posto:
+
+```
+Includes_Lists.xml:671-681   List_Widget_Row_HiddenButton_OnFocus   <- l'onfocus del pulsante nascosto
+```
+
+e quell'include lo usano soltanto le finestre a widget: Home, gli hub 1101-1104, la ricerca 1105 e gli
+addons 1108 e le impostazioni 1109 (l'esito esatto di `grep -l Hub_Onload 1080i/*.xml`). Le viste della finestra media non lo usano mai:
+`grep hidden_button Includes_Views*.xml` non restituisce niente, e nella vista Combined
+`Categories_Selector` viene incluso senza `hidden_button_enabled`, che di suo vale `false`.
+
+L'altro scrittore storico era il ciclo di `blur_service.py`, che le ripubblicava dal vivo. **E' spento
+dal lotto 48** (`service.py:1100`, la riga `Thread(target=self._delayed_blur_start).start()` e'
+commentata per il crash da avvio sulla stick). Il commento di `Includes_Lists.xml` lo diceva gia':
+*"E NESSUNO RIMEDIA PIU'"*.
+
+Quindi: **fuori dalle finestre a widget nessuno riscrive quelle due proprieta'**. Restano quelle
+dell'ultimo elemento di widget messo a fuoco, e il menu contestuale le mostra su qualunque cosa.
+
+### Il log, che e' esattamente il caso descritto
+
+Sessione del 09/09 sul Mac (`~/Library/Logs/kodi.log`):
+
+```
+19:38:48.959  Activating window ID: 10025      <- da Home alla finestra Video (MyVideoNav)
+19:38:53.104  HandleKey: long-return pressed, window 10025, action is ContextMenu
+19:38:53.110  ...?action=MovieList&mode=navigator.main&name=Movies     <- l'elemento e' la CARTELLA "Movies"
+19:38:53.117  ------ Window Init (DialogContextMenu.xml) ------
+```
+
+e il secondo caso, l'addon browser:
+
+```
+19:41:27.721  ------ Window Init (AddonBrowser.xml) ------             <- finestra 10040
+19:41:30.970  ------ Window Init (DialogContextMenu.xml) ------
+```
+
+In mezzo, fra le 19:38:48 e le 19:41:30, **nessuna scrittura di `base_label` o `base_poster`**: non
+puo' essercene, l'unico scrittore vive su Home e Home era stata lasciata alle 19:38:48.
+
+Questo spiega anche la differenza fra i due dispositivi segnalata dall'utente (sulla stick gli addon
+"sembravano corretti", sul Mac no): non e' una differenza di piattaforma, e' quale valore era rimasto
+appeso. Su una sessione dove l'ultimo elemento a fuoco non aveva poster, `base_poster` era stata
+cancellata dall'onfocus e il dialogo usciva nella forma stretta, per caso giusta.
+
+E spiega perche' "scorrendo fra i media sembra giusto": nelle finestre a widget lo stato ricordato
+**e'** l'elemento a fuoco, l'onfocus lo riscrive a ogni spostamento. Il difetto non e' che lo stato
+sia sbagliato, e' che veniva usato anche dove non e' mai stato aggiornato.
+
+### La correzione: chiedere all'elemento, non al ricordo
+
+Nelle finestre media il ricordo non serve, perche' un elemento corrente vero c'e': sono
+`CGUIMediaWindow`, e dentro il dialogo `ListItem` nudo risolve proprio su quello. Non e' una
+scommessa: e' la stessa risoluzione su cui gia' oggi si regge `<visible>ListItem.IsFolder</visible>`
+nelle voci di questo stesso menu, ed e' la stessa che il lotto 64 aveva misurato dal lato Python
+(*"dentro la finestra Video `ListItem` nudo risolve sul contenitore della finestra"*).
+
+Un'espressione nuova separa i due casi (`Includes_Expressions.xml`):
+
+```xml
+<expression name="Exp_ContextMenu_UsesBaseProperties">[Window.IsVisible(home) | Window.IsVisible(1101)
+  | Window.IsVisible(1102) | Window.IsVisible(1103) | Window.IsVisible(1104) | Window.IsVisible(1105)
+  | Window.IsVisible(1108) | Window.IsVisible(1109)]</expression>
+```
+
+L'elenco non e' una scelta di gusto: e' **esattamente** l'esito di `grep -l Hub_Onload 1080i/*.xml`,
+cioe' le finestre in cui l'elemento visibile sta in un contenitore che non ha il fuoco (il fuoco ce
+l'ha il pulsante nascosto) e `ListItem` nudo non lo vede. Se un domani una finestra nuova adottasse le
+righe widget va aggiunta qui, altrimenti il suo menu contestuale perde l'intestazione.
+
+`Dialog_DialogContextMenu.xml` diventa:
+
+| | finestre a widget | finestre media | il resto |
+|---|---|---|---|
+| intestazione | `base_label` (come prima) | `ListItem.Label` dal vivo | `$LOCALIZE[10106]` |
+| poster | `base_poster` (come prima) | `ListItem.Art(poster)`, poi `Art(tvshow.poster)` | vuoto |
+| forma del dialogo | invariata | stretta se non c'e' poster | stretta |
+
+Il poster e' stato estratto in `$VAR[DialogContextMenu_Poster]` perche' `poster_icon` lo vuole come
+valore singolo, e `DialogContextMenu_HasArtwork` ora interroga la stessa sorgente dell'immagine: le
+due non possono piu' discordare. Su una cartella o un addon il ramo dal vivo esce vuoto,
+l'espressione e' falsa e il dialogo si monta in `Dimension_DialogMiniMenu` senza spazio artwork --
+che e' il comportamento giusto quando non c'e' niente da mostrare.
+
+Il ramo delle finestre a widget e' rimasto **identico byte per byte** nella sostanza: li' funzionava,
+e questo lotto non lo tocca.
+
+### Costo
+
+Zero sulla costruzione delle liste e zero a runtime fuori dal dialogo: sono condizioni valutate solo
+mentre il menu contestuale e' aperto, e leggono l'elemento gia' in memoria. Nessun servizio riacceso,
+nessun poll: `blur_service` resta spento.
+
+### Cosa questo lotto NON ha corretto
+
+Trovato per strada e lasciato dov'era, perche' e' un'altra domanda:
+
+1. **`base_title`, `base_plot`, `base_tvshowtitle`, `base_year`, `base_dbtype` non le scrive nessuno.**
+   Un `grep` su tutto il repo trova solo letture. Sono le condizioni di visibilita' delle voci
+   *Informazioni* (`$LOCALIZE[207]` -> `ActivateWindow(1113)`) e *Wiki* del vassoio: essendo sempre
+   vuote, quelle due voci **non compaiono mai**. Erano alimentate da TMDbHelper.
+2. **Vista Combined**: con il fuoco sul pannello episodi, l'elemento corrente della finestra resta la
+   lista stagioni, quindi l'intestazione mostrera' la stagione invece dell'episodio. E' il difetto 1
+   del lotto 64, che la correzione di allora aveva messo in `blur_service` -- spento dal lotto 48.
+   Prima di questo lotto li' usciva un elemento della home, che era peggio; ora esce il genitore.
+   Kodi non risolve `Container($INFO[...])`, quindi sistemarlo vuol dire o la catena di id letterali
+   in stile `Image_Foreground_NoService`, o riaccendere un pubblicatore.
+
+### L'unica cosa non provata, e perche' sbagliarla non fa danni
+
+Che dentro il dialogo `ListItem` nudo raggiunga l'elemento della finestra media sotto non e' stato
+misurato in questa sessione. Le prove indirette sono buone -- il lotto 64 lo misuro' dal lato Python
+sullo stesso percorso di risoluzione (contesto = finestra attiva), e la voce *Aggiungi al menu* di
+questo stesso dialogo si regge su `ListItem.IsFolder` -- ma restano indirette.
+
+**La correzione e' scritta perche' l'esito peggiore sia comunque accettabile.** Se `ListItem` non
+risolvesse, nelle finestre media il ramo dal vivo esce vuoto e si cade sull'ultimo valore:
+intestazione `$LOCALIZE[10106]` (*Menu contestuale*) e dialogo stretto senza artwork. Cioe' un titolo
+generico invece di un titolo sbagliato. In nessuno dei due esiti puo' ricomparire il film di prima:
+quel ramo, fuori dalle finestre a widget, non viene piu' letto.
+
+Al primo test si distinguono a occhio: **nome della cartella** = `ListItem` risolve; **"Menu
+contestuale"** = non risolve, e allora l'unica strada e' un pubblicatore (riaccendere quel pezzo di
+`blur_service` fuori dalla finestra d'avvio, o le righe widget anche nelle viste).
+
+### Da verificare sul campo
+
+Aprire il menu contestuale su: (a) una cartella di Fen Light nella finestra Video, deve uscire il
+nome della cartella, dialogo stretto, nessun poster; (b) un addon nell'Addon Browser, idem; (c) un
+film dentro una lista di Fen Light, nome e poster del film a fuoco; (d) un elemento di un widget
+della home, invariato rispetto a prima. Le due XML toccate passano il controllo di forma su tutti e
+158 i file di `1080i/`.
+
+Niente e' stato consegnato a nessun dispositivo: nessuna versione alzata, nessuno zip rigenerato,
+nessun commit. Sul Mac serve `deploy_local.py` e un riavvio di Kodi -- un XML copiato a Kodi gia'
+avviato non esiste per quella sessione.
+
+---
+
+## Lotto 215 -- Menu contestuale: via i rami morti, e la Combined che nominava la stagione
+
+Due richieste dell'utente dopo la prova sul campo del lotto 214, che sul Mac ha dato l'esito buono:
+sulle cartelle e sugli addon esce il **nome dell'elemento**, quindi `ListItem` nudo dentro il dialogo
+risolve davvero sulla finestra media sotto. La premessa non provata del lotto 214 e' quindi confermata
+dall'uso, e tutto quello che segue ci si appoggia.
+
+*(Il log di quella sessione non e' piu' leggibile: `~/Library/Logs/kodi.log` era gia' stato
+sovrascritto dall'avvio delle 20:01 e su questo Mac non esiste un `kodi.old.log`. La conferma e'
+dell'utente, non del log.)*
+
+### 1. I rami TMDbHelper tolti dal menu
+
+Dettaglio per riga in [TMDBHELPER-RIMOZIONI.md](TMDBHELPER-RIMOZIONI.md), lotto 9. In sintesi: via le
+voci **Trama** e **Wiki** del vassoio (entrambe con `<visible>` su proprieta' che nessuno scrive, e la
+seconda puntava a `script.wikipedia`, che non e' installato), via le due variabili `Wiki_*` che
+servivano solo alla seconda, e sovrascritti a vuoto i due `<param>` artwork che ereditavano
+`Base_Icon`/`Base_Clearlogo`.
+
+Il punto meno ovvio e' **perche' la voce Trama non e' stata riparata invece che tolta**: il dialogo
+1113 che apriva e' vuoto a sua volta. Le sei parti di `Label_Overlay_PlotBox` stanno tutte dietro
+`!$EXP[Exp_TMDbHelper_IsData]`, costante **falsa** da quando il lotto 152 ha congelato quella
+espressione a `[true]`. Riparare la `<visible>` avrebbe prodotto una voce che apre un pannello bianco.
+
+**Restano** `base_label`, `base_poster` e `WidgetContainer`: hanno il nome di TMDbHelper ma le scrive
+la skin, e sono il meccanismo su cui poggia l'intestazione nelle finestre a widget. Toglierle
+spegnerebbe il menu proprio dove funziona. Il rinominarle e' un lotto a se'.
+
+### 2. Vista Combined: l'intestazione mostrava la stagione invece dell'episodio
+
+E' il difetto 1 del **lotto 64**, rimasto aperto da quando il lotto 48 ha spento `blur_service`, dove
+viveva la sua correzione. L'utente lo ha chiesto pur non usando quella vista.
+
+La causa e' precisa: nella Combined la finestra media espone come elemento corrente la lista
+**stagioni** (il suo view control), mentre il fuoco puo' stare sul pannello **episodi**, che e' un
+contenitore della skin alimentato da `<content>` e non fa parte del view control. `ListItem` nudo --
+che il lotto 214 ha appena messo a leggere l'elemento della finestra -- prende quindi la stagione.
+
+Chi ha il fuoco lo dichiara gia' il pannello stesso:
+
+```xml
+Includes_Views_Combined.xml:123   <onfocus>SetProperty(TMDbHelper.WidgetContainer,53$PARAM[id])</onfocus>
+Includes_Views_Combined.xml:173   <onfocus>ClearProperty(TMDbHelper.WidgetContainer)</onfocus>   (selettore stagioni)
+```
+
+Il dialogo ora la rilegge. Tre dettagli che fanno la differenza fra funzionare e no:
+
+- **la finestra va nominata.** `Window.Property(x)` senza id, dentro un dialogo, interroga il dialogo.
+  Serve `Window(videos).Property(...)`, che e' la stessa forma di `Window(Home).Property(...)` gia' in
+  uso qui e che funziona.
+- **gli id sono letterali**, perche' Kodi non risolve `Container($INFO[...])`: e' la ragione per cui
+  `Image_Foreground_NoService` e' lunga cinquanta righe. I sei possibili sono `530-534` e `538`, cioe'
+  `53$PARAM[id]` per gli id `0-4` e `8` di `View_Combined_Row_Horz_Selector` e `..._List_Horz_Selector`.
+- **ogni riga porta anche `!String.IsEmpty(Container(53X).ListItem...)`.** Se `Container(id)` non si
+  risolvesse dallo scope del dialogo -- l'unica cosa qui dentro che non e' verificata -- la condizione
+  e' falsa e si ricade sul ramo generico, cioe' sul comportamento di oggi. **Puo' migliorare, non puo'
+  peggiorare**, ed e' lo stesso criterio con cui e' stato scritto il lotto 214.
+
+Solo `Window(videos)`: la Combined con stagioni ed episodi e' una vista video. `MyPrograms` usa gli
+stessi include, ma li' il pannello elenca cartelle di addon e ricade sul ramo generico.
+
+### 3. Il ricordo che sarebbe rimasto appeso
+
+`TMDbHelper.WidgetContainer` e' una proprieta' della **finestra**, e l'oggetto finestra sopravvive al
+`Window Deinit`. Uscendo dalla Combined col fuoco ancora sul pannello, il valore restava scritto: da
+solo non si vedeva, ma **da questo lotto in poi il menu contestuale lo legge**, ed e' esattamente la
+forma del difetto che il lotto 214 ha appena chiuso. Sarebbe stato reintrodurlo da un'altra porta.
+
+Chiuso alla sorgente, in `Action_Media_Onload` ([Includes_Actions.xml](skin.arctic.fuse.3/1080i/Includes_Actions.xml)),
+che e' gia' il posto dove le finestre media azzerano lo stato di finestra all'ingresso:
+
+```xml
+<onload>ClearProperty(TMDbHelper.WidgetContainer)</onload>
+```
+
+Il fuoco all'ingresso va sul controllo 500, la vista principale, quindi vuota e' anche la risposta
+giusta. Vale per `MyVideoNav`, `MyPrograms` e `MyPlaylist`, i tre che includono quell'azione.
+
+### Verifiche
+
+- Forma XML su tutti e **158** i file di `1080i/`: zero errori.
+- **Simboli confrontati con `HEAD`** (la regola sta in memoria: una riscrittura puo' cancellare
+  definizioni lasciando l'XML valido). Perse: `DialogContextMenu_Wiki_Title` e
+  `DialogContextMenu_Wiki_Type`, **le due volute**. Nuove: `DialogContextMenu_Poster`,
+  `DialogContextMenu_CombinedPanel_HasArtwork`, `Exp_ContextMenu_UsesBaseProperties`.
+- Orfani: `grep` su tutto l'albero, nessun consumatore superstite delle due variabili eliminate.
+- `Includes_Actions.xml`: nessuna definizione toccata, solo una riga aggiunta dentro un include
+  esistente.
+
+### Da provare sul dispositivo
+
+Il vassoio del menu contestuale deve avere le stesse voci di prima (Trama e Wiki non si vedevano
+comunque). Nella vista Combined, menu contestuale con il fuoco sul pannello episodi: deve uscire il
+nome dell'**episodio**; se esce quello della stagione, `Container(id)` non si risolve dal dialogo e la
+strada e' un pubblicatore, non una condizione.
+
+Niente consegnato: nessuna versione alzata, nessuno zip rigenerato, nessun commit.
