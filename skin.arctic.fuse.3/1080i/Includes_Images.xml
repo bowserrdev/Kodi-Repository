@@ -281,7 +281,27 @@
         <value condition="Integer.IsEqual(Window(Home).Property(TMDbHelper.WidgetContainer),550)">$INFO[Container(550).ListItem.Art(fanart)]</value>
     </variable>
 
+    <!-- LOTTO 212. I cinque valori in testa valgono solo per la ricerca testuale e sono li' perche'
+         tutto il resto di questa variabile risponde alla domanda sbagliata quando la finestra non e' la
+         Home:
+           - il primo valore di Image_Foreground_NoService legge Container.ListItem, cioe' il contenitore
+             CHE HA IL FUOCO. Nella 1105 il fuoco sta nella barra di ricerca finche' l'utente non scende
+             nella riga, quindi all'arrivo dei risultati non c'e' nessuna landscape; e spostando il fuoco
+             sul nome del widget ('Film', contenitore 601) l'elemento a fuoco diventa la linguetta, che
+             non ha fanart -> l'immagine spariva. Sono i due difetti segnalati dall'utente.
+           - la catena numerata sotto legge Window(HOME).Property(TMDbHelper.WidgetContainer), mentre chi
+             la scrive (Hub_Combined_Widget e la linguetta, via SetProperty senza finestra) la scrive
+             sulla finestra CORRENTE, che qui e' la 1105. Su Home le due coincidono e infatti li' funziona.
+         La risposta giusta senza fuoco e' la stessa usata dal pannello info: in combinata e' visibile un
+         solo row della ricerca, quello della linguetta selezionata. Vedi Hub_Combined_Info.
+         Gli id sono letterali per la ragione di sempre (Kodi non risolve Container($INFO[...])) e
+         l'intervallo 502-506 e' quello di Exp_Search_Row_Spinner. -->
     <variable name="Image_Foreground">
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(502)">$INFO[Container(502).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(503)">$INFO[Container(503).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(504)">$INFO[Container(504).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(505)">$INFO[Container(505).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(506)">$INFO[Container(506).ListItem.Art(fanart)]</value>
         <value condition="$EXP[Exp_BackgroundArtwork_IsSimple]">$INFO[Window(Home).Property(TMDbHelper.SimpleBackground.BlurImage.Original)]</value>
         <value condition="!$EXP[Exp_TMDbHelper_IsBlur]">$VAR[Image_Foreground_NoService]</value>
         <value condition="!String.IsEmpty(Window.Property(TMDbHelper.ListItem.BlurImage.Original))">$INFO[Window.Property(TMDbHelper.ListItem.BlurImage.Original)]</value>
@@ -518,60 +538,6 @@
         <value condition="ListItem.IsRecording">indicator/record.png</value>
         <value condition="ListItem.HasTimer">indicator/timer.png</value>
         <value condition="ListItem.IsPlayable + !Skin.HasSetting(Indicator.DisablePVRGuideCatchUp)">indicator/library.png</value>
-    </variable>
-
-    <variable name="Image_OSD_UpNext_Playlist_Landscape">
-        <value condition="!Integer.IsLess(VideoPlayer.PlaylistPosition,VideoPlayer.PlaylistLength)">$VAR[Image_Landscape_LIA_C450_0]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,1)">$VAR[Image_Landscape_LIA_C450_1]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,2)">$VAR[Image_Landscape_LIA_C450_2]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,3)">$VAR[Image_Landscape_LIA_C450_3]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,4)">$VAR[Image_Landscape_LIA_C450_4]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,5)">$VAR[Image_Landscape_LIA_C450_5]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,6)">$VAR[Image_Landscape_LIA_C450_6]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,7)">$VAR[Image_Landscape_LIA_C450_7]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,8)">$VAR[Image_Landscape_LIA_C450_8]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,9)">$VAR[Image_Landscape_LIA_C450_9]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,10)">$VAR[Image_Landscape_LIA_C450_10]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,11)">$VAR[Image_Landscape_LIA_C450_11]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,12)">$VAR[Image_Landscape_LIA_C450_12]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,13)">$VAR[Image_Landscape_LIA_C450_13]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,14)">$VAR[Image_Landscape_LIA_C450_14]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,15)">$VAR[Image_Landscape_LIA_C450_15]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,16)">$VAR[Image_Landscape_LIA_C450_16]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,17)">$VAR[Image_Landscape_LIA_C450_17]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,18)">$VAR[Image_Landscape_LIA_C450_18]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,19)">$VAR[Image_Landscape_LIA_C450_19]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,20)">$VAR[Image_Landscape_LIA_C450_20]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,21)">$VAR[Image_Landscape_LIA_C450_21]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,22)">$VAR[Image_Landscape_LIA_C450_22]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,23)">$VAR[Image_Landscape_LIA_C450_23]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,24)">$VAR[Image_Landscape_LIA_C450_24]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,25)">$VAR[Image_Landscape_LIA_C450_25]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,26)">$VAR[Image_Landscape_LIA_C450_26]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,27)">$VAR[Image_Landscape_LIA_C450_27]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,28)">$VAR[Image_Landscape_LIA_C450_28]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,29)">$VAR[Image_Landscape_LIA_C450_29]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,30)">$VAR[Image_Landscape_LIA_C450_30]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,31)">$VAR[Image_Landscape_LIA_C450_31]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,32)">$VAR[Image_Landscape_LIA_C450_32]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,33)">$VAR[Image_Landscape_LIA_C450_33]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,34)">$VAR[Image_Landscape_LIA_C450_34]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,35)">$VAR[Image_Landscape_LIA_C450_35]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,36)">$VAR[Image_Landscape_LIA_C450_36]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,37)">$VAR[Image_Landscape_LIA_C450_37]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,38)">$VAR[Image_Landscape_LIA_C450_38]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,39)">$VAR[Image_Landscape_LIA_C450_39]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,40)">$VAR[Image_Landscape_LIA_C450_40]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,41)">$VAR[Image_Landscape_LIA_C450_41]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,42)">$VAR[Image_Landscape_LIA_C450_42]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,43)">$VAR[Image_Landscape_LIA_C450_43]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,44)">$VAR[Image_Landscape_LIA_C450_44]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,45)">$VAR[Image_Landscape_LIA_C450_45]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,46)">$VAR[Image_Landscape_LIA_C450_46]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,47)">$VAR[Image_Landscape_LIA_C450_47]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,48)">$VAR[Image_Landscape_LIA_C450_48]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,49)">$VAR[Image_Landscape_LIA_C450_49]</value>
-        <value condition="Integer.IsEqual(VideoPlayer.PlaylistPosition,50)">$VAR[Image_Landscape_LIA_C450_50]</value>
     </variable>
 
 

@@ -448,6 +448,16 @@
                         <param name="icon">$PARAM[icon]</param>
                     </include>
                     <control type="panel" id="$PARAM[id]">
+                        <!-- LOTTO 183, passo 3.4 :: mai mostrare le tracce del media precedente.
+                             Un CDirectoryProvider ricarica in sottofondo e nel frattempo tiene a schermo
+                             gli elementi che aveva. Misurato il 07/09: Init 1146 alle 14:04:29.041, dati
+                             freschi alle 14:04:29.685, cioe' 644 ms di lista vecchia visibile. Prima della
+                             correzione della chiave quella lista vecchia ci restava per sempre quando le
+                             chiavi collidevano; ora si ricarica, ma il ricambio si vede.
+                             La lista si spegne mentre il contenitore aggiorna: si vede il vuoto, non il
+                             dato sbagliato. IsUpdating e' gia' usato altrove nella skin
+                             (Custom_1193_VideoOSDInfo.xml:24), non e' una novita' non provata. -->
+                        <animation effect="fade" start="100" end="0" time="100" condition="Container($PARAM[id]).IsUpdating" reversible="true">Conditional</animation>
                         <top>140</top>
                         <bottom>40</bottom>
                         <ondown>$PARAM[buttonid]</ondown>
@@ -1066,16 +1076,31 @@
         </control>
     </include>
 
+    <!-- LOTTO 185, punto 3.3 :: il bottone finto chiudeva "il dialogo in cima allo stack"
+         (builtin Close) invece del proprio. Quando due frecce arrivano nello stesso frame
+         (cosa che succede sempre tenendo premuto, o quando la coda si e' accumulata durante
+         un caricamento pigro) il primo Close chiude il dialogo compagno e il secondo,
+         valutato quando in cima c'e' ormai la VideoOSD, chiude la VideoOSD stessa.
+         Da li' in poi la freccia arriva al player e manda avanti il film.
+         Prova nel log del 07/09: 15:30:05.725 e .726 due frecce su 11148, 15:30:05.759
+         Deinit 1148, 15:30:05.799 inizia la chiusura della VideoOSD (fade WindowClose da
+         300 ms, VideoOSD.xml riga 6) durante la quale Kodi scarta ogni azione
+         ("ignoring action 2, because topmost modal dialog closing animation is running",
+         7 di fila), 15:30:06.104 Deinit VideoOSD, 15:30:06.176 StepForward sul film.
+         Dialog.Close(id) e' idempotente: sul dialogo gia' chiuso non fa nulla. -->
     <include name="OSD_CustomDialog_FakeButton">
-        <control type="button" id="600$PARAM[id]">
-            <width>80</width>
-            <texturefocus />
-            <texturenofocus />
-            <font />
-            <label />
-            <onfocus>Close</onfocus>
-            <onfocus>SetFocus(600$PARAM[id])</onfocus>
-        </control>
+        <param name="dialog_id">0</param>
+        <definition>
+            <control type="button" id="600$PARAM[id]">
+                <width>80</width>
+                <texturefocus />
+                <texturenofocus />
+                <font />
+                <label />
+                <onfocus>Dialog.Close($PARAM[dialog_id])</onfocus>
+                <onfocus>SetFocus(600$PARAM[id])</onfocus>
+            </control>
+        </definition>
     </include>
 
     <include name="OSD_CustomDialog_RealButton">
@@ -1099,6 +1124,7 @@
     </include>
 
     <include name="OSD_CustomDialog_GroupList">
+        <param name="dialog_id">0</param>
         <param name="button_1">false</param>
         <param name="button_2">false</param>
         <param name="button_3">false</param>
@@ -1119,11 +1145,19 @@
                 <itemgap>osd_itemgap</itemgap>
                 <align>left</align>
 
-                <onleft>6005</onleft>
-                <onright>6008</onright>
+                <!-- LOTTO 185, punto 3.3 :: la fila vera nella VideoOSD e' circolare in due
+                     grouplist: 6091 (6001-6004) ha onleft 6008 / onright 6005, 6092 (6005-6008)
+                     ha onleft 6004 / onright 6001. Qui gli 8 bottoni stanno in UN solo grouplist,
+                     quindi l'avvolgimento corretto e' 6008 a sinistra e 6001 a destra.
+                     Era 6005/6008: premendo a destra oltre l'ultimo si finiva sull'ULTIMO
+                     bottone invece che sul primo. E' il salto visto nel log alle 15:29:09.588,
+                     dove quattro frecce arrivate in 2 ms su 11143 producono Init 1148. -->
+                <onleft>6008</onleft>
+                <onright>6001</onright>
 
                 <include content="OSD_CustomDialog_FakeButton" condition="![$PARAM[button_1]]">
                     <param name="id">1</param>
+                    <param name="dialog_id">$PARAM[dialog_id]</param>
                 </include>
                 <include content="OSD_CustomDialog_RealButton" condition="$PARAM[button_1]">
                     <param name="id">1</param>
@@ -1138,6 +1172,7 @@
 
                 <include content="OSD_CustomDialog_FakeButton" condition="![$PARAM[button_2]]">
                     <param name="id">2</param>
+                    <param name="dialog_id">$PARAM[dialog_id]</param>
                 </include>
                 <include content="OSD_CustomDialog_RealButton" condition="$PARAM[button_2]">
                     <param name="id">2</param>
@@ -1152,6 +1187,7 @@
 
                 <include content="OSD_CustomDialog_FakeButton" condition="![$PARAM[button_3]]">
                     <param name="id">3</param>
+                    <param name="dialog_id">$PARAM[dialog_id]</param>
                 </include>
                 <include content="OSD_CustomDialog_RealButton" condition="$PARAM[button_3]">
                     <param name="id">3</param>
@@ -1166,6 +1202,7 @@
 
                 <include content="OSD_CustomDialog_FakeButton" condition="![$PARAM[button_4]]">
                     <param name="id">4</param>
+                    <param name="dialog_id">$PARAM[dialog_id]</param>
                 </include>
                 <include content="OSD_CustomDialog_RealButton" condition="$PARAM[button_4]">
                     <param name="id">4</param>
@@ -1193,6 +1230,7 @@
 
                 <include content="OSD_CustomDialog_FakeButton" condition="![$PARAM[button_5]]">
                     <param name="id">5</param>
+                    <param name="dialog_id">$PARAM[dialog_id]</param>
                 </include>
                 <include content="OSD_CustomDialog_RealButton" condition="$PARAM[button_5]">
                     <param name="id">5</param>
@@ -1207,6 +1245,7 @@
 
                 <include content="OSD_CustomDialog_FakeButton" condition="![$PARAM[button_6]]">
                     <param name="id">6</param>
+                    <param name="dialog_id">$PARAM[dialog_id]</param>
                 </include>
                 <include content="OSD_CustomDialog_RealButton" condition="$PARAM[button_6]">
                     <param name="id">6</param>
@@ -1221,6 +1260,7 @@
 
                 <include content="OSD_CustomDialog_FakeButton" condition="![$PARAM[button_7]]">
                     <param name="id">7</param>
+                    <param name="dialog_id">$PARAM[dialog_id]</param>
                 </include>
                 <include content="OSD_CustomDialog_RealButton" condition="$PARAM[button_7]">
                     <param name="id">7</param>
@@ -1235,6 +1275,7 @@
 
                 <include content="OSD_CustomDialog_FakeButton" condition="![$PARAM[button_8]]">
                     <param name="id">8</param>
+                    <param name="dialog_id">$PARAM[dialog_id]</param>
                 </include>
                 <include content="OSD_CustomDialog_RealButton" condition="$PARAM[button_8]">
                     <param name="id">8</param>

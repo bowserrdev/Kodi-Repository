@@ -8,7 +8,7 @@ from caches.settings_cache import get_setting, set_setting, set_default, default
 from modules.downloader import manager
 from modules import kodi_utils, settings, metadata
 from modules.source_utils import clear_scrapers_cache, get_aliases_titles, make_alias_dict, audio_filter_choices, source_filters
-from modules.utils import get_datetime, title_key, adjust_premiered_date, append_module_to_syspath, manual_module_import
+from modules.utils import get_datetime, title_key, adjust_premiered_date, append_module_to_syspath, manual_module_import, install_lazy_chardet
 # logger = kodi_utils.logger
 
 ok_dialog, container_content, close_all_dialog, external = kodi_utils.ok_dialog, kodi_utils.container_content, kodi_utils.close_all_dialog, kodi_utils.external
@@ -113,6 +113,7 @@ def external_scraper_choice(params):
 	if choice == None: return
 	module_id, module_name = choice['addonid'], choice['name']
 	try:
+		install_lazy_chardet()  # lotto 178, stesso motivo di sources.import_external_scrapers
 		append_module_to_syspath('special://home/addons/%s/lib' % module_id)
 		main_folder_name = module_id.split('.')[-1]
 		manual_module_import('%s.sources_%s' % (main_folder_name, main_folder_name))
@@ -250,8 +251,16 @@ def playback_choice(params):
 		show_busy_dialog()
 		from caches.base_cache import clear_cache
 		from caches.external_cache import ExternalCache
-		clear_cache('internal_scrapers', silent=True)
+		# LOTTO 205 -- il rescrape di un titolo tocca solo quel titolo.
+		# Restano da svuotare gli elenchi dei cloud (e' li' che compaiono i file nuovi, ed e' il
+		# motivo per cui si rifa' la ricerca) e i risultati esterni di QUESTO tmdb_id. NON si tocca
+		# piu' la cache degli hash: e' globale, si rinnova da sola ogni 24 ore, e buttarla costava
+		# centodieci controlli di rete rifatti piu' la stessa perdita per ogni altro titolo.
+		# Per ricontrollare gli hash di questo titolo -- che e' l'unica cosa che l'utente voleva --
+		# basta saltare la consultazione locale per questa ricerca: fs_rescrape.
+		clear_cache('internal_scrapers', silent=True, clear_hashes=False)
 		ExternalCache().delete_cache_single(media_type, str(meta['tmdb_id']))
+		set_property('fs_rescrape', 'true')
 		hide_busy_dialog()
 	if choice == 'scrape':
 		if media_type == 'movie': play_params = {'mode': 'playback.media', 'media_type': 'movie', 'tmdb_id': meta['tmdb_id'], 'autoplay': 'false'}

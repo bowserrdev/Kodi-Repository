@@ -84,7 +84,8 @@ def build_season_list(params):
 				set_properties({'watchedepisodes': string(watched), 'unwatchedepisodes': string(unwatched)})
 				set_properties({'totalepisodes': string(aired_eps), 'watchedprogress': string(visible_progress),
 								'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
-								'fenlight.cast': cast_names})
+								'fenlight.cast': cast_names,
+								'hide_add_remove_favourite': 'true'})  # vedi indexers/movies.py
 				# "Refresh" e' il superset di "Reload": tenuta solo quella, come nei film.
 				if is_external:
 					cm_append(('[B]Aggiorna widget[/B]', run_plugin % URL_REFRESH_WIDGETS))

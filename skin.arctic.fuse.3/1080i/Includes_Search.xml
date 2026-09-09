@@ -204,8 +204,24 @@
          copre i percorsi di ricerca configurabili (il generatore li numera da 502) con margine.
          Il tentativo del 169 di metterne una PER linguetta e' stato abbandonato proprio qui: richiedeva
          di confrontare ListItem.Property(widget_id), che il generatore scrive come '$NUMBER[502]', e
-         quel confronto non e' mai risultato vero. -->
-    <expression name="Exp_Search_Row_Spinner">Container(502).IsUpdating | Container(503).IsUpdating | Container(504).IsUpdating | Container(505).IsUpdating | Container(506).IsUpdating</expression>
+         quel confronto non e' mai risultato vero.
+         LOTTO 212. La rotellina vale SOLO per le pagine caricate dopo la prima. Il secondo termine e' quel
+         cancello: Settled e' la query i cui risultati sono a schermo ADESSO (router._text_search_done),
+         quindi Settled == testo vivo vuol dire "c'e' gia' una lista di questa ricerca, quello che sta
+         costruendo e' una pagina in piu'". Durante la PRIMA pagina di una query nuova Settled e'
+         ancora quella precedente (o vuota) e la rotellina non compare: li' a informare l'utente c'e'
+         gia' 'Ricerca in corso / Attendi il caricamento dei risultati', e la rotellina accanto a una
+         riga di linguette ancora vuota diceva solo che qualcosa girava, non cosa. E' lo stesso
+         cancello che i row usano per decidere se il loro contenuto appartiene al testo vivo, quindi
+         non aggiunge stato: legge quello che c'e' gia'. -->
+    <expression name="Exp_Search_Row_Spinner">[Container(502).IsUpdating | Container(503).IsUpdating | Container(504).IsUpdating | Container(505).IsUpdating | Container(506).IsUpdating] + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Settled),Control.GetLabel(3000).index(1))</expression>
+
+    <!-- LOTTO 212. "La ricerca testuale ha risultati a schermo": finestra 1105 (id reale 11105) con testo nel box.
+         Serve ai consumatori che devono sapere QUALE contenitore mostra i risultati senza dipendere dal
+         fuoco - il pannello info (logo) e l'artwork in primo piano - perche' fino a che il fuoco sta
+         sulla barra di ricerca nessun onfocus ha ancora dichiarato niente. Vedi Hub_Combined_Info e
+         Image_Foreground. -->
+    <expression name="Exp_Search_Window_Text">[[Window.IsVisible(1105) | Window.IsVisible(11105)] + !String.IsEmpty(Control.GetLabel(3000).index(1))]</expression>
 
     <include name="Search_Info_Panel">
         <control type="group">

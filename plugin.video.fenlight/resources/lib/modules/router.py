@@ -97,6 +97,18 @@ def routing(sys):
 	params = dict(parse_qsl(sys.argv[2][1:], keep_blank_values=True))
 	_get = params.get
 	mode = _get('mode', 'navigator.main')
+	# LOTTO 176, PASSO 1.2 BIS. Chi ha un pgctl E' la costruzione di un widget, e questo e' l'istante
+	# piu' presto in cui lo si sa: i parametri sono appena stati letti e non e' ancora stato importato
+	# nessun indexer. Prima si dichiarava l'inizio in get_pages e in mark_build_start, che pero'
+	# stanno entrambe DOPO gli import pigri: fra l'avvio dell'interprete e quel punto passa oltre un
+	# secondo in cui la costruzione e' in corso e builds_in_flight() risponde "niente in volo".
+	# Vedi paginator.mark_invocation_start per la misura.
+	_pgctl = _get('pgctl')
+	if _pgctl:
+		try:
+			from modules.paginator import mark_invocation_start
+			mark_invocation_start(_pgctl)
+		except: pass
 	# QUI C'ERA IL CANCELLO RIPRODUZIONE (lotto 111, rimosso col lotto 113).
 	# Chiudeva la cartella con succeeded=False quando un widget veniva ricostruito durante la
 	# riproduzione. Funzionava -- 18 invocazioni tagliate su tre film, da 5-6 s a 150-280 ms l'una --

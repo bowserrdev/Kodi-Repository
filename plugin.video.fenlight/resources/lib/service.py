@@ -1,8 +1,29 @@
 # -*- coding: utf-8 -*-
+# La nascita di questo servizio e' stata profilata nel lotto 204 e il profilatore e' stato tolto
+# dopo aver risposto. Il referto, perche' non si riapra la stessa domanda fra sei mesi (stick,
+# avvii 08/09 05:03 e 05:08, fra 'entering source directory' e 'Main Monitor Service Starting'):
+#     prima:  import 864 ms + corpo 2 ms + ~110 ms di compilazione = 976 ms
+#     dopo:   import 331 ms + corpo 1 ms + ~103 ms di compilazione = 436 ms
+# Due conclusioni, entrambe con un numero sotto:
+#  - la COMPILAZIONE dei 76 KB vale ~105 ms, stabile su due avvii. Kodi esegue questo file come
+#    __main__, quindi Python non ne mette in cache il bytecode, e infatti resources/lib/ e' l'unica
+#    cartella senza __pycache__. Spostare 1100 righe in un modulo col .pyc per recuperare 105 ms non
+#    vale il rimaneggiamento: ipotesi valutata e SCARTATA, non dimenticata.
+#  - il costo era negli import di sola libreria standard (Fen Light: 0 ms), e pendeva quasi tutto da
+#    `json`, usato in UN punto solo. Reso pigro: 23 moduli -> 12, 864 ms -> 331.
+# Quel che resta e' l'albero di `threading` (~310 ms) piu' xbmcgui: Thread serve subito, per far
+# partire il rinvio del lotto 203, e non si toglie senza cambiare come il servizio genera lavoro.
+# Il capitolo import di service.py e' chiuso.
 import xbmc, xbmcgui
-import json
+# `import json` NON sta piu' qui: vedi WidgetRefresher.condition_check, l'unico punto che lo usa.
 from threading import Thread
-from modules.blur_service import BlurService
+# BlurService NON si importa piu' qui (lotto avvio, 08/09/2026). L'import era di livello modulo,
+# quindi girava a ogni avvio del servizio anche con il blur spento dal 23/08 (vedi la riga
+# commentata in startServices): modules/blur_service.py importa urllib.parse in testa, cioe'
+# proprio la catena che il lotto 74 aveva tolto dal percorso di Fen Light portandosi in casa
+# urlencode/parse_qsl/unquote. Rientrava dalla finestra, e rientrava dentro la tempesta d'avvio.
+# Ora sta dentro _delayed_blur_start, che e' l'unico punto che lo usa: se il blur tornera' vivo
+# pagera' il suo import allora, fuori dai 7,56 s in cui si costruiscono i widget della home.
 
 pause_services_prop = 'fenlight.pause_services'
 # Vedi kodi_utils.PLAYBACK_ACTIVE_PROP. Dal lotto 113 la bandiera non taglia piu' niente: resta
@@ -33,6 +54,25 @@ TRAKT_REFRESH_COALESCE = 30
 # test). Il compromesso e' rimandarne l'avvio oltre la finestra critica (0-25s misurati finora):
 # l'interprete Kodi e' gia' vivo, aspettare qui non costa un processo in piu', solo un thread fermo.
 BLUR_START_DELAY = 25
+# Attesa del lavoro di avvio differito (lotto 2, 08/09/2026). Vedi _deferred_services.
+#
+# SETTLE e' quiete DOPO l'ultima consegna, non una stima della durata dell'avvio. Va tarata sopra il
+# BUCO PIU' LARGO fra due consegne consecutive, o la quiete scatta in mezzo alla finestra e il rinvio
+# non serve a niente. I buchi misurati, per avvio:
+#     03:42 (6 interpreti)  36.36 / 37.26 / 37.44  ->  0,90 e 0,18
+#     04:35 (4 interpreti)  57.89 / 59.26 / 59.57  ->  1,37 e 0,31
+#     04:36 (4 interpreti)  22.42 / 24.16 / 24.40  ->  1,74 e 0,24
+# Il peggiore e' 1,74 s. Il valore sotto e' 3,0: 1,7 volte il peggiore osservato, perche' sbagliare
+# per eccesso non costa nulla (il lavoro rinviato non e' urgente) mentre sbagliare per difetto
+# annulla il lotto. La prima stesura aveva 1,5 s e un banco di prova con orologio finto l'ha
+# bocciata sul caso reale del 04:36: sarebbe ripartita dopo UN widget su tre.
+# Se un widget straggler arrivasse comunque oltre i 3 s, il rinvio degrada al comportamento di prima
+# per quel solo widget: si perde guadagno, non si rompe niente.
+# POLL e' fitto perche' ogni giro e' la lettura di una proprieta' di finestra.
+# CAP e' la rete di sicurezza: dopo tanto si parte comunque, widget o non widget.
+BOOT_DEFER_SETTLE = 3.0
+BOOT_DEFER_POLL = 0.25
+BOOT_DEFER_CAP = 20
 
 def refresh_official_status():
 	"""Ricalcola in anticipo la risposta di trakt_official_status, fuori dal percorso critico.
@@ -182,12 +222,27 @@ class TraktMonitor:
 		logger('Fen Light', 'TraktMonitor Service Starting')
 		from apis.trakt_api import trakt_sync_activities
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import run_plugin, refresh_age
+		from modules.kodi_utils import run_plugin, refresh_age, playback_running
 		from modules.settings import trakt_sync_interval
 		monitor, player, window = xbmc.Monitor(), xbmc.Player(), xbmcgui.Window(10000)
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		while not monitor.abortRequested():
-			while is_playing() or window.getProperty(pause_services_prop) == 'true': wait_for_abort(10)
+			# LOTTO 210 -- LA GUARDIA GUARDAVA IL SEGNALE SBAGLIATO.
+			# isPlayingVideo() diventa vero solo quando Kodi ha davvero un flusso video, cioe' a
+			# Player.OnAVStart. Fra il momento in cui l'utente sceglie la sorgente e quell'istante
+			# passano secondi -- il 09/09 sulla stick 15:42:58 (Select) -> 15:43:11.9 (OnAVStart),
+			# quattordici -- e in quella finestra questa guardia diceva 'non si sta riproducendo'.
+			# Alle 15:43:08, cinque secondi dopo che il player era gia' partito, il monitor si e'
+			# svegliato, ha sincronizzato con Trakt e ha chiesto un ridisegno. A valle
+			# _defer_refresh_if_busy usa Player.HasVideo, che li' era gia' vero: l'ha rimandato
+			# buttando id e azioni, e alla chiusura dell'episodio e' uscito un UpdateLibrary globale.
+			# Due definizioni diverse di 'sta riproducendo' nello stesso percorso.
+			# playback_running() legge fenlight.playback.active, che il player alza PRIMA di play()
+			# (player.py:159, 'l'unico istante che non e' una corsa') e abbassa alla chiusura: e'
+			# l'unico segnale che copre anche l'apertura del file. Durante una riproduzione queste
+			# dinamiche non devono esistere, ed e' questa la riga che lo garantisce.
+			while is_playing() or playback_running() or window.getProperty(pause_services_prop) == 'true':
+				wait_for_abort(10)
 			# Prima del giro di sincronizzazione, cioe' sempre mentre non si sta riproducendo nulla.
 			refresh_official_status()
 			wait_time = 1800
@@ -239,7 +294,12 @@ class TraktMonitor:
 							cosa, ids, acts = decide_refresh(changed, actions, age, TRAKT_REFRESH_COALESCE)
 							if cosa == 'niente':
 								logger('Fen Light', 'TraktMonitor: nessun titolo cambiato davvero, nessuna ricostruzione')
-							elif cosa == 'rinvio': self._defer_widget_refresh(window, ids, acts, age)
+							# LOTTO 179. `changed == '-'` vuol dire "lo sappiamo, non e' cambiato nessuno":
+							# decide_refresh lo fonde con "non lo sappiamo" quando rimanda, e a valle i
+							# due casi diventano indistinguibili. Qui la distinzione c'e' ancora, e
+							# viaggia col rinvio: e' cio' che permette di non ridisegnare due volte lo
+							# stesso widget senza tornare a una guardia a tempo.
+							elif cosa == 'rinvio': self._defer_widget_refresh(window, ids, acts, age, changed == '-')
 							elif cosa == 'mirato':
 								logger('Fen Light', 'TraktMonitor: refresh MIRATO su %d titoli e %d azioni%s'
 										% (len(ids.split(',')) if ids else 0, len(acts.split(',')) if acts else 0,
@@ -254,7 +314,7 @@ class TraktMonitor:
 		except: pass
 		return logger('Fen Light', 'TraktMonitor Service Finished')
 
-	def _defer_widget_refresh(self, window, changed, actions, age):
+	def _defer_widget_refresh(self, window, changed, actions, age, nochange=False):
 		# La guardia dell'accorpamento vieta di ricostruire ADESSO, e ha ragione: all'avvio scatta
 		# sempre, perche' stamp_startup_rebuild timbra la costruzione iniziale dei widget come
 		# ricostruzione globale, e senza di lei la prima sincronizzazione ordinava UpdateLibrary sopra
@@ -284,7 +344,7 @@ class TraktMonitor:
 		_ids = [i for i in changed.split(',') if i]
 		_acts = [a for a in actions.split(',') if a]
 		if queue_pending_refresh('kodi_refresh_ids' if (_ids or _acts) else 'kodi_refresh',
-									_ids, _acts, scope=''):
+									_ids, _acts, scope='', nochange=nochange):
 			return logger('Fen Light', 'TraktMonitor: refresh GLOBALE rimandato, interfaccia ricostruita %.1fs fa' % age)
 		ids = [i for i in window.getProperty(PENDING_IDS_PROP).split(',') if i]
 		acts = [a for a in window.getProperty(PENDING_ACTIONS_PROP).split(',') if a]
@@ -296,7 +356,8 @@ class WidgetRefresher:
 		logger('Fen Light', 'WidgetRefresher Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, refresh_flag_expired, modal_dialog_open
+		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, PENDING_NOCHANGE_PROP, refresh_flag_expired, modal_dialog_open, pending_refresh_is_redundant, playback_running, decide_pending_refresh
+		self.playback_running = playback_running
 		self.modal_dialog_open = modal_dialog_open
 		self.refresh_flag_expired = refresh_flag_expired
 		monitor, player = xbmc.Monitor(), xbmc.Player()
@@ -321,7 +382,8 @@ class WidgetRefresher:
 		while not monitor.abortRequested():
 			try:
 				wait_for_abort(1)
-				if self.window.getProperty(PENDING_REFRESH_PROP):
+				_kind_rinvio = self.window.getProperty(PENDING_REFRESH_PROP)
+				if _kind_rinvio:
 					if self.pending_since is None: self.pending_since = time()
 					# modal_dialog_open() sta QUI e non solo in kodi_refresh_ids (lotto 136). Senza, il
 					# rinvio nato per il dialogo verrebbe consumato al giro dopo, ririmandato da
@@ -331,10 +393,20 @@ class WidgetRefresher:
 							and self._nothing_building() and self._widgets_on_screen():
 						pending_ids = self.window.getProperty(PENDING_IDS_PROP)
 						pending_actions = self.window.getProperty(PENDING_ACTIONS_PROP)
+						# LOTTO 179. Unico caso in cui un rinvio si spegne invece di essere disegnato:
+						# la sincronizzazione ha dichiarato zero titoli cambiati E cio' che il rinvio
+						# chiederebbe e' gia' tutto a schermo. Non e' l'accorpamento a tempo del lotto
+						# 130 -- quello bocciava anche i rinvii che portavano roba nuova -- ne' la
+						# guardia del lotto 139, che deduceva "e' gia' a schermo" da un timbro. Vedi
+						# kodi_utils.pending_refresh_is_redundant.
+						_inutile = pending_refresh_is_redundant(
+								[i for i in pending_ids.split(',') if i],
+								[a for a in pending_actions.split(',') if a])
 						self.window.clearProperty(PENDING_REFRESH_PROP)
 						self.window.clearProperty(PENDING_IDS_PROP)
 						self.window.clearProperty(PENDING_ACTIONS_PROP)
 						self.window.clearProperty(PENDING_SCOPE_PROP)
+						self.window.clearProperty(PENDING_NOCHANGE_PROP)
 						logger('Fen Light', 'WidgetRefresher: rinvio consumato dopo %.1fs di attesa, nessuna costruzione in volo'
 								% (time() - self.pending_since))
 						self.pending_since = None
@@ -363,8 +435,22 @@ class WidgetRefresher:
 						# La protezione che stamp_startup_rebuild doveva dare non si perde: quella
 						# vietava di ordinare una ricostruzione SOPRA la costruzione d'avvio ancora in
 						# corso, e a garantirla e' _nothing_building() qui sopra, non l'accorpamento.
-						if pending_ids or pending_actions:
+						# LOTTO 210 -- la decisione sta in decide_pending_refresh, che e' pura e provata.
+						# Qui si esegue e basta, come gia' per decide_refresh nel monitor Trakt.
+						_cosa = decide_pending_refresh(_kind_rinvio, pending_ids, pending_actions, _inutile)
+						if _cosa == 'niente':
+							logger('Fen Light', 'WidgetRefresher: rinvio spento, nessun titolo cambiato e i widget richiesti [%s] sono gia\' quelli appena ricostruiti'
+									% (pending_actions or pending_ids or '-'))
+						elif _cosa == 'mirato':
 							refresh_ids_inproc(pending_ids, pending_actions, coalesce=False)
+						elif _cosa == 'strappata':
+							# Tipo mirato ma canali vuoti: qualcuno stava azzerando mentre leggevamo.
+							# Chi azzera lo fa perche' sta gia' ridisegnando lui -- e' il caso di
+							# player._order_refresh_after_write -- quindi qui non manca niente da
+							# mostrare, e ricostruire tutto sarebbe la reazione piu' costosa possibile
+							# al piu' piccolo dei disallineamenti.
+							logger('Fen Light', 'WidgetRefresher: rinvio letto a meta\' (tipo %s, nessun id ne\' azione): '
+									'lo sta gia\' consumando qualcun altro, nessuna ricostruzione' % _kind_rinvio)
 						else: run_plugin({'mode': 'refresh_widgets', 'coalesce': 'false'})
 				elif self.pending_since is not None: self.pending_since = None
 				tick += 1
@@ -457,9 +543,22 @@ class WidgetRefresher:
 
 	def condition_check(self):
 		if not self.home(): return True
-		if self.next_refresh == None or self.is_playing() or self.window.getProperty(pause_services_prop) == 'true': return True
+		# playback_running() accanto a is_playing() per la stessa ragione del monitor Trakt (lotto
+		# 210): questo ramo ordina refresh_widgets, cioe' un UpdateLibrary globale, e non deve poterlo
+		# fare nella finestra in cui il file si sta aprendo e isPlayingVideo() risponde ancora di no.
+		if self.next_refresh == None or self.is_playing() or self.playback_running() \
+				or self.window.getProperty(pause_services_prop) == 'true': return True
 		if self.window.getProperty('fenlight.window_loaded') == 'true': return True 
 		try:
+			# json e' PIGRO (lotto 204), e questo e' il suo unico uso in tutto il file. Misurato sulla
+			# stick il 08/09 col profilatore in cima: la nascita del servizio costava 864 ms di import,
+			# tutti di libreria standard (Fen Light: 0 ms), e la catena che pende SOLO da json --
+			# json, decoder, encoder, _json, re con le sue tabelle, enum, copyreg -- ne vale ~373.
+			# Il resto (collections, functools, operator, itertools, _weakrefset) lo tira `threading`
+			# per conto suo, verificato importandolo da solo, quindi resta e non c'e' niente da fare.
+			# Qui dentro l'import costa una ricerca in sys.modules per chiamata, su un metodo che
+			# gira a widget gia' costruiti.
+			import json
 			window_stack = json.loads(self.window.getProperty('fenlight.window_stack'))
 			if isinstance(window_stack, list): return True
 		except: pass
@@ -969,7 +1068,28 @@ class FenLightMonitor(xbmc.Monitor):
 		# ordinera' una seconda a vuoto. Vedi kodi_utils.stamp_startup_rebuild.
 		from modules.kodi_utils import stamp_startup_rebuild
 		stamp_startup_rebuild()
+		# SetAddonConstants resta SEMPRE qui e sempre in sincrono: sono 5 ms misurati, e la skin legge
+		# fenlight.addon_path / _profile / _icon / _fanart appena disegna. Rimandarlo si vedrebbe.
 		SetAddonConstants().run()
+		# IL RESTO ASPETTA CHE LA HOME SIA PIENA (lotto 2, 08/09/2026).
+		#
+		# Perche'. Su Android il Python di Kodi vive dentro un solo processo e i sotto-interpreti si
+		# dividono UN core: la quota di CPU di ogni invocazione e' circa 1/N, con N il numero di
+		# interpreti vivi. Misurato sulla stick il 08/09: con 6 interpreti la fase di import di un
+		# widget girava al 16% di CPU, con 4 al 25%, da sola all'86%. Questo servizio e' uno di quegli
+		# N, e nella finestra in cui si costruiscono i tre widget della home spendeva (log 04:36):
+		#     DatabaseMaintenance 572 ms + SyncSettings 347 ms + AutoStart 175 ms
+		#     + l'import del client http tirato dal primo giro di TraktMonitor, 1172 ms
+		# cioe' oltre due secondi di lavoro che nessuno stava aspettando, sottratti a chi invece si
+		# stava aspettando. Spostandolo dopo, quel lavoro costa meno anche a se stesso: e' la stessa
+		# firma del controllo dei template del lotto 151, 5500 ms dentro la tempesta e 592 fuori.
+		#
+		# L'ordine interno NON cambia: _start_remaining_services e' la vecchia coda di questo metodo,
+		# riga per riga. L'unica differenza e' QUANDO parte.
+		if self._boot_work_can_wait(): Thread(target=self._deferred_services).start()
+		else: self._start_remaining_services()
+
+	def _start_remaining_services(self):
 		DatabaseMaintenance().run()
 		SyncSettings().run()
 		Thread(target=CustomFonts().run).start()
@@ -984,12 +1104,113 @@ class FenLightMonitor(xbmc.Monitor):
 		Thread(target=DubResolver().run).start()
 		Thread(target=PerfSampler().run).start()
 		AutoStart().run()
+		self._mark_boot_ready()
+
+	def _boot_work_can_wait(self):
+		"""Si puo' rimandare il lavoro di avvio, o questo e' un avvio in cui deve precedere i widget?
+
+		DEVE precedere in due casi, e sono gli unici due in cui make_databases e sync_settings fanno
+		qualcosa di piu' che confermare l'esistente:
+
+		  1. primo avvio o profilo azzerato -- non esistono ne' i database ne' le impostazioni;
+		  2. primo avvio dopo un aggiornamento dell'addon -- puo' esserci una tabella nuova da creare
+		     o un'impostazione nuova da inserire.
+
+		Il secondo caso non e' teorico ed e' il motivo per cui qui non c'e' un semplice
+		"i database esistono?". get_setting e' `get_property(id) or settings_cache.get(id) or fallback`:
+		un'impostazione che sync_settings non ha ancora inserito non torna il suo default dichiarato,
+		torna il fallback di chi chiama. Sarebbe un widget costruito con un valore diverso da quello
+		configurato, per un solo avvio, senza un errore in log -- esattamente il tipo di guasto
+		silenzioso che questo progetto continua a scovare mesi dopo.
+
+		Il dato che risponde alla domanda e' la VERSIONE, non un orologio: tabelle e impostazioni nuove
+		arrivano solo con una versione nuova. Il segnalibro sta in un file del profilo e non nella
+		cache delle impostazioni di proposito: sync_settings cancella le righe che non stanno in
+		default_settings, quindi una riga nostra li' dentro verrebbe potata a ogni giro.
+
+		Qualunque cosa vada storta -- file illeggibile, profilo non scrivibile, eccezione -- si
+		risponde NO e si lavora in sincrono come prima del lotto: la via lenta e' sempre quella giusta.
+		"""
+		try:
+			from modules.kodi_utils import addon_version
+			marker = self._read_boot_marker()
+			return bool(marker) and marker == addon_version()
+		except: return False
+
+	def _boot_marker_path(self):
+		from modules.kodi_utils import addon_profile
+		import os
+		return os.path.join(addon_profile(), 'boot_ready')
+
+	def _read_boot_marker(self):
+		from modules.kodi_utils import path_exists, open_file
+		p = self._boot_marker_path()
+		if not path_exists(p): return ''
+		f = open_file(p)
+		try: return (f.read() or '').strip()
+		finally: f.close()
+
+	def _mark_boot_ready(self):
+		"""Registra che con QUESTA versione un avvio completo e' andato a termine.
+
+		Scritto in coda a _start_remaining_services, cioe' solo dopo che make_databases e
+		sync_settings sono finiti davvero: se l'avvio si interrompe prima, il segnalibro resta
+		vecchio e il prossimo avvio rifa' il lavoro in sincrono. E' il verso giusto in cui sbagliare.
+		"""
+		try:
+			from modules.kodi_utils import addon_version, addon_profile, path_exists, make_directory, open_file
+			version = addon_version()
+			if not version or self._read_boot_marker() == version: return
+			profile = addon_profile()
+			if not path_exists(profile): make_directory(profile)
+			f = open_file(self._boot_marker_path(), 'w')
+			try: f.write(version)
+			finally: f.close()
+		except: pass
+
+	def _deferred_services(self):
+		"""Aspetta che la home smetta di costruire, poi avvia il resto.
+
+		L'attesa NON e' un timer tarato a occhio sulla durata dell'avvio: il registro delle
+		costruzioni (kodi_utils.BUILD_LOG_PROP, una riga per ogni cartella consegnata) dice
+		quante ne sono state consegnate da quando il servizio e' nato. Si aspetta che quel
+		numero smetta di crescere -- il timer misura solo la QUIETE fra una consegna e l'altra,
+		non indovina quando finisce l'avvio, e non serve sapere quanti widget abbia la home.
+
+		Due uscite di sicurezza, perche' un'attesa senza fine qui vorrebbe dire niente Trakt e
+		niente paginazione per tutta la sessione:
+		  - BOOT_DEFER_CAP: si parte comunque, anche se di widget non ne arriva nessuno (una home
+		    senza widget Fen Light e' una configurazione legittima);
+		  - waitForAbort: se Kodi chiude durante l'attesa il thread non resta appeso.
+		"""
+		from time import time as _now
+		from modules.kodi_utils import build_log_rows
+		monitor = xbmc.Monitor()
+		t0 = _now()
+		seen, last_change = 0, t0
+		while not monitor.abortRequested():
+			# Il registro si legge DA ZERO, non da t0, e non e' una svista. Le proprieta' di finestra
+			# muoiono con Kodi, quindi all'avvio il registro e' vuoto e ogni riga che contiene e' di
+			# questo avvio. Contare da t0 aprirebbe una corsa che questo metodo perderebbe: se i
+			# widget venissero consegnati prima che questo thread nasca -- il servizio parte 1,3 s
+			# dopo i provider e su una macchina piu' svelta l'ordine si inverte -- non ne vedrebbe
+			# nessuno, e aspetterebbe BOOT_DEFER_CAP interi con Trakt e paginazione fermi.
+			try: count = len(build_log_rows(0))
+			except: count = seen
+			if count != seen: seen, last_change = count, _now()
+			now = _now()
+			if seen and now - last_change >= BOOT_DEFER_SETTLE: break
+			if now - t0 >= BOOT_DEFER_CAP: break
+			if monitor.waitForAbort(BOOT_DEFER_POLL): return
+		logger('Fen Light', 'Avvio differito: %s costruzioni viste, parto dopo %.1f s' % (seen, _now() - t0))
+		self._start_remaining_services()
 
 	def _delayed_blur_start(self):
 		# Aspetta che la tempesta di avvio sia passata prima di importare Pillow e partire col
 		# polling: vedi BLUR_START_DELAY per la misura che l'ha motivato. waitForAbort (non sleep)
 		# cosi' un abort di Kodi durante l'attesa non lascia il thread appeso.
 		if xbmc.Monitor().waitForAbort(BLUR_START_DELAY): return
+		from modules.blur_service import BlurService
 		BlurService().run()
 
 	def onNotification(self, sender, method, data):
@@ -1031,6 +1252,12 @@ class FenLightMonitor(xbmc.Monitor):
 			# l'invocazione, e a spegnere la bandiera pensa WidgetRefresher, che gira gia'. La
 			# finestra di 20 s copre abbondantemente il ritardo osservato fra OnStop (17:18:57,078) e
 			# la prima get_pages (17:18:59,031).
+			#
+			# LOTTO 177. Qui NON si timbra piu' una ricostruzione globale. Il passo 1.2 lo faceva
+			# perche' Kodi, uscendo dal player, invalidava davvero tutti i contenitori; da quando
+			# non scrive piu' nel proprio database video quella ricostruzione non avviene, e il
+			# timbro scartava il refresh mirato del segnalibro -- l'unico che porta l'id del film.
+			# Il motivo per esteso sta in kodi_utils, dove stava la funzione.
 			try:
 				from modules.kodi_utils import hold_refresh_flag
 				hold_refresh_flag('fenlight.pg.refresh')

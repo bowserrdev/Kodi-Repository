@@ -80,14 +80,6 @@
         <value>special://skin/extras/playlists/Null.xsp</value>
     </variable>
 
-    <variable name="Path_OSD_NextRecommendation">
-        <value condition="Integer.IsLess(VideoPlayer.PlaylistPosition,VideoPlayer.PlaylistLength)">playlistvideo://?reload=$INFO[VideoPlayer.Season,,_]$INFO[VideoPlayer.Episode,,_]$INFO[VideoPlayer.PlaylistPosition,,_]</value>
-        <!-- I valori TMDbHelper sono stati rimossi: il container li risolveva come plugin:// di un
-             addon non installato e Kodi apriva il prompt "installa addon" al solo focus del bottone
-             OSD. Null.xsp lascia il container vuoto, che e' gia' il risultato di oggi. -->
-        <value>special://skin/extras/playlists/Null.xsp</value>
-    </variable>
-
     <variable name="Path_VideoInfo_OnlineSeasons">
         <value condition="[String.IsEqual(Window.Property(FenLight.DBType),tvshow) | String.IsEqual(Window.Property(FenLight.DBType),season) | String.IsEqual(Window.Property(FenLight.DBType),episode)] + !String.IsEmpty(Window.Property(FenLight.TMDb_ID))">plugin://plugin.video.fenlight/?mode=build_season_list&amp;tmdb_id=$INFO[Window.Property(FenLight.TMDb_ID)]</value>
         <value condition="String.IsEqual(Window.Property(FenLight.DBType),tvshow) | String.IsEqual(Window.Property(FenLight.DBType),season) | String.IsEqual(Window.Property(FenLight.DBType),episode)">special://skin/extras/playlists/Null.xsp</value>

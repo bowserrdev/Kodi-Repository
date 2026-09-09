@@ -124,7 +124,8 @@ def build_episode_list(params):
 				listitem.setArt({'poster': show_poster, 'fanart': show_fanart, 'thumb': thumb, 'icon':thumb, 'clearlogo': show_clearlogo, 'landscape': show_landscape,
 								'season.poster': season_poster, 'tvshow.poster': show_poster, 'tvshow.clearlogo': show_clearlogo})
 				_ph6 = _perf()
-				_p = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'episode_type': episode_type}
+				_p = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'episode_type': episode_type,
+						'hide_add_remove_favourite': 'true'}  # vedi indexers/movies.py
 				if _cast_names: _p['fenlight.cast'] = _cast_names
 				set_properties(_p)
 				paginator.phase_record(_ph1 - _ph0, _ph2 - _ph1, _ph3 - _ph2, _ph4 - _ph3, _ph5 - _ph4, _ph6 - _ph5, _perf() - _ph6)
@@ -392,7 +393,8 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			listitem.setArt({'poster': show_poster, 'fanart': show_fanart, 'thumb': thumb, 'icon':thumb, 'clearlogo': show_clearlogo, 'landscape': show_landscape,
 							'season.poster': season_poster, 'tvshow.poster': show_poster, 'tvshow.clearlogo': show_clearlogo})
 			_ph7 = _perf()
-			_p = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'episode_type': episode_type}
+			_p = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params, 'episode_type': episode_type,
+						'hide_add_remove_favourite': 'true'}  # vedi indexers/movies.py
 			if _cast_names: _p['fenlight.cast'] = _cast_names
 			set_properties(_p)
 			_phase_append((_ph1 - _ph0, _pa - _ph1, _pb - _pa, _pc - _pb, _pd - _pc, _ph2 - _pd,

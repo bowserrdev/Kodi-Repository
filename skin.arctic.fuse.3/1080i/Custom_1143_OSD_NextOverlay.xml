@@ -6,63 +6,20 @@
 
         <control type="group">
             <include>OSD_HideControls</include>
-            <control type="list" id="450">
-                <left>-1920</left>
-                <width>1</width>
-                <height>1</height>
-                <itemlayout width="1" height="1" />
-                <focusedlayout width="1" height="1" />
-                <content target="videos">$VAR[Path_OSD_NextRecommendation]</content>
-            </control>
-
-            <control type="group">
-                <top>view_pad</top>
-                <left>view_pad</left>
-                <visible>!Container(450).IsUpdating</visible>
-                <visible>!Integer.IsEqual(Container(450).NumItems,0)</visible>
-                <visible>![!String.IsEmpty(Player.Chapter) + !String.IsEqual(Player.Chapter,00) + !String.IsEmpty(Player.ChapterCount) + !String.IsEqual(Player.ChapterCount,00) + !String.IsEqual(Player.Chapter,Player.ChapterCount)]</visible>
-                <visible>Integer.IsLess(VideoPlayer.PlaylistPosition,VideoPlayer.PlaylistLength) | Integer.IsLess(Player.TimeRemaining(mins),10)</visible>
-                <animation type="WindowOpen" reversible="true">
-                    <effect type="fade" start="0" end="100" time="300" delay="600"/>
-                    <effect type="slide" start="0,-48" end="0" center="auto" tween="back" easing="out" time="400" delay="600"/>
-                </animation>
-                <animation type="Visible" reversible="true">
-                    <effect type="fade" start="0" end="100" time="300" delay="600"/>
-                    <effect type="slide" start="0,-48" end="0" center="auto" tween="back" easing="out" time="400" delay="600"/>
-                </animation>
-                <control type="group">
-                    <height>view_landscape_item_h</height>
-                    <width>view_landscape_item_w</width>
-                    <control type="group">
-                        <include>Object_ItemBack</include>
-                        <control type="image">
-                            <texture background="true" diffuse="diffuse/landscape_w410_h231.png">$VAR[Image_OSD_UpNext_Playlist_Landscape]</texture>
-                            <aspectratio scalediffuse="false">keep</aspectratio>
-                        </control>
-                        <!-- <param name="top_title">$VAR[Label_OSD_UpNext_Playlist_TopTitle]</param>
-                        <param name="sub_title">$VAR[Label_OSD_UpNext_Playlist_SubTitle]</param> -->
-                    </control>
-                </control>
-                <control type="grouplist">
-                    <left>view_landscape_item_w</left>
-                    <height>view_landscape_item_h</height>
-                    <align>center</align>
-                    <orientation>vertical</orientation>
-                    <control type="label">
-                        <left>40</left>
-                        <textcolor>panel_fg_90</textcolor>
-                        <label>$LOCALIZE[31196]$VAR[Label_OSD_UpNext_Playlist_TopTitle, - ,]</label>
-                        <height>40</height>
-                        <font>font_main_bold</font>
-                    </control>
-                    <control type="label">
-                        <left>40</left>
-                        <textcolor>panel_fg_70</textcolor>
-                        <label>$VAR[Label_OSD_UpNext_Playlist_SubTitle]</label>
-                        <height>40</height>
-                    </control>
-                </control>
-            </control>
+            <!-- LOTTO 186 :: qui stava il riquadro "prossimo elemento" (lista 450 +
+                 gruppo con locandina e due etichette). Rimosso: costava 479-689 ms di
+                 thread GUI alla prima apertura dell'OSD di ogni sessione, misurati come
+                 silenzio fra "Loading skin file: Custom_1143" e l'evento successivo, con
+                 tanto di "OutputPicture - timeout waiting for buffer" sul video.
+                 Il costo era la registrazione di ~1300 infobool: l'immagine era una
+                 variabile da 51 valori (uno per posizione di playlist) e ognuno rimandava
+                 a una $VAR generata da 10 valori con condizioni fino a 7 termini; piu'
+                 due etichette da 51 valori.
+                 E non si vedeva mai: Path_OSD_NextRecommendation dava playlistvideo://
+                 solo con PlaylistPosition < PlaylistLength, e Fen Light non costruisce mai
+                 una playlist di Kodi (make_playlist() in kodi_utils.py non ha chiamanti).
+                 Restava Null.xsp, container vuoto, gruppo nascosto.
+                 Il bottone 6003 (salta avanti) e la fila di bottoni restano. -->
 
             <control type="group">
                 <left>view_pad</left>
@@ -72,11 +29,17 @@
                 <visible>!Window.IsVisible(DialogSlider.xml)</visible>
 
                 <include content="OSD_CustomDialog_GroupList">
+                    <param name="dialog_id">1143</param>
                     <param name="onclick">$VAR[Action_OSD_SkipNext]</param>
                     <param name="icon">$VAR[Image_OSD_SkipNext]</param>
                     <param name="button_3">true</param>
 
-                    <param name="onup">Close</param>
+                    <!-- LOTTO 189 :: era Close, che chiude "il dialogo in cima" e non il proprio.
+                         Stessa trappola del lotto 185 sui bottoni finti: oggi non morde, ma con
+                         due tasti nello stesso frame chiuderebbe la VideoOSD invece di 1143.
+                         Id letterale e non $PARAM[dialog_id]: qui siamo al punto di CHIAMATA
+                         dell'include, fuori da ogni <definition>, dove $PARAM non si risolve. -->
+                    <param name="onup">Dialog.Close(1143)</param>
                     <param name="onup_02">SetFocus(8200)</param>
 
                 </include>

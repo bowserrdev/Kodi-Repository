@@ -217,12 +217,91 @@ class source:
 			results = list(_process_duplicates(results))
 			hash_list = list(set([i['hash'] for i in results]))
 			cached_hashes = query_local_cache(hash_list)
+			# LOTTO 207 -- in PARALLELO, non in coda: la domanda "quali sono in cache" e quella
+			# "quali file contengono" sono indipendenti, quindi il costo e' il massimo dei due e non
+			# la somma. Quasi sempre la seconda non parte nemmeno.
+			pacchi = Thread(target=self._impara_pacchetti, args=(results, cached_hashes), name='PackFiles')
+			pacchi.start()
 			debrid_check_threads = [Thread(target=_process_cache_check, args=debrid_runners[item], name=item) for item in self.active_debrid]
 			[i.start() for i in debrid_check_threads]
 			if self.background: [i.join() for i in debrid_check_threads]
 			else: _debrid_check_dialog()
+			try: pacchi.join(30)
+			except: pass
+			self._dimensioni_vere(final_results)
 			return final_results
 		except: return []
+
+	def _candidati_pacchetto(self, results):
+		"""Le sorgenti la cui taglia oggi e' inventata: un pacchetto, da un indicizzatore che non
+		dichiara la dimensione del singolo file. Per gli altri il numero e' gia' quello vero."""
+		return [i for i in results if i.get('hash') and 'package' in i
+				and i.get('provider') not in correct_pack_sizes]
+
+	def _impara_pacchetti(self, results, cached_hashes=None):
+		"""Chiede a TorBox l'elenco dei file dei pacchetti che non conosce ancora.
+
+		Solo di quelli che non conosce: l'elenco dei file di un torrent non cambia mai -- l'infohash
+		E' il contenuto -- quindi una volta imparato non si richiede piu'. E' cio' che permette al
+		rinnovo delle 24 ore di `debrid_data` di restare la chiamata leggera di sempre.
+		"""
+		try:
+			if self.media_type == 'movie': return
+			if 'TorBox' not in self.active_debrid: return
+			from caches import pack_cache
+			candidati = set(i['hash'] for i in self._candidati_pacchetto(results))
+			if not candidati: return
+			# Chi la cache locale sa gia' NON essere in cache non ha file da farsi dare: TorBox
+			# risponde solo per i torrent che ha. Chiederglieli lo stesso significa pagare una
+			# chiamata che torna vuota a ogni ricerca, e sulla stick il 58% degli hash sta in questo
+			# caso (541 su 926, misura del 09/09). Il salto dura esattamente quanto il verdetto che
+			# lo giustifica: `debrid_data` scade a 24 h e allora si torna a chiedere.
+			try: assenti = set(x[0] for x in (cached_hashes or []) if x[1] == 'tb' and x[2] == 'False')
+			except: assenti = set()
+			ignoti = [h for h in (candidati - pack_cache.noti(candidati)) if h not in assenti]
+			if not ignoti:
+				logger('FenLight PACCHI', '%d pacchetti, niente di nuovo da chiedere (%d gia\' noti, %d non in cache)'
+					   % (len(candidati), len(candidati) - len(assenti & candidati), len(assenti & candidati)))
+				return
+			from apis.torbox_api import TorBoxAPI
+			avvio = time.time()
+			risposta = TorBoxAPI().check_cache_files(ignoti)
+			imparati = pack_cache.scrivi((risposta or {}).get('data') or [])
+			logger('FenLight PACCHI', '%d pacchetti: %d gia\' noti, %d saltati (non in cache), %d chiesti a TorBox -> %d elenchi imparati in %d ms'
+				   % (len(candidati), len(candidati) - len(ignoti) - len(assenti & candidati),
+					  len(assenti & candidati), len(ignoti), imparati, int((time.time() - avvio) * 1000)))
+			pack_cache.manutenzione()
+		except: pass
+
+	def _dimensioni_vere(self, results):
+		"""Sostituisce la taglia inventata con quella del file che si riprodurra' davvero.
+
+		Se l'episodio non si riconosce nei nomi, si ripiega sul pacco diviso per il numero VERO di
+		file: resta una stima, ma il divisore e' misurato invece che dedotto da TMDb.
+		"""
+		try:
+			if self.media_type == 'movie': return
+			from caches import pack_cache
+			candidati = self._candidati_pacchetto(results)
+			if not candidati: return
+			mappa = pack_cache.leggi(set(i['hash'] for i in candidati))
+			if not mappa: return
+			esatte = stimate = 0
+			for i in candidati:
+				files = mappa.get(i['hash'])
+				if not files: continue
+				byte = pack_cache.dimensione_episodio(files, self.season, self.episode)
+				if byte: esatte += 1
+				else:
+					pacco = i.get('dimensione_pacchetto')
+					if not pacco: continue
+					byte = (float(pacco) * 1073741824.0) / len(files)
+					stimate += 1
+				i['size'] = round(byte / 1073741824.0, 2)
+				i['size_label'] = '%.2f GB' % i['size']
+			logger('FenLight PACCHI', 'taglie corrette: %d esatte, %d dal numero vero di file, su %d'
+				   % (esatte, stimate, len(candidati)))
+		except: pass
 
 	def process_sources(self, provider, sources):
 		try:
@@ -241,6 +320,10 @@ class source:
 						if 'package' in i and provider not in correct_pack_sizes:
 							if i_get('package') == 'season': divider = self.season_divider
 							else: divider = self.show_divider
+							# LOTTO 207 -- la taglia del TORRENT si conserva: la divisione qui sotto e'
+							# una stima e va potuta sostituire con il dato vero quando arriva. Serve
+							# anche come ripiego: pacco/numero VERO di file batte pacco/conteggio TMDb.
+							i['dimensione_pacchetto'] = float(size)
 							size = float(size) / divider
 						size_label = '%.2f GB' % size
 					except: pass

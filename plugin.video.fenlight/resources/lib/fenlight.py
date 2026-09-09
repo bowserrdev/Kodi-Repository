@@ -23,20 +23,33 @@ except Exception:
 # importa a sua volta, altrimenti la radice si prenderebbe il merito di tutto.
 # reuselanguageinvoker=false garantisce un interprete nuovo per invocazione: la patch a
 # builtins.__import__ non sopravvive e non puo' contaminare altre invocazioni.
-_IMPORT_TIMES, _IMPORT_ORDER, _IMPORT_PARENT = {}, [], {}
+#
+# LOTTO 178. Accanto al tempo di orologio ora si misura anche quello di CPU, PER MODULO. Serviva:
+# sui widget la fase 'import pigri' vale 496/3615 ms, cioe' il 14% di CPU -- quasi tutta attesa, e
+# potare li' non restituirebbe quasi niente. Su playback.media la stessa fase non era strumentata, e
+# senza il rapporto si sceglierebbe di nuovo a caso quale ramo tagliare. Stesso conteggio a tempo
+# PROPRIO dell'orologio: le due pile si spingono e si estraggono insieme.
+_IMPORT_TIMES, _IMPORT_ORDER, _IMPORT_PARENT, _IMPORT_CPU = {}, [], {}, {}
 try:
 	import builtins as _builtins
 	_real_import = _builtins.__import__
 	_import_stack = []
+	_cpu_stack = []
 	def _timed_import(name, *args, **kwargs):
 		if name in sys.modules: return _real_import(name, *args, **kwargs)
 		_t0 = _pc()
+		_c0 = _tt() if _tt else 0.0
 		_import_stack.append(0.0)
+		_cpu_stack.append(0.0)
 		try: return _real_import(name, *args, **kwargs)
 		finally:
 			_elapsed = _pc() - _t0
+			_cpu = (_tt() - _c0) if _tt else 0.0
 			_children = _import_stack.pop()
+			_cpu_children = _cpu_stack.pop()
 			if _import_stack: _import_stack[-1] += _elapsed
+			if _cpu_stack: _cpu_stack[-1] += _cpu
+			_IMPORT_CPU[name] = _IMPORT_CPU.get(name, 0.0) + (_cpu - _cpu_children)
 			if name not in _IMPORT_TIMES:
 				_IMPORT_ORDER.append(name)
 				# Chi ha chiesto questo modulo per primo: senza il richiedente si sa QUANTO costa la
@@ -69,6 +82,6 @@ except: pass
 try:
 	from modules.kodi_utils import log_invocation, log_import_profile
 	log_invocation(sys.argv, _T_START, _T_IMPORT, _T_END, _C_START, _C_IMPORT, _C_END)
-	log_import_profile(sys.argv, _IMPORT_TIMES, _IMPORT_ORDER, _IMPORT_PARENT)
+	log_import_profile(sys.argv, _IMPORT_TIMES, _IMPORT_ORDER, _IMPORT_PARENT, cpus=_IMPORT_CPU)
 except: pass
 if sys_exit_check(): sys.exit(1)

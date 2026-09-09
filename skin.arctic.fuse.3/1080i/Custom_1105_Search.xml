@@ -3,8 +3,24 @@
 
     <onload>ClearProperty(Background.ShowOverlay,Home)</onload>
     <!-- Forza il focus sull'edit di ricerca all'apertura, evitando che Kodi atterri sulla X di clear (3005)
-         quando c'e' testo nel box e 3005 e' il primo controllo focusabile trovato spazialmente. -->
-    <onload>SetFocus(3001)</onload>
+         quando c'e' testo nel box e 3005 e' il primo controllo focusabile trovato spazialmente.
+
+         LOTTO 212. Ma NON quando si rientra dal player. Andando a schermo intero questa finestra viene
+         chiusa (Window Deinit) e al ritorno riaperta (Window Init): l'onload riparte, e quel SetFocus
+         scavalcava il controllo che Kodi aveva appena ripristinato - la riga dei risultati sull'elemento
+         appena riprodotto - buttando il fuoco sulla barra di ricerca. E' il difetto "chiudo il player e
+         il fuoco e' sulla barra" ed e' visibile nel log della stick anche solo passando dalla Home:
+         fuoco 3004 all'uscita, 3000 al rientro (18:12:41.607 -> 18:12:43.290), cioe' la catena
+         3001 -> onfocus SetFocus(3000), non il ripristino.
+         Il segnale si prende all'uscita, non all'entrata: allo Deinit verso il player Player.HasMedia e'
+         gia' vero, mentre al rientro la riproduzione e' finita e non c'e' piu' niente da leggere. La
+         proprieta' e' indirizzata alla 1105 di proposito: durante un Deinit la "finestra corrente" di
+         SetProperty puo' essere gia' quella nuova.
+         Vale per entrambe le meta' della ricerca, testuale e Discover: la finestra e' la stessa. -->
+    <onunload condition="Player.HasMedia">SetProperty(Search.FromPlayer,True,1105)</onunload>
+    <onunload condition="!Player.HasMedia">ClearProperty(Search.FromPlayer,1105)</onunload>
+    <onload condition="String.IsEmpty(Window(1105).Property(Search.FromPlayer))">SetFocus(3001)</onload>
+    <onload>ClearProperty(Search.FromPlayer,1105)</onload>
 
     <include content="Hub_Onload">
         <param name="window_id">1105</param>

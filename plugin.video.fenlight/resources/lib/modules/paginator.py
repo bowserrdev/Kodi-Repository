@@ -1268,6 +1268,39 @@ def mark_build_start(key):
 	# anche il piu' lento.
 	_stamp_build(key)
 
+def mark_invocation_start(key):
+	"""Alza SOLO la bandiera 'sto costruendo', appena l'invocazione entra nel router.
+
+	LOTTO 176, PASSO 1.2 BIS. mark_build_start e get_pages timbrano l'inizio della costruzione, ma
+	arrivano DOPO gli import pigri: fra l'avvio dell'interprete e la prima di quelle due chiamate
+	passa oltre un secondo in cui la build e' partita e nessuno lo sa. Misura sulla stick del 06/09,
+	fine della terza riproduzione:
+
+	    22:14:18.747  CPythonInvoker(15) parte     <- ricostruzione del ritorno dal player
+	    22:14:18.781  CPythonInvoker(16) parte
+	    22:14:18.792  CPythonInvoker(17) parte
+	    22:14:20.145  WidgetRefresher: "nessuna costruzione in volo"   <- controlla QUI
+	    22:14:20.270  get_pages key=home.502       <- la bandiera si alza solo adesso
+
+	1,4 s di finestra cieca, e il controllo del canale dei rinvii ci e' caduto dentro in tre
+	riproduzioni su quattro: il rinvio si consumava a zero secondi di attesa, i tre contenitori
+	venivano ricostruiti una seconda volta, e il timbro del passo 1.2 non serviva a niente.
+
+	Non chiama _stamp_build: LASTBUILD_PROP deve continuare a significare "una costruzione e'
+	ARRIVATA IN FONDO", perche' e' su quello che si regge il giudizio soft_refresh di get_pages.
+	Qui si sa solo che una e' partita, ed e' l'unica cosa che si dichiara.
+
+	La marca orfana -- invocazione morta prima di pubblicare la testa -- se la ripulisce
+	builds_in_flight() dopo INFLIGHT_MAX_SECONDS, esattamente come per _stamp_build.
+	"""
+	from modules.kodi_utils import set_property
+	from time import time
+	try:
+		set_property(INFLIGHT_PROP % key, str(time()))
+		_scope, _, _cid = key.partition('.')
+		if _scope and _cid: registry_add(_scope, _cid)
+	except: pass
+
 def mark_build_end(key):
 	# Fine dichiarata. Una sola definizione di "fine", usata sia qui sia da set_head.
 	from modules.kodi_utils import clear_property

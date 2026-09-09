@@ -316,7 +316,7 @@
                      L'etichetta passata vuota fa collassare il distanziatore trasparente di
                      View_Line_Spinner, che li' serve solo ad allinearsi dopo un testo. -->
                 <control type="group">
-                    <left>170</left>
+                    <left>165</left>
                     <centertop>0</centertop>
                     <height>80</height>
                     <animation effect="slide" end="200,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,2)">Conditional</animation>
@@ -354,6 +354,20 @@
         </control>
     </include>
 
+    <!-- LOTTO 212. Chi ha il fuoco NON e' l'unica risposta alla domanda "quale contenitore sto
+         guardando". Nella ricerca testuale i risultati compaiono mentre il fuoco e' ancora nella barra
+         di ricerca: nessun onfocus ha dichiarato niente, TMDbHelper.WidgetContainer vale ancora 505
+         (lo mette Hub_Onload all'apertura della 1105) e il pannello - cioe' il logo del primo
+         risultato nello spazio fra la barra e la riga - restava vuoto finche' l'utente non ci
+         scendeva dentro. Da li' in poi restava giusto, ed e' esattamente la descrizione dell'utente.
+         Il secondo termine e' la risposta che vale anche senza fuoco: in modalita' combinata e' VISIBILE
+         un solo row della ricerca, quello della linguetta selezionata, perche' il suo <visible> gia'
+         confronta il guid della linguetta. Control.IsVisible(id) legge quel confronto e non aggiunge
+         stato nuovo. Non si puo' invece confrontare ListItem.Property(widget_id): il generatore lo
+         scrive come '$NUMBER[502]' e quel confronto non risulta mai vero (vedi lotto 170 in
+         Includes_Search.xml).
+         Fuori dalla 1105, o a casella vuota, Exp_Search_Window_Text e' falsa e qui non cambia niente:
+         il row Discover (505) e' visibile solo a casella vuota, quindi non entra mai da questa porta. -->
     <include name="Hub_Combined_Info">
         <control type="group">
             <animation effect="fade" start="0" end="100" delay="399" time="1" condition="!$EXP[Hub_Spotlight_Visible_Expression]">Conditional</animation>
@@ -364,7 +378,7 @@
                 <control type="group">
                     <top>200</top>
                     <include content="Info_Panel">
-                        <param name="visible">[!$EXP[Exp_InfoDialogs] + Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id])]</param>
+                        <param name="visible">[!$EXP[Exp_InfoDialogs] + [Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id]) | [$EXP[Exp_Search_Window_Text] + Control.IsVisible($PARAM[id])]]]</param>
                         <param name="visible_line">false</param>
                         <param name="visible_plot">false</param>
                         <param name="visible_meta">false</param>
@@ -378,7 +392,7 @@
                 <include>Info_Panel_Dimensions</include>
                 <include>Home_Info_Animation</include>
                 <include content="Info_Panel">
-                    <param name="visible">[!$EXP[Exp_InfoDialogs] + Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id])]</param>
+                    <param name="visible">[!$EXP[Exp_InfoDialogs] + [Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id]) | [$EXP[Exp_Search_Window_Text] + Control.IsVisible($PARAM[id])]]]</param>
                     <param name="visible_line">true</param>
                     <param name="visible_plot">true</param>
                     <param name="visible_meta">true</param>
