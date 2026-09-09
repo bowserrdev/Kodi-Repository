@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addons>
-<addon id="plugin.video.fenlight" name="Fen Light" provider-name="Tikipeter" version="3.0.27">
+<addon id="plugin.video.fenlight" name="Fen Light" provider-name="Tikipeter" version="3.0.28">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
         <import addon="script.module.requests" version="2.19.1"/>
@@ -67,7 +67,7 @@
         </assets>
     </extension>
 </addon>
-<addon id="skin.arctic.fuse.3" name="Arctic Fuse 3" provider-name="jurialmunkey" version="3.3.12">
+<addon id="skin.arctic.fuse.3" name="Arctic Fuse 3" provider-name="jurialmunkey" version="3.3.13">
     <requires>
         <import addon="xbmc.gui" version="5.17.0" />
         <import addon="script.skinvariables" version="2.2.1" />
@@ -127,7 +127,7 @@
         </assets>
     </extension>
 </addon>
-<addon id="script.module.cocoscrapers" name="CocoScrapers Module" version="1.2" provider-name="CocoJoe">
+<addon id="script.module.cocoscrapers" name="CocoScrapers Module" version="1.3" provider-name="CocoJoe">
 	<requires>
 		<import addon="xbmc.python" version="3.0.0" />
 		<import addon="script.module.requests" />
@@ -135,7 +135,19 @@
 	<extension point="xbmc.python.pluginsource" library="lib/default.py">
 		<provides>executable</provides>
 	</extension> 
-	<extension point="xbmc.service" library="lib/service.py" start="startup" />
+	<!-- SERVIZIO DISATTIVATO (lotto avvio, 08/09/2026). Non e' una rimozione di funzione: le due
+	     estensioni sono indipendenti, e Fen Light usa SOLO xbmc.python.module, importato pigramente
+	     da modules/sources.py:312 (import_external_scrapers) sul percorso di riproduzione.
+	     Il servizio faceva CheckSettingsFile, CheckUndesirablesDatabase e un osservatore delle
+	     impostazioni: nulla che serva alla home. Misurato sul Mi Stick nel log del 08/09 03:42:
+	     l'interprete nasceva a 30.485 e arrivava a "Service Started" a 35.591, cioe' 5,1 s di soli
+	     import piantati dentro i 7,56 s in cui si costruiscono i tre widget della home. Su quel
+	     dispositivo il Python di Kodi vive su un core solo, quindi era tempo tolto ai widget.
+	     Conseguenza dichiarata: SettingsMonitor non gira piu', quindi un cambio delle impostazioni
+	     di cocoscrapers non aggiorna piu' da solo il dizionario in memoria.
+	     Per riaccenderlo: togliere questo commento e ripristinare la riga qui sotto.
+	     <extension point="xbmc.service" library="lib/service.py" start="startup" />
+	-->
 	<extension point="xbmc.python.module" library="lib" />
 	<extension point="xbmc.addon.metadata">
 		<reuselanguageinvoker>false</reuselanguageinvoker>
