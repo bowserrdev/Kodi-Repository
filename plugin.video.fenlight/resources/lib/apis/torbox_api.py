@@ -116,6 +116,17 @@ class TorBoxAPI:
 		data = {'hashes': hashlist}
 		return self._post(cache, params={'format': 'list'}, json=data)
 
+	def check_cache_files(self, hashlist):
+		# LOTTO 207 -- la stessa richiesta di check_cache con `list_files=true`: per ogni hash in
+		# cache aggiunge l'elenco dei file con `short_name` e `size` in byte, cioe' la dimensione
+		# vera del singolo episodio dentro un pacchetto. Misurato sui 110 hash veri della stick:
+		#   senza list_files :   506 ms |   3.674 byte sul filo
+		#   con   list_files : 1.877 ms | 339.282 byte sul filo (2,5 MB espansi, 8.073 file)
+		# Non e' gratis, quindi non si chiede per tutti: si chiede solo per gli hash di cui non
+		# conosciamo gia' l'elenco (caches/pack_cache), che a regime sono zero.
+		data = {'hashes': hashlist}
+		return self._post(cache, params={'format': 'list', 'list_files': 'true'}, json=data)
+
 	def create_transfer(self, magnet_url):
 		result = self.add_magnet(magnet_url)
 		if not result['success']: return ''

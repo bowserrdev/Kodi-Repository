@@ -311,8 +311,25 @@ class Movies:
 			# UNA sola setProperties invece di due o tre: erano gia' tutte proprieta' dello stesso
 			# listitem, quindi il dizionario si compone in Python (costo nullo) e si attraversa il
 			# confine verso il C++ una volta sola.
+			# hide_add_remove_favourite: TOGLIE 'Aggiungi ai preferiti' dal menu contestuale, ed e' un
+			# aggancio ufficiale di Kodi, non un trucco. In xbmc/ContextMenus.cpp (branch Omega, cioe'
+			# la 21 che gira sulla stick) CAddRemoveFavourite::IsVisible comincia con:
+			#     if (item.GetProperty("hide_add_remove_favourite").asBoolean()) return false;
+			# Serve perche' i preferiti di Kodi sono un elenco suo, scollegato da quelli di Fen Light:
+			# la voce c'era sempre e non portava da nessuna parte.
+			#
+			# LE ALTRE DUE VOCI DI KODI NON SI POSSONO TOGLIERE, e sta scritto qui perche' nessuno ci
+			# riprovi fra sei mesi:
+			#  - 'Segna come gia' visto' (CVideoMarkWatched) compare per qualunque elemento non-cartella
+			#    con un video info tag e playcount 0. Nessuna proprieta' la disattiva; l'unico modo
+			#    sarebbe non mettere il video info tag, cioe' lasciare la skin senza metadati.
+			#  - 'Informazioni' (CVideoInfo) idem: la sua IsVisible parte da HasVideoInfoTag().
+			# E il vecchio rimedio non c'e' piu': il parametro `replaceItems` di addContextMenuItems e'
+			# deprecato da Krypton e in Omega e' IGNORATO -- il corpo della funzione non lo legge
+			# nemmeno, scrive solo le proprieta' contextmenulabel(N)/contextmenuaction(N).
 			_props = {'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
-						'belongs_to_collection': belongs_to_movieset, 'fenlight.more_like_this_params': more_like_this_params}
+						'belongs_to_collection': belongs_to_movieset, 'fenlight.more_like_this_params': more_like_this_params,
+						'hide_add_remove_favourite': 'true'}
 			if cast_names: _props['fenlight.cast'] = cast_names
 			if progress: _props['WatchedProgress'] = progress
 			extra_ratings = meta_get('extra_ratings')

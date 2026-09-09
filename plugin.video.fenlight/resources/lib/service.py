@@ -222,12 +222,27 @@ class TraktMonitor:
 		logger('Fen Light', 'TraktMonitor Service Starting')
 		from apis.trakt_api import trakt_sync_activities
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import run_plugin, refresh_age
+		from modules.kodi_utils import run_plugin, refresh_age, playback_running
 		from modules.settings import trakt_sync_interval
 		monitor, player, window = xbmc.Monitor(), xbmc.Player(), xbmcgui.Window(10000)
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		while not monitor.abortRequested():
-			while is_playing() or window.getProperty(pause_services_prop) == 'true': wait_for_abort(10)
+			# LOTTO 210 -- LA GUARDIA GUARDAVA IL SEGNALE SBAGLIATO.
+			# isPlayingVideo() diventa vero solo quando Kodi ha davvero un flusso video, cioe' a
+			# Player.OnAVStart. Fra il momento in cui l'utente sceglie la sorgente e quell'istante
+			# passano secondi -- il 09/09 sulla stick 15:42:58 (Select) -> 15:43:11.9 (OnAVStart),
+			# quattordici -- e in quella finestra questa guardia diceva 'non si sta riproducendo'.
+			# Alle 15:43:08, cinque secondi dopo che il player era gia' partito, il monitor si e'
+			# svegliato, ha sincronizzato con Trakt e ha chiesto un ridisegno. A valle
+			# _defer_refresh_if_busy usa Player.HasVideo, che li' era gia' vero: l'ha rimandato
+			# buttando id e azioni, e alla chiusura dell'episodio e' uscito un UpdateLibrary globale.
+			# Due definizioni diverse di 'sta riproducendo' nello stesso percorso.
+			# playback_running() legge fenlight.playback.active, che il player alza PRIMA di play()
+			# (player.py:159, 'l'unico istante che non e' una corsa') e abbassa alla chiusura: e'
+			# l'unico segnale che copre anche l'apertura del file. Durante una riproduzione queste
+			# dinamiche non devono esistere, ed e' questa la riga che lo garantisce.
+			while is_playing() or playback_running() or window.getProperty(pause_services_prop) == 'true':
+				wait_for_abort(10)
 			# Prima del giro di sincronizzazione, cioe' sempre mentre non si sta riproducendo nulla.
 			refresh_official_status()
 			wait_time = 1800
@@ -341,7 +356,8 @@ class WidgetRefresher:
 		logger('Fen Light', 'WidgetRefresher Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, PENDING_NOCHANGE_PROP, refresh_flag_expired, modal_dialog_open, pending_refresh_is_redundant
+		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, PENDING_NOCHANGE_PROP, refresh_flag_expired, modal_dialog_open, pending_refresh_is_redundant, playback_running, decide_pending_refresh
+		self.playback_running = playback_running
 		self.modal_dialog_open = modal_dialog_open
 		self.refresh_flag_expired = refresh_flag_expired
 		monitor, player = xbmc.Monitor(), xbmc.Player()
@@ -366,7 +382,8 @@ class WidgetRefresher:
 		while not monitor.abortRequested():
 			try:
 				wait_for_abort(1)
-				if self.window.getProperty(PENDING_REFRESH_PROP):
+				_kind_rinvio = self.window.getProperty(PENDING_REFRESH_PROP)
+				if _kind_rinvio:
 					if self.pending_since is None: self.pending_since = time()
 					# modal_dialog_open() sta QUI e non solo in kodi_refresh_ids (lotto 136). Senza, il
 					# rinvio nato per il dialogo verrebbe consumato al giro dopo, ririmandato da
@@ -418,11 +435,22 @@ class WidgetRefresher:
 						# La protezione che stamp_startup_rebuild doveva dare non si perde: quella
 						# vietava di ordinare una ricostruzione SOPRA la costruzione d'avvio ancora in
 						# corso, e a garantirla e' _nothing_building() qui sopra, non l'accorpamento.
-						if _inutile:
+						# LOTTO 210 -- la decisione sta in decide_pending_refresh, che e' pura e provata.
+						# Qui si esegue e basta, come gia' per decide_refresh nel monitor Trakt.
+						_cosa = decide_pending_refresh(_kind_rinvio, pending_ids, pending_actions, _inutile)
+						if _cosa == 'niente':
 							logger('Fen Light', 'WidgetRefresher: rinvio spento, nessun titolo cambiato e i widget richiesti [%s] sono gia\' quelli appena ricostruiti'
 									% (pending_actions or pending_ids or '-'))
-						elif pending_ids or pending_actions:
+						elif _cosa == 'mirato':
 							refresh_ids_inproc(pending_ids, pending_actions, coalesce=False)
+						elif _cosa == 'strappata':
+							# Tipo mirato ma canali vuoti: qualcuno stava azzerando mentre leggevamo.
+							# Chi azzera lo fa perche' sta gia' ridisegnando lui -- e' il caso di
+							# player._order_refresh_after_write -- quindi qui non manca niente da
+							# mostrare, e ricostruire tutto sarebbe la reazione piu' costosa possibile
+							# al piu' piccolo dei disallineamenti.
+							logger('Fen Light', 'WidgetRefresher: rinvio letto a meta\' (tipo %s, nessun id ne\' azione): '
+									'lo sta gia\' consumando qualcun altro, nessuna ricostruzione' % _kind_rinvio)
 						else: run_plugin({'mode': 'refresh_widgets', 'coalesce': 'false'})
 				elif self.pending_since is not None: self.pending_since = None
 				tick += 1
@@ -515,7 +543,11 @@ class WidgetRefresher:
 
 	def condition_check(self):
 		if not self.home(): return True
-		if self.next_refresh == None or self.is_playing() or self.window.getProperty(pause_services_prop) == 'true': return True
+		# playback_running() accanto a is_playing() per la stessa ragione del monitor Trakt (lotto
+		# 210): questo ramo ordina refresh_widgets, cioe' un UpdateLibrary globale, e non deve poterlo
+		# fare nella finestra in cui il file si sta aprendo e isPlayingVideo() risponde ancora di no.
+		if self.next_refresh == None or self.is_playing() or self.playback_running() \
+				or self.window.getProperty(pause_services_prop) == 'true': return True
 		if self.window.getProperty('fenlight.window_loaded') == 'true': return True 
 		try:
 			# json e' PIGRO (lotto 204), e questo e' il suo unico uso in tutto il file. Misurato sulla

@@ -251,8 +251,16 @@ def playback_choice(params):
 		show_busy_dialog()
 		from caches.base_cache import clear_cache
 		from caches.external_cache import ExternalCache
-		clear_cache('internal_scrapers', silent=True)
+		# LOTTO 205 -- il rescrape di un titolo tocca solo quel titolo.
+		# Restano da svuotare gli elenchi dei cloud (e' li' che compaiono i file nuovi, ed e' il
+		# motivo per cui si rifa' la ricerca) e i risultati esterni di QUESTO tmdb_id. NON si tocca
+		# piu' la cache degli hash: e' globale, si rinnova da sola ogni 24 ore, e buttarla costava
+		# centodieci controlli di rete rifatti piu' la stessa perdita per ogni altro titolo.
+		# Per ricontrollare gli hash di questo titolo -- che e' l'unica cosa che l'utente voleva --
+		# basta saltare la consultazione locale per questa ricerca: fs_rescrape.
+		clear_cache('internal_scrapers', silent=True, clear_hashes=False)
 		ExternalCache().delete_cache_single(media_type, str(meta['tmdb_id']))
+		set_property('fs_rescrape', 'true')
 		hide_busy_dialog()
 	if choice == 'scrape':
 		if media_type == 'movie': play_params = {'mode': 'playback.media', 'media_type': 'movie', 'tmdb_id': meta['tmdb_id'], 'autoplay': 'false'}

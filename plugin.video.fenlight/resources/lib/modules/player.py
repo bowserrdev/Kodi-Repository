@@ -22,7 +22,45 @@ perf_logger = ku.logger
 WRITE_DONE_PROP = 'fenlight.perf.write_done'
 total_time_errors = ('0.0', '', 0.0, None)
 set_resume, set_watched = 5, 90
+# LOTTO 202 -- CAMBIO SORGENTE AUTOMATICO. Soglie in secondi: il ciclo di monitor() dorme 1000 ms
+# per giro, quindi un giro vale un secondo. Due guasti diversi meritano due soglie diverse.
+#
+# MAI PARTITO. L'08/09 un episodio HEVC 10 bit 1920x1456 ha fatto morire il decoder della stick,
+# che dichiara max="1920x1088": 44.055 righe 'dequeueInputBuffer failed' in 67 secondi, schermo
+# nero, e alla fine Kodi si e' ucciso da solo su un bug di formattazione nel PROPRIO percorso
+# d'errore (fmt::format_error, SIGABRT). Kodi non ha mai emesso Player.OnAVStart e la posizione e'
+# rimasta a zero, ma isPlayingVideo() diceva di si': dal punto di vista di Fen Light la
+# riproduzione era in corso, e nessuna delle nostre misure di banda poteva accorgersene -- il file
+# era da 2,1 Mbit/s con la cache piena. Quindici secondi fermi a zero non sono mai una
+# riproduzione lenta: sono una sorgente che questa macchina non sa riprodurre.
+#
+# BLOCCATO. Soglia molto piu' alta perche' qui l'ambiguita' c'e' davvero: un buco di banda blocca
+# la posizione allo stesso modo, ma si riprende. Il congelamento di Dead Man del 07/09 e' durato
+# 77 secondi e non si e' ripreso mai.
+FERMO_MAI_PARTITO, FERMO_BLOCCATO = 15, 60
 video_fullscreen_check = 'Window.IsActive(fullscreenvideo)'
+
+def nota_sorgente(item, esito, motivo, dettaglio='', posizione=None):
+	"""UNA riga per ogni sorgente presa in considerazione, accettata o scartata (lotto 205).
+
+	Prima ogni via d'uscita raccontava una storia diversa, e due su quattro non ne raccontavano
+	nessuna: una sorgente che non si risolveva usciva con un `continue` muto, e una che si apriva
+	senza mai partire lasciava solo il crash. Nel log dell'08/09 l'utente ne aveva viste passare tre
+	e il log ne mostrava una. Con una riga sola e sempre lo stesso formato, `grep SORGENTE` racconta
+	l'intero giro -- ed e' anche il motivo per cui la notifica a schermo non serve piu': quello che
+	diceva sta qui, per tutti i casi invece che per uno.
+
+	Il provider e' quello VERO -- l'indicizzatore -- non 'external', che e' solo la famiglia: senza,
+	una taglia sbagliata non si puo' attribuire a nessuno.
+	"""
+	try:
+		_it = item or {}
+		perf_logger('FenLight SORGENTE', '%s %s [%s]%s | %s | %s'
+					% (posizione or '--', esito, motivo, ' ' + dettaglio if dettaglio else '',
+					   _it.get('provider') or _it.get('scrape_provider') or 'n.d.',
+					   _it.get('name') or _it.get('display_name') or 'senza nome'))
+	except: pass
+
 
 class FenLightPlayer(xbmc_player):
 	def __init__ (self):
@@ -66,6 +104,12 @@ class FenLightPlayer(xbmc_player):
 			if getattr(self, 'is_generic', True): return
 			if not getattr(self, '_av_started', False): return
 			if getattr(self, 'media_marked', False): return
+			# Una sorgente che non si e' riprodotta non lascia traccia (lotto 202). self.stop() dentro
+			# _cambia_sorgente fa scattare questa richiamata, e senza la guardia scriverebbe un punto di
+			# ripresa a zero su un film che l'utente non ha visto -- peggio del guasto stesso, perche'
+			# resterebbe nel 'continua a guardare'. La guardia sta QUI e non solo in monitor() perche'
+			# questa e' una richiamata di Kodi: arriva anche per strade che monitor() non controlla.
+			if getattr(self, '_esito_guasto', None): return
 			self.media_watched_marker()
 		except: pass
 
@@ -98,6 +142,12 @@ class FenLightPlayer(xbmc_player):
 
 	def play_video(self, url, obj):
 		self.set_constants(url, obj)
+		# QUI, e prima di play(): dopo e' troppo tardi per sempre. Se il decoder muore sul file,
+		# chiuderlo fa abortire Kodi dentro Dispose (lotto 203), quindi non c'e' nessun rimedio a
+		# valle -- l'unica difesa e' non aprirlo. Restituendo qui senza aver mai chiamato play(),
+		# play_file trova playback_successful False e passa da solo alla sorgente successiva: la
+		# rotazione non va scritta, esiste gia'.
+		if not self.is_generic and not self._esamina_sorgente(): return
 		volume_checker()
 		# La bandiera si alza QUI, non in onAVStarted (lotto 111). onAVStarted arriva quando audio e
 		# video sono davvero partiti: nel log del 29/08 sono le 16:00:07,5, mentre l'ondata di
@@ -121,20 +171,42 @@ class FenLightPlayer(xbmc_player):
 				self.sources_object.playback_successful = self.playback_successful
 				self.sources_object.cancel_all_playback = self.cancel_all_playback
 				if self.cancel_all_playback: self.kill_dialog()
+				# PRIMA di stop(), non dopo, e non e' pignoleria: se il file e' di quelli che
+				# uccidono il decoder, stop() fa abortire il processo e nulla di cio' che sta sotto
+				# viene mai eseguito. E' il motivo per cui l'08/09 non e' rimasta traccia di niente.
+				_m, _d = getattr(self, '_motivo_avvio', ('avvio', ''))
+				nota_sorgente(getattr(self, 'playing_item', None), 'SCARTATA', _m, _d, self._posizione())
+				self._boccia_sorgente('mai_partito')
 				self.stop()
 			try: del self.kodi_monitor
 			except: pass
 
 	def check_playback_start(self):
 		resolve_percent = 0
+		# Ogni uscita da questo ciclo lascia detto perche' (lotto 205): quattro strade diverse
+		# finivano tutte nello stesso `playback_successful = False`, e da fuori erano indistinguibili.
+		self._motivo_avvio = ('avvio', '')
 		while self.playback_successful is None:
 			hide_busy_dialog()
 			if not self.sources_object.progress_dialog: self.playback_successful = True
-			elif self.sources_object.progress_dialog.skip_resolved(): self.playback_successful = False
-			elif self.sources_object.progress_dialog.iscanceled() or self.kodi_monitor.abortRequested(): self.cancel_all_playback, self.playback_successful = True, False
-			elif resolve_percent >= 100: self.playback_successful = False
+			elif self.sources_object.progress_dialog.skip_resolved():
+				self._motivo_avvio = ('saltata', 'saltata dall\'utente')
+				self.playback_successful = False
+			elif self.sources_object.progress_dialog.iscanceled() or self.kodi_monitor.abortRequested():
+				self._motivo_avvio = ('annullata', 'annullata dall\'utente o da Kodi')
+				self.cancel_all_playback, self.playback_successful = True, False
+			elif resolve_percent >= 100:
+				# Scaduto il tempo. Se Kodi dice ancora di stare riproducendo, non e' un link morto
+				# ne' un annullamento dell'utente: e' un file che si e' APERTO e non e' mai partito.
+				# E' l'unico dei quattro esiti che merita la lista nera, quindi si distingue.
+				try: self._scaduto_in_avvio = bool(self.isPlayingVideo())
+				except: self._scaduto_in_avvio = False
+				self._motivo_avvio = (('aperta ma mai partita' if self._scaduto_in_avvio else 'nessuna riproduzione'),
+									  'scaduto il tempo di avvio (72 s)')
+				self.playback_successful = False
 			elif get_visibility('Window.IsTopMost(okdialog)'):
 				execute_builtin('SendClick(okdialog, 11)')
+				self._motivo_avvio = ('errore di Kodi', 'Kodi ha aperto una finestra di errore sul file')
 				self.playback_successful = False
 			elif self.isPlayingVideo():
 				try:
@@ -213,6 +285,152 @@ class FenLightPlayer(xbmc_player):
 			perf_logger('FenLight PERF CACHE', 'livello %s | salti finora %s'
 						% ('-'.join(str(_v) for _v in _tratto), getattr(self, '_salti', 0)))
 			self._cache_tratto = []
+
+	def _esamina_sorgente(self):
+		"""True se si puo' provare a riprodurre. False solo se lo sappiamo POSITIVAMENTE (lotto 203).
+
+		Tre controlli, in ordine di costo. Il primo e' gratis e legge la lista nera. Il secondo e'
+		una richiesta sola al cdn -- `Range: bytes=0-131071` -- che porta a casa cinque cose:
+		codec, larghezza, altezza, durata e, dal Content-Range, la dimensione vera del file che
+		finora costava un secondo giro dentro monitor(). Il terzo non costa niente in piu': con
+		byte veri e secondi veri gia' in mano, il bitrate e' una divisione.
+
+		OGNI DUBBIO VALE COME SI'. Contenitore che non conosciamo, intestazione oltre i byte letti,
+		rete lenta, dispositivo che non pubblica i suoi limiti (una Fire Stick, un Mac): in tutti
+		questi casi non sappiamo, e non sapere vuol dire riprodurre. Il meccanismo puo' solo
+		togliere cio' che ha misurato, e se non misura niente e' come se non ci fosse.
+		"""
+		try:
+			from caches import playback_stats
+			from modules import decoder_limits
+			_item = getattr(self, 'playing_item', None) or {}
+			_ch = playback_stats.chiave(_item)
+			_motivo = playback_stats.bocciata(_ch)
+			if _motivo:
+				return self._rifiuta_sorgente('lista nera', 'gia\' fallita in passato (%s)' % _motivo, 'lista_nera')
+			_t = perf_counter()
+			from modules import stream_header
+			_h = stream_header.leggi(self.url)
+			_ms = int((perf_counter() - _t) * 1000)
+			# La dimensione e il nodo si tengono comunque: valgono per la raccolta anche quando il
+			# verdetto e' "vai".
+			if _h.get('dimensione'): self._dimensione_vera = _h['dimensione']
+			if _h.get('host'): self._cdn_host = _h['host']
+			if _h.get('durata'): self._durata_vera = _h['durata']
+			self._sonda = (_h.get('codec'), _h.get('larghezza'), _h.get('altezza'))
+			_ok, _perche = decoder_limits.riproducibile(_h.get('codec'), _h.get('larghezza'), _h.get('altezza'))
+			_forma = '%s %sx%s letti in %s ms' % (_h.get('codec') or 'codec ignoto',
+												  _h.get('larghezza'), _h.get('altezza'), _ms)
+			if not _ok:
+				return self._rifiuta_sorgente('risoluzione', '%s, %s' % (_forma, _perche), 'scartata_dimensione')
+			_ok, _banda = self._banda_sufficiente(_h)
+			if not _ok:
+				return self._rifiuta_sorgente('banda', '%s, %s' % (_forma, _banda), 'scartata_banda')
+			nota_sorgente(self.playing_item, 'ACCETTATA', 'riproducibile',
+						  '%s, %s, %s' % (_forma, _perche, _banda), self._posizione())
+			return True
+		except:
+			# Qualunque cosa vada storta qui dentro non deve poter impedire una riproduzione.
+			return True
+
+	def _banda_sufficiente(self, _h):
+		"""(esito, spiegazione). Il cancello ESATTO sul bitrate -- lotto 209.
+
+		IL PROBLEMA CHE CHIUDE. Il filtro di `results.line_speed` in sources.py deve trasformare un
+		limite di velocita' in un limite di dimensione, e il ponte fra i due e' il tempo:
+
+		    byte ammessi = Mbit/s x secondi / 8
+
+		Al momento dell'elenco quei secondi non esistono. La dimensione si', esatta, dal lotto 207 --
+		TorBox la dichiara file per file -- ma la durata la sa solo il file, e aprire quarantasette
+		file per leggerne l'intestazione vorrebbe dire quarantasette risoluzioni sul debrid prima di
+		mostrare la lista. Quindi li' la durata resta quella di TMDb, che sui film e sugli episodi
+		normali e' vicina al vero e sulle serie a segmenti no. Un filtro inesatto.
+
+		Qui invece i due numeri ci sono ENTRAMBI, veri, e nella stessa risposta: la dimensione dal
+		Content-Range, i secondi dall'Info del matroska o dal mvhd dell'mp4. Il bitrate diventa una
+		divisione, e la sorgente che sta per aprirsi non puo' piu' sfuggire al limite per un errore
+		di stima. Il filtro dell'elenco resta un setaccio; il giudice e' questo.
+
+		SOLO SE IL FILTRO E' ACCESO. Con filter_size_method 0 l'utente ha scelto di non filtrare
+		sulla banda, con 2 filtra su una dimensione fissa che non c'entra col tempo: in nessuno dei
+		due casi si puo' introdurre qui uno scarto che dall'elenco non sarebbe mai arrivato.
+
+		Mbit/s DECIMALI, come li vendono. 8 bit per byte e 10**6 per Mbit: una linea da 25 Mbit/s
+		consegna 25.000.000 bit al secondo, non 26.214.400. Qui non c'entrano i GiB del lotto 207 --
+		quelli servivano a confrontare due DIMENSIONI, questo confronta due VELOCITA'.
+
+		OGNI DUBBIO VALE COME SI'. Durata illeggibile, contenitore non parsato, impostazione assente:
+		si torna True. Come tutto il resto di questo percorso, puo' solo togliere cio' che ha
+		positivamente misurato.
+		"""
+		try:
+			if int(get_setting('fenlight.results.filter_size_method', '0')) != 1:
+				return True, 'cancello banda non attivo'
+			_byte, _sec = _h.get('dimensione'), _h.get('durata')
+			if not _byte or not _sec: return True, 'bitrate non misurabile'
+			_linea = float(get_setting('results.line_speed', '25') or 25)
+			if _linea <= 0: return True, 'linea non impostata'
+			_mbit = (_byte * 8.0) / _sec / 1000000.0
+			self._bitrate_vero = _mbit
+			_come = '%.1f Mbit/s veri (%.2f GB in %s)' % (_mbit, _byte / 1000000000.0, self._mmss(_sec))
+			if _mbit <= _linea: return True, '%s, entro i %g impostati' % (_come, _linea)
+			return False, '%s, oltre i %g impostati' % (_come, _linea)
+		except: return True, 'cancello banda fallito'
+
+	@staticmethod
+	def _mmss(secondi):
+		try: return '%d:%02d' % (int(secondi) // 60, int(secondi) % 60)
+		except: return '?'
+
+	def _posizione(self):
+		try: return getattr(self.sources_object, '_posizione_sorgente', None)
+		except: return None
+
+	def _rifiuta_sorgente(self, motivo, dettaglio, esito):
+		"""Registra lo scarto e restituisce False, cosi' play_file passa alla sorgente dopo."""
+		try:
+			from caches import playback_stats
+			from time import time as _adesso
+			_item = getattr(self, 'playing_item', None) or {}
+			_c, _w, _h = getattr(self, '_sonda', (None, None, None))
+			# Una riga anche per cio' che NON si e' riprodotto: senza, uno scarto sarebbe
+			# indistinguibile da una sorgente mai comparsa, e non si potrebbe piu' verificare se il
+			# meccanismo sta togliendo roba buona.
+			playback_stats.registra(quando=int(_adesso()), dimensione=getattr(self, '_dimensione_vera', None),
+									cdn=getattr(self, '_cdn_host', None), larghezza=_w, altezza=_h, codec=_c,
+									# Lotto 209: su una riga di scarto questi due sono MISURATI, non stimati.
+									# Senza, non si potrebbe verificare a posteriori se il cancello ha tolto
+									# roba buona -- che e' l'unica domanda che conta su un filtro.
+									durata=getattr(self, '_durata_vera', None),
+									bitrate=getattr(self, '_bitrate_vero', None),
+									esito=esito, nome=_item.get('name') or None,
+									provider=_item.get('provider') or _item.get('scrape_provider') or None,
+									pacchetto=_item.get('package') or None,
+									dimensione_dichiarata=_item.get('size'))
+		except: pass
+		# Niente notifica a schermo: la riga di log copre tutti i casi di scarto, non solo questo, e
+		# l'utente non deve essere avvisato di un lavoro che il meccanismo fa da solo.
+		nota_sorgente(getattr(self, 'playing_item', None), 'SCARTATA', motivo, dettaglio, self._posizione())
+		try:
+			self.sources_object.playback_successful = False
+			self.sources_object.cancel_all_playback = False
+		except: pass
+		self.clear_playback_properties()
+		return False
+
+	def _boccia_sorgente(self, motivo):
+		"""Mette la sorgente in lista nera. Solo per il caso 'si e' aperta e non e' mai partita'."""
+		try:
+			if not getattr(self, '_scaduto_in_avvio', False): return
+			from caches import playback_stats
+			_item = getattr(self, 'playing_item', None) or {}
+			_ch = playback_stats.chiave(_item)
+			if playback_stats.boccia(_ch, _item.get('name'),
+									 _item.get('provider') or _item.get('scrape_provider'), motivo):
+				perf_logger('FenLight PERF CACHE', 'sorgente bocciata (%s) | %s | non verra\' piu\' proposta '
+							'finche\' non si svuota la lista' % (motivo, _ch))
+		except: pass
 
 	def _misura_dimensione(self):
 		"""Dimensione VERA del file dal cdn, in un thread di sfondo a riproduzione gia' avviata.
@@ -327,6 +545,13 @@ class FenLightPlayer(xbmc_player):
 				return _p / 100.0 * buffer_mb * 8 + _bit
 			_np, _nd = getattr(self, '_cache_n_prima', 0), getattr(self, '_cache_n_dopo', 0)
 			_media = lambda _s, _n: int(round(float(_s) / _n)) if _n else None
+			# Identita' della sorgente, dal risultato che play_file ha scelto. `size` e' in GiB, e
+			# NON e' la stessa misura per tutti: per un pacchetto external e' la taglia del pacco
+			# divisa per il numero di episodi, cioe' una stima. Per questo si registra accanto a
+			# `provider` e `pacchetto`, che sono cio' che permette di leggerla.
+			_it = getattr(self, 'playing_item', None) or {}
+			try: _dich = float(_it.get('size')) if _it.get('size') is not None else None
+			except: _dich = None
 			playback_stats.registra(
 				quando=int(_now()), cdn=getattr(self, '_cdn_host', None), dimensione=_dim,
 				durata=_dur or None, bitrate=_bit, salti=getattr(self, '_salti', 0),
@@ -336,20 +561,160 @@ class FenLightPlayer(xbmc_player):
 				cache_media_dopo=_media(getattr(self, '_cache_somma_dopo', 0), _nd),
 				cache_max_dopo=getattr(self, '_cache_max_dopo', None) if _nd else None,
 				secondi_a_zero=getattr(self, '_cache_zero_max', 0),
-				campioni=getattr(self, '_cache_n', 0))
+				campioni=getattr(self, '_cache_n', 0),
+				larghezza=getattr(self, '_vid_larghezza', None), altezza=getattr(self, '_vid_altezza', None),
+				codec=getattr(self, '_vid_codec', None), esito=getattr(self, '_esito_guasto', None),
+				nome=_it.get('name') or getattr(self, 'playing_filename', None) or None,
+				dimensione_dichiarata=_dich, provider=_it.get('provider') or _it.get('scrape_provider') or None,
+				pacchetto=_it.get('package') or None)
+			# Lo scarto fra taglia dichiarata e taglia vera va nel log perche' e' il numero che dira'
+			# se il tetto di results.line_speed sta decidendo su un dato attendibile o su una stima.
+			_sc = None
+			if _dich and _dim:
+				try: _sc = (_dich * 1073741824 / _dim - 1) * 100
+				except: _sc = None
 			perf_logger('FenLight PERF CACHE',
-						'misura registrata | bitrate %s | portata prima %s dopo %s | zero piu\' lungo %s s | righe in archivio %s'
-						% ('%.2f' % _bit if _bit else 'n.d.',
+						'sorgente | %s | provider %s%s | dichiarata %s GiB contro %s GiB reali%s'
+						% (_it.get('name') or getattr(self, 'playing_filename', None) or 'n.d.',
+						   _it.get('provider') or _it.get('scrape_provider') or 'n.d.',
+						   ' (pacchetto %s)' % _it.get('package') if _it.get('package') else '',
+						   '%.2f' % _dich if _dich else 'n.d.',
+						   '%.2f' % (_dim / 1073741824.0) if _dim else 'n.d.',
+						   ' | scarto %+.1f%%' % _sc if _sc is not None else ''))
+			perf_logger('FenLight PERF CACHE',
+						'misura registrata | %sx%s %s | bitrate %s | portata prima %s dopo %s | zero piu\' lungo %s s '
+						'| esito %s | righe in archivio %s'
+						% (getattr(self, '_vid_larghezza', None), getattr(self, '_vid_altezza', None),
+						   getattr(self, '_vid_codec', None) or 'n.d.',
+						   '%.2f' % _bit if _bit else 'n.d.',
 						   '%.1f' % _porta('_prima') if _porta('_prima') else 'n.d.',
 						   '%.1f' % _porta('_dopo') if _porta('_dopo') else 'n.d.',
-						   getattr(self, '_cache_zero_max', 0), playback_stats.quante()))
+						   getattr(self, '_cache_zero_max', 0),
+						   getattr(self, '_esito_guasto', None) or 'normale', playback_stats.quante()))
 		except: pass
+
+	def _misura_flusso(self):
+		"""Forma del flusso video -- larghezza, altezza, codec -- una volta sola, in sfondo.
+
+		E' la misura che mancava l'08/09. Tutte le colonne raccolte fin qui descrivono la VELOCITA'
+		del collegamento, e nessuna avrebbe distinto quel guasto da una riproduzione riuscita: 2,1
+		Mbit/s, cache piena, e niente da riprodurre. Il dato che lo spiega e' 1920x1456 contro il
+		max="1920x1088" dichiarato dal decoder in /vendor/etc/media_codecs.xml.
+
+		Va letta DURANTE la riproduzione: a player fermo Player.GetProperties non risponde piu'.
+		Funziona anche quando il decoder e' morto, perche' il demuxer i flussi li conosce lo stesso.
+		"""
+		try:
+			_att = ku.get_jsonrpc({'jsonrpc': '2.0', 'id': 1, 'method': 'Player.GetActivePlayers'}) or []
+			_pid = next((_p.get('playerid') for _p in _att if _p.get('type') == 'video'), None)
+			if _pid is None: return
+			_r = ku.get_jsonrpc({'jsonrpc': '2.0', 'id': 1, 'method': 'Player.GetProperties',
+								 'params': {'playerid': _pid, 'properties': ['currentvideostream']}}) or {}
+			_v = _r.get('currentvideostream') or {}
+			self._vid_larghezza = _v.get('width') or None
+			self._vid_altezza = _v.get('height') or None
+			self._vid_codec = _v.get('codec') or None
+			perf_logger('FenLight PERF CACHE', 'flusso video | %sx%s | codec %s'
+						% (self._vid_larghezza, self._vid_altezza, self._vid_codec))
+		except: pass
+
+	def _controlla_avanzamento(self):
+		"""Riconosce una sorgente che NON si sta riproducendo, mentre Kodi dice che si'.
+
+		Il criterio e' la posizione, non la cache e non il codec. Un decoder morto, un demuxer
+		congelato e un collegamento che non consegna piu' niente hanno tre cause diverse e un solo
+		sintomo osservabile da qui: getTime() non avanza. Guardare il sintomo li copre tutti e tre e
+		non richiede di indovinare quale sia -- ed e' importante, perche' l'08/09 la causa vera non
+		era osservabile da Python in nessun modo.
+
+		Due condizioni da escludere prima di dire 'guasto', e sono le uniche due in cui la posizione
+		sta ferma legittimamente: la pausa e un salto (che la fa anche tornare indietro).
+		"""
+		if getattr(self, '_esito_guasto', None): return
+		try: _pos = float(self.curr_time or 0)
+		except: return
+		try:
+			if get_visibility('Player.Paused'):
+				self._fermo_da, self._pos_prec = 0, _pos
+				return
+		except: pass
+		_prec = getattr(self, '_pos_prec', None)
+		self._pos_prec = _pos
+		# In valore assoluto: un salto all'indietro e' movimento quanto uno in avanti. Mezzo secondo
+		# di tolleranza perche' il ciclo dorme 1000 ms ma slitta, e getTime() e' un float.
+		if _prec is None or abs(_pos - _prec) > 0.5:
+			self._fermo_da = 0
+			# "Mai partito" e' una storia, non una posizione: contano i secondi visti scorrere, non il
+			# numero sul cronometro. Con un punto di ripresa la posizione parte gia' da 1200 s, e un
+			# criterio basato sul valore assoluto -- la prima stesura diceva `if _pos <= 1.0` --
+			# avrebbe classificato lo stesso guasto come 'bloccato', facendo aspettare 60 secondi
+			# invece di 15 proprio nei film che si stanno riprendendo a meta'.
+			if _prec is not None: self._pos_avanzata = True
+			return
+		_fermo = self._fermo_da = getattr(self, '_fermo_da', 0) + 1
+		if not getattr(self, '_pos_avanzata', False):
+			if _fermo < FERMO_MAI_PARTITO: return
+			_esito = 'mai_partito'
+		else:
+			if _fermo < FERMO_BLOCCATO: return
+			_esito = 'bloccato'
+		self._esito_guasto = _esito
+		# Il livello di cache non decide niente, ma va scritto: e' cio' che dira', rileggendo le righe
+		# raccolte, se abbiamo cambiato sorgente su un decoder morto (cache alta) o su un collegamento
+		# semplicemente lento (cache bassa). Se il secondo caso comparisse, la soglia va alzata.
+		perf_logger('FenLight PERF CACHE',
+					'SORGENTE GUASTA (%s) | posizione ferma a %.1f s da %s s | Player.OnAVStart %s '
+					'| cache max %s%% media ultimi campioni %s | passo alla sorgente successiva'
+					% (_esito, _pos, _fermo, 'mai arrivato' if not getattr(self, '_av_started', False) else 'arrivato',
+					   getattr(self, '_cache_max_prima', 0), getattr(self, '_cache_tratto', None)))
+
+	def _cambia_sorgente(self):
+		"""Chiude la sorgente guasta e fa riprendere play_file dalla successiva.
+
+		La riga di misura e' gia' stata scritta da _riassunto_cache prima di arrivare qui, con la
+		colonna `esito` valorizzata: una riproduzione che non e' avvenuta resta agli atti, ma il
+		wizard deve escluderla dal percentile della banda -- non e' una misura di banda.
+		"""
+		try:
+			self.stop()
+			sleep(500)
+		except: pass
+		# Lo scrobble era gia' partito alla prima iterazione del ciclo: si chiude, altrimenti su Trakt
+		# resta appesa una visione a zero mentre la sorgente successiva ne apre un'altra.
+		try:
+			if getattr(self, 'scrobble_started', False):
+				Thread(target=trakt_scrobble_stop, args=(self.media_type, self.tmdb_id, 0.0,
+														 self._trakt_season, self._trakt_episode)).start()
+				self.scrobble_started = False
+		except: pass
+		self.clear_playback_properties()
+		nota_sorgente(getattr(self, 'playing_item', None), 'SCARTATA', getattr(self, '_esito_guasto', 'bloccata'),
+					  'la riproduzione era partita e si e\' fermata', self._posizione())
+		# clear_playing_item e flush_pending_refresh NON si chiamano qui, e non e' una dimenticanza.
+		# flush_pending_refresh lancia la ricostruzione dei widget rimandata durante il video: farla
+		# ora vorrebbe dire ricostruire l'interfaccia proprio mentre play_file risolve la sorgente
+		# successiva, cioe' esattamente cio' che il presidio del lotto 111 esiste per impedire. La
+		# riproduzione che riesce la eseguira' lei; se falliscono tutte, ci pensa playback_failed_action.
+		try:
+			self.sources_object.playback_successful = False
+			self.sources_object.cancel_all_playback = False
+			# SENZA QUESTA RIGA IL MECCANISMO NON FUNZIONA AFFATTO. playback_close_dialogs, alla prima
+			# iterazione del ciclo, ha chiuso la finestra del risolutore e _kill_progress_dialog la
+			# mette a None; play_file, al giro successivo, apre con `if not self.progress_dialog:
+			# break` e uscirebbe dal ciclo senza provare nessun'altra sorgente. Ricrearla e' lo stesso
+			# rimedio che random_continual_handler usa gia' dopo una riproduzione.
+			self.sources_object._make_resolve_dialog()
+		except: pass
+		return False
 
 	def monitor(self):
 		try:
-			# La dimensione vera parte QUI, in sfondo: il film e' gia' partito, quindi non si aspetta.
-			try: Thread(target=self._misura_dimensione).start()
-			except: pass
+			# Ripiego, non percorso normale: dal lotto 203 la dimensione arriva gia' dalla stessa
+			# richiesta che legge l'intestazione, prima di play(). Si riparte da qui solo se quella
+			# richiesta e' fallita, per non perdere anche la misura.
+			if not getattr(self, '_dimensione_vera', None):
+				try: Thread(target=self._misura_dimensione).start()
+				except: pass
 			ensure_dialog_dead, total_check_time = False, 0
 			if self.media_type == 'episode':
 				play_random_continual = self.sources_object.random_continual
@@ -410,9 +775,14 @@ class FenLightPlayer(xbmc_player):
 							self.scrobble_started = True
 						from modules.auto_subtitles import auto_subtitle_check
 						Thread(target=auto_subtitle_check, args=(self,)).start()
+						# Una volta sola, in sfondo: a player fermo non si legge piu' (lotto 202).
+						try: Thread(target=self._misura_flusso).start()
+						except: pass
 
 					sleep(1000)
 					self._campiona_cache()
+					self._controlla_avanzamento()
+					if getattr(self, '_esito_guasto', None): break
 					self.current_point = round(float(self.curr_time/self.total_time * 100), 1)
 					# Durante la riproduzione non si tocca ne' Trakt ne' il database dei visti: niente
 					# rinvio periodico dello scrobble (era ogni 120s) e niente marcatura al 90%. Tutto
@@ -425,6 +795,10 @@ class FenLightPlayer(xbmc_player):
 				except: pass
 			hide_busy_dialog()
 			self._riassunto_cache()
+			# L'ordine conta: prima si scrive la misura (che ora porta anche il motivo del guasto),
+			# poi si cambia sorgente. Cambiando prima, self.stop() smonterebbe il player e il
+			# riassunto troverebbe getTotalTime() gia' morto.
+			if getattr(self, '_esito_guasto', None): return self._cambia_sorgente()
 			if not self.media_marked: self.media_watched_marker()
 			self.clear_playback_properties()
 			self.clear_playing_item()
@@ -803,7 +1177,25 @@ class FenLightPlayer(xbmc_player):
 		try:
 			# La richiesta rimandata si azzera subito: ne' flush_pending_refresh ne' la rete di
 			# sicurezza di WidgetRefresher (che ordinerebbe un GLOBALE) devono partire sopra questo.
+			#
+			# LOTTO 210 -- SI AZZERANO TUTTE E TRE. Finora spariva solo la chiave, e i due canali
+			# restavano scritti: un rinvio a meta', in cui 'c'e' qualcosa da fare' era gia' falso ma
+			# 'cosa fare' era ancora vero. WidgetRefresher gira ogni secondo e legge le due cose in
+			# momenti diversi -- prima PENDING_REFRESH_PROP per decidere se consumare, poi id e azioni
+			# per decidere COSA -- quindi bastava cadere fra le due letture per trovare la chiave
+			# ancora accesa e i canali gia' svuotati da kodi_refresh_ids qui sotto. Un rinvio senza
+			# id ne' azioni significa 'ricostruisci tutto' (service.py:426), ed e' cosi' che un
+			# refresh MIRATO su un episodio diventava un UpdateLibrary globale.
+			#
+			# Misurato sulla stick il 09/09 alle 15:42:32.293: nello STESSO millisecondo la riga
+			# 'MIRATO 1 contenitori | id=1 azioni=1' del thread 32303 e 'rinvio consumato dopo 74.3s'
+			# del thread 31994, e 11 ms dopo 'refresh_widgets&coalesce=false' -> GLOBALE. La finestra
+			# di corsa era di circa 300 ms, cioe' il tempo di _wait_window_settled.
+			#
+			# Azzerarle insieme la chiude: chi legge trova o tutto o niente, e 'niente' non consuma.
 			ku.clear_property(ku.PENDING_REFRESH_PROP)
+			ku.clear_property(ku.PENDING_IDS_PROP)
+			ku.clear_property(ku.PENDING_ACTIONS_PROP)
 			# Prima di qualunque decisione: la finestra deve avere smesso di essere quella del player.
 			self._wait_window_settled()
 			if self._open_folder_rebuilt_after_write():
