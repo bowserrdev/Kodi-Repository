@@ -1103,8 +1103,20 @@ class FenLightMonitor(xbmc.Monitor):
 		Thread(target=WidgetPaginator().run).start()
 		Thread(target=DubResolver().run).start()
 		Thread(target=PerfSampler().run).start()
+		# Aggiornamento della skin senza ReloadSkin. Vive in modules/skin_updater.py e non qui perche'
+		# quel modulo ha il suo .pyc, mentre questo file Kodi lo esegue come __main__ e lo ricompila a
+		# ogni avvio (vedi il referto in testa): sono ~250 righe che non hanno motivo di ricompilarsi.
+		# L'import e' pigro per la stessa ragione, e il servizio aspetta comunque 90 s prima di
+		# toccare la rete. Vedi il modulo per il log del 09/09 che l'ha reso necessario.
+		Thread(target=self._start_skin_updater).start()
 		AutoStart().run()
 		self._mark_boot_ready()
+
+	def _start_skin_updater(self):
+		try:
+			from modules.skin_updater import SkinUpdater
+			SkinUpdater().run()
+		except Exception as e: logger('Fen Light', 'SkinUpdater non avviato (%s)' % e)
 
 	def _boot_work_can_wait(self):
 		"""Si puo' rimandare il lavoro di avvio, o questo e' un avvio in cui deve precedere i widget?
