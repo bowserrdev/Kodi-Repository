@@ -1,6 +1,15 @@
 # -*- coding: utf-8 -*-
 import json
 from caches import progress_sync
+
+def _elenco_id(ids, quanti=4):
+	"""Gli id, per il log. Troncato: un disallineamento grosso e' gia' descritto dal conteggio, e una
+	riga di log lunga mille caratteri non la legge nessuno."""
+	try:
+		_o = sorted(ids)
+		return '[%s]' % ', '.join([str(i) for i in _o[:quanti]] + (['+%s' % (len(_o) - quanti)] if len(_o) > quanti else []))
+	except: return ''
+
 from caches.base_cache import connect_database
 from modules.kodi_utils import sleep, confirm_dialog, close_all_dialog, logger
 
@@ -290,9 +299,14 @@ class TraktWatched:
 			# Il motivo torna al chiamante perche' finisca nel log: la differenza fra 'Trakt ha tolto' e
 			# 'qualcuno ha messo in pausa altrove' e' la prima cosa che si vuole sapere leggendo un log,
 			# ed e' costata due indagini quando non c'era.
+			# LOTTO 238 -- GLI ID FINISCONO NEL LOG, non solo il conteggio. La ruota da 30 s del
+			# difetto 9.2 e' stata invisibile per giorni proprio perche' la riga diceva '1 in piu' su
+			# Trakt' e basta: per sapere QUALE voce serviva interrogare l'API a mano. Con l'id
+			# scritto, un ciclo che dovesse ripresentarsi si diagnostica leggendo due righe di log --
+			# stesso id ogni trenta secondi vuol dire che la riparazione non lo sa togliere.
 			parti = []
-			if tolte: parti.append('%s tolte da Trakt' % len(tolte))
-			if aggiunte: parti.append('%s in piu' % len(aggiunte) + "'" + ' su Trakt')
+			if tolte: parti.append('%s tolte da Trakt %s' % (len(tolte), _elenco_id(tolte)))
+			if aggiunte: parti.append('%s in piu' % len(aggiunte) + "'" + ' su Trakt %s' % _elenco_id(aggiunte))
 			return ' + '.join(parti)
 		except: return ''
 
@@ -350,6 +364,10 @@ def cache_trakt_object(function, string, url):
 	cache = trakt_cache.get(string)
 	if cache: return cache
 	result = function(url)
+	# LOTTO 237 -- `None` significa che la chiamata non e' arrivata a Trakt, ed e' diverso da una
+	# lista vuota. Memorizzarlo faceva si' che un momento di rete assente -- o un rinnovo del
+	# token non concluso -- svuotasse la watchlist fino alla scadenza della cache.
+	if result is None: return None
 	trakt_cache.set(string, result)
 	return result
 

@@ -38,6 +38,75 @@ set_resume, set_watched = 5, 90
 # la posizione allo stesso modo, ma si riprende. Il congelamento di Dead Man del 07/09 e' durato
 # 77 secondi e non si e' ripreso mai.
 FERMO_MAI_PARTITO, FERMO_BLOCCATO = 15, 60
+
+# LOTTO 212 -- LA CAPACITA' SI VEDE SOLO QUANDO IL BUFFER HA SPAZIO.
+#
+# Consegna e capacita' non sono la stessa cosa. Per quasi tutta una riproduzione il player chiede
+# solo cio' che consuma: buffer pieno, richieste rallentate, consegna = bitrate del file. In quel
+# momento la consegna non dice NIENTE su quanto la linea saprebbe dare. La capacita' e' osservabile
+# soltanto mentre il buffer NON e' pieno, perche' li' Kodi tira quanto la linea concede.
+#
+# Sotto il tetto vale una formula sola, e copre tre casi invece di uno:
+#     capacita' = bitrate + (variazione del buffer in byte / tempo)
+#   buffer che SALE   -> la linea da' piu' del film: capacita' = bitrate + surplus
+#   buffer FERMO      -> da' esattamente quanto il film consuma: capacita' = bitrate, esatto
+#   buffer che CALA   -> non ce la fa: capacita' MINORE del bitrate, e sappiamo di quanto
+# Gli ultimi due il lotto 197 non li misurava affatto (`if _dt > 0 and _dl > 0`): su 33 riproduzioni
+# riuscite, 9 non hanno prodotto nessuna misura, e otto di quelle nove avevano la cache inchiodata
+# vicino a zero. Erano le riproduzioni al limite, cioe' le uniche che dicono dove sta il limite.
+#
+# 90 e non 100: vicino al tetto la percentuale si appiattisce -- il buffer e' quasi sazio e l'ultimo
+# tratto non e' piu' una misura della linea. Dieci punti di distanza dal tetto costano poco e tolgono
+# l'ambiguita'.
+TETTO_CACHE = 90
+# Un crollo di questa ampiezza in un campione solo non e' consegna che manca: e' il buffer BUTTATO
+# (un salto, un cambio di flusso). Vale 6 MB in un secondo su un buffer da 24: nessuna linea lo fa.
+# Spezza il tratto invece di entrare nel conto come pendenza negativa enorme.
+CROLLO_BRUSCO = 25
+# Sotto questi campioni un tratto non dice niente: la percentuale e' un intero, e su pochi punti la
+# quantizzazione pesa piu' del segnale.
+MIN_CAMPIONI_TRATTO = 5
+# E almeno questi secondi. Il minimo in CAMPIONI da solo non basta piu' da quando si campiona fitto:
+# a 250 ms cinque campioni sono un secondo e un quarto, cioe' un lampo, e la quantizzazione della
+# percentuale peserebbe piu' del segnale. Le due condizioni misurano cose diverse -- quanti punti
+# abbiamo letto e per quanto tempo -- e servono tutte e due.
+MIN_SECONDI_TRATTO = 3.0
+# Capienza minima: un tratto che parte troppo in alto ha il tetto addosso e la sua pendenza e'
+# tagliata dal tetto, non dalla linea. Quaranta punti sono cio' che serve per poter scrivere,
+# nei tre secondi minimi, anche la linea piu' veloce che abbiamo mai misurato (~13%/s).
+CAPIENZA_MINIMA = 40
+# Il PAVIMENTO della banda utile, e NON e' lo zero esatto. Su 28 Years Later (10/09) il buffer ha
+# passato quarantadue secondi a terra rimbalzando fra 0 e 1, e il conteggio a zero esatto leggeva 7:
+# quegli 1% spezzavano la sequenza. Ma l'1% di 24 MB sono 245 KB, cioe' quattro centesimi di secondo
+# di un film da 45 Mbit/s -- vuoto quanto lo zero. Sotto questa soglia il buffer non puo' piu'
+# scendere e smette di registrare il deficit, esattamente come sopra il tetto smette di registrare
+# il surplus: la formula non vale ne' di qua ne' di la'.
+PAVIMENTO_CACHE = 2
+# LOTTO 221 -- una finestra deve avere una DIREZIONE. `capacita = bitrate + variazione/tempo` e'
+# vera su qualunque finestra, ma su una a V -- il buffer scende e poi risale allo stesso punto -- la
+# media descrive due regimi opposti e non ne descrive nessuno. The Two Towers (10/09): il buffer e'
+# sceso da 87 a 48 ed e' risalito a 81, netto +1 punto in dieci secondi, e la riga ha registrato
+# "22,0 Mbit/s" su un collegamento che nella stessa riproduzione ne misurava 42,9 dopo il salto.
+# Il criterio e' quanto la finestra FINISCE vicino a uno dei suoi estremi: sui tratti veri separa
+# senza sovrapposizioni -- riempimenti e svuotamenti monotoni 1,00, tuffi a V 0,14-0,25.
+FRAZIONE_DIREZIONE = 0.5
+# ...sotto questa escursione la finestra e' semplicemente piatta, e il rapporto non significa niente:
+# una cache ferma a 12% con un punto di rumore avrebbe netto 0 su escursione 2. Il piatto dentro la
+# banda resta la misura esatta che il lotto 212 ha voluto (capacita' = bitrate).
+ESCURSIONE_MINIMA = 10
+
+# CAMPIONAMENTO FITTO -- LOTTO 213.
+# Il buffer si riempie PRIMA che l'immagine compaia: il 10/09 fra Player.OnPlay (01:54:28.7) e
+# Player.OnAVStart (01:54:33.1) sono passati 4,36 secondi, e al primo campione la cache era gia' al
+# 72% -- 17,3 MB su 24 arrivati mentre non stavamo guardando. Su quattro riproduzioni i tratti sono
+# usciti di 5, 6, 7 campioni e uno non e' uscito affatto: su un collegamento piu' veloce dei file,
+# guardare una volta al secondo a partire da OnAVStart significa arrivare a riempimento quasi finito.
+#
+# La cura e' guardare PRIMA e piu' spesso, ma solo dove serve: finche' il buffer ha spazio e finche'
+# il tratto e' ancora corto. A regime -- cache al tetto, o tratto gia' lungo -- si torna a un giro al
+# secondo e il costo sparisce.
+PASSO_FITTO = 250               # ms fra due letture nella fase fitta
+CAMPIONI_FITTI = 40             # oltre questi il tratto ha gia' risoluzione a sufficienza
 video_fullscreen_check = 'Window.IsActive(fullscreenvideo)'
 
 def nota_sorgente(item, esito, motivo, dettaglio='', posizione=None):
@@ -118,9 +187,18 @@ class FenLightPlayer(xbmc_player):
 		# Trakt riceve uno scrobble start all'avvio e uno stop alla chiusura, niente altro.
 		# SONDA (lotto 182): il numero di salti serve a separare il livello di cache PRIMA del primo
 		# salto da quello DOPO l'ultimo. E' la sola cosa che questa richiamata aggiunge.
-		# La finestra scorrevole della portata si azzera qui: un salto resetta la cache di Kodi, e una
-		# finestra a cavallo della discontinuita' misurerebbe un dislivello, non una velocita'.
-		try: self._cache_serie = []
+		# Il tratto in corso si spezza qui: un salto butta la cache di Kodi, e un tratto a cavallo
+		# della discontinuita' misurerebbe un dislivello, non una velocita'.
+		#
+		# NON basta il cambio di fase dentro _campiona_cache. Quello scatta solo al PRIMO salto --
+		# quando `_salti` passa da 0 a 1 e il suffisso va da _prima a _dopo -- mentre dal secondo in
+		# poi la fase resta _dopo e il tratto passerebbe sopra il salto senza accorgersene. Il vecchio
+		# meccanismo azzerava la finestra a ogni salto e aveva ragione; qui serve lo stesso.
+		#
+		# Si alza una bandiera invece di chiudere il tratto da qui: questa e' una richiamata di Kodi e
+		# gira su un altro thread, mentre _campiona_cache sta scrivendo la stessa lista. Un booleano
+		# lo si posa e basta; a chiudere ci pensa il ciclo, dove la lista ha un padrone solo.
+		try: self._tratto_rotto = True
 		except: pass
 		try: self._salti = getattr(self, '_salti', 0) + 1
 		except: pass
@@ -244,39 +322,23 @@ class FenLightPlayer(xbmc_player):
 			self._cache_max_prima = max(getattr(self, '_cache_max_prima', 0), _liv)
 			self._cache_somma_prima = getattr(self, '_cache_somma_prima', 0) + _liv
 			self._cache_n_prima = getattr(self, '_cache_n_prima', 0) + 1
-		# PORTATA (lotto 197, corretto al 198). Quando la cache sale, il collegamento consegna piu' di
-		# quanto il film consuma, e la pendenza dice di quanto. Tempo vero e non "un secondo": il ciclo
-		# fa sleep(1000) ma anche altro, e slitta.
-		#
-		# DUE FINESTRE, e la seconda e' quella che conta. Con la sola finestra da 5 campioni il lotto
-		# 197 leggeva il PICCO, e il picco non e' cio' che regge un film: la riproduzione 7 dell'08/09
-		# (13,72 Mbit/s) dava picco 21,4 Mbit/s -- verdetto "larghissimo" -- mentre la cache non
-		# passava mai il 21% e la media era 1%. Su 20 campioni la stessa riproduzione da' 15,8 Mbit/s,
-		# cioe' un margine di 1,15x, che e' il numero vero. Stesso errore delle sonde dei lotti 191 e
-		# 193, in un posto nuovo: misurare un massimo dove serve una portata sostenuta.
-		_serie = getattr(self, '_cache_serie', None)
-		if _serie is None: _serie = self._cache_serie = []
-		_serie.append((perf_counter(), _liv))
-		if len(_serie) > 20: _serie.pop(0)
-		# Prima e dopo il primo salto si tengono separate: il dato dell'08/09 dice che dopo un salto
-		# la cache non si riprende, ma senza la portata separata non si sa SE cala la consegna del cdn
-		# (offset freddo) o se semplicemente manca il margine per ricostruire il buffer. E' la
-		# domanda dell'obiettivo 1, e finora non era misurata.
-		_suff = '_dopo' if _dopo else '_prima'
-		for _w, _attr in ((5, '_cache_pend_picco' + _suff), (20, '_cache_pend_sost' + _suff)):
-			if len(_serie) < _w: continue
-			_a, _b = _serie[-_w], _serie[-1]
-			_dt, _dl = _b[0] - _a[0], _b[1] - _a[1]
-			if _dt > 0 and _dl > 0:
-				_pend = _dl / _dt
-				if _pend > getattr(self, _attr, 0): setattr(self, _attr, _pend)
-		# Il tratto consecutivo piu' lungo a zero. E' l'unico esito che si SENTE: la media della cache
-		# misura il margine (lotto 197), ma il film si ferma solo quando il buffer resta vuoto.
-		if _liv <= 0:
-			_run = getattr(self, '_cache_run_zero', 0) + 1
-			self._cache_run_zero = _run
-			if _run > getattr(self, '_cache_zero_max', 0): self._cache_zero_max = _run
-		else: self._cache_run_zero = 0
+		self._tratto_campiona(_liv)
+		# Il tratto consecutivo piu' lungo A SECCO. E' l'unico esito che si SENTE: la media della
+		# cache misura il margine (lotto 197), ma il film si ferma solo quando il buffer resta vuoto.
+		# La soglia e' PAVIMENTO_CACHE e non lo zero esatto -- vedi il commento alla costante: a zero
+		# esatto questo numero usciva sei volte piu' piccolo del vero.
+		if _liv <= PAVIMENTO_CACHE:
+			_run = getattr(self, '_cache_run_secco', 0) + 1
+			self._cache_run_secco = _run
+			if _run > getattr(self, '_cache_secco_max', 0): self._cache_secco_max = _run
+			# LOTTO 220 -- anche per fase, e serve al log: `_cache_secco_max` e' di TUTTA la
+			# riproduzione, e usarlo per spiegare l'esito di una fase dice il falso. Marty Supreme
+			# (11/09): la fase PRIMA aveva media 98% e minimo 55, zero secondi a secco, e il log le
+			# attribuiva ventidue secondi di buffer vuoto che erano tutti nella fase DOPO.
+			_sf = '_dopo' if _dopo else '_prima'
+			if _run > getattr(self, '_cache_secco_max' + _sf, 0):
+				setattr(self, '_cache_secco_max' + _sf, _run)
+		else: self._cache_run_secco = 0
 		_tratto = getattr(self, '_cache_tratto', None)
 		if _tratto is None: _tratto = self._cache_tratto = []
 		_tratto.append(_liv)
@@ -285,6 +347,160 @@ class FenLightPlayer(xbmc_player):
 			perf_logger('FenLight PERF CACHE', 'livello %s | salti finora %s'
 						% ('-'.join(str(_v) for _v in _tratto), getattr(self, '_salti', 0)))
 			self._cache_tratto = []
+
+	def _campiona_capacita(self):
+		"""UNA lettura in piu\' della cache, per la sola misura di capacita\' (lotto 213).
+
+		Separata da _campiona_cache di proposito. Quella resta a UN giro al secondo perche\' possiede
+		le statistiche -- `campioni`, `secondi_a_secco`, le medie e i massimi -- e quei nomi dicono
+		secondi: farla girare quattro volte al secondo cambierebbe il significato di quattro colonne
+		senza che nessuno se ne accorga. Qui invece si alimenta solo il tratto, che di suo non ha
+		nessuna unita\' di tempo implicita: piu\' campioni sono solo piu\' risoluzione.
+		"""
+		try:
+			_grezzo = get_infolabel('Player.CacheLevel')
+			if not _grezzo: return
+			self._tratto_campiona(int(float(_grezzo)))
+		except: pass
+
+	def _fitto_utile(self):
+		"""Se conviene guardare piu\' spesso: c\'e\' spazio nel buffer E il tratto e\' ancora corto."""
+		if getattr(self, '_tetto_raggiunto', False): return False
+		return len(getattr(self, '_tratto_utile', None) or []) < CAMPIONI_FITTI
+
+	def _attesa_campionata(self):
+		"""Il secondo di attesa del ciclo, speso guardando la cache invece che dormendo e basta.
+
+		L\'ultimo quarto non si campiona: subito dopo tocca a _campiona_cache, che legge comunque.
+		"""
+		_quanti = max(1, 1000 // PASSO_FITTO)
+		for _i in range(_quanti):
+			sleep(PASSO_FITTO)
+			if _i == _quanti - 1: return
+			if self._fitto_utile(): self._campiona_capacita()
+
+	def _tratto_campiona(self, _liv):
+		"""Aggiunge un campione al tratto in corso, spezzandolo dove va spezzato.
+
+		PORTATA -- LOTTO 212. Niente finestra fissa da 20 campioni: era lei a produrre il numero
+		costante. 5%/s x 20 s = 100%, cioe\' il buffer intero: ogni volta che la cache si riempiva
+		dentro la finestra, la "portata sostenuta" misurava la LUNGHEZZA DELLA FINESTRA e non la
+		linea. Nei log raccolti quel valore usciva 5,1%/s otto volte su ventisette, e 5,0 altre due.
+		Su Angel Dust il conto vero era 9,1%/s e la finestra dava 5,1: capacita\' registrata
+		15,1 Mbit/s contro 22,7 reali, -33%.
+
+		Adesso si misurano TRATTI: ogni sequenza di campioni consecutivi rimasti sotto il tetto, con
+		i due estremi presi da campioni VERI e il tempo da perf_counter. Non si indovina dove il
+		riempimento comincia o finisce -- si usano i campioni che ci sono, e l\'unico errore che resta
+		e\' l\'arrotondamento della percentuale: su un tratto da 90 punti vale l\'1%.
+
+		UNA CONSERVATIVITA\' CHE RESTA, E VOLUTA. All\'avvio la cache sta a zero per qualche campione
+		prima di muoversi -- il collegamento che si apre -- e quei secondi entrano nel conto.
+		Toglierli vorrebbe dire decidere quali campioni sono "veri", ed e\' la strada delle euristiche
+		che questo lotto sta smontando; e non si potrebbe distinguere il caso in cui la cache resta a
+		zero perche\' la linea non ce la fa, che e\' la misura piu\' preziosa che abbiamo.
+		"""
+		self._tetto_raggiunto = _liv > TETTO_CACHE
+		_suff = '_dopo' if getattr(self, '_salti', 0) > 0 else '_prima'
+		_tratto_u = getattr(self, '_tratto_utile', None)
+		if _tratto_u is None: _tratto_u = self._tratto_utile = []
+		# Va INIZIALIZZATA al primo campione, non lasciata al valore predefinito. Se resta assente
+		# fino al primo salto, quando quello arriva `_fase` si legge gia' come '_dopo' e il tratto
+		# iniziale -- che e' tutto roba di PRIMA -- viene chiuso nella fase sbagliata: la misura
+		# principale sparisce e quella secondaria eredita numeri che non sono suoi.
+		_fase = getattr(self, '_tratto_fase', None)
+		if _fase is None: _fase = self._tratto_fase = _suff
+		# Quattro modi di spezzare un tratto, e nessuno dei quattro e' "la linea e' lenta": il primo
+		# salto (cambia la fase), i salti successivi (la bandiera posata da onPlayBackSeek), il tetto
+		# raggiunto (la capacita' smette di essere osservabile) e un crollo che nessuna linea puo'
+		# produrre. Confonderne anche uno solo con la lentezza vorrebbe dire registrare come misura
+		# della banda un buffer buttato via.
+		# LOTTO 217 -- la banda utile ha DUE bordi, non uno. Sopra il tetto Kodi si strozza da solo
+		# e la cache non dice piu' niente; a ZERO il buffer non puo' scendere oltre, quindi smette
+		# di registrare il deficit: dB/dt va a zero e la formula legge "capacita' = bitrate" mentre
+		# la verita' e' "capacita' MINORE del bitrate, di quanto non si sa". E' la stessa censura,
+		# specchiata, e fino al lotto 216 si guardava un bordo solo. The Mandalorian (10/09): 206
+		# dei 265 campioni del tratto vincente erano schiacciati sul pavimento.
+		_fuori = _liv > TETTO_CACHE or _liv <= PAVIMENTO_CACHE
+		if (_fase != _suff or getattr(self, '_tratto_rotto', False) or _fuori
+				or (_tratto_u and (_tratto_u[-1][1] - _liv) > CROLLO_BRUSCO)):
+			self._tratto_rotto = False
+			self._chiudi_tratto(_fase, _liv > TETTO_CACHE)
+			_tratto_u = self._tratto_utile = []
+			self._tratto_fase = _suff
+		if not _fuori: _tratto_u.append((perf_counter(), _liv))
+
+	def _chiudi_tratto(self, suff, tetto=False):
+		"""Chiude il tratto in corso e lo conserva se e\' il piu\' LUNGO fra quelli CAPIENTI.
+
+		Due regole, e fanno due lavori diversi.
+
+		La capienza SQUALIFICA. La pendenza di un tratto e' limitata dallo spazio che ha sopra di
+		se': un tratto che parte da 82 ha otto punti prima del tetto, quindi non PUO' scrivere piu'
+		di otto punti, per quanto veloce sia la linea. Se la linea fosse velocissima quel tratto
+		finirebbe subito e cadrebbe sotto il minimo di tre secondi; se sopravvive e' perche' e'
+		lento. Un tratto senza capienza dice sempre "linea al minimo", qualunque sia la linea, e
+		quindi non e' una misura. Il lotto 213 lo faceva concorrere con gli altri e sul film delle
+		02:42 il riempimento iniziale (73 punti, 39,8 Mbit/s) e un tuffo di meta' film (1 punto,
+		20,1 Mbit/s) sono finiti a pari merito su 28 campioni: tre secondi di tuffo in piu' e la
+		portata registrata si sarebbe dimezzata senza che la linea fosse cambiata di nulla.
+
+		Fra i tratti capienti SCEGLIE la lunghezza, ed e' la regola del lotto 212, che resta: il
+		piu' lungo, non il piu' ripido. Un tratto breve e ripido e' il picco che i lotti 191, 193 e
+		197 hanno gia' preso per buono tre volte -- descrive un istante, non cio' che regge un film.
+
+		Se nessun tratto e' capiente non si registra niente. Un buco e' onesto: vuol dire che quella
+		riproduzione non ha mai offerto una finestra in cui la linea potesse dire quanto vale.
+
+		Si conservano anche CAMPIONI e PUNTI, e non e' contorno: sono cio' che permette di
+		distinguere una misura solida -- quaranta campioni su novanta punti -- da una tirata su
+		cinque campioni e sei punti. Senza, davanti al 5,1%/s costante non avevo modo di accorgermi
+		che non era una misura. Il wizard le usera' per pesare o scartare.
+		"""
+		_t = getattr(self, '_tratto_utile', None) or []
+		if len(_t) < MIN_CAMPIONI_TRATTO: return
+		_dt = _t[-1][0] - _t[0][0]
+		if _dt < MIN_SECONDI_TRATTO: return
+		# LOTTO 216 -- la capienza vale solo per i tratti che il TETTO ha troncato. Nel lotto 214
+		# la si applicava sempre, e su The Mandalorian (10/09) ha buttato il tratto piu' lungo mai
+		# osservato -- 265 campioni su 264 secondi -- soltanto perche' partiva da 79. Il tetto non
+		# c'entrava niente: quel tratto SCENDEVA, allontanandosi dal tetto, e aveva davanti a se'
+		# tutti i settantanove punti di discesa. Censura chi ti sbarra la strada, non chi ti sta
+		# alle spalle.
+		# LOTTO 219 -- la capienza si misura dal punto piu' BASSO che il tratto ha raggiunto, non da
+		# dove parte. Il tetto censura un tratto solo se quel tratto non si e' mai allontanato dal
+		# tetto: se e' sceso a 14 e poi e' risalito, di spazio ne ha avuto in abbondanza e la sua
+		# pendenza non e' tagliata da niente. Wuthering Heights (11/09), 1805 campioni su mezz'ora:
+		# quattro escursioni vere -- fino al 14%, al 37%, al 47% -- tutte buttate perche' PARTIVANO
+		# da 80-87. Quella riproduzione non ha prodotto una sola misura.
+		_liv_t = [_c[1] for _c in _t]
+		if tetto and TETTO_CACHE - min(_liv_t) < CAPIENZA_MINIMA: return
+		_escursione = max(_liv_t) - min(_liv_t)
+		if _escursione > ESCURSIONE_MINIMA and \
+				abs(_liv_t[-1] - _liv_t[0]) < _escursione * FRAZIONE_DIREZIONE: return
+		# Fra i capienti vince il piu' lungo. A parita' non si sostituisce: il primo ha gia' un tempo.
+		if len(_t) <= getattr(self, '_tratto_campioni' + suff, 0): return
+		setattr(self, '_tratto_pendenza' + suff, (_t[-1][1] - _t[0][1]) / _dt)
+		setattr(self, '_tratto_campioni' + suff, len(_t))
+		setattr(self, '_tratto_punti' + suff, _t[-1][1] - _t[0][1])
+		# LOTTO 217 -- quanti campioni di QUESTO tratto erano schiacciati sul pavimento. Lo stavo
+		# gia' calcolando qui dentro e lo buttavo. E' il dato che distingue una misura da un limite
+		# superiore: a zero il buffer non puo' scendere oltre, quindi smette di registrare il
+		# deficit e la pendenza misura il pavimento invece della linea. `secondi_a_secco` non serve
+		# allo scopo -- e' di tutta la riproduzione, mentre la contaminazione riguarda il tratto
+		# vincente, e i due si separano solo per caso (Devil Wears Prada: 9 s a zero e la misura
+		# migliore dell'archivio, perche' quegli zeri erano il punto da cui la risalita partiva).
+		setattr(self, '_tratto_secchi' + suff, sum(1 for _c in _t if _c[1] <= PAVIMENTO_CACHE))
+		# LOTTO 219 -- i SECONDI, e non si ricavano dai campioni: il passo non e' costante (250 ms
+		# finche' il fitto e' acceso, poi 1 s), quindi 46 campioni possono valere 15,8 s e 77 ne
+		# possono valere 48,3. E' la durata che dice quanto una misura e' sostenuta, ed e' la
+		# distinzione che serve: le finestre corte leggono sistematicamente piu' alto.
+		setattr(self, '_tratto_secondi' + suff, round(_dt, 1))
+		# quanto la finestra e' andata in una direzione sola: 1,0 monotona, ~0 andata e ritorno.
+		# Si conserva come si conserva `portata_secchi`, per poter verificare la regola dall'archivio
+		# invece di doverla ricontrollare sui log.
+		setattr(self, '_tratto_direzione' + suff,
+				round(abs(_liv_t[-1] - _liv_t[0]) / float(_escursione), 2) if _escursione else 1.0)
 
 	def _esamina_sorgente(self):
 		"""True se si puo' provare a riprodurre. False solo se lo sappiamo POSITIVAMENTE (lotto 203).
@@ -369,14 +585,39 @@ class FenLightPlayer(xbmc_player):
 				return True, 'cancello banda non attivo'
 			_byte, _sec = _h.get('dimensione'), _h.get('durata')
 			if not _byte or not _sec: return True, 'bitrate non misurabile'
-			_linea = float(get_setting('results.line_speed', '25') or 25)
+			# LOTTO 231 -- LO STESSO NUMERO DEL FILTRO, non l'impostazione.
+			#
+			# Questo cancello e il filtro di sources.filter_results decidono la stessa cosa su due
+			# stime diverse dello stesso bitrate: il filtro sulla dimensione dichiarata, questo sui
+			# byte e i secondi letti dentro il file. Se leggessero due SOGLIE diverse -- il filtro
+			# quella misurata dalla sonda, questo l'impostazione scritta a mano -- il piu' preciso
+			# dei due giudicherebbe contro un numero vecchio. Il 10/09 il filtro decideva su 26,7
+			# Mbit/s misurati e questo su 50 impostati.
+			_linea, _fonte = self._linea_utile()
 			if _linea <= 0: return True, 'linea non impostata'
 			_mbit = (_byte * 8.0) / _sec / 1000000.0
 			self._bitrate_vero = _mbit
 			_come = '%.1f Mbit/s veri (%.2f GB in %s)' % (_mbit, _byte / 1000000000.0, self._mmss(_sec))
-			if _mbit <= _linea: return True, '%s, entro i %g impostati' % (_come, _linea)
-			return False, '%s, oltre i %g impostati' % (_come, _linea)
+			if _mbit <= _linea: return True, '%s, entro i %.1f %s' % (_come, _linea, _fonte)
+			return False, '%s, oltre i %.1f %s' % (_come, _linea, _fonte)
 		except: return True, 'cancello banda fallito'
+
+	@staticmethod
+	def _linea_utile():
+		"""(Mbit/s, da dove viene). La misura della sonda se c'e', l'impostazione altrimenti.
+
+		La provenienza si restituisce e si scrive nel log: senza, una riga di scarto non dice se il
+		numero contro cui la sorgente e' stata giudicata era misurato o scritto a mano, e non si
+		puo' piu' verificare a posteriori se il cancello ha tolto roba buona.
+		"""
+		try:
+			from modules import sonda_linea
+			_m = sonda_linea.letta()
+			_v = sonda_linea.line_speed_da((_m or {}).get('regime'))
+			if _v: return _v, 'dalla sonda (%.1f Mbit/s misurati / %.2f)' % (_m['regime'], sonda_linea.MARGINE)
+		except: pass
+		try: return float(get_setting('results.line_speed', '25') or 25), 'impostati'
+		except: return 0.0, 'impostati'
 
 	@staticmethod
 	def _mmss(secondi):
@@ -407,7 +648,8 @@ class FenLightPlayer(xbmc_player):
 									esito=esito, nome=_item.get('name') or None,
 									provider=_item.get('provider') or _item.get('scrape_provider') or None,
 									pacchetto=_item.get('package') or None,
-									dimensione_dichiarata=_item.get('size'))
+									dimensione_dichiarata=_item.get('size'),
+									**self._campi_sonda())
 		except: pass
 		# Niente notifica a schermo: la riga di log copre tutti i casi di scarto, non solo questo, e
 		# l'utente non deve essere avvisato di un lavoro che il meccanismo fa da solo.
@@ -431,6 +673,32 @@ class FenLightPlayer(xbmc_player):
 				perf_logger('FenLight PERF CACHE', 'sorgente bocciata (%s) | %s | non verra\' piu\' proposta '
 							'finche\' non si svuota la lista' % (motivo, _ch))
 		except: pass
+
+	def _campi_sonda(self):
+		"""Le colonne del lotto 222: la misura della linea presa PRIMA di questa riproduzione.
+
+		`link` si scrive SEMPRE, anche quando la sonda non c'e' stata: non serve piu' a scegliere il
+		bersaglio (dal lotto 230 e' la sorgente che sta per partire) ma a poter risalire a QUALE file
+		una misura descriveva. Le altre colonne restano NULL, che vuol dire 'non misurato' e non
+		'misurato zero'.
+		"""
+		_fuori = {'link': getattr(self, 'url', None) or None}
+		try:
+			from modules import sonda_linea
+			_e = sonda_linea.letta()
+			if not _e: return _fuori
+			_t0 = getattr(self, '_sonda_t0', None)
+			_fuori.update({
+				'sonda_mbps': _e.get('regime'), 'sonda_lorda': _e.get('lorda'),
+				'sonda_secondi': _e.get('regime_secondi'), 'sonda_byte': _e.get('byte'),
+				'sonda_offset': _e.get('offset'),
+				'sonda_quota': _e.get('quota'),
+				'sonda_cpu': int(_e['cpu'] * 1000) if _e.get('cpu') else None,
+				'sonda_ttfb': int(_e['ttfb']) if _e.get('ttfb') else None,
+				'sonda_cdn': _e.get('cdn') or None,
+				'sonda_eta': int(_t0 - _e['quando']) if (_t0 and _e.get('quando')) else None})
+		except: pass
+		return _fuori
 
 	def _misura_dimensione(self):
 		"""Dimensione VERA del file dal cdn, in un thread di sfondo a riproduzione gia' avviata.
@@ -492,6 +760,11 @@ class FenLightPlayer(xbmc_player):
 	def _riassunto_cache(self):
 		try:
 			if not getattr(self, '_cache_n', 0): return
+			# Il tratto ancora aperto va chiuso PRIMA di leggere le pendenze: su una riproduzione che
+			# non ha mai riempito il buffer -- proprio quelle che il lotto 197 non misurava -- il
+			# tratto e' uno solo e arriva fino all'ultimo campione. Senza questa riga sarebbe l'unico
+			# caso in cui continueremmo a non misurare niente.
+			self._chiudi_tratto(getattr(self, '_tratto_fase', '_prima'))
 			_tratto = getattr(self, '_cache_tratto', None)
 			if _tratto:
 				perf_logger('FenLight PERF CACHE', 'livello %s | salti finora %s'
@@ -509,17 +782,48 @@ class FenLightPlayer(xbmc_player):
 			# perfetta lo stesso. Evil Dead, 07/09: media 26%, 17 s a zero, e nessun problema visto.
 			# Il numero che serve per tarare results.line_speed e' questo qui sotto.
 			_mb = self._buffer_avanti_mb()
-			_c = (lambda _p: _p / 100.0 * _mb * 8) if _mb else None
 			for _et, _sf in (('prima del salto', '_prima'), ('DOPO il salto ', '_dopo')):
-				_pk, _so = getattr(self, '_cache_pend_picco' + _sf, 0), getattr(self, '_cache_pend_sost' + _sf, 0)
-				if not (_pk or _so): continue
-				if _c:
+				# LOTTO 219 -- una fase senza campioni non e' una fase senza misura: e' una fase che
+				# non c'e' stata. Prima si stampava "capacita DOPO il salto | la linea non regge
+				# questo bitrate" anche con `salti 0`, cioe' una diagnosi su una finestra mai
+				# esistita, per giunta allarmante.
+				if not getattr(self, '_cache_n' + _sf, 0):
+					if _sf == '_dopo':
+						perf_logger('FenLight PERF CACHE', 'capacita %s | nessun salto in questa '
+									'riproduzione' % _et)
+					continue
+				_pend = getattr(self, '_tratto_pendenza' + _sf, None)
+				if _pend is None:
+					# LOTTO 216 -- il motivo, non una formula fissa. Il messaggio vecchio diceva
+					# sempre "nessun tratto di almeno 5 campioni sotto il 90%", e su The Mandalorian
+					# (10/09) era falso: di campioni sotto il 90 ce n'erano 283. Un log che dichiara
+					# una causa sbagliata e' peggio di un log muto, perche' chiude l'indagine.
+					_a_secco = getattr(self, '_cache_secco_max' + _sf, 0)
+					perf_logger('FenLight PERF CACHE', 'capacita %s | non misurabile: %s'
+								% (_et, ('il buffer e\' rimasto sotto il %s%% fino a %s s di fila: '
+										 'li\' non puo\' scendere oltre, quindi non misura piu\' '
+										 'niente -- la linea non regge questo bitrate'
+										 % (PAVIMENTO_CACHE, _a_secco))
+									if _a_secco >= 10 else
+									('nessun tratto abbastanza lungo o abbastanza capiente sotto il '
+									 '%s%% di buffer (minimo %s campioni, %s s)'
+									 % (TETTO_CACHE, MIN_CAMPIONI_TRATTO, MIN_SECONDI_TRATTO))))
+					continue
+				_camp = getattr(self, '_tratto_campioni' + _sf, 0)
+				_punti = getattr(self, '_tratto_punti' + _sf, 0)
+				# Il verso si scrive a parole: e' la differenza fra "la linea aveva margine" e "la
+				# linea non ce la faceva", e su un numero vicino a zero il segno da solo si perde.
+				_verso = 'in salita' if _punti > 0 else ('in calo' if _punti < 0 else 'ferma')
+				if _mb:
 					perf_logger('FenLight PERF CACHE',
-								'portata %s | SOSTENUTA (20 s) %.1f%%/s = %.1f Mbit/s di surplus | picco (5 s) %.1f%%/s = %.1f Mbit/s '
-								'| buffer in avanti %.0f MB | portata = surplus + bitrate (riga "setting maxRate"); per tarare usare la SOSTENUTA'
-								% (_et, _so, _c(_so), _pk, _c(_pk), _mb))
+								'capacita %s | tratto piu\' lungo: %s campioni, %+d punti (%s) in %.1f s '
+								'-> %+.2f%%/s = %+.1f Mbit/s oltre il bitrate | buffer in avanti %.0f MB'
+								% (_et, _camp, _punti, _verso, (_punti / _pend) if _pend else 0.0,
+								   _pend, _pend / 100.0 * _mb * 8, _mb))
 				else:
-					perf_logger('FenLight PERF CACHE', 'portata %s | sostenuta %.1f%%/s | picco %.1f%%/s (filecache.memorysize non leggibile)' % (_et, _so, _pk))
+					perf_logger('FenLight PERF CACHE', 'capacita %s | %+.2f%%/s su %s campioni '
+								'(filecache.memorysize non leggibile, non convertibile in Mbit/s)'
+								% (_et, _pend, _camp))
 			self._registra_misura(_mb)
 		except: pass
 
@@ -540,9 +844,17 @@ class FenLightPlayer(xbmc_player):
 			# NULL, non zero: il wizard deve poter distinguere "non misurato" da "misurato zero".
 			_bit = (_dim * 8.0 / _dur / 1000000.0) if (_dim and _dur) else None
 			def _porta(_sf):
-				_p = getattr(self, '_cache_pend_sost' + _sf, 0)
-				if not (_p and buffer_mb and _bit): return None
+				# `is None` e NON `if not _p`: dal lotto 212 la pendenza puo' valere zero (buffer
+				# fermo sotto il tetto: la linea da' esattamente il bitrate, ed e' una misura
+				# perfetta) o essere negativa (non ce la fa). Il vecchio controllo le buttava
+				# entrambe, ed erano proprio le riproduzioni al limite.
+				_p = getattr(self, '_tratto_pendenza' + _sf, None)
+				if _p is None or not buffer_mb or not _bit: return None
 				return _p / 100.0 * buffer_mb * 8 + _bit
+			def _con_peso(_v, _sf):
+				if _v is None: return 'n.d.'
+				return '%.1f (%s campioni in %s s)' % (_v, getattr(self, '_tratto_campioni' + _sf, 0),
+													  getattr(self, '_tratto_secondi' + _sf, 0))
 			_np, _nd = getattr(self, '_cache_n_prima', 0), getattr(self, '_cache_n_dopo', 0)
 			_media = lambda _s, _n: int(round(float(_s) / _n)) if _n else None
 			# Identita' della sorgente, dal risultato che play_file ha scelto. `size` e' in GiB, e
@@ -556,17 +868,31 @@ class FenLightPlayer(xbmc_player):
 				quando=int(_now()), cdn=getattr(self, '_cdn_host', None), dimensione=_dim,
 				durata=_dur or None, bitrate=_bit, salti=getattr(self, '_salti', 0),
 				portata_prima=_porta('_prima'), portata_dopo=_porta('_dopo'),
+				# Lotto 215: una coppia per misura. Senza quella `_dopo`, una portata presa solo dopo
+				# il salto arrivava al wizard senza peso e sembrava inaffidabile proprio quando era
+				# la piu' solida delle due -- dopo un salto il buffer riparte da zero e ha tutti i
+				# novanta punti davanti, quindi il tratto e' lungo e capiente.
+				portata_campioni_prima=getattr(self, '_tratto_campioni_prima', None) or None,
+				portata_punti_prima=getattr(self, '_tratto_punti_prima', None),
+				portata_campioni_dopo=getattr(self, '_tratto_campioni_dopo', None) or None,
+				portata_punti_dopo=getattr(self, '_tratto_punti_dopo', None),
+				portata_secchi_prima=getattr(self, '_tratto_secchi_prima', None),
+				portata_secchi_dopo=getattr(self, '_tratto_secchi_dopo', None),
+				portata_secondi_prima=getattr(self, '_tratto_secondi_prima', None),
+				portata_secondi_dopo=getattr(self, '_tratto_secondi_dopo', None),
+				portata_direzione_prima=getattr(self, '_tratto_direzione_prima', None),
+				portata_direzione_dopo=getattr(self, '_tratto_direzione_dopo', None),
 				cache_media_prima=_media(getattr(self, '_cache_somma_prima', 0), _np),
 				cache_max_prima=getattr(self, '_cache_max_prima', None) if _np else None,
 				cache_media_dopo=_media(getattr(self, '_cache_somma_dopo', 0), _nd),
 				cache_max_dopo=getattr(self, '_cache_max_dopo', None) if _nd else None,
-				secondi_a_zero=getattr(self, '_cache_zero_max', 0),
+				secondi_a_secco=getattr(self, '_cache_secco_max', 0),
 				campioni=getattr(self, '_cache_n', 0),
 				larghezza=getattr(self, '_vid_larghezza', None), altezza=getattr(self, '_vid_altezza', None),
 				codec=getattr(self, '_vid_codec', None), esito=getattr(self, '_esito_guasto', None),
 				nome=_it.get('name') or getattr(self, 'playing_filename', None) or None,
 				dimensione_dichiarata=_dich, provider=_it.get('provider') or _it.get('scrape_provider') or None,
-				pacchetto=_it.get('package') or None)
+				pacchetto=_it.get('package') or None, **self._campi_sonda())
 			# Lo scarto fra taglia dichiarata e taglia vera va nel log perche' e' il numero che dira'
 			# se il tetto di results.line_speed sta decidendo su un dato attendibile o su una stima.
 			_sc = None
@@ -587,9 +913,11 @@ class FenLightPlayer(xbmc_player):
 						% (getattr(self, '_vid_larghezza', None), getattr(self, '_vid_altezza', None),
 						   getattr(self, '_vid_codec', None) or 'n.d.',
 						   '%.2f' % _bit if _bit else 'n.d.',
-						   '%.1f' % _porta('_prima') if _porta('_prima') else 'n.d.',
-						   '%.1f' % _porta('_dopo') if _porta('_dopo') else 'n.d.',
-						   getattr(self, '_cache_zero_max', 0),
+						   # Lotto 215: accanto al valore, su quanto e' stato costruito. Leggendo il
+						   # log si deve poter distinguere 37,9 su 51 campioni da 37,9 su cinque,
+						   # senza dover aprire il database.
+						   _con_peso(_porta('_prima'), '_prima'), _con_peso(_porta('_dopo'), '_dopo'),
+						   getattr(self, '_cache_secco_max', 0),
 						   getattr(self, '_esito_guasto', None) or 'normale', playback_stats.quante()))
 		except: pass
 
@@ -759,10 +1087,19 @@ class FenLightPlayer(xbmc_player):
 			# (Player.OnAVStart, alle 16:00:07,561 nello stesso log): 1,2 s prima, e per un motivo
 			# invece che per un numero. Il limite di 3 s non e' il criterio di uscita ma un
 			# rompi-stallo: se l'annuncio non arrivasse, la finestra non deve restare appesa.
-			_atteso = 0.0
+			# LOTTO 213 -- QUI SI CAMPIONA GIA'. Questa attesa esisteva per non entrare nel ciclo prima
+			# che il flusso fosse davvero partito, e passava sessanta giri a guardare una bandiera.
+			# Sono anche i secondi in cui il buffer si riempie: il 10/09 fra OnPlay e OnAVStart ne
+			# sono passati 4,36, e quando il ciclo prendeva il suo primo campione la cache era gia' al
+			# 72%. Il thread gira comunque; leggere la cache ogni PASSO_FITTO e' l'unico modo di
+			# vedere il riempimento invece della sua coda, e non costa un giro in piu'.
+			_atteso, _giri = 0.0, 0
+			_ogni = max(1, int(PASSO_FITTO / 50))
 			while not getattr(self, '_av_started', False) and _atteso < 3.0 and self.isPlayingVideo():
 				sleep(50)
 				_atteso += 0.05
+				_giri += 1
+				if _giri % _ogni == 0 and self._fitto_utile(): self._campiona_capacita()
 			while self.isPlayingVideo():
 				try:
 					try: self.total_time, self.curr_time = self.getTotalTime(), self.getTime()
@@ -779,7 +1116,7 @@ class FenLightPlayer(xbmc_player):
 						try: Thread(target=self._misura_flusso).start()
 						except: pass
 
-					sleep(1000)
+					self._attesa_campionata()
 					self._campiona_cache()
 					self._controlla_avanzamento()
 					if getattr(self, '_esito_guasto', None): break
@@ -1260,6 +1597,13 @@ class FenLightPlayer(xbmc_player):
 
 	def set_constants(self, url, obj):
 		self.url = url
+		# LOTTO 225 -- si timbra solo l'istante di avvio. Niente da mollare e niente da aspettare:
+		# la sonda vive nel servizio e ha gia' finito. Questo istante serve a `sonda_eta`, che
+		# calcolata alla scrittura in archivio conterrebbe la durata del film invece dell'attesa.
+		try:
+			from time import time as _adesso
+			self._sonda_t0 = _adesso()
+		except: pass
 		self.sources_object = obj
 		self.is_generic = self.sources_object == 'video'
 		if not self.is_generic:

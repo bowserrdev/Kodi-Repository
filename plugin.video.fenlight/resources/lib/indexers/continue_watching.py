@@ -137,6 +137,14 @@ def build_continue_watching(params):
 	if _pg_key:
 		try: paginator.set_head(_pg_key, final_items, kodi_utils.CONTINUE_WATCHING_ACTION)
 		except: pass
+		# LOTTO 216 -- e QUI si dichiara la testa, non dentro set_head. Che questa riga debba tornare
+		# sul primo elemento quando arriva un titolo nuovo e' una regola di QUESTO widget: non e'
+		# paginato, non ha pagine, e il paginatore non ha motivo di sapere che esiste. Vedi
+		# modules/cw_head.py per la regola e per il difetto del 09/09 che ha chiuso.
+		try:
+			from modules import cw_head
+			cw_head.note_head(_pg_key, final_items)
+		except: pass
 	set_content(handle, content)
 	set_category(handle, 'Continue Watching')
 	# ESPERIMENTO DEL LOTTO 61, REVOCATO: cacheToDisc=True qui NON cambia niente. Provato il 24/08 con

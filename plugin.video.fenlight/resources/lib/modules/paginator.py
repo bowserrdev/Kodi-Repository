@@ -169,32 +169,25 @@ IDS_PROP = 'fenlight.pg.ids.%s'
 # id, quindi la regola per id lo scarterebbe proprio mentre va ricostruito. Vedi
 # refresh_containers_for_ids.
 ACTION_PROP = 'fenlight.pg.action.%s'
-# La testa dell'ULTIMA costruzione di questo widget: il path del primo elemento. Serve a rispondere a
-# una domanda che nessuno sapeva porre -- 'in questa ricostruzione la testa e' cambiata?' -- e la
-# risposta la conosce solo set_head, che vede la lista nuova avendo pubblicato la vecchia.
-FIRSTURL_PROP = 'fenlight.pg.first.%s'
-# I widget che hanno una testa NUOVA e vanno riportati a inizio riga: UNA proprieta' sola, con dentro
-# l'elenco delle chiavi separate da virgola. La riempie set_head, la svuota il watcher.
+# I contenitori in cui e' cambiata la LISTA INTERA e che vanno riportati a inizio riga: UNA proprieta'
+# sola, con dentro l'elenco delle chiavi separate da virgola. La riempie reconcile_position, la svuota
+# il watcher, e la legge anche la SKIN per tenere nascosto un row finche' non e' a posto (lotti
+# 165/167) -- quindi una chiave che resta qui dentro non lascia solo una riga fuori posto, tiene il
+# row invisibile: e' la ragione del tetto in rehead_step.
 # Perche' una coda e non una bandiera per chiave: il watcher deve poter chiedere 'c'e' qualcosa da
 # fare?' a ogni giro da 0,3 s, e con una bandiera per chiave la domanda costava una lettura per ogni
 # widget conosciuto anche quando la risposta era no. Cosi' costa una lettura sola, servita dalla
 # memoria, e l'elenco si guarda solo nei rari giri in cui c'e' davvero lavoro.
-# Perche' il lavoro lo fa il watcher e non il plugin: quando la build finisce Kodi non ha ancora
-# popolato il contenitore -- la stessa corsa gia' documentata in refresh_containers_for_ids, dove
-# container_head non riesce a leggere un contenitore appena ordinato -- quindi un comando lanciato dal
-# plugin cadrebbe sulla lista vecchia. Il watcher e' l'unico che lo guarda DOPO.
 #
-# I due inneschi guardano pero' a due istanti OPPOSTI, e vale la pena dirlo perche' la frase qui sopra,
-# letta da sola, sembra escludere il secondo:
-#   set_head (lotto 138)          accoda a build FINITA. Vuole agire sulla lista NUOVA, e per quello
-#                                 deve aspettare il watcher.
-#   reconcile_position (163)      accoda a build APPENA COMINCIATA. Vuole agire sulla lista VECCHIA --
-#                                 azzerare l'indice PRIMA che arrivino gli elementi nuovi, perche' e'
-#                                 confrontando l'indice vecchio con la lunghezza nuova che Kodi decide
-#                                 di mandarti in fondo. Qui 'cadere sulla lista vecchia' non e' il
-#                                 rischio, e' lo scopo.
-# Il margine e' misurato e non e' stretto: fra il reconcile e set_head passano 3,7 s (Discover) e 6,9 s
-# (ricerca testuale) sulla stick, contro i 0,3 s del giro del watcher.
+# LOTTO 216 -- qui dentro c'era un SECONDO committente, set_head, per il caso 'e' arrivato un titolo
+# nuovo in testa a continua a guardare'. Se n'e' andato in modules/cw_head.py, e non per ordine: le
+# due domande vogliono risposte opposte. reconcile_position accoda a build APPENA COMINCIATA e vuole
+# agire sulla lista VECCHIA -- azzerare l'indice PRIMA che arrivino gli elementi nuovi, perche' e'
+# confrontando l'indice vecchio con la lunghezza nuova che Kodi decide di mandarti in fondo; il caso
+# di 'continua a guardare' vuole l'esatto contrario, cioe' NON toccare niente finche' la lista nuova
+# non e' a schermo, ed e' proprio consumando il debito contro la lista vecchia che il meccanismo
+# sbagliava (vedi cw_head.py). Tenerle nella stessa proprieta' voleva dire un consumatore solo per
+# due semantiche, ed e' quello che ha prodotto tre lotti di rincorse.
 # Il plugin non puo' fare da se' nemmeno questo: leggere Container(N).CurrentItem o muovere il cursore
 # vuol dire chiamate grafiche dal thread di un'invocazione, che e' proprio cio' che il lotto 111 ha
 # vietato. Il watcher gira nel servizio, dove sono lecite, e ha gia' davanti i cancelli giusti
@@ -929,7 +922,6 @@ def set_head(key, items, action=None):
 	mark_build_end(key)
 	_publish_ids(key, items)
 	if action: set_property(ACTION_PROP % key, str(action))
-	_note_head_change(key, url, action)
 	_register(key, (headhash, headhash_one))
 	# Il censimento (registry_add) passa solo sui contenitori A SCHERMO, e all'avvio i widget spesso
 	# finiscono di costruirsi dopo che l'utente ha gia' cambiato finestra: il 28/08 alle 20:18 la Home
@@ -950,49 +942,12 @@ def set_head(key, items, action=None):
 	log('set_head key=%s built=%s firma=%s first_url=%s' %
 		(short(key), count, (headhash[:8] if headhash else '-'), (url[:90] if url else '-')))
 
-def _note_head_change(key, url, action=None):
-	"""Se la testa di 'continua a guardare' e' cambiata, chiede al watcher di riportare la riga a 1.
-
-	Perche' serve, misurato sulla stick il 03/09. Alle 16:02:39 un film messo in pausa dal Mac entra
-	nel widget IN TESTA (`first_url=...media_type=movie&tmdb_id=1232569`, 7 elementi). Kodi, ricaricando
-	un contenitore, conserva l'ELEMENTO su cui eri, non la posizione: l'elemento su cui stava il fuoco
-	e' scivolato da 1 a 2 e il fuoco l'ha seguito (`current=1/6` prima, `current=2/7` dopo). La riga si
-	disegna a partire dall'elemento col fuoco, quindi il film era li' ma un posto piu' a sinistra,
-	fuori campo. Il log lo dimostra due volte con i tasti dell'utente: alle 15:59:37 un `Left` porta
-	`current` da 2 a 1 e l'elemento nuovo si vede; alle 16:03:19 `Down`+`Up` non spostano niente dentro
-	la riga e infatti resta `2/7`; alle 16:11:58 un `Back` riporta a `1/7` -- 'e' comparso'.
-
-	Vale SOLO per 'continua a guardare', per scelta dell'utente: e' la lista il cui senso e' che la cosa
-	piu' recente sta in testa, e un arrivo che atterra fuori campo non serve a niente. Su ogni altro
-	widget il fuoco resta dov'e', perche' li' l'ordine non e' una promessa e strattonare chi sta
-	scorrendo sarebbe solo un fastidio.
-
-	Questa restrizione riguarda la TESTA CHE CAMBIA dentro la stessa lista, e resta. Dal lotto 163 la
-	coda ha un secondo innesco, che e' un'altra domanda: reconcile_position la usa quando in una
-	posizione cambia la LISTA INTERA. Li' non si strattona nessuno -- cio' su cui l'utente stava non
-	esiste piu'.
-
-	Alla PRIMA costruzione non si alza niente: non c'e' una testa precedente da confrontare, e un
-	contenitore appena nato parte gia' dal primo elemento.
-	"""
-	if not url: return
-	from modules.kodi_utils import set_property, get_property, CONTINUE_WATCHING_ACTION
-	precedente = get_property(FIRSTURL_PROP % key)
-	set_property(FIRSTURL_PROP % key, url)
-	if not precedente or precedente == url: return
-	# L'azione arriva dal costruttore quando la passa; se non la passa vale quella gia' pubblicata,
-	# che e' la stessa cosa scritta un attimo prima. Il confronto e' per prefisso qualificato, come
-	# ovunque: 'continue_watching' copre anche un eventuale 'continue_watching:movie'.
-	azione = str(action) if action else get_property(ACTION_PROP % key)
-	if not _action_matches(azione, {CONTINUE_WATCHING_ACTION}): return
-	rehead_queue(key)
-
 def rehead_queue(key):
 	"""Mette questo widget in coda per il riposizionamento. Idempotente.
 
 	Read-modify-write su una proprieta' condivisa, lo stesso schema del lotto 3: in contesa si puo'
-	perdere una scrittura. Il danno peggiore e' una riga che resta dov'e' fino alla prossima testa
-	nuova -- cioe' il comportamento di prima -- quindi non vale un lucchetto.
+	perdere una scrittura. Il danno peggiore e' una riga che resta dov'e' fino alla prossima volta che
+	quella posizione cambia lista -- cioe' il comportamento di prima -- quindi non vale un lucchetto.
 	"""
 	from modules.kodi_utils import set_property
 	coda = rehead_pending()
@@ -1457,7 +1412,8 @@ def reconcile_position(key, params):
 	# un caricamento avanti che nessuno ha chiesto (misurato: TRIGGER a current=31/31, build da 3370 ms)
 	# proprio mentre l'utente aspetta i risultati.
 	# Alla prima costruzione non si accoda niente: non c'e' una lista precedente e il contenitore parte
-	# gia' dal primo elemento. Stessa disciplina di _note_head_change, altro innesco della stessa coda.
+	# gia' dal primo elemento. Stesso principio di cw_head.note_head, che pero' vive in un'altra
+	# proprieta' e risponde a un'altra domanda: vedi la nota su REHEAD_PROP.
 	if was: rehead_queue(key)
 	log('reconcile %s: contenuto %s -> %s, conteggio azzerato' % (key, short(was) if was else '(nuovo)', short(content)))
 	return 0

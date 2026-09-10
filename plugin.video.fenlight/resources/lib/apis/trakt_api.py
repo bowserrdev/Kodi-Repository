@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 import json
 import time
-# Vedi la nota in caches/base_cache.py: threading.Lock E' _thread.allocate_lock, e _thread e'
-# builtin. Qui serviva solo refresh_lock.
-from _thread import allocate_lock as Lock
 from caches import trakt_cache
-from caches.settings_cache import get_setting, set_setting
+from caches.settings_cache import get_setting, set_setting, settings_cache
+from caches.base_cache import connect_database, checkpoint_database, TRAKT_AUTH_LOCK_CREATE
 from caches.main_cache import cache_object
 from caches.lists_cache import lists_cache_object
 from modules import kodi_utils, settings
@@ -25,6 +23,7 @@ def _get_session():
 		_session[0] = import_requests('trakt_api').Session()
 	return _session[0]
 sleep, with_media_removals, get_property = kodi_utils.sleep, kodi_utils.with_media_removals, kodi_utils.get_property
+set_property = kodi_utils.set_property
 logger, notification, xbmc_player, confirm_dialog = kodi_utils.logger, kodi_utils.notification, kodi_utils.xbmc_player, kodi_utils.confirm_dialog
 kodi_dialog, addon_installed, addon_enabled, addon = kodi_utils.kodi_dialog, kodi_utils.addon_installed, kodi_utils.addon_enabled, kodi_utils.addon
 path_check, get_icon, clear_property, remove_keys = kodi_utils.path_check, kodi_utils.get_icon, kodi_utils.clear_property, kodi_utils.remove_keys
@@ -63,7 +62,6 @@ empty_setting_check = (None, 'empty_setting', '')
 standby_date = '2050-01-01T01:00:00.000Z'
 res_format = '%Y-%m-%dT%H:%M:%S.%fZ'
 API_ENDPOINT = 'https://api.trakt.tv/%s'
-refresh_lock = Lock()
 history_page_limit = 250
 timeout = 20
 EXPIRY_1_DAY, EXPIRY_1_WEEK = 24, 168
@@ -76,20 +74,235 @@ def no_secret_key():
 	notification('Please set a valid Trakt Client Secret Key')
 	return None
 
+# =============================================================================================
+# L'AUTENTICAZIONE TRAKT (lotti 233-237)
+#
+# Il guasto da cui nasce questo blocco, dal log della Shield del 10/09 alle 21:11:43: quattro
+# interpreti diversi -- il servizio e tre invocazioni del plugin -- hanno spedito a Trakt LO STESSO
+# refresh token nello stesso decimo di secondo. Uno ha vinto, tre hanno preso 400; nella seconda
+# ondata i perdenti hanno riletto il token appena ruotato e se lo sono giocato a loro volta. In
+# 1,4 secondi il token e' stato ruotato tre volte e riusato cinque. Per Trakt il refresh token e'
+# MONOUSO e ogni riuso e' un tentativo di replay.
+#
+# Tre proprieta' che questo blocco garantisce, e che prima non garantiva nessuno:
+#
+#   ATOMICITA'    access, refresh e scadenza sono UN valore solo, scritto una volta sola. Prima
+#                 erano tre set_setting consecutivi: chi leggeva fra il primo e il secondo vedeva
+#                 un refresh token nuovo accanto a un access token scaduto, concludeva 'ha gia'
+#                 rinnovato qualcun altro', rispediva la richiesta con il token vecchio e
+#                 riprendeva 401 -- ed e' QUELLO, non un token morto, ad aprire il dialogo di
+#                 riautenticazione. Chi leggeva fra il secondo e il terzo trovava token nuovi ma
+#                 scadenza vecchia e rinnovava di nuovo: e' cosi' che le ondate si alimentavano.
+#   UNICITA'      un solo rinnovo per volta sulla macchina, arbitrato da una riga di settings.db.
+#                 Chi non ottiene il lucchetto ASPETTA l'esito altrui invece di spendere il token.
+#   LEGGIBILITA'  un 400 di Trakt e' una risposta, non un guasto: porta `error` e
+#                 `error_description`. raise_for_status lo trasformava in eccezione, call_trakt
+#                 tornava None e il ramo invalid_grant era codice irraggiungibile -- ogni rifiuto
+#                 finiva a log come 'Trakt unreachable'.
+#
+# Riferimento: docs.trakt.tv/docs/authentication-oauth -- access token 7 giorni (erano 90, poi 24
+# ore da marzo 2025), refresh token monouso e senza scadenza per inattivita'.
+# =============================================================================================
+REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
+# Solo un ripiego per una risposta senza expires_in: il valore vero arriva sempre da Trakt, che
+# l'ha gia' cambiato tre volte e lo cambiera' ancora. Non va usato per dedurre una scadenza.
+TOKEN_LIFETIME_FALLBACK = 604800
+RENEW_MARGIN = 86400
+# Deve superare il tempo peggiore di UNA richiesta, altrimenti un altro processo puo' rubare il
+# lucchetto mentre il primo e' ancora in volo -- ed e' esattamente la doppia rotazione da evitare.
+# http_client non riprova i timeout ma puo' riaprire una connessione riciclata, quindi il peggio e'
+# circa due volte `timeout`. Il prezzo di un valore alto e' che un processo ucciso a meta' rotazione
+# blocca i rinnovi fino alla scadenza: costa un giro di servizio, non l'autenticazione.
+ROTATION_LOCK_TTL = (timeout * 2) + 5
+ROTATION_WAIT = 8
+ROTATION_POLL = 250
+AUTH_SETTING = 'trakt.auth'
+AUTH_PROP = 'fenlight.trakt.auth'
+# Il token che Trakt ha gia' rifiutato in questa sessione, con il VERDETTO davanti: ripresentarlo a
+# ogni widget aggiunge solo tentativi di replay al conto che tiene lui. Si azzera da solo appena il
+# token cambia, perche' e' memorizzato insieme al token a cui si riferisce.
+REJECTED_PROP = 'fenlight.trakt.rotation_rejected'
+PROMPTED_PROP = 'fenlight.trakt.reauth_prompted'
+# La tabella e' definita in caches/base_cache.TRAKT_AUTH_LOCK_CREATE, con il perche'.
+ROTATION_LOCK_ACQUIRE = 'UPDATE trakt_auth_lock SET expires = ? WHERE id = 1 AND expires < ?'
+# Il rilascio e' CONDIZIONATO alla scadenza che avevamo scritto noi: fa da gettone di
+# proprieta'. Senza, un processo rimasto indietro (richiesta piu' lunga della scadenza, lucchetto
+# nel frattempo ripreso da un altro) libererebbe il lucchetto di chi sta ancora ruotando.
+ROTATION_LOCK_RELEASE = 'UPDATE trakt_auth_lock SET expires = 0 WHERE id = 1 AND expires = ?'
+ROTATION_LOCK_STATE = 'SELECT expires FROM trakt_auth_lock WHERE id = 1'
+_bootstrapped = [False]
+_lock_ready = [False]
+
+def _auth_decode(raw):
+	if not raw: return '', '', 0.0
+	try:
+		record = json.loads(raw)
+		return record.get('access') or '', record.get('refresh') or '', float(record.get('expires') or 0)
+	except Exception:
+		logger('FenLight Trakt', 'record di autenticazione illeggibile, trattato come assente')
+		return '', '', 0.0
+
+def _auth_read():
+	"""(access, refresh, scadenza) coerenti fra loro: o tutti e tre, o nessuno."""
+	if not _bootstrapped[0]: _auth_bootstrap()
+	return _auth_decode(get_setting(AUTH_PROP))
+
+def _auth_read_stored():
+	"""Come _auth_read ma salta la proprieta' di finestra e va al database.
+
+	Serve dentro il lucchetto: la proprieta' e' una copia pubblicata, e una copia non puo' fare da
+	arbitro -- sync_settings, per esempio, ripubblica in blocco una fotografia delle impostazioni.
+	"""
+	return _auth_decode(settings_cache.get(AUTH_SETTING))
+
+def _auth_write(access, refresh, expires):
+	"""Una scrittura sola, quindi nessuno puo' osservare uno stato misto. Vero se e' riuscita."""
+	try:
+		set_setting(AUTH_SETTING, json.dumps({'access': access, 'refresh': refresh, 'expires': round(float(expires), 3)}))
+		checkpoint_database('settings_db')
+		return True
+	except Exception as e:
+		# Non c'e' niente da recuperare: Trakt ha gia' ruotato dalla sua parte, quindi il token che
+		# abbiamo in mano e' morto e il suo sostituto e' andato perso. Va detto forte.
+		logger('FenLight Trakt', "SCRITTURA DEL RECORD FALLITA (%s): il token appena ruotato e' perduto" % e)
+		return False
+
+def _auth_clear():
+	# Azzerare e' scrivere un record vuoto, non un percorso a parte: uno scrittore solo significa
+	# una sola gestione dell'errore e una sola garanzia di durata.
+	_auth_write('', '', 0)
+	clear_property(REJECTED_PROP)
+	clear_property(PROMPTED_PROP)
+
+def _auth_bootstrap():
+	"""Migrazione una tantum, una volta per interprete. Non tocca nulla se non c'e' nulla da fare."""
+	_bootstrapped[0] = True
+	try:
+		legacy = [get_setting('fenlight.trakt.%s' % k) for k in ('token', 'refresh')]
+		if not get_setting(AUTH_PROP) and all(v and v not in empty_setting_check and v != '0' for v in legacy):
+			try: expires = float(get_setting('fenlight.trakt.expires', '0'))
+			except (TypeError, ValueError): expires = 0.0
+			if _auth_write(legacy[0], legacy[1], expires):
+				logger('FenLight Trakt', 'record di autenticazione migrato dai tre setting separati')
+		# I tre id restano dichiarati in settings_cache (sync_settings cancella gli id che non
+		# conosce) ma svuotati: due copie dello stesso stato sono esattamente il difetto che questi
+		# lotti chiudono, e un valore fossile che riaffiora fra un anno e' peggio di nessun valore.
+		for setting_id in ('trakt.token', 'trakt.refresh', 'trakt.expires'):
+			if get_setting('fenlight.%s' % setting_id) not in ('0', ''): set_setting(setting_id, '0')
+		# Residuo delle chiavi revocate: trakt_client()/trakt_secret() restituiscono la costante e
+		# ignorano l'impostazione, quindi un valore diverso qui e' solo un client id morto mostrato
+		# all'utente nel pannello. Sulla Shield era ancora 1038ef32..., revocato da Trakt (403).
+		for setting_id, in_use in (('trakt.client', trakt_client()), ('trakt.secret', trakt_secret())):
+			if in_use not in empty_setting_check and get_setting('fenlight.%s' % setting_id) != in_use:
+				set_setting(setting_id, in_use)
+	except Exception as e: logger('FenLight Trakt', "bootstrap dell'autenticazione non riuscito: %s" % e)
+
+def _mark_rejected(verdict, refresh_token):
+	"""Ricorda per questa sessione che Trakt ha rifiutato QUESTO token, e con quale verdetto.
+
+	I due verdetti sono quelli che distingue l'API, e la differenza cambia cosa si dice all'utente:
+
+	  'grant'   invalid_grant -- il token dell'utente e' morto. Riautorizzare ripara, e ha senso
+	            chiederlo: e' il caso della migrazione OAuth di luglio 2026.
+	  'client'  invalid_client -- e' la CHIAVE dell'applicazione a non valere piu'. Riautorizzare
+	            fallirebbe allo stesso modo, quindi non si disturba nessuno: e' successo davvero il
+	            12/08/2026, quando Trakt cancello' l'app originale di Fen Light.
+	"""
+	set_property(REJECTED_PROP, '%s|%s' % (verdict, refresh_token))
+
+def _rejection_verdict(refresh_token):
+	"""(rifiutato, esito). L'esito e' gia' nella forma che restituisce trakt_refresh_token."""
+	marked = get_property(REJECTED_PROP)
+	if not marked or not marked.endswith('|%s' % refresh_token): return False, None
+	return True, (False if marked.startswith('grant|') else None)
+
+def _needs_renewal(access, refresh, expires):
+	"""Il rinnovo anticipato si fa solo quando SAPPIAMO che la scadenza e' vicina.
+
+	Una scadenza sconosciuta (0: per esempio un record migrato dai vecchi setting) non significa
+	'rinnova adesso'. Con la rete assente si tradurrebbe in un tentativo di rotazione da venti secondi
+	davanti a ogni chiamata; e se il token e' davvero morto lo dice Trakt con un 401, che costa una
+	richiesta sola e non consuma nessuna rotazione.
+	"""
+	return bool(access and refresh and expires and time.time() > expires - RENEW_MARGIN)
+
+def _expires_in(payload):
+	try: return int(payload.get('expires_in') or TOKEN_LIFETIME_FALLBACK)
+	except (TypeError, ValueError): return TOKEN_LIFETIME_FALLBACK
+
+def _oauth_post(path, data):
+	"""Le rotte oauth/* NON passano da call_trakt, e non e' un dettaglio di stile.
+
+	call_trakt e' il trasporto dell'API: bearer, rinnovo su 401, attesa su 429, paginazione. Qui non
+	serve niente di tutto questo, e il rinnovo su 401 sarebbe per giunta circolare. Soprattutto: qui
+	un 400 non e' un errore da sollevare, e' la risposta che dice PERCHE'.
+
+	Torna (stato, payload). Stato 0 significa che non siamo arrivati a Trakt.
+	"""
+	CLIENT_ID = trakt_client()
+	if CLIENT_ID in empty_setting_check: return 0, {}
+	headers = {'Content-Type': 'application/json', 'trakt-api-version': '2', 'trakt-api-key': CLIENT_ID}
+	try: response = _get_session().post(API_ENDPOINT % path, json=data, headers=headers, timeout=timeout)
+	except Exception as e:
+		logger('FenLight Trakt', '%s non raggiungibile: %s' % (path, e))
+		return 0, {}
+	try: payload = response.json()
+	except Exception: payload = {}
+	return response.status_code, payload if isinstance(payload, dict) else {}
+
+def _rotation_lock_acquire():
+	"""Torna la scadenza scritta se il lucchetto e' nostro, 0 altrimenti.
+
+	L'UPDATE condizionato e' atomico fra processi: o cambia una riga (preso) o zero (di qualcun
+	altro). Un lucchetto scaduto viene ripreso dalla stessa istruzione, senza codice di recupero.
+	La scadenza restituita va ripassata a _rotation_lock_release: e' il gettone di proprieta'.
+	"""
+	now = time.time()
+	deadline = now + ROTATION_LOCK_TTL
+	try:
+		dbcon = connect_database('settings_db')
+		if not _lock_ready[0]:
+			# make_databases() gira all'avvio del servizio, ma un interprete del plugin puo' non
+			# averlo mai chiamato: la tabella si crea qui, una volta per interprete.
+			for command in TRAKT_AUTH_LOCK_CREATE: dbcon.execute(command)
+			_lock_ready[0] = True
+		return deadline if dbcon.execute(ROTATION_LOCK_ACQUIRE, (deadline, now)).rowcount == 1 else 0
+	except Exception as e:
+		# Senza arbitro si preferisce NON ruotare: un rinnovo saltato costa una chiamata fallita,
+		# un rinnovo in corsa costa l'autenticazione.
+		logger('FenLight Trakt', 'lucchetto del rinnovo non disponibile (%s)' % e)
+		return 0
+
+def _rotation_lock_release(deadline):
+	try: connect_database('settings_db').execute(ROTATION_LOCK_RELEASE, (deadline,))
+	except Exception as e: logger('FenLight Trakt', "rilascio del lucchetto fallito (%s), scadra' da solo" % e)
+
+def _rotation_lock_held():
+	try: return connect_database('settings_db').execute(ROTATION_LOCK_STATE).fetchone()[0] > time.time()
+	except Exception: return False
+
+def _ask_to_authorize():
+	"""Una sola richiesta per sessione di Kodi, e mai durante una riproduzione.
+
+	Prima ogni interprete poteva aprirne una per conto suo: con quattro processi in corsa sullo
+	stesso token, l'utente si trovava davanti quattro dialoghi identici.
+	"""
+	if xbmc_player().isPlaying(): return False
+	if get_property(PROMPTED_PROP) == 'true': return False
+	set_property(PROMPTED_PROP, 'true')
+	return confirm_dialog(heading='Authorize Trakt', text='You must authenticate with Trakt. Do you want to authenticate now?')
+
 def call_trakt(path, params=None, data=None, is_delete=False, with_auth=True, method=None, pagination=False, page_no=1):
 	def send_query():
 		resp = None
 		if with_auth:
-			try:
-				token = get_setting('fenlight.trakt.token')
-				if token and token not in empty_setting_check:
-					try:
-						expires_at = float(get_setting('fenlight.trakt.expires', '0'))
-						if expires_at > 0 and time.time() > (expires_at - 86400): trakt_refresh_token()
-					except: pass
-					token = get_setting('fenlight.trakt.token')
-				if token and token not in empty_setting_check: headers['Authorization'] = 'Bearer ' + token
-			except: pass
+			access, refresh, expires = _auth_read()
+			# Il rinnovo anticipato legge un record coerente, quindi non puo' piu' innescarsi perche'
+			# ha visto una scadenza vecchia accanto a un token nuovo.
+			if _needs_renewal(access, refresh, expires):
+				trakt_refresh_token()
+				access = _auth_read()[0]
+			if access: headers['Authorization'] = 'Bearer ' + access
 		try:
 			if method:
 				if method == 'post':
@@ -114,22 +327,24 @@ def call_trakt(path, params=None, data=None, is_delete=False, with_auth=True, me
 	try: status_code = response.status_code
 	except: return None
 	if status_code == 401:
-		logger('FenLight Trakt', 'received 401 for path=%s - attempting token refresh' % path)
-		refreshed = trakt_refresh_token() if with_auth else False
+		# Una 401 senza credenziali non si ripara rinnovando: e' la chiave dell'applicazione a non
+		# andare bene, e il rinnovo non la tocca.
+		if not with_auth: return None
+		logger('FenLight Trakt', '401 su path=%s - si tenta il rinnovo' % path)
+		refreshed = trakt_refresh_token()
+		if refreshed is None:
+			# Non sappiamo se i token siano morti: puo' essere rete assente, o il rinnovo di un
+			# altro processo che non si e' concluso in tempo. Nel dubbio non si disturba l'utente.
+			return logger('FenLight Trakt', "rinnovo non concluso su path=%s - nessuna richiesta all'utente" % path)
 		if refreshed:
 			response = send_query()
 			try: status_code = response.status_code
 			except: return None
-		elif refreshed is None:
-			# transient failure (no network, Trakt unreachable): the stored tokens may still be good,
-			# so fail quietly instead of asking the user to authorize again.
-			return logger('FenLight Trakt', 'token refresh could not be completed for path=%s - not prompting' % path)
 		if status_code == 401:
-			if not xbmc_player().isPlaying():
-				if with_auth and confirm_dialog(heading='Authorize Trakt', text='You must authenticate with Trakt. Do you want to authenticate now?') and trakt_authenticate():
-					response = send_query()
-				else: pass
-			else: return None
+			if not (_ask_to_authorize() and trakt_authenticate()): return None
+			response = send_query()
+			try: status_code = response.status_code
+			except: return None
 	elif status_code == 429:
 		retry_headers = response.headers
 		if 'Retry-After' in retry_headers:
@@ -199,72 +414,141 @@ def trakt_get_device_token(device_codes):
 	return result
 
 def trakt_refresh_token():
-	CLIENT_ID = trakt_client()
-	if CLIENT_ID in empty_setting_check: return False
-	CLIENT_SECRET = trakt_secret()
-	if CLIENT_SECRET in empty_setting_check: return False
-	refresh_token = get_setting('fenlight.trakt.refresh')
-	if not refresh_token or refresh_token in empty_setting_check or refresh_token == '0': return False
-	with refresh_lock:
-		# Trakt rotates the refresh token on use, so a concurrent call may already have replaced it.
-		if get_setting('fenlight.trakt.refresh') != refresh_token: return True
-		return _trakt_refresh_token(CLIENT_ID, CLIENT_SECRET, refresh_token)
+	"""Rinnova la coppia di token. Tre esiti, e la differenza fra loro conta:
 
-def _trakt_refresh_token(CLIENT_ID, CLIENT_SECRET, refresh_token):
-	data = {
-		'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob',
-		'grant_type': 'refresh_token', 'refresh_token': refresh_token}
-	response = call_trakt("oauth/token", data=data, with_auth=False)
-	if response and 'access_token' in response:
-		# the refresh token is single use, so store the replacement first: a crash after this point
-		# still leaves a usable token pair behind.
-		set_setting('trakt.refresh', response["refresh_token"])
-		set_setting('trakt.token', response["access_token"])
-		expires_in = int(response.get('expires_in', 604800))
-		set_setting('trakt.expires', str(time.time() + expires_in))
-		logger('FenLight Trakt', 'token refresh SUCCESS - new token valid for %s seconds' % expires_in)
-		return True
-	error = response.get('error') if isinstance(response, dict) else None
-	if error in ('invalid_grant', 'invalid_client'):
-		logger('FenLight Trakt', 'token refresh REJECTED (%s) - the account must be authorized again' % error)
+	  True   c'e' un access token valido adesso -- l'abbiamo ruotato noi o l'ha ruotato un altro
+	  False  Trakt ha RIFIUTATO: serve una nuova autorizzazione, ed e' l'unico caso in cui abbia
+			 senso disturbare l'utente
+	  None   non si e' concluso (rete assente, o il rinnovo di un altro non finito in tempo): i
+			 token memorizzati possono essere ancora buoni, quindi non si chiede niente a nessuno
+	"""
+	# Prima si guarda se c'e' qualcosa da rinnovare: senza account le chiavi non c'entrano nulla, e
+	# annunciare 'Please set a valid Trakt Client ID Key' sarebbe indicare la causa sbagliata.
+	refresh_token = _auth_read()[1]
+	if not refresh_token: return False
+	CLIENT_ID, CLIENT_SECRET = trakt_client(), trakt_secret()
+	if CLIENT_ID in empty_setting_check:
+		no_client_key()
 		return False
-	logger('FenLight Trakt', 'token refresh could not be completed - Trakt unreachable or unexpected response: %s' % str(response)[:120])
+	if CLIENT_SECRET in empty_setting_check:
+		no_secret_key()
+		return False
+	rejected, verdict = _rejection_verdict(refresh_token)
+	if rejected: return verdict
+	deadline = _rotation_lock_acquire()
+	if not deadline: return _await_rotation(refresh_token)
+	try:
+		# Dentro il lucchetto si rilegge dal database, non dalla proprieta': fra il momento in cui
+		# abbiamo letto e quello in cui abbiamo ottenuto il lucchetto puo' essersi infilato un
+		# rinnovo altrui, e ruotare due volte lo stesso token e' il difetto che stiamo chiudendo.
+		stored_refresh = _auth_read_stored()[1]
+		if not stored_refresh: return False
+		if stored_refresh != refresh_token: return True
+		return _rotate(CLIENT_ID, CLIENT_SECRET, stored_refresh)
+	finally: _rotation_lock_release(deadline)
+
+def _rotate(CLIENT_ID, CLIENT_SECRET, refresh_token):
+	data = {
+		'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'redirect_uri': REDIRECT_URI,
+		'grant_type': 'refresh_token', 'refresh_token': refresh_token}
+	status, payload = _oauth_post('oauth/token', data)
+	if status == 200:
+		access, new_refresh = payload.get('access_token'), payload.get('refresh_token')
+		if not (access and new_refresh):
+			# A log finiscono le CHIAVI, mai i valori: qui dentro passano dei segreti.
+			logger('FenLight Trakt', 'rinnovo: 200 senza coppia completa, campi ricevuti %s' % sorted(payload))
+			return None
+		expires_in = _expires_in(payload)
+		if not _auth_write(access, new_refresh, time.time() + expires_in): return None
+		clear_property(REJECTED_PROP)
+		logger('FenLight Trakt', 'token ruotato, valido per %s secondi' % expires_in)
+		return True
+	if status in (400, 401, 403):
+		error, description = payload.get('error') or '?', payload.get('error_description') or '?'
+		if error == 'invalid_client':
+			_mark_rejected('client', refresh_token)
+			logger('FenLight Trakt', "rinnovo RIFIUTATO: non vale la chiave dell'applicazione (%s %s: %s) - "
+					'riautorizzare non riparerebbe nulla' % (status, error, description))
+			return None
+		_mark_rejected('grant', refresh_token)
+		logger('FenLight Trakt', 'rinnovo RIFIUTATO da Trakt (%s %s: %s) - serve una nuova autorizzazione'
+				% (status, error, description))
+		return False
+	logger('FenLight Trakt', 'rinnovo non concluso (stato %s) - i token memorizzati restano validi' % (status or 'nessuna risposta'))
 	return None
+
+def _await_rotation(stale_refresh):
+	"""Chi non ha preso il lucchetto ASPETTA l'esito altrui invece di spendere il token.
+
+	E' il passo che mancava: nel log del 10/09 i perdenti rileggevano il token appena ruotato e lo
+	bruciavano a loro volta, un'ondata dopo l'altra. Chi aspetta eredita anche il verdetto, perche'
+	un rifiuto vale per tutti: e' lo stesso token.
+	"""
+	deadline = time.time() + ROTATION_WAIT
+	while time.time() < deadline:
+		sleep(ROTATION_POLL)
+		if _auth_read_stored()[1] not in ('', stale_refresh): return True
+		if not _rotation_lock_held(): break
+	rejected, verdict = _rejection_verdict(stale_refresh)
+	return verdict if rejected else None
+
+def trakt_ensure_token():
+	"""Rinnova in anticipo, se serve. La chiama il servizio a ogni giro.
+
+	Il servizio esiste prima dei widget e vive quanto Kodi: se il rinnovo avviene qui, gli
+	interpreti del plugin trovano un token gia' buono e non si mettono nemmeno in coda. Non
+	sostituisce il lucchetto -- all'avvio servizio e widget partono insieme, e nel log del 10/09 li
+	separavano centodieci millisecondi -- ma fa in modo che il lucchetto sia raramente conteso.
+	"""
+	access, refresh, expires = _auth_read()
+	if not (access and refresh): return False
+	if not _needs_renewal(access, refresh, expires): return True
+	return trakt_refresh_token() is True
 
 def trakt_authenticate(dummy=''):
 	code = trakt_get_device_code()
 	if not code: return False
-	token = trakt_get_device_token(code)
-	if token:
-		set_setting('trakt.token', token["access_token"])
-		set_setting('trakt.refresh', token["refresh_token"])
-		set_setting('trakt.expires', str(time.time() + int(token.get('expires_in', 604800))))
-		set_setting('watched_indicators', '1')
-		sleep(1000)
-		try:
-			user = call_trakt('/users/me')
-			set_setting('trakt.user', str(user['username']))
-		except: pass
-		notification('Trakt Account Authorized', 3000)
-		trakt_sync_activities(force_update=True)
-		return True
-	notification('Trakt Error Authorizing', 3000)
-	return False
+	token = trakt_get_device_token(code) or {}
+	access, refresh = token.get('access_token'), token.get('refresh_token')
+	if not (access and refresh):
+		# Senza refresh token l'autorizzazione muore alla prima scadenza e non e' rinnovabile:
+		# meglio dichiararla fallita adesso che scoprirlo fra sette giorni. Prima si scriveva
+		# l'access token e SOLO POI si leggeva token["refresh_token"]: se fosse mancato restava un
+		# access token orfano, e con lui una riautenticazione forzata ogni settimana.
+		if token: logger('FenLight Trakt', 'autorizzazione senza coppia completa, campi ricevuti %s' % sorted(token))
+		notification('Trakt Error Authorizing', 3000)
+		return False
+	if not _auth_write(access, refresh, time.time() + _expires_in(token)):
+		notification('Trakt Error Authorizing', 3000)
+		return False
+	clear_property(REJECTED_PROP)
+	clear_property(PROMPTED_PROP)
+	set_setting('watched_indicators', '1')
+	sleep(1000)
+	try:
+		user = call_trakt('users/me')
+		set_setting('trakt.user', str(user['username']))
+	except: pass
+	notification('Trakt Account Authorized', 3000)
+	trakt_sync_activities(force_update=True)
+	return True
 
 def trakt_revoke_authentication(dummy=''):
+	# L'ordine e' tutto: il token va CATTURATO prima di essere cancellato. Prima la revoca partiva
+	# dopo l'azzeramento e spediva a Trakt un token vuoto -- da noi l'account risultava scollegato,
+	# su Trakt la sessione restava viva.
+	access = _auth_read()[0]
+	_auth_clear()
 	set_setting('trakt.user', 'empty_setting')
-	set_setting('trakt.expires', '')
-	set_setting('trakt.token', '')
-	set_setting('trakt.refresh', '')
 	set_setting('watched_indicators', '0')
 	clear_all_trakt_cache_data(silent=True, refresh=False)
 	notification('Trakt Account Authorization Reset', 3000)
-	CLIENT_ID = trakt_client()
+	if not access: return
+	CLIENT_ID, CLIENT_SECRET = trakt_client(), trakt_secret()
 	if CLIENT_ID in empty_setting_check: return no_client_key()
-	CLIENT_SECRET = trakt_secret()
 	if CLIENT_SECRET in empty_setting_check: return no_secret_key()
-	data = {'token': get_setting('fenlight.trakt.token'), 'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET}
-	response = call_trakt("oauth/revoke", data=data, with_auth=False)
+	status = _oauth_post('oauth/revoke', {'token': access, 'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET})[0]
+	logger('FenLight Trakt', 'revoca della sessione su Trakt: stato %s' % (status or 'nessuna risposta'))
 
 def trakt_movies_trending(page_no):
 	string = 'trakt_movies_trending_%s' % page_no
@@ -450,6 +734,11 @@ def trakt_watchlist(media_type, dummy_arg):
 def trakt_fetch_collection_watchlist(list_type, media_type):
 	def _process(params):
 		data = get_trakt(params)
+		# Nel log della Shield del 10/09: due 'BUILD FALLITA ... NoneType object is not iterable' di
+		# fila, cioe' il widget della watchlist che esplode mentre il token si stava rinnovando.
+		# Una chiamata non riuscita non e' una watchlist vuota: si torna None, cache_trakt_object
+		# non memorizza, e il giro dopo si riprova.
+		if data is None: return None
 		if list_type == 'watchlist': data = [i for i in data if i['type'] == key]
 		return [{'media_ids': {'tmdb': i[key]['ids'].get('tmdb', ''), 'imdb': i[key]['ids'].get('imdb', ''), 'tvdb': i[key]['ids'].get('tvdb', '')}, 'title': i[key]['title'],
 				'collected_at': i.get(collected_at), 'released': i[key].get(r_key) if i[key].get(r_key) else ('2050-01-01' if media_type in ('movie', 'movies') else standby_date)}
@@ -459,7 +748,7 @@ def trakt_fetch_collection_watchlist(list_type, media_type):
 	string = 'trakt_%s_%s' % (list_type, string_insert)
 	path = 'sync/%s/%s?extended=full'
 	params = {'path': path, 'path_insert': (list_type, media_type), 'with_auth': True, 'pagination': False}
-	return cache_trakt_object(_process, string, params)
+	return cache_trakt_object(_process, string, params) or []
 
 def _tmdb_ids_from_data(data):
 	# I dati spediti a Trakt hanno forma {'movies'|'shows': [{'ids': {'tmdb'|'imdb'|'tvdb': id}}]}.
@@ -1536,9 +1825,84 @@ def trakt_episode_index(tmdb_id):
 		return fuori or None
 	except: return None
 
+def chiave_voce_playback(item):
+	"""L'identita' della COSA in pausa, non della voce di playback. None se non si sa dirla.
+
+	E' la stessa chiave con cui la tabella `progress` e' unica -- (media_id, stagione, episodio) --
+	ma detta nei numeri di Trakt, che sono gli unici disponibili qui senza toccare la rete. Per gli
+	episodi NON si usa il rimappaggio TMDb<->TVDB: serve `tvshow_meta`, e questa funzione gira a ogni
+	poll da 30 s. Due voci con lo stesso id di serie, stagione e numero sono lo stesso episodio in
+	qualunque numerazione, e questo basta per il lavoro che deve fare.
+	"""
+	try:
+		if item['type'] == 'movie': return ('movie', item['movie']['ids']['trakt'])
+		return ('episode', item['show']['ids']['trakt'], item['episode']['season'], item['episode']['number'])
+	except: return None
+
+def _quando_in_pausa(item):
+	# Ordinamento lessicografico su un ISO8601 in Z: e' cronologico senza dover convertire niente.
+	try: return item.get('paused_at') or ''
+	except: return ''
+
+def dedup_playback(progress_info):
+	"""Una voce per chiave, come la tabella. Torna (snapshot, quante voci scartate).
+
+	LOTTO 238 -- IL DIFETTO 9.2 DI TRAKT.md, LA RUOTA DA 30 SECONDI. `progress_out_of_sync` chiede
+	"lo snapshot ha un resume_id che noi non abbiamo?" e la riparazione, `set_bulk_*_progress`,
+	scrive UNA riga per chiave. Due alfabeti diversi: quando Trakt tiene due voci per lo stesso film
+	-- e le tiene, e' il difetto 9.1 che le crea a ogni chiusura sotto soglia -- la tabella puo'
+	contenerne una sola, l'altra risulta "in piu' su Trakt" e la riparazione non potra' MAI toglierla.
+
+	Misurato sulla stick il 10/09: 21 giri in 28 minuti, uno ogni 30 s, dalle 21:53 alle 22:21 senza
+	interruzione, 16 dei quali con un `refresh MIRATO su 0 titoli` dietro. Ogni giro accende un
+	interprete Python nuovo (`reuselanguageinvoker` e' false e deve restarlo): 928 ms di orologio,
+	538 di cpu, di cui 465 solo per diventare Python. Mezzo secondo di cpu ogni trenta, riproduzione
+	compresa.
+
+	LA REGOLA GENERALE, che vale oltre questo caso: un rilevatore di differenze puo' segnalare solo
+	differenze che la sua stessa riparazione sa togliere. Se le due cose parlano alfabeti diversi il
+	ciclo non e' un rischio, e' una certezza. Qui si allinea l'alfabeto alla sorgente, cosi' TUTTI i
+	consumatori dello snapshot -- il confronto, la ricostruzione, gli id per il ridisegno -- vedono
+	la stessa cosa. Ripararlo nel solo confronto avrebbe zittito il sintomo lasciando la
+	ricostruzione a scegliere a caso quale gemello scrivere.
+
+	QUALE DEI DUE VINCE, e perche' deve essere deciso e non casuale. Prima di questo lotto la scelta
+	la faceva l'ordine di arrivo dei thread dentro `trakt_progress_movies`: la tabella finiva con l'uno
+	o con l'altro a caso, e il giro dopo il confronto si lamentava dell'altro. Vince la voce messa in
+	pausa PIU' TARDI, che e' anche la risposta giusta per l'utente -- e' l'ultimo punto in cui ha
+	davvero smesso di guardare; a parita' di istante, l'id piu' alto, cioe' il record allocato dopo.
+
+	Una voce di cui non si sa dire la chiave si TIENE. Nel dubbio si preferisce una riga in piu' da
+	riconciliare a una pausa dell'utente buttata via qui dentro (regola 9 di TRAKT.md §8).
+	"""
+	if not progress_info: return progress_info, 0
+	migliori, senza_chiave, ordine = {}, [], []
+	for item in progress_info:
+		_k = chiave_voce_playback(item)
+		if _k is None:
+			senza_chiave.append(item)
+			continue
+		_vecchio = migliori.get(_k)
+		if _vecchio is None:
+			migliori[_k] = item
+			ordine.append(_k)
+		elif (_quando_in_pausa(item), item.get('id') or 0) > (_quando_in_pausa(_vecchio), _vecchio.get('id') or 0):
+			migliori[_k] = item
+	_fuori = [migliori[_k] for _k in ordine] + senza_chiave
+	return _fuori, len(progress_info) - len(_fuori)
+
 def trakt_playback_progress():
 	params = {'path': 'sync/playback%s', 'with_auth': True, 'pagination': False}
-	return get_trakt(params)
+	_snapshot = get_trakt(params)
+	# `None` non e' una lista vuota (regola 3 di TRAKT.md §8): "non lo so" deve restare distinguibile
+	# da "non c'e' niente in pausa" fino in fondo alla catena, perche' a valle decide se ricostruire.
+	if _snapshot is None: return None
+	_snapshot, _doppi = dedup_playback(_snapshot)
+	# Questa riga e' la spia del difetto 9.1 sul campo: finche' compare, Trakt sta accumulando voci
+	# gemelle e la causa e' a monte, nella doppia scrittura a fine riproduzione.
+	if _doppi:
+		logger('FenLight Trakt', 'snapshot di avanzamento: %s voci gemelle accorpate (una per chiave)' % _doppi)
+	return _snapshot
 
 def trakt_comments(media_type, imdb_id):
 	def _process(foo):

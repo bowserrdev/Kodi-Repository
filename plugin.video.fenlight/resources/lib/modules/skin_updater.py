@@ -70,6 +70,12 @@ PRESERVE = (
 	'1080i/script-skinshortcuts-includes.xml',
 )
 
+# Nomi dentro l'area di lavoro. Il marcatore e' il giornale dello scambio: se al prossimo avvio si
+# trova ancora li', lo scambio e' stato interrotto a meta' e va finito o disfatto.
+BACKUP = 'old'
+STAGED = SKIN_ID
+MARKER = 'SCAMBIO_IN_CORSO'
+
 # Cio' senza cui la skin non parte. Un pacchetto che non li ha e' un pacchetto da buttare, non da
 # installare: meglio restare indietro di una versione che non avere una GUI al prossimo avvio.
 ESSENTIAL = ('addon.xml', '1080i/Includes.xml', '1080i/Home.xml', 'media/Textures.xbt')
@@ -124,6 +130,11 @@ class SkinUpdater:
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		window = xbmcgui.Window(10000)
 		self.monitor = monitor
+		# Prima di ogni altra cosa, e prima di qualunque attesa: se lo scambio precedente e' stato
+		# interrotto a meta', il percorso della skin non esiste e Kodi e' appena partito senza. Qui si
+		# rimette a posto, per la sessione successiva.
+		try: self._repair()
+		except Exception as e: logger('Fen Light', 'SkinUpdater: riparazione fallita (%s)' % e)
 		try: self.rule_in_force = self._ensure_no_auto_update()
 		except Exception as e:
 			self.rule_in_force = False
@@ -371,16 +382,60 @@ class SkinUpdater:
 
 	# --- scambio ----------------------------------------------------------------------------------
 
-	def _swap(self, staged):
-		"""Due rename e una cancellazione. Fra il primo e il secondo il percorso della skin non esiste
-		per qualche millisecondo: e' la ragione per cui si arriva qui solo a stick ferma. Se il secondo
-		fallisce si rimette a posto il vecchio e si riprova al prossimo avvio -- non si lascia mai il
-		dispositivo senza skin."""
+	def _repair(self):
+		"""Rimette a posto uno scambio interrotto. Costa due `exists` quando non c'e' niente da fare.
+
+		Il caso che questa funzione esiste per coprire: il processo ucciso -- Kodi chiuso, o il
+		`watchdog_reboot` che su questa stick non e' teorico -- fra i due rename di `_swap`. I rename
+		in se' sono atomici e non possono rompersi a meta', ma fra l'uno e l'altro c'e' una finestra di
+		microsecondi in cui `addons/skin.arctic.fuse.3` NON ESISTE. Se il colpo arriva li', al
+		riavvio Kodi non trova la skin e ricade su quella di sistema: il dispositivo funziona, ma
+		l'utente si trova davanti una GUI che non e' la sua, ed e' esattamente cio' che tutto questo
+		lavoro serve a non fare.
+
+		La regola di riparazione e' quella dei giornali, e si legge da sola: se la skin non c'e', la
+		nuova vince sulla vecchia (lo scambio era voluto, si finisce), e se la nuova non c'e' si
+		rimette la vecchia. Se invece la skin c'e', lo scambio era gia' arrivato in fondo e resta solo
+		da buttare l'area di lavoro."""
 		import shutil
 		from modules.kodi_utils import logger
 		installed, work = self._paths()
-		backup = os.path.join(work, 'old')
+		marker = os.path.join(work, MARKER)
+		if not os.path.exists(marker): return
+		staged, backup = os.path.join(work, STAGED), os.path.join(work, BACKUP)
+		if not os.path.exists(installed):
+			source = staged if os.path.exists(staged) else (backup if os.path.exists(backup) else None)
+			if source is None:
+				return logger('Fen Light', 'SkinUpdater: scambio interrotto e nessuna copia da rimettere -- la skin va reinstallata a mano')
+			os.rename(source, installed)
+			logger('Fen Light', 'SkinUpdater: scambio interrotto, rimessa in posizione la %s (%s)'
+					% ('nuova' if source == staged else 'precedente', self._xml_version(os.path.join(installed, 'addon.xml'))))
+		else: logger('Fen Light', 'SkinUpdater: scambio precedente gia\' completo, ripulisco')
+		shutil.rmtree(work, ignore_errors=True)
+
+	def _swap(self, staged):
+		"""Due rename e una cancellazione, con un giornale intorno.
+
+		I rename sono atomici: nessuno dei due puo' rompersi a meta'. Fra l'uno e l'altro pero' c'e'
+		una finestra di microsecondi in cui il percorso della skin non esiste, e su Android il processo
+		puo' essere ucciso in qualunque momento. Per questo si scrive `SCAMBIO_IN_CORSO` prima di
+		cominciare e lo si toglie solo alla fine: e' quel file a dire a `_repair`, al prossimo avvio,
+		che c'e' qualcosa da finire. Non elimina la finestra -- in Python non si puo' -- ma la rende
+		una sessione da recuperare invece di un dispositivo senza GUI.
+
+		Se il secondo rename FALLISCE (errore vero, non uccisione) si rimette a posto il vecchio qui e
+		subito, e si riprova al prossimo giro."""
+		import shutil
+		from modules.kodi_utils import logger
+		installed, work = self._paths()
+		backup = os.path.join(work, BACKUP)
 		shutil.rmtree(backup, ignore_errors=True)
+		# Ultimo controllo prima di toccare il disco: se Kodi sta gia' chiudendo non si comincia
+		# nemmeno. Non chiude la finestra (l'uccisione puo' arrivare un istante dopo), ma toglie di
+		# mezzo il caso piu' probabile -- l'utente che spegne dopo essere stato fermo due minuti,
+		# cioe' proprio la condizione che ci ha portati qui.
+		if self.monitor.abortRequested(): raise InterruptedError('Kodi sta chiudendo, scambio rimandato')
+		with open(os.path.join(work, MARKER), 'w', encoding='utf-8') as handle: handle.write(SKIN_ID)
 		os.rename(installed, backup)
 		try: os.rename(staged, installed)
 		except Exception:

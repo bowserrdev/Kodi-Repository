@@ -26818,7 +26818,7 @@ contestuale dell'addon: *Auto-update: No*.
 
 ### Verifica
 
-`test_206.py`, **57 asserzioni, tutte OK**, e sono prove **funzionali** su alberi veri in una sandbox,
+`test_206.py`, **77 asserzioni, tutte OK**, e sono prove **funzionali** su alberi veri in una sandbox,
 non ispezioni del sorgente:
 
 - i tre file generati sopravvivono allo scambio **e contengono ancora quelli del dispositivo**, non
@@ -26936,6 +26936,51 @@ download dello zip reale, md5 verificato, 339 file scompattati piu' il file gene
 (340), scambio, versione installata `3.3.14`, la home della finta stick ancora al suo posto, area di
 lavoro ripulita, e il secondo giro che non fa niente. E' il percorso completo, quello che sul
 dispositivo non era mai arrivato in fondo.
+
+### E se Kodi si chiude nel mezzo?
+
+Domanda arrivata subito dopo, ed e' quella giusta. Le due risposte sono diverse.
+
+**Durante il download non succede niente,** e non per fortuna: la skin installata non viene toccata
+fino allo scambio. Tutto avviene sotto `special://temp/fenlight_skinswap/`. Alla chiusura,
+`waitForAbort` fra un blocco e l'altro solleva `InterruptedError`, il ramo di errore chiama
+`_clean_work` e il pacchetto parziale sparisce; e se il thread viene ucciso prima di arrivarci, il
+giro successivo fa comunque `rmtree` dell'area di lavoro prima di ricrearla, e a valle c'e' l'md5.
+Tre reti per un caso che non fa danno neanche senza.
+
+**Durante lo scambio invece c'era un buco vero, ed era il peggiore possibile.** I due `os.rename` sono
+atomici -- nessuno dei due puo' rompersi a meta' -- ma **fra l'uno e l'altro** c'e' una finestra di
+microsecondi in cui `addons/skin.arctic.fuse.3` non esiste. Un processo ucciso li' dentro (Kodi
+chiuso, o il `watchdog_reboot` che su questa stick non e' teorico) lascia il dispositivo **senza
+skin**: al riavvio Kodi non la trova e ricade su quella di sistema. Microsecondi, ma su Android il
+processo puo' morire in qualunque istante, e la conseguenza e' esattamente cio' che tutto questo
+lavoro esiste per evitare. La docstring di `_swap` diceva *"non si lascia mai il dispositivo senza
+skin"*: era vero per il rename che fallisce, falso per il processo che muore. Ora dice la verita'.
+
+**Chiuso con un giornale.** `_swap` scrive `SCAMBIO_IN_CORSO` nell'area di lavoro prima di cominciare
+e lo toglie solo alla fine. `_repair`, che gira **per prima cosa** all'avvio del servizio -- prima di
+`FIRST_CHECK_DELAY`, prima di tutto -- lo cerca, e se lo trova applica la regola dei giornali: se la
+skin non c'e', la nuova vince sulla vecchia (lo scambio era voluto, si finisce), e se la nuova non c'e'
+si rimette la vecchia; se la skin c'e' gia', lo scambio era arrivato in fondo e resta solo da buttare
+l'area di lavoro. Costa due `os.path.exists` quando non c'e' niente da fare.
+
+Non elimina la finestra -- in Python non si puo', servirebbe uno scambio atomico di due directory che
+il filesystem non offre -- ma **la trasforma da dispositivo morto in una sessione da recuperare**: nel
+peggiore dei casi un avvio con la skin di sistema, poi tutto torna al suo posto da solo.
+
+In piu' `_swap` controlla `abortRequested()` **prima** di toccare il disco. Non chiude la finestra
+(l'uccisione puo' arrivare un istante dopo il controllo) ma toglie di mezzo il caso piu' probabile di
+tutti: l'utente che spegne dopo essere stato fermo due minuti, cioe' proprio la condizione che fa
+scattare lo scambio.
+
+Sette scenari nuovi nelle prove, che simulano l'uccisione del processo contando i rename e
+interrompendo al numero voluto: ucciso prima di toccare il disco (skin intatta), ucciso fra i due
+rename (percorso inesistente -> riparato con la **nuova**, home del dispositivo ancora dentro), lo
+stesso ma con il pacchetto nuovo sparito (riparato con la **precedente** -- mai un dispositivo senza
+skin), ucciso prima della pulizia (la nuova e' gia' in posizione, si butta solo l'area di lavoro),
+nessun giornale (la riparazione non tocca niente e non butta un pacchetto gia' pronto), chiusura in
+corso (lo scambio non comincia nemmeno), download troncato (la skin installata non e' mai stata
+toccata).
 
 ### Vincolo: `general.addonupdates` deve restare su *installa automaticamente*
 
@@ -27232,3 +27277,2184 @@ nome dell'**episodio**; se esce quello della stagione, `Container(id)` non si ri
 strada e' un pubblicatore, non una condizione.
 
 Niente consegnato: nessuna versione alzata, nessuno zip rigenerato, nessun commit.
+
+## Lotto 216 -- 'continua a guardare': il debito che non si puo' perdere
+
+Sintomo, con le due fotografie dell'utente: un titolo entra in testa a 'continua a guardare' e la riga
+continua a partire da quello di prima. Del nuovo si vede una striscia di poster a sinistra. **A volte**
+-- ed e' quella parola che ha indirizzato tutto.
+
+### Il log dice che il meccanismo non ha nemmeno provato
+
+Log della stick del 09/09, fuoco su un ALTRO widget della Home mentre il film finisce:
+
+```
+20:58:42.803  set_head key=home.501 built=6 first_url=...media_type=episode&tmdb_id=126506
+21:14:15.562  watcher id=501 key=home.501 current=1/6          <- il cursore di CW era sul PRIMO
+21:23:05.065  OnPlayBackStopped
+21:23:05.749  watcher id=502 key=home.502 current=77/128       <- il fuoco e' su un altro widget
+21:23:08.490  set_head key=home.501 built=7 first_url=...media_type=movie&tmdb_id=1315303
+21:23:11.669  set_head key=home.501 built=7 first_url=...movie&tmdb_id=1315303   (2a build, testa uguale)
+21:23:17.544  watcher id=501 key=home.501 current=2/7          <- torno su CW: sono sul 2o
+```
+
+Nessun `watcher testa nuova`, nessun `mollo`: il meccanismo dei lotti 137/138 non ha lasciato traccia.
+Gli md5 di `service.py`, `paginator.py` e `continue_watching.py` sulla stick erano identici al repo,
+quindi non era codice vecchio.
+
+### La causa: un debito consumato contro la lista vecchia
+
+`rehead_step` ha una sola uscita muta, `fatto`, e la prende quando il cursore segna 1. La chiave entra
+in coda dentro `set_head`, che sta **prima di `end_directory`**: quando la bandiera si alza, Kodi non
+ha ancora ricevuto la cartella e il contenitore mostra ancora i 6 elementi vecchi, col cursore sul
+primo. Il giro del watcher che cade in quei ~300 ms legge `rcur = 1`, dice `fatto` e butta via la
+coda. Un attimo dopo Kodi applica i 7 elementi, il cursore segue l'elemento su cui stavi e diventa 2 --
+e non c'e' piu' nessuno a riportarlo indietro.
+
+Il 03/09 (lotto 137) lo stesso codice funzionava perche' lo scambio del contenitore aveva battuto il
+tick di 157 ms. **E' una corsa, e l'utente l'aveva gia' detto: "a volte".**
+
+Due aggravanti strutturali:
+
+1. **La seconda occasione non esiste.** Il refresh mirato ha ricostruito la riga due volte (21:23:08 e
+   21:23:11), ma alla seconda `_note_head_change` esce su `precedente == url`. Persa la prima, persa
+   per sempre.
+2. **La coda diceva che era successo qualcosa, non quale fosse lo stato voluto**, quindi il
+   consumatore non poteva accorgersi di stare guardando la lista sbagliata.
+
+### La regola, decisa con l'utente
+
+| | |
+|---|---|
+| arriva un titolo nuovo, la riga NON ha il fuoco | si riporta in testa subito: il titolo si vede, e al rientro il fuoco ci sta sopra |
+| arriva un titolo nuovo, la riga HA il fuoco | non si muove niente; il debito aspetta che si esca dalla riga |
+
+Scartata l'alternativa "il nuovo compare come primo e spinge tutti a destra, il fuoco resta sul mio
+elemento". Non e' un gusto: le righe sono `<control type="fixedlist">` senza `<focusposition>`
+(`List_Core`, `List_Landscape_Row`), quindi la posizione di riposo dell'elemento a fuoco **e' il primo
+posto a sinistra** e il ramo centrale di `SelectItem` ci riporta il cursore a ogni ricalcolo: quello
+spostamento non e' ordinabile senza cambiare il tipo di contenitore di tutte le righe della skin. E lo
+sarebbe a meta': con il fuoco sull'ultimo slot visibile non ci sarebbe spazio a destra, Kodi
+scorrerebbe di uno e il titolo nuovo resterebbe invisibile lo stesso -- stesso evento, due
+comportamenti a seconda di dove capitava il cursore.
+
+Nota a margine, perche' due lotti nel file si contraddicevano: il 165 concludeva che lo scostamento
+del cursore non esistesse "perche' `cursorrange` non e' nel binario". Il tag XML che lo imposta si
+chiama **`movement`**, e la skin lo mette (`view_landscape_movement` 3, `view_poster_movement` 6). La
+conclusione regge in mezzo alla lista, dove il cursore sta comunque a 0, ma la finestra di coda del
+lotto 164 esiste proprio per quel valore.
+
+### Anche la regola senza stato e' stata scartata, ed e' l'alternativa piu' seria
+
+*"Se la riga di CW non ha il fuoco e il cursore non e' sul primo, riportacelo"*: zero stato, zero
+proprieta', nessuna corsa possibile per costruzione, sei righe. Scartata dall'utente per una ragione
+d'uso, non tecnica: non distinguendo **perche'** il cursore e' fuori posto, la riga si riavvolgerebbe
+ogni volta che perde il fuoco, cioe' decine di volte al giorno per un evento che capita due. Resta
+scritta qui perche' se un domani questa area tornasse a costare, e' il taglio disponibile.
+
+### La struttura: `modules/cw_head.py`, e perche' non in `paginator.py`
+
+'Continua a guardare' **non e' un widget paginato**: non chiama `get_pages`, non ha pagine, dichiara
+`hasmore=False`. Stava dentro il paginatore per un incidente di percorso -- `set_head` passava di li'
+-- e da quella convivenza erano arrivati un controllo sull'azione, una proprieta' in piu' e una coda
+con due committenti che vogliono cose opposte:
+
+- `reconcile_position` (163) accoda a build **appena cominciata** e vuole agire sulla lista **vecchia**;
+- 'continua a guardare' vuole l'esatto contrario: **non toccare niente** finche' la lista nuova non e'
+  a schermo.
+
+Un consumatore solo per due semantiche opposte: e' quello che ha prodotto il difetto. `fenlight.pg.rehead`
+resta al suo committente vero (ed e' anche l'unica letta dalla skin, lotti 165/167); la regola di CW
+sta ora in un modulo suo, e la dichiara `continue_watching.py`, non `set_head`.
+
+**Lo stato e' un debito, non un evento**, e sono due proprieta':
+
+```
+fenlight.cw.head.<key>   il path del primo elemento dell'ultima costruzione: e' insieme il
+                         rilevatore ('la testa e' cambiata?') e il BERSAGLIO che il servizio
+                         aspetta di vedere in cima. Un dato, uno scrittore.
+fenlight.cw.pending      le righe che devono ancora tornare in testa. Una lettura per giro,
+                         vuota nel 99,9% dei giri.
+```
+
+Il servizio riconcilia con `cw_head.step`, **pura**, sette righe:
+
+```python
+if not attesa or vista != attesa: return 'attendi'   # la lista nuova non e' ancora a schermo
+if current < 1: return 'attendi'
+if current == 1: return 'attendi' if scrolling else 'fatto'
+if mosso_da is None: return 'muovi'
+if adesso - mosso_da < RIPETI: return 'attendi'
+return 'muovi' if tentativi < TENTATIVI else 'mollo'
+```
+
+**Perche' il confronto con la testa attesa non e' un ornamento** (e' il cuore del lotto): con il debito
+aperto e il cursore su 1, *"la lista nuova non e' ancora arrivata"* e *"la lista nuova e' arrivata ed e'
+gia' a posto"* sono la **stessa osservazione**. Non esiste modo di sceglierne una guardando il cursore.
+Ed e' un confronto fra stringhe uguali byte per byte, verificato invece che supposto -- stesso film,
+due strade diverse nello stesso log:
+
+```
+21:15:35.900  CPythonInvoker(19):  ?mode=playback.media&media_type=movie&tmdb_id=1315303
+21:23:08.490  set_head ... first_url=plugin://plugin.video.fenlight/?mode=playback.media&media_type=movie&tmdb_id=1315303
+```
+
+Kodi conserva il path del ListItem verbatim: o il confronto e' sempre vero o e' sempre falso, non c'e'
+nessuna finestra temporale in cui puo' andare in un modo o nell'altro. (Una rete anti-stallo era stata
+disegnata e poi tolta: difendeva da un'ignoranza, non da un rischio, e trenta secondi di log l'hanno
+resa inutile.)
+
+**Il cancello del fuoco chiede 'ce l'aveva al giro SCORSO', non 'ce l'ha adesso'** (`cw_head.hold`).
+Con "adesso", chi rientra in Home da un hub e trova il fuoco atterrato proprio su quella riga non
+vedrebbe mai il titolo nuovo -- che e' il caso da cui e' partito tutto. Con "al giro scorso": se stai
+dentro la riga da prima si aspetta; se ci arrivi ora, la riga si riporta in testa sotto di te; se la
+finestra non era a schermo, per definizione il fuoco non c'era e si agisce.
+
+### Perche' non puo' esserci una corsa
+
+| dipendenza dal tempo del meccanismo vecchio | com'e' chiusa |
+|---|---|
+| debito consumato contro il contenitore vecchio | `vista != attesa` -> si aspetta: il confronto e' sul contenuto |
+| `set_head` scrive prima di `end_directory` | irrilevante: si aspetta il contenuto, non il momento |
+| `REHEAD_TIMEOUT` di 3 s dal primo avvistamento | l'orologio parte solo DOPO aver ordinato il movimento |
+| il ciclo esce in cima durante la riproduzione | un debito non e' un evento: sopravvive e si salda dopo |
+| servizio riavviato a meta' | il debito e' una proprieta'; le due memorie di lavoro sono in RAM e perderle costa un giro |
+| due build di fila per lo stesso cambiamento | idempotente: la seconda non tocca il debito aperto |
+
+L'**avvolgimento** e' impossibile per costruzione: il `Control.Move` parte solo con `current > 1`, e un
+secondo comando non puo' partire prima di `RIPETI` (1,5 s), quando l'animazione da 400 ms e' finita da
+un pezzo. Senza quel vincolo, due comandi in volo insieme -- il secondo calcolato su un cursore gia' a
+1 -- manderebbero la riga in fondo (`CGUIFixedListContainer::MoveUp` avvolge quando e' gia' in testa).
+
+Resta **una** ambiguita', dichiarata: se ti sposti sulla riga negli stessi 300 ms in cui nasce il
+debito, `hold` puo' leggere l'uno o l'altro stato. Entrambi gli esiti sono innocui e non esiste un
+osservatore piu' preciso: l'istante in cui Kodi scambia la lista non lo comunica nessuno.
+
+### Verifica
+
+`tests/test_216.py`, 9 casi. Il caso **C** e' il difetto del 09/09: con la lista vecchia a schermo non
+si dice mai `fatto`, qualunque cosa dica il cursore.
+
+Il caso **I** e' quello che serviva davvero, e non c'era in nessuno dei tre lotti precedenti: prova il
+**cablaggio**, non la decisione. Il blocco del watcher viene ESTRATTO da `service.py` -- dal file
+spedito, non da una copia -- compilato ed eseguito contro un mondo simulato (le due infolabel, le due
+condizioni, l'orologio), e ci si rigioca dentro la sequenza del 09/09 piu' i due casi del fuoco. E'
+la lezione dei lotti 137/165/167 messa in una prova: le tre volte precedenti la funzione era giusta e
+sbagliava il giro che la chiamava, e nessuna prova poteva accorgersene perche' tutte guardavano la
+funzione. Se un domani cambiano i nomi che il blocco usa, questa cade invece di restare verde su un
+codice morto.
+
+**Verificato rosso** neutralizzando il confronto sulla testa: cadono 8 controlli, fra cui il primo
+giro del caso I -- il blocco vero si comporta di nuovo come il 09/09, chiude il debito guardando la
+lista vecchia e il `Control.Move` non parte mai.
+
+`test_137.py` e' stato **tolto**: provava `paginator._note_head_change`, che non esiste piu'; il suo
+contenuto e' dentro il 216. `test_138.py` (la coda) e `test_163.py` sono stati adattati -- ora mettono
+le voci con `rehead_queue`, cioe' come ce le mette il suo committente vero, e il 163 pretende che
+`set_head` **non** accodi piu' niente. Suite: 34 su 38 (i quattro rossi sono `test_202..205`, che
+vogliono argomenti da riga di comando e fallivano identici prima).
+
+Diff dei simboli rispetto a HEAD: `paginator.py` perde esattamente `FIRSTURL_PROP` e
+`_note_head_change` e nient'altro; `service.py` e `continue_watching.py` non perdono niente.
+
+**La skin non e' stata toccata**: nessun `buildv` alzato, nessuna rigenerazione, nessun file generato
+sfiorato.
+
+### Costo, detto onestamente
+
+Nessun guadagno di prestazioni, e sarebbe disonesto venderlo come tale: a riposo il watcher fa una
+lettura di proprieta' in piu' per giro (mappa in memoria); le quattro letture vere si pagano solo nei
+pochi secondi in cui un debito e' aperto e la finestra e' a schermo.
+
+**Dove sta invece il tempo, misurato nello stesso log**: un solo film messo in pausa fa ricostruire
+'continua a guardare' **due volte** -- 21:23:05.955 e 21:23:09.846, 2283 ms + 1488 ms, di cui ~2,7 s di
+soli import -- per produrre due liste con la stessa firma `95a52b24`. Il rinvio del monitor Trakt
+riparte anche quando la ricostruzione che stava aspettando ha gia' incorporato quel titolo. Sono
+1,5-2,3 s di stick per evento: cinque ordini di grandezza piu' di qualunque cosa nel ciclo del watcher.
+**Prossimo lotto, separato da questo.**
+
+### Da provare sul dispositivo
+
+Film messo in pausa dal Mac con il fuoco su un'altra riga della Home. Atteso:
+
+```
+cw testa nuova key=home.501: riga riportata in cima (era 2)
+cw testa nuova key=home.501: in testa e ferma, debito chiuso
+```
+
+e il film nuovo come primo elemento, col fuoco rimasto dov'era. Poi il caso opposto: fuoco **dentro**
+la riga mentre arriva il titolo -- non deve muoversi niente, e deve riportarsi in testa appena si
+scende alla riga sotto. Terzo: la stessa cosa stando in un hub, e rientrare in Home.
+
+Niente consegnato: nessuna versione alzata, nessuno zip rigenerato, nessun commit, niente schierato
+sui dispositivi.
+
+## Lotto 212 -- La capacita' della linea non si misurava: si leggeva la lunghezza della finestra
+
+Il wizard di `line_speed` ha bisogno di un numero solo: **quanto la linea saprebbe consegnare**. Il
+lotto 197 lo ricavava dalla pendenza con cui la cache si riempie, su una finestra fissa di 20
+campioni. Contando quel valore su tutte le riproduzioni registrate:
+
+    8 volte  5.1 %/s
+    2 volte  5.0 %/s
+    2 volte  4.6 %/s   ...
+
+**5 %/s x 20 s = 100%**, cioe' il buffer intero. Ogni volta che la cache si riempiva dentro la
+finestra, quel numero misurava **la lunghezza della finestra** e non il collegamento. Dieci misure
+su ventisette erano la stessa costante travestita da misura.
+
+Su Angel Dust il conto vero era 9,1%/s -- riempimento da 8% a 99% in dieci secondi -- e la finestra
+dava 5,1: **capacita' registrata 15,1 Mbit/s contro 22,7 reali, -33%**.
+
+### Consegna e capacita' non sono la stessa cosa
+
+Per quasi tutta una riproduzione il player chiede solo cio' che consuma: buffer pieno, richieste
+rallentate, consegna = bitrate. In quel momento la consegna **non dice niente** sulla capacita'. Un
+buffer pieno significa che il collegamento e' fermo per scelta, non per incapacita'.
+
+La capacita' e' osservabile soltanto **mentre il buffer non e' pieno**, perche' li' Kodi tira quanto
+la linea concede. E li' vale una formula sola, che copre tre casi invece di uno:
+
+    capacita' = bitrate + (variazione del buffer in byte / tempo)
+
+| il buffer | significa | capacita' |
+|---|---|---|
+| **sale** | la linea da' piu' del film | bitrate + surplus |
+| **fermo** (sotto il tetto) | da' esattamente quanto il film consuma | **= bitrate, esatto** |
+| **cala** | non ce la fa | **< bitrate**, e sappiamo di quanto |
+
+Gli ultimi due il lotto 197 non li misurava affatto: `if _dt > 0 and _dl > 0` scartava pendenza zero
+e pendenza negativa. Su **33 riproduzioni riuscite, 9 non hanno prodotto nessuna misura**, e otto di
+quelle nove avevano la cache inchiodata vicino a zero -- cioe' erano le riproduzioni al limite, le
+uniche che dicono dove sta il limite. Misuravamo le facili e ignoravamo le difficili.
+
+### Cosa fa adesso
+
+Niente finestra fissa. Si misurano **TRATTI**: ogni sequenza di campioni consecutivi rimasti sotto
+`TETTO_CACHE = 90`, con i due estremi presi da campioni VERI e il tempo da `perf_counter`. Non si
+indovina dove il riempimento comincia o finisce -- si usano i campioni che ci sono, e l'unico errore
+che resta e' l'arrotondamento della percentuale: su un tratto da 90 punti vale l'1%.
+
+**Novanta e non cento**: vicino al tetto la percentuale si appiattisce perche' il buffer e' quasi
+sazio, e quell'ultimo tratto non descrive piu' la linea.
+
+**Quattro modi di spezzare un tratto**, e nessuno dei quattro e' "la linea e' lenta": il primo salto
+(cambia la fase), i salti successivi (una bandiera posata da `onPlayBackSeek` -- la sola guardia
+sulla fase non li vedeva, perche' dal secondo in poi la fase resta `_dopo`), il tetto raggiunto, e
+un crollo oltre 25 punti in un campione, che vale 6 MB in un secondo e nessuna linea lo produce.
+
+**Vince il tratto piu' LUNGO, non il piu' ripido.** Un tratto breve e ripido e' il picco che i lotti
+191, 193 e 197 hanno gia' preso per buono tre volte: descrive un istante, non cio' che regge un film.
+
+### Due colonne nuove: quanto e' solida la misura
+
+`portata_campioni` e `portata_punti` -- i campioni del tratto scelto e i punti percentuali coperti,
+negativi se la cache calava. Non sono contorno: sono cio' che distingue una misura su quaranta
+campioni e novanta punti da una tirata su cinque campioni e sei punti. Davanti al 5,1%/s costante non
+avevo modo di accorgermi che non era una misura, ed e' esattamente il dato che mancava.
+
+### La conservativita' che resta, e che e' voluta
+
+All'avvio la cache sta a zero per due o tre campioni prima di muoversi -- il collegamento che si
+apre -- e quei secondi entrano nel conto. Su Angel Dust il tratto misura **7,45%/s invece di 9,1**:
+-18%. Toglierli vorrebbe dire decidere quali campioni sono "veri", cioe' rimettere un'euristica
+dove questo lotto ne sta togliendo una; e non si potrebbe piu' distinguere la cache ferma a zero
+perche' la linea non ce la fa, che e' la misura piu' preziosa che abbiamo. Il numero registrato resta
+letteralmente vero -- *in undici secondi dalla prima immagine sono arrivati 26,8 MB* -- l'errore e'
+uniforme fra le riproduzioni e si assottiglia sui tratti lunghi, mentre quello della finestra fissa
+arrivava al -43% e non era nemmeno monotono.
+
+### Le misure vecchie si buttano
+
+Una volta sola, dentro `migrate_playback_schema`. Non e' una colonna aggiunta a righe ancora valide:
+cambia il modo in cui e' stata prodotta la colonna centrale. Il dato per ricalcolarle non c'e' nella
+riga -- servirebbe la sequenza dei campioni, che non salviamo -- quindi mescolarle alle misure nuove
+le sporcherebbe senza che nessuno possa piu' distinguerle. La lista nera (`sorgenti_bocciate`) **non
+si tocca**: e' un'altra tabella e un altro tipo di dato.
+
+### Le colonne inutili: nessuna, e l'ho verificato invece di dirlo
+
+    colonna                  piene    distinti
+    cdn                      39/39    4          <- quattro nodi diversi, non uno
+    portata_dopo              9/39    9
+    cache_max_dopo           11/39    3
+    larghezza/altezza/codec  38/39    7/13/4
+    dimensione_dichiarata    36/39   30
+    pacchetto                12/39    1          <- sempre 'season'
+
+L'unica candidata e' `pacchetto`, che porta un bit solo ("era un pacchetto") ed e' NULL altrimenti.
+Toglierla costerebbe una migrazione per guadagnare niente, e serve a leggere
+`dimensione_dichiarata` insieme a `provider`. Che poi e' la colonna che continua a guadagnarsi il
+posto: ha appena mostrato Angel Dust dichiarato **+340%** (torrent di una cartella DVD, film, quindi
+fuori dalla correzione del lotto 207) e i tre SpongeBob a **+734,9%**. E' la sola sentinella che
+farebbe vedere una regressione del 207.
+
+### Verifica
+
+`test_212.py`, **35 asserzioni, tutte OK**. Il campionatore vero si estrae con ast ed esegue su
+tracce costruite a mano con un orologio finto -- fra cui la traccia REALE di Angel Dust presa dal log
+del 09/09. Le costanti si leggono dal sorgente, non si ripetono nella prova. C'e' anche una
+reimplementazione della vecchia formula, per far vedere fianco a fianco che dava 5,2 dove la nuova
+da' 7,5.
+
+**La prova ha trovato un difetto mio**: `_tratto_fase` non veniva inizializzata al primo campione.
+Restava assente fino al primo salto, e in quel momento si leggeva gia' come `_dopo`: il tratto
+iniziale -- tutto roba di PRIMA -- veniva chiuso nella fase sbagliata, la misura principale spariva e
+quella secondaria ereditava numeri non suoi. Senza il caso del salto nel test sarebbe passato.
+
+Simboli di `player.py` +1 (`_chiudi_tratto`), **PERSI: nessuno**. `compileall` pulito su tutta la
+lib. `test_202`/`203`/`204`/`205` erano gia' rotti prima -- vogliono percorsi su `sys.argv` e un
+modulo `campioni` che non e' piu' sul disco.
+
+## Lotto 213 -- Guardare prima, e piu' fitto solo dove serve
+
+Prova sul campo del lotto 212: migrazione applicata, tabella svuotata, **4 riproduzioni -> 4 righe,
+niente perso**, colonne nuove popolate. E una riga che vale il lotto intero:
+
+    id 40  La Mummia  bitrate  9.75  capacita' NULL   (nessun tratto valido)
+
+Dove non c'era niente da misurare adesso scrive **NULL**. Prima avrebbe scritto 5,1%/s.
+
+Inatteso e buono: `portata_dopo` finalmente si popola e **concorda** con `portata_prima` -- 33,1
+contro 31,2 sulla stessa riproduzione. Primo indizio vero che il cdn NON consegna meno dopo un salto,
+domanda aperta dal lotto 197.
+
+### Ma i tratti erano di cinque campioni
+
+    La Mummia:       livello  72-89-99-99-99...     <- il PRIMO campione e' gia' al 72%
+    The Last House:  livello  30-44-52-64-70-80-98-99...
+
+Il buffer si riempie **prima che l'immagine compaia**:
+
+    01:54:28.743  Player.OnPlay        il file si apre, la cache comincia a riempirsi
+                  <-- 4,36 secondi in cui nessuno guarda -->
+    01:54:33.106  Player.OnAVStart
+    01:54:33.9    primo campione: 72%  <- 17,3 MB su 24 gia' arrivati
+
+Su un collegamento piu' veloce dei file (30-40 Mbit/s contro 10-12), guardare una volta al secondo a
+partire da OnAVStart significa arrivare a riempimento quasi finito. Tratti di 5, 6, 7 campioni, e uno
+che non e' uscito affatto -- salvato solo dal riempimento dopo il salto, che invece parte da zero col
+campionamento gia' in corso e ha dato **8 campioni, +79 punti**.
+
+### Due correzioni, e la prima e' gratis
+
+**1. Si campiona gia' fra `play()` e `OnAVStart`.** Quel ciclo esisteva gia' e passava sessanta giri
+da 50 ms a guardare una bandiera:
+
+    while not self._av_started and _atteso < 3.0 and self.isPlayingVideo():
+        sleep(50)
+
+Sono esattamente i secondi in cui il buffer si riempie. Il thread gira comunque: leggere la cache
+ogni 250 ms li' dentro non costa un giro in piu' ed e' l'unico modo di vedere il riempimento invece
+della sua coda.
+
+**2. Si campiona ogni 250 ms finche' serve.** Era la proposta dell'utente due lotti fa. L'avevo
+respinta calcolando che a 1 Hz l'errore fosse del 2% -- e quel conto valeva per un riempimento da
+dieci secondi. Questi durano quattro secondi e li prendiamo a meta': l'obiezione non reggeva.
+
+`_attesa_campionata()` sostituisce `sleep(1000)`: dorme lo stesso secondo, ma in quattro quarti, e
+nei primi tre guarda la cache. L'ultimo no -- subito dopo tocca a `_campiona_cache`, che legge
+comunque.
+
+**Solo dove serve**, e sono due condizioni: finche' il buffer ha spazio (`_tetto_raggiunto`) e finche'
+il tratto e' corto (`CAMPIONI_FITTI = 40`, cioe' una decina di secondi). A regime si torna a un giro
+al secondo. Su una riproduzione che non riempie mai il buffer -- proprio quelle che vogliamo
+misurare -- il fitto si spegne da solo dopo i primi quaranta campioni, e non resta acceso per tutto
+il film contendendo il lock grafico proprio quando la macchina fatica.
+
+### Due campionatori separati, e la separazione e' il punto
+
+`_campiona_cache` **resta a un giro al secondo**, e possiede le statistiche: `campioni`,
+`secondi_a_zero`, medie e massimi. Quei nomi dicono *secondi*: farla girare quattro volte al secondo
+cambierebbe il significato di quattro colonne senza che nessuno se ne accorga. `_campiona_capacita`
+e' una lettura in piu' che alimenta **solo** il tratto, che di suo non ha nessuna unita' di tempo
+implicita -- piu' campioni sono solo piu' risoluzione.
+
+E una condizione nuova: `MIN_SECONDI_TRATTO = 3.0`. Il minimo in CAMPIONI da solo non basta piu': a
+250 ms cinque campioni sono un secondo e un quarto. Le due condizioni misurano cose diverse -- quanti
+punti abbiamo letto e per quanto tempo -- e servono entrambe.
+
+### Verifica
+
+`test_212.py` esteso a **50 asserzioni, tutte OK**. Il blocco nuovo esegue la traccia vera del 10/09
+a 1 Hz (nessuna misura, come sul campo) e la stessa a 250 ms (**17 campioni, 90 punti**), prova
+`_fitto_utile` ai quattro confini, e verifica che `_attesa_campionata` dorma comunque 1000 ms in
+quattro giri campionando tre volte -- e zero volte quando la cache e' al tetto. L'orologio e il
+`sleep` sono finti, quindi la prova misura il comportamento e non il tempo di parete.
+
+Simboli di `player.py` +4 (`_campiona_capacita`, `_fitto_utile`, `_attesa_campionata`,
+`_tratto_campiona`), **PERSI: nessuno**.
+
+### Nota per la raccolta
+
+Le quattro righe non discriminano niente: margini 2,45-3,29, cache a 99 per tutta la durata, zeri di
+1-3 secondi. Tutte facili. Un dataset di sole riproduzioni facili dice al wizard "almeno 30 Mbit/s" e
+nient'altro. Le righe che fisseranno la soglia sono quelle in cui il collegamento fatica -- che sono
+anche le meglio misurate, perche' li' la cache resta sotto il tetto a lungo. La qualita' della misura
+e' inversamente proporzionale alla capacita', ed e' il verso giusto.
+
+## Lotto 214 -- Un tratto senza capienza non e' una misura
+
+Tre riproduzioni pesanti del 10/09 (02:35, 02:42, 02:48) hanno confermato che la macchina del lotto
+213 funziona: i campioni per tratto sono passati da **5-7 a 25-31** e i punti da 50-67 a **73-86**,
+con le tre misure prese a 3,96-4,03 Hz esatti. Ma rigiocando le tracce vere dentro il campionatore
+estratto da `player.py` e' saltato fuori un difetto della **regola di scelta**, non della misura.
+
+### Il difetto
+
+Alle 02:43:44, a meta' di *Ready or Not*, la cache e' scesa a 65 e ha impiegato sette secondi a
+risalire: `82-70-65-69-76-79-87-96`. E' un tratto sotto il tetto, quindi valido, e a 250 ms vale
+**circa 28 campioni** -- esattamente quanti ne aveva il riempimento iniziale. Il lotto 213 sceglieva
+il piu' lungo, quindi la portata di quel film e' stata decisa da un pareggio:
+
+| tratto | campioni | punti | portata |
+|---|---|---|---|
+| riempimento iniziale | 28 | +73 | **39,8 Mbit/s** |
+| tuffo di meta' film | ~28 | +1 | **20,1 Mbit/s** |
+
+Rigiocato con tre secondi di tuffo in piu', il campionatore vero registra 20,1 invece di 39,8. **La
+portata si dimezza senza che la linea sia cambiata di niente.**
+
+E il verso dell'errore non e' casuale, e' strutturale. La pendenza di un tratto e' limitata dallo
+spazio che ha sopra di se': un tratto che parte da 82 ha otto punti prima del tetto, quindi non
+**puo'** scrivere piu' di otto punti per quanto veloce sia la linea. Se la linea fosse velocissima
+quel tratto finirebbe in un secondo e cadrebbe sotto il minimo dei tre secondi; se sopravvive, e'
+perche' e' lento. Un tratto senza capienza dice sempre "linea al minimo", qualunque sia la linea.
+"Vince il piu' lungo" premiava quindi per costruzione proprio i tratti che non possono dire altro:
+una polarizzazione sistematica verso il basso, che e' l'opposto di quello che serve a un wizard.
+
+### La regola, in due pezzi che fanno due lavori
+
+	CAPIENZA_MINIMA = 40
+
+**La capienza squalifica**: `if TETTO_CACHE - _t[0][1] < CAPIENZA_MINIMA: return`. Quaranta punti
+sono cio' che serve per poter scrivere, nei tre secondi minimi, anche la linea piu' veloce mai
+misurata (~13%/s = 25 Mbit/s di surplus). Sotto quella soglia il numero non e' una misura e non
+concorre. **Fra i capienti sceglie la lunghezza**, ed e' la regola del lotto 212, che resta intatta:
+il piu' lungo, non il piu' ripido.
+
+La separazione fra i due pezzi e' il punto. Il primo tentativo -- "vince chi parte piu' in basso" --
+faceva squalificare e scegliere allo stesso criterio, e infatti ha rotto due blocchi di `test_212`
+che il lotto 212 aveva scritto apposta: davanti a un tratto breve e ripido che parte da 0 e a uno
+lungo e mite che parte da 8, sceglieva il picco. Sono stati quei due blocchi a dire che la capienza
+puo' solo escludere, mai preferire.
+
+Se nessun tratto e' capiente non si registra niente. Un buco e' onesto: vuol dire che quella
+riproduzione non ha mai offerto una finestra in cui la linea potesse dire quanto vale, ed e' molto
+meglio di un 20 falso in mezzo a un dataset che deve fissare una soglia.
+
+### Verifica
+
+`test_212.py` a **63 asserzioni, tutte OK** (era 50). Il blocco nuovo rigioca le tracce vere del
+10/09 02:42 a 250 ms: il riempimento da solo (+8,11%/s, 73 punti), il tuffo da solo e la sua versione
+allungata (**entrambi squalificati, `None`**), la riproduzione intera con e senza il tuffo lungo
+(**vince il riempimento in tutti e due i casi**). E il caso opposto: un crollo del buffer a zero a
+meta' film **non** e' squalificato -- ha tutta la capienza davanti -- e se e' la finestra piu'
+osservata batte il riempimento, perche' li' la linea magra e' la verita' del film.
+
+I due blocchi del lotto 212 sulla scelta per lunghezza passano **senza modifiche**, ed e' la prova
+che la regola vecchia non e' stata sostituita ma solo preceduta da un filtro.
+
+`compileall` pulito sull'intera lib, suite 34/38 (i 4 falliti sono i preesistenti 202-205).
+Simboli di `player.py` invariati a 53, **PERSI: nessuno**.
+
+### Le tre righe di stanotte restano buone
+
+Nessuna delle tre e' stata decisa da un tratto senza capienza: i riempimenti partivano da 16, 3 e 7.
+Con la regola nuova darebbero gli stessi numeri. Non c'e' database da ripulire.
+
+---
+
+## Lotto 217 -- Il menu contestuale di Sinners si chiamava La Mummia
+
+Segnalazione: *"aprendo il menu contestuale di sinners mi compare quello della mummia"*. Stick, log
+delle 03:29 del 10/09. Non e' una ricaduta del lotto 214: quello riguardava le finestre dove
+`base_label` non veniva scritta da nessuno, questa e' una finestra a widget, dove viene scritta ma
+smette di essere vera.
+
+### Il log dice tutto, e in due righe dice anche l'ora
+
+`CPlayerCoreFactory::GetPlayers(<url>)` viene loggata all'apertura del menu contestuale e **nomina
+l'elemento su cui il menu si apre**. E' la verita' di riferimento contro cui misurare la skin.
+
+```
+03:26:24.148  ContextMenu, window 11101   -> tmdb_id=1304313      <- elemento 6 di 1101.502
+03:26:25.8    playback_choice&meta=1304313
+03:26:29.4    DEBRID TorBox CACHED: "Lee.Cronins.The.Mummy.2026..."   <- 1304313 = La Mummia
+03:26:43.7    OnPlayBackStarted        ...        03:29:15.6  OnPlayBackStopped
+03:29:16.192  Window Init (Custom_1101_Hub.xml)                  <- si rientra, fuoco ancora su 6/58
+03:29:16.533  CDirectoryProvider[...pgctl=1101.502...]: refreshing   -> consegnato 03:29:18.165
+03:29:20.378  CDirectoryProvider[...pgctl=1101.502...]: refreshing   -> consegnato 03:29:21.593
+03:29:20.581  right -> current=7/58 |
+03:29:21.030  right -> current=8/58 |   TUTTI E TRE DENTRO LA SECONDA RICOSTRUZIONE
+03:29:21.245  right -> current=9/58 |
+03:29:22.397  ContextMenu, window 11101   -> tmdb_id=1233413      <- Sinners
+```
+
+**Il menu di Kodi era giusto**: alla scelta e' partito `playback_choice&meta=1233413`, cioe' Sinners.
+Sbagliata era solo l'intestazione della skin, ferma su La Mummia -- che e' l'ultimo valore scritto
+con successo, alle 03:26:24, **prima della riproduzione**.
+
+### Perche' nessuno l'ha riscritta
+
+`base_label`/`base_poster` le scrive un solo posto: l'`onfocus` del pulsante nascosto dentro il
+`focusedlayout` della riga widget ([Includes_Lists.xml:671](skin.arctic.fuse.3/1080i/Includes_Lists.xml#L671)).
+E' un trigger **sul fronte**: scatta quando il fuoco si muove. Due cose lo scavalcano:
+
+1. **sotto un fuoco fermo l'elemento cambia lo stesso**, perche' il contenitore si ricostruisce. Qui
+   e' successo due volte in cinque secondi (il `set_bookmark` del film appena visto, poi il
+   `continue_watching` di Trakt). Nessun fronte, nessuna scrittura.
+2. l'`onfocus` e' guardato da `!String.IsEmpty(ListItem.Label)`, messo il 03/09 per non pubblicare il
+   vuoto di meta' ricostruzione. E' giusto -- senza, l'intestazione restava senza nome -- ma vuol dire
+   che **durante** una ricostruzione anche gli spostamenti veri del fuoco non scrivono. I tre Destra
+   stanno esattamente li' dentro.
+
+Atterrata la ricostruzione, il fuoco non si muove piu': non c'e' un altro fronte, e la guardia ha
+protetto per sempre un valore vecchio. Verificato che il pubblicatore ci sia davvero, prima di
+accusarlo: il file generato **sulla stick** (`script-skinvariables-generator-includes-.xml`, tirato
+via adb) monta il widget 502 dell'hub 1101 con `Widget_Row`, che passa `hidden_button_enabled=true`.
+Il meccanismo c'e' e in condizioni normali funziona -- ed e' per questo che scorrendo si vede giusto.
+
+### La correzione: chi segue il fuoco a livello lo segue anche per il menu
+
+Il rimedio storico era il ciclo di `blur_service`, che rileggeva l'elemento dal vivo ogni 0,3 s.
+**Non lo si riaccende**: quel ciclo e' l'unico elemento presente in ogni crash da avvio catturato
+(lotto 48). Ma un ciclo che segue il fuoco a livello, giro per giro, c'e' gia' ed e' vivo:
+`WidgetPaginator`. Sa gia' quale contenitore ha il fuoco (`fenlight.active_widget`, poi
+`System.CurrentControlID`), gira a 0,3 s, e **si ferma da solo quando si apre un dialogo modale**
+(`watcher idle (modal dialog open)`) -- quindi all'apertura del menu contestuale il valore pubblicato
+all'ultimo giro utile e' proprio quello dell'elemento giusto.
+
+Sei righe, subito dopo la risoluzione di `widget_id`:
+
+```python
+base_label = get_infolabel('Container(%s).ListItem.Label' % widget_id)
+if base_label and base_label != window.getProperty('TMDbHelper.ListItem.base_label'):
+    base_poster = get_infolabel('Container(%s).ListItem.Art(poster)' % widget_id) \
+                    or get_infolabel('Container(%s).ListItem.Art(tvshow.poster)' % widget_id)
+    window.setProperty('TMDbHelper.ListItem.base_label', base_label)
+    if base_poster: window.setProperty('TMDbHelper.ListItem.base_poster', base_poster)
+    else: window.clearProperty('TMDbHelper.ListItem.base_poster')
+```
+
+Tre scelte che non sono di stile:
+
+- **il confronto e' col valore ATTUALE della proprieta'**, non con una variabile locale. Cosi' la
+  scrittura *ripristina* anche quando l'onfocus della skin ha azzerato (ri-fuoco a menu chiuso, con
+  l'elemento vuoto per un istante). Una variabile locale crederebbe di aver gia' pubblicato.
+- **poster e label si scrivono insieme, seguendo l'identita' dell'elemento**, e se il nuovo elemento
+  non ha poster la proprieta' si **cancella**. Lasciarla sarebbe lo stesso difetto sull'immagine
+  invece che sul nome: e' l'errore che `blur_service` faceva (li' il caso senza poster era lasciato
+  all'onfocus).
+- **sta dove `widget_id` e' gia' risolto**, quindi vale per qualunque widget Fen Light a fuoco, anche
+  senza chiave di paginazione.
+
+Costo: una `getInfoLabel` per giro su un ciclo che ne fa gia' una dozzina, piu' una o due solo quando
+l'elemento cambia davvero. Nessun thread nuovo, nessun import nuovo, niente Pillow.
+
+La guardia della skin **resta**: e' corretta, e adesso ha chi ripara quello che lei giustamente salta.
+E' la regola gia' in memoria -- se un guasto torna nello stesso punto manca un dato, non una guardia.
+
+### Il limite, dichiarato
+
+Il pubblicatore vive dentro `WidgetPaginator`, che idla del tutto se
+`fenlight.paginate.interactive` e' su false. Con la paginazione interattiva spenta si torna al solo
+`onfocus`, cioe' al comportamento di oggi: degrada, non si rompe. E copre i widget **Fen Light**; un
+widget di un altro addon in un hub resta all'onfocus.
+
+### Da provare sul dispositivo
+
+Rifare la sequenza esatta: riprodurre un film da un widget dell'hub, tornare indietro, scorrere di
+qualche posizione mentre il widget si ricostruisce, aprire il menu contestuale. L'intestazione deve
+essere quella dell'elemento a fuoco. Nel log si incrociano `GetPlayers(...tmdb_id=X)` all'apertura del
+menu e l'ultimo `watcher id=N ... current=M` prima di essa.
+
+Niente consegnato: `plugin.video.fenlight/addon.xml` non e' stato alzato, nessuno zip, nessun commit.
+
+## Lotto 215 -- Una coppia campioni/punti per ogni misura, non per la prima soltanto
+
+Le tre riproduzioni remux del 10/09 hanno dato al dataset le sue righe migliori, e proprio li' e'
+saltato fuori che una di quelle misure arrivava al wizard **senza peso**.
+
+`registra()` scriveva `portata_prima` e `portata_dopo`, ma per il peso passava
+`_tratto_campioni_prima` e `_tratto_punti_prima` a due colonne senza suffisso. Finche' una
+riproduzione aveva entrambe le misure il difetto non si vedeva: la riga aveva un numero di campioni
+plausibile e nessuno guardava a quale delle due si riferisse.
+
+Su **Boogie Nights** si e' visto. Prima del salto non c'era nessun tratto valido (cache a 99 per
+tutta la prima parte, `non misurabile`); dopo il salto il buffer e' ripartito da zero e ha prodotto
+un tratto da **76 campioni su 84 punti in 46,7 secondi** -- la seconda misura piu' solida
+dell'archivio. In tabella e' finita cosi':
+
+	portata_prima  NULL
+	portata_dopo   31.8
+	portata_campioni  NULL      <- descriveva la misura che non c'era
+	portata_punti     NULL
+
+Il wizard, che deve pesare le righe o scartare quelle deboli, avrebbe buttato la misura piu' forte
+che avevamo. E il verso dell'errore e' sistematico, non casuale: **le misure dopo il salto sono in
+media le migliori**, perche' il buffer riparte da zero e ha tutti i novanta punti di capienza
+davanti, mentre il riempimento iniziale su una linea larga finisce in sette secondi.
+
+### Le colonne
+
+	portata_campioni_dopo integer
+	portata_punti_dopo    integer
+
+La coppia senza suffisso **non si rinomina**: descriveva gia' `portata_prima` e rinominarla
+richiederebbe `ALTER TABLE ... RENAME COLUMN`, che vuole SQLite 3.25+ e non e' garantito sul
+dispositivo. Le sei righe raccolte valgono piu' della simmetria dei nomi, quindi la coppia vecchia
+resta com'e' e il commento nello schema dice a cosa si riferisce.
+
+La DELETE una-tantum del lotto 212 **resta condizionata a `'portata_campioni' in aggiunte`**: su un
+dispositivo che quella colonna ce l'ha gia' non scatta, e le righe sopravvivono alla migrazione.
+
+Nel log, accanto a ogni portata ora c'e' il suo peso: `portata prima 37.9 (51 campioni) dopo 38.3
+(78 campioni)`. Serve a poter leggere una riproduzione dal log senza aprire il database -- 37,9 su 51
+campioni e 37,9 su cinque non sono lo stesso numero.
+
+### Verifica
+
+`tests/test_215.py`, **23 asserzioni, tutte OK**. Non cerca stringhe: estrae la `CREATE TABLE` vera
+da `table_creators`, costruisce il database in memoria, esegue il modulo `playback_stats` vero
+privato dei suoi import (con `connect_database` fornita dalla prova) e ci scrive attraverso la
+`registra()` di produzione. Poi rilegge. I due casi provati sono quelli reali: la riga di Boogie
+Nights (solo `_dopo`, con peso 76/84 e la coppia `prima` a NULL) e quella di The Bride (entrambe,
+51/35 e 78/88, distinte). Il blocco 5 apre `player.py` e verifica che `portata_campioni_dopo` legga
+`_tratto_campioni_dopo` e **non** contenga `_prima` -- che era esattamente il difetto.
+
+`compileall` pulito, suite **35/39** (i 4 falliti sono i preesistenti 202-205). Simboli di
+`player.py` 53 -> 54 (`_con_peso`), **PERSI: nessuno**.
+
+## Lotto 216 -- La capienza censura chi ti sbarra la strada, non chi ti sta alle spalle
+
+Verifica richiesta sugli strumenti di misura, dopo quattro riproduzioni nuove. **Trovato un difetto
+mio, del lotto 214**, e un limite di fondo che resta aperto.
+
+### Il difetto
+
+**The Mandalorian and Grogu**, 10/09: remux da 43,12 Mbit/s, 413 campioni, cache media 37%, **109
+secondi consecutivi a zero**. In archivio la riga e' uscita con `portata prima n.d. dopo n.d.`, e il
+log diceva:
+
+	capacita prima del salto | non misurabile: nessun tratto di almeno 5 campioni sotto il 90%
+
+Era **falso**: di campioni sotto il 90 ce n'erano 283. Rigiocando la traccia vera dentro il
+campionatore estratto da `player.py`, con `_chiudi_tratto` strumentata per dire il motivo di ogni
+scarto, e' venuto fuori questo:
+
+	265 campioni,  264.0 s, da 79 a 33  ->  CAPIENZA: parte da 79, spazio 11 < 40
+
+**Il tratto piu' lungo mai osservato** -- 265 campioni su 264 secondi, cinque volte piu' lungo della
+migliore misura in archivio -- buttato dal controllo di capienza del lotto 214.
+
+Il ragionamento del 214 era: un tratto che parte da 79 ha undici punti prima del tetto, quindi non
+puo' scrivere una linea veloce. Vero **per un tratto che sale**. Quel tratto pero' **scendeva**, e si
+allontanava dal tetto: aveva davanti a se' tutti i settantanove punti di discesa. Il tetto non lo ha
+mai toccato e non lo avrebbe mai potuto troncare.
+
+La correzione e' di una parola: la capienza si controlla **solo sui tratti che il tetto ha davvero
+chiuso**.
+
+	if tetto and TETTO_CACHE - _t[0][1] < CAPIENZA_MINIMA: return
+
+`_tratto_campiona` passa ora a `_chiudi_tratto` se la chiusura e' venuta dal superamento del tetto o
+da altro (salto, crollo brusco, fine riproduzione). Verificato sulle tracce vere: The Mandalorian
+recupera il tratto da 265 campioni, **Devil Wears Prada non cambia di un decimale** (41,0 Mbit/s su
+52 campioni, prima e dopo la correzione).
+
+### Il limite che resta aperto: il pavimento
+
+A cache **zero** il buffer non puo' scendere oltre. Smette di registrare il deficit, dB/dt va a zero
+e la formula legge "capacita' = bitrate" mentre la verita' e' "capacita' MINORE del bitrate, di
+quanto non si sa". **E' la stessa censura del tetto, specchiata**, e nessun lotto la guarda.
+
+Su The Mandalorian, 207 dei 265 campioni erano a zero: la portata che ne esce, 42,8 Mbit/s, e' un
+**limite superiore**, non una misura -- e per giunta e' il numero costruito sul maggior numero di
+campioni dell'intero archivio, quindi qualunque pesatura ingenua lo prenderebbe per il piu'
+affidabile di tutti.
+
+Ho provato a chiuderlo nel modo ovvio -- **escludere gli zeri dalla banda, come si escludono i
+campioni sopra il tetto** -- e la prova sulle tracce vere ha detto di no:
+
+| | adesso | escludendo il pavimento |
+|---|---|---|
+| The Mandalorian | n.d. | **7,6** Mbit/s (5 campioni) |
+| Devil Wears Prada | 41,0 (52 campioni) | 48,6 (16 campioni) |
+
+Escludere gli zeri **frammenta** le finestre lunghe, e "vince il piu' lungo" si ritrova a scegliere
+fra transitori: il crollo del buffer in cinque secondi diventa "la linea fa 7,6 Mbit/s". Anche la
+seconda idea -- scartare i tratti con troppi campioni a zero -- e' stata scartata dai numeri: uccide
+la misura eccellente di Devil Wears Prada, dove i 28 zeri sono il **punto di partenza di una
+risalita**, non fame.
+
+**Quindi il pavimento non si chiude nel livello di misura, e la decisione passa al wizard.** La
+separazione e' quella giusta: il campionatore registra onestamente cio' che il buffer ha fatto, il
+wizard decide quali righe sono prova di capacita' e quali sono prova di fallimento. Il dato per
+farlo c'e' gia' ed e' `secondi_a_zero`.
+
+**Regola per il wizard, da non dimenticare**: una riga con `secondi_a_zero` alto NON entra nel
+percentile della capacita'. Entra come **tetto**: "a questo bitrate la linea non ce la fa". The
+Mandalorian, 43,12 Mbit/s con 109 secondi a zero, e' la riga piu' preziosa dell'archivio proprio
+perche' e' l'unica che mostri un fallimento, e da sola dice piu' di dieci riproduzioni facili.
+
+### Il messaggio di log diceva il falso
+
+Riscritto: adesso distingue "il buffer e' rimasto a zero fino a N s di fila" da "nessun tratto
+abbastanza lungo o abbastanza capiente". Un log che dichiara una causa sbagliata e' peggio di un log
+muto, perche' chiude l'indagine invece di aprirla -- e questo l'aveva chiusa.
+
+### Verifica
+
+`test_212.py` a **70 asserzioni, tutte OK** (era 63). Il blocco nuovo prova i tre casi che devono
+restare distinti: un tratto che scende da 79 viene misurato (59 campioni, -58 punti); il tuffo che
+risale dentro il tetto resta squalificato; il riempimento da zero resta buono.
+
+`compileall` pulito, suite **35/39** (i 4 preesistenti 202-205). Simboli di `player.py` invariati a
+54, **PERSI: nessuno**.
+
+## Lotto 217 -- La banda utile ha due bordi, non uno
+
+Il lotto 216 lasciava aperto il pavimento e proponeva di chiuderlo nel wizard, con una quota su
+`secondi_a_zero`. **La quota era la forma sbagliata**, e i dati veri l'hanno detto prima che
+diventasse codice: misurando la frazione di campioni a zero dentro il tratto vincente,
+
+	The Mandalorian     265 campioni, 206 a zero = 77,7%
+	Devil Wears Prada    52 campioni,  26 a zero = 50,0%
+
+qualunque soglia fra un terzo e la meta' avrebbe bocciato tutte e due. Ma Devil Wears Prada non e'
+fame: quei 26 zeri sono il punto da cui la risalita PARTE, e la risalita c'e' stata. Non si separano
+con una soglia perche' non differiscono per quantita'.
+
+### Il difetto vero, e stava nel campionatore
+
+La capacita' si misura come `bitrate + variazione del buffer nel tempo`, e la formula vale finche'
+il buffer e' libero di muoversi. I bordi dove non lo e' sono **due**:
+
+- **sopra il tetto** Kodi si strozza da solo -- guardato dal lotto 197 in poi;
+- **a zero** il buffer non puo' SCENDERE oltre. Smette di registrare il deficit, dB/dt va a zero e
+  il conto legge "capacita' = bitrate" mentre la verita' e' "capacita' MINORE del bitrate, di
+  quanto non si sa". **Mai guardato.**
+
+E' la stessa censura, specchiata. La correzione e' una riga -- i campioni a zero escono dalla banda
+esattamente come quelli sopra il tetto:
+
+	_fuori = _liv > TETTO_CACHE or _liv <= 0
+
+Sulle tracce vere del 10/09:
+
+| | prima | dopo |
+|---|---|---|
+| The Mandalorian | 42,8 Mbit/s (265 campioni, **206 a zero**) | **43,2** (44 campioni, 0 a zero) |
+| Devil Wears Prada | 41,0 (52 campioni, **26 a zero**) | **47,3** (18 campioni, 0 a zero) |
+
+E il numero di Mandalorian e' quello giusto e finalmente leggibile: **43,2 Mbit/s contro un bitrate
+di 43,12**, cioe' margine 1,00. La linea consegnava esattamente quanto il film chiedeva, non un bit
+di piu' -- ed e' per questo che il buffer, una volta svuotato, non e' mai piu' risalito e il film e'
+rimasto senza riserva per 109 secondi. Prima questa riga diceva 42,8 su 265 campioni: il numero piu'
+"solido" dell'archivio, costruito per tre quarti su un buffer che non poteva muoversi.
+
+**Al primo tentativo avevo scartato questa stessa idea** (lotto 216, tabella "escludendo il
+pavimento": Mandalorian a 7,6 Mbit/s su 5 campioni). Era colpa di una regola di capienza dal basso
+che avevo aggiunto insieme all'esclusione: bocciava i tratti che ripartono da 1, cioe' tutti quelli
+buoni, lasciando vincere il crollo di cinque secondi. Tolta quella, l'esclusione da sola fa
+esattamente il suo mestiere. La lezione e' che l'esperimento aveva due variabili e ne ho incolpata
+la sbagliata.
+
+### Dove il lotto 212 si sbagliava, e lo dichiarava
+
+`test_212` conteneva questa asserzione, con tanto di commento che la spiegava:
+
+	att('cache a zero per tutta la riproduzione: misurata, non scartata', pend, 0.0)
+
+Il ragionamento era: buffer fermo sotto il tetto -> la linea da' esattamente il bitrate -> misura
+perfetta. **Vale per un buffer fermo dentro la banda, non per uno fermo sul pavimento.** A zero la
+pendenza nulla non dice "esattamente il bitrate": dice "il bitrate O MENO, e quanto meno non si
+vede". Adesso quel caso vale `None`, e accanto c'e' il controcaso -- cache ferma a 1%, dentro la
+banda -- che resta la misura esatta che era.
+
+Stessa sorte per i tre secondi a zero iniziali di Angel Dust, che il lotto 212 teneva nel conto di
+proposito ("il numero e' conservativo e lo sappiamo"): erano conservativi per il verso sbagliato,
+perche' in quei tre secondi il collegamento si apriva e il player non consumava. Non erano tre
+secondi di linea lenta, erano tre secondi in cui la formula non valeva.
+
+### La regola, in codice
+
+Chiuso il bordo nel campionatore, al wizard non serve piu' separare misure buone da contaminate:
+arrivano pulite. Restano in `playback_stats.py` tre funzioni, che sono la regola vera:
+
+- `portata_contaminata(riga)` -- **invariante**, non dato da interpretare: `portata_zeri` **deve**
+  valere zero. Se un giorno non lo fosse, la guardia sul pavimento si e' rotta e le portate di quel
+  periodo non sono misure. Una guardia che nessuno controlla non e' una guardia.
+- `misure_di_capacita(righe)` -- le portate utilizzabili: esito NULL e non contaminate.
+- `margine(riga)` -- `portata / bitrate`, e prende la portata **peggiore** della riga. E' il numero
+  su cui il wizard decide: 43 Mbit/s non dicono niente finche' non si sa che il film ne chiedeva 43.
+
+Due colonne nuove, `portata_zeri` e `portata_zeri_dopo`, che il campionatore calcolava gia' dentro
+`_chiudi_tratto` e buttava via.
+
+### Verifica
+
+`test_212.py` **71/71**, `test_215.py` **42/42** (era 23). Il blocco nuovo di 215 esegue le funzioni
+vere sulle righe vere del 10/09: Mandalorian esce con margine **1,00**, Prada con **1,25**, la riga
+guasta e quella con la guardia rotta sono escluse dalle misure, e una riga pre-217 con
+`portata_zeri` NULL non viene trattata come contaminata -- e' assenza del dato, non contaminazione.
+
+`compileall` pulito, suite **35/39** (i 4 preesistenti 202-205). Simboli di `player.py` invariati a
+54, **PERSI: nessuno**.
+
+### Le quattordici righe in archivio
+
+Restano, ma sono di **annata mista**: quelle prima del 217 hanno la portata calcolata includendo i
+campioni sul pavimento. Le facili (margine sopra 2) sono praticamente identiche, perche' non hanno
+quasi zeri. Le tre remux vanno rilette con le misure nuove.
+
+## Lotto 218 -- Il pavimento non e' lo zero, e in taratura l'archivio si rifa'
+
+Due difetti trovati verificando le tre riproduzioni del 10/09 notte, con la stessa radice.
+
+### Il buffer era vuoto per 42 secondi e ne registravamo 7
+
+**28 Years Later**, remux da 45,53 Mbit/s. I primi quaranta secondi della traccia:
+
+	0 0 0 0 0 0 0 1 0 0 0 1 1 0 0 0 1 0 1 0 0 0 0 0 0 0 1 0 ...
+
+Il buffer era a terra. Ma `secondi_a_zero` contava le sequenze di zeri **esatti**, e quegli 1%
+sparsi le spezzavano:
+
+| soglia | sequenza consecutiva piu' lunga |
+|---|---|
+| cache <= 0% | **7** -- e' cio' che registravamo |
+| cache <= 1% | **42** |
+| cache <= 2% | 42 |
+
+Un fattore sei sulla colonna che il lotto 217 aveva appena indicato al wizard come il segnale di
+fame. Finche' era un numero di contorno non faceva danno; da quel lotto in poi si'.
+
+La stessa soglia sbagliata era nella guardia sul pavimento: `_liv <= 0` lasciava entrare in banda un
+campione all'1%. Ma **l'1% di 24 MB sono 245 KB**, cioe' quattro centesimi di secondo di un film da
+45 Mbit/s: vuoto quanto lo zero, e la formula li' non vale piu' di quanto valga a zero. Quegli 1%
+sono esattamente cio' che permetterebbe a un tratto di attraversare una regione schiacciata senza
+che nessuno se ne accorga -- il difetto che il 217 doveva chiudere.
+
+	PAVIMENTO_CACHE = 2
+
+Una soglia sola per entrambi: la banda utile e il conteggio della fame. `secondi_a_zero` diventa
+**`secondi_a_secco`**, perche' il nome vecchio prometteva lo zero esatto.
+
+### E in taratura l'archivio si rifa' invece di migrare
+
+Fino a qui ogni cambiamento aggiungeva colonne e teneva le righe. Il risultato erano **diciassette
+righe di quattro annate diverse**: portate calcolate includendo il pavimento accanto ad altre che lo
+escludevano, colonne di peso che descrivevano solo la misura `prima`, un `secondi_a_zero` contato su
+una soglia poi cambiata. Un archivio cosi' non si legge -- ogni riga andrebbe interpretata sapendo
+quando e' stata scritta -- e le statistiche che ci si fanno sopra non significano niente.
+
+`migrate_playback_schema()` non migra piu': confronta lo schema atteso con quello sul disco e, se
+differiscono, **rifa' la tabella da zero**. Finche' il wizard non esiste, il valore di una riga
+vecchia e' molto minore del costo di ricordarsi come veniva prodotta; si butta e si rifa' la
+raccolta, che costa qualche riproduzione.
+
+`sorgenti_bocciate` **non si tocca**: e' un'altra tabella e un altro tipo di dato -- cancellarla
+farebbe ricomparire sorgenti gia' dimostrate rotte, che non e' una misura da rifare ma una
+conoscenza da perdere.
+
+Approfittando del rifacimento, i nomi diventano simmetrici: `portata_campioni_prima` /
+`portata_punti_prima` accanto a `..._dopo` (prima la coppia `prima` non aveva suffisso, tenuta cosi'
+nel lotto 215 solo per non perdere le righe), e `portata_zeri` -> `portata_secchi_prima`/`_dopo`.
+
+### Verifica
+
+`test_212.py` **81/81** (era 71), `test_215.py` **43/43**. Il blocco del rifacimento non cerca
+stringhe: costruisce un database con lo schema **vecchio**, ci mette una misura e una voce di lista
+nera, esegue `migrate_playback_schema()` estratta da `base_cache.py` e controlla che lo schema sia
+diventato quello atteso, che la misura sia sparita e che **la lista nera sia intatta**. Poi lo
+richiama a schema gia' giusto e verifica che non tocchi piu' niente.
+
+In `test_212` sono stati aggiunti i tre casi del pavimento: cache ferma a zero, a 1 e sul pavimento
+stesso non sono misure; ferma **un punto sopra** il pavimento lo e' ancora, e vale zero -- la linea
+consegna esattamente il bitrate.
+
+`compileall` pulito, suite **35/39** (i 4 preesistenti 202-205). Simboli di `player.py` invariati a
+54, **PERSI: nessuno**.
+
+### Le diciassette righe
+
+**Buttate alla prossima partenza di Kodi**, ed e' giusto cosi'. Le tre migliori (Scream 48,3 /
+Mortal Kombat 52,1 / 28 Years Later 44,3 con margine 0,97) vanno rifatte, ma erano gia' di annata
+mista rispetto a quelle prima. Da adesso ogni riga e' prodotta nello stesso modo.
+
+## Lotto 219 -- Lo spazio si misura da dove sei sceso, e una raffica non e' una portata
+
+Verifica sulle quattro riproduzioni dell'11/09. Il rifacimento del lotto 218 e' andato a segno --
+`schema cambiato, tabella rifatta da zero (17 misure buttate)`, lista nera intatta -- e l'invariante
+`portata_secchi` vale zero su tutte le righe. Ma sono usciti due difetti e una misura mancante.
+
+### Mezz'ora di riproduzione, zero misure
+
+**Wuthering Heights**, remux da 32,49 Mbit/s: **1805 campioni**, cache media 97%, e in archivio
+`portata prima n.d. dopo n.d.`. Eppure la traccia conteneva quattro escursioni vere:
+
+	 18 campioni | parte da 80, minimo 53, finisce a 87
+	 14 campioni | parte da 80, minimo 37, finisce a 85
+	 11 campioni | parte da 55, minimo 14, finisce a 77
+	 11 campioni | parte da 87, minimo 47, finisce a 89
+
+Buttate tutte, perche' `CAPIENZA_MINIMA` guardava **da dove il tratto parte**. Ma un tratto che
+scende a 14 e risale non e' schiacciato contro il tetto: di spazio ne ha avuto in abbondanza, e la
+sua pendenza non e' tagliata da niente.
+
+	if tetto and TETTO_CACHE - min(_c[1] for _c in _t) < CAPIENZA_MINIMA: return
+
+Dal punto piu' **basso**, non da quello di partenza. E il caso per cui la capienza e' nata resta
+escluso: il tuffo di Ready or Not (82 -> 65 -> 87) ha minimo 65, capienza 25 < 40 -- quello al tetto
+ci resta appiccicato davvero.
+
+### Una diagnosi su una finestra mai esistita
+
+Con `salti 0`, il log stampava lo stesso:
+
+	capacita DOPO il salto | non misurabile: il buffer e' rimasto sotto il 2% ... la linea non regge
+	questo bitrate
+
+Una fase senza campioni non e' una fase senza misura: e' una fase che non c'e' stata. Adesso dice
+`nessun salto in questa riproduzione`.
+
+### La misura che mancava: i SECONDI
+
+Su quattro riproduzioni indipendenti la portata scende al crescere della finestra:
+
+| finestra | portata |
+|---|---|
+| 4,4 s | **47,5** Mbit/s |
+| 15,8 s | **46,2** |
+| 48,3 s | **43,2** |
+| 117 s | **44,3** |
+
+Non e' rumore, e' il modo in cui la misura viene presa: la finestra corta e' quasi sempre il
+riempimento iniziale, cioe' il momento in cui il collegamento si apre e il cdn manda una raffica; la
+finestra lunga e' la linea che regge davvero.
+
+**Michael** lo dimostra da solo: portata **46,2 Mbit/s misurata su 15,8 secondi**, e poi **51 secondi
+a secco** con un film da 35,95. Un wizard che avesse preso quel 46,2 avrebbe concluso che la linea
+copre 36 Mbit/s con margine. Non li copre.
+
+E i secondi **non si ricavano dai campioni**, perche' il passo non e' costante: 250 ms finche' il
+fitto e' acceso, 1 s dopo. Nelle quattro righe: 18 campioni/4,4 s = 4,1 Hz, 46/15,8 = 2,9 Hz,
+77/48,3 = 1,6 Hz. Due colonne nuove, `portata_secondi_prima` e `portata_secondi_dopo`, e in
+`playback_stats.py` la regola che ci si fonda sopra:
+
+	SECONDI_SOSTENUTA = 30.0
+	sostenuta(riga, fase) -> (portata se la finestra e' lunga, secondi)
+	misure_sostenute(righe) -> le portate su cui si puo' fondare una soglia
+
+Una finestra corta **non si butta** -- dice comunque che in quel momento la linea andava cosi' -- ma
+non va mediata insieme a una lunga. `misure_di_capacita()` continua a restituirle tutte,
+`misure_sostenute()` solo quelle lunghe: il wizard chiede le une o le altre e sa quale sta usando.
+
+### Verifica
+
+`test_212.py` **87/87** (era 81), `test_215.py` **55/55** (era 43). Il blocco nuovo di 212 esegue la
+traccia vera di Wuthering Heights: il tuffo che parte da 87 ma scende a 14 viene misurato su tutti
+e venti i campioni, quello di Ready or Not che resta al tetto no. E verifica che i secondi siano
+conservati (19,0 s su 20 campioni a 1 Hz) e che non siano il numero di campioni. Il blocco di 215
+esegue `sostenuta()` sulle quattro righe vere: 4,4 e 15,8 secondi non sostenute, 48,3 si'.
+
+`compileall` pulito, suite **35/39** (i 4 preesistenti 202-205). Simboli di `player.py` invariati a
+54, **PERSI: nessuno**. Schema cambiato -> la tabella si rifa' alla prossima partenza (4 righe).
+
+## Lotto 220 -- Un numero di tutta la riproduzione non spiega l'esito di una fase
+
+Riproduzione di collaudo dell'11/09 (**Marty Supreme**, remux 37,16 Mbit/s), fatta apposta per
+provare sul dispositivo il lotto 219 prima di investire ore di raccolta. Meccanicamente tutto a
+segno:
+
+	playback_stats: schema cambiato, tabella rifatta da zero (4 misure buttate).
+	  Mancavano: portata_secondi_prima, portata_secondi_dopo | in piu': niente
+	misura registrata | ... portata prima n.d. dopo 55.7 (35 campioni in 8.8 s) | ...
+
+I secondi si scrivono, il rifacimento distingue le colonne mancanti da quelle di troppo, la fase
+senza salti non stampa piu' diagnosi. Ma il log diceva ancora una cosa falsa:
+
+	capacita prima del salto | non misurabile: il buffer e' rimasto sotto il 2% fino a 22 s di
+	fila ... la linea non regge questo bitrate
+
+Separando la traccia per fase:
+
+	FASE PRIMA: 150 campioni | media 98% | minimo 55 | sotto il 2%:  0 s
+	FASE DOPO : 180 campioni | media 83% | minimo  0 | sotto il 2%: 22 s
+
+I ventidue secondi erano **tutti** nella fase DOPO. La fase PRIMA aveva la cache al 98% di media e
+non e' mai scesa sotto 55. E' lo stesso difetto del lotto 219 -- un numero di tutta la riproduzione
+usato per spiegare l'esito di una fase -- lasciato su una seconda istanza: la' era `_cache_n`, qui
+e' `_cache_secco_max`. Adesso il conteggio si tiene anche per fase e il messaggio usa quello.
+
+**Nessuna colonna cambia**: e' un difetto di diagnosi, non di misura, e la tabella non si rifa'. La
+riga raccolta stanotte sopravvive -- verificato confrontando lo schema atteso con quello sul
+dispositivo.
+
+### Perche' la fase PRIMA non ha misurato (ed e' corretto)
+
+Il tratto era `76 55 64 75 83` poi 95 chiude: minimo 55, capienza 90-55 = **35 < 40**. Scartato per
+cinque punti. Non si tocca `CAPIENZA_MINIMA`: quel tratto durava cinque secondi e `misure_sostenute()`
+lo escluderebbe comunque, mentre abbassare la soglia rischierebbe di far rientrare il tuffo di Ready
+or Not (minimo 65) che e' il caso per cui la regola esiste.
+
+### Cio' che questa riga insegna sul dato piu' utile
+
+`portata dopo 55.7 su 8,8 secondi` e' la lettura piu' alta mai registrata, ed e' l'ennesima conferma
+che **le finestre corte leggono la raffica**: 8,8 secondi su un collegamento da 72 Mbps di link.
+`misure_sostenute()` la esclude, ed e' esattamente il suo mestiere.
+
+E soprattutto: `secondi_a_secco` ha un'**ambiguita' di fondo** che nessuna soglia risolve. I 22
+secondi di Marty sono il cdn che si riposiziona dopo un salto -- transitorio normale, pagato da ogni
+salto -- mentre i 109 secondi di The Mandalorian erano la linea che non ce la faceva. Si distinguono
+guardando `salti`: le riproduzioni con `salti 0` che vanno a secco stanno fallendo davvero (Michael
+51 s, Mandalorian 109 s, The Drama 12 s), quelle con un salto pagano il riempimento.
+
+Il segnale che **non** ha questa ambiguita' e' `cache_media`, gia' in tabella e gia' per fase:
+
+	media 91-98%  comodo        (film leggeri, Wuthering Heights, Marty fase prima)
+	media 66-83%  in affanno    (28 Years Later 66, Michael 67, The Drama 72, Marty dopo 83)
+	media 37%     in fallimento (The Mandalorian)
+
+Per il wizard e' il termometro migliore, perche' non richiede di classificare un transitorio.
+
+### Verifica
+
+`test_212.py` **91/91** (era 87). Il blocco nuovo esegue le due tracce vere di Marty separate per
+fase e verifica che il contatore della fase PRIMA valga 0, quello della fase DOPO 22, e che il
+totale della riproduzione **non** descriva la fase prima.
+
+`compileall` pulito, suite **35/39**. Simboli di `player.py` invariati a 54, **PERSI: nessuno**.
+Schema invariato: la raccolta puo' cominciare senza perdere la riga di collaudo.
+
+## Lotto 221 -- Una finestra deve avere una direzione
+
+Verifica sulle riproduzioni del 10/09 pomeriggio. Tre cose, e la prima non e' nostra.
+
+### La notifica "sorgente troppo lenta" e' di Kodi, e poi si e' riavviata la stick
+
+	14:55:16  debug <general>: Readrate 5852000 was too low with 5866782 required
+
+E' il controllo interno di Kodi (`Source too slow`), non una nostra guardia: **zero
+`SORGENTE GUASTA` in entrambi i log**, quindi FenLight non ha ruotato niente. Il numero e' una
+conferma indipendente della nostra misura -- 5.852.000 B/s = **46,8 Mbit/s**, contro i 46,3 che il
+nostro campionatore ha misurato su The Departed nella stessa ora. Due strumenti indipendenti entro
+l'1%: e' la prima validazione esterna della catena di misura.
+
+Quello che e' successo dopo pero' non e' un cambio di sorgente. Il log vecchio si interrompe di
+colpo a **14:57:46** in mezzo alla riproduzione di American Beauty (42,7 Mbit/s), senza sequenza di
+chiusura; `/proc/uptime` dice che il dispositivo e' partito alle **14:58:01**. E' il
+`watchdog_reboot` gia' noto, ed e' il motivo per cui quella riga non e' mai stata scritta: la scrive
+`_riassunto_cache` a fine riproduzione, e la riproduzione non e' finita -- e' finita la stick.
+
+**Non si aggiungono scritture intermedie per difendersi**: costerebbero I/O sulla eMMC proprio nel
+momento piu' delicato. La traccia non e' persa comunque -- sta in `kodi.old.log`, e da li' si
+ricostruisce, che e' esattamente cio' che si e' fatto qui.
+
+### Il difetto: una misura a V
+
+**The Two Towers** ha registrato `portata prima 22.0` con un bitrate di 21,79 -- cioe' "la linea da'
+esattamente quanto il film chiede". Nella stessa riproduzione, dopo il salto: **42,9**.
+
+Il tratto vincente era questo:
+
+	87 82 72 66 58 48 54 62 74 81      netto +1 punto in 10,2 s
+
+Il buffer e' sceso da 87 a 48 ed e' risalito a 81. La formula `capacita = bitrate + variazione /
+tempo` e' vera su qualunque finestra, ma su una **andata e ritorno** la media descrive due regimi
+opposti e non ne descrive nessuno. E "vince il piu' lungo" preferisce sistematicamente i tuffi,
+perche' un riempimento attraversa la banda in quattro secondi mentre un tuffo ci indugia per dieci.
+
+### La regola
+
+	FRAZIONE_DIREZIONE = 0.5     # la finestra deve finire vicino a uno dei suoi estremi
+	ESCURSIONE_MINIMA  = 10      # sotto, e' piatta e il rapporto non significa niente
+
+Sui tratti veri raccolti dai log separa **senza sovrapposizioni**:
+
+| tratto | netto | escursione | rapporto | |
+|---|---|---|---|---|
+| LOTR riempimento 24->89 | +65 | 65 | **1,00** | tieni |
+| Departed risalita 4->85 | +81 | 81 | **1,00** | tieni |
+| 28 Years discesa 86->10 | -76 | 76 | **1,00** | tieni |
+| LOTR tuffo a V | +1 | 39 | 0,15 | scarta |
+| Ready or Not tuffo | +5 | 22 | 0,23 | scarta |
+| Wuthering a V | -10 | 73 | 0,14 | scarta |
+| Marty a V | +7 | 28 | 0,25 | scarta |
+
+`ESCURSIONE_MINIMA` protegge il caso che il lotto 212 ha voluto: una cache **ferma dentro la banda**
+ha netto zero su escursione zero, ed e' la misura esatta `capacita = bitrate`. Con un punto di
+rumore avrebbe netto 0 su escursione 2, e senza la soglia verrebbe buttata.
+
+Il rapporto si conserva in `portata_direzione_prima`/`_dopo`, come `portata_secchi` per il pavimento:
+serve a poter verificare la regola dall'archivio invece che dai log.
+
+**E costringe a correggere il lotto 219**: la traccia di Wuthering Heights che lo aveva motivato e'
+essa stessa una andata-e-ritorno. La diagnosi del 219 era giusta -- la capienza non deve guardare da
+dove il tratto parte -- ma la conclusione (quella finestra e' una misura) era sbagliata. Il blocco di
+prova e' stato riscritto sul caso che la capienza possiede davvero: una discesa **monotona** che
+parte in alto.
+
+### Verifica
+
+`test_212.py` **103/103** (era 91), `test_215.py` **60/60**. Il blocco nuovo esegue tutti e sette i
+tratti veri sopra e verifica il verdetto di ciascuno, piu' i tre casi del piatto (ferma, ferma con
+rumore, tuffo appena sopra la soglia).
+
+`compileall` pulito, suite **35/39**. Simboli di `player.py` invariati a 54, **PERSI: nessuno**.
+Schema cambiato -> la tabella si rifa' alla prossima partenza (3 righe, di cui una -- The Two Towers
+-- era proprio la misura a V).
+
+## Lotto 222 -- La sonda della linea
+
+Cambio di strumento, non di regola. Fino al 221 la linea si misurava **attraverso il buffer di
+Kodi**, e otto lotti sono serviti a rendere onesto lo strumento, non a rispondere alla domanda. Il
+buffer ha due bordi dove la formula smette di valere (sopra il tetto Kodi si strozza da solo, sotto
+il pavimento non puo' scendere e smette di registrare il deficit), una frequenza di campionamento
+che cambia (250 ms / 1 s), e un'uscita che mescola la velocita' della linea col bitrate del film.
+
+Qui si misura la linea **direttamente**: richiesta nostra, byte nostri, orologio nostro. Nessun
+bordo, nessuna forma a V, nessuna raffica da distinguere da una finestra lunga.
+
+### Cosa risolve, e non e' un dettaglio di precisione
+
+Il difetto strutturale che la portata non poteva risolvere e' l'**autoplay**. L'utente non sceglie
+le sorgenti come si fa in collaudo: riproduce la prima valida per la sua lingua, che spessissimo sta
+molto sotto la fascia interessante. Cinquanta riproduzioni tutte a 2-3 Mbit/s danno cinquanta cache
+perfette e **zero discrepanza**: nessun wizard puo' concluderne niente. La sonda non dipende da cosa
+l'utente guarda.
+
+E risolve l'obsolescenza: un archivio di cinquanta righe descrive la linea di quando e' stato
+riempito. Chi cambia casa -- o cambia linea -- non e' protetto. La sonda ha sempre trenta secondi.
+
+### Quando parte, e perche' proprio li'
+
+**All'inizio della ricerca sorgenti**, in un thread, mentre gli scraper interrogano. Tre ragioni
+indipendenti:
+
+- lo scraping sono decine di richieste piccole, **limitate dalla latenza e non dalla banda**: la
+  sonda occupa la risorsa che in quel momento e' ferma;
+- l'utente sta gia' aspettando, quindi il costo visibile e' zero;
+- e' **prima** della riproduzione, l'unico istante in cui una misura protegge la sessione in corso
+  invece della successiva.
+
+Un solo innesco. Le tre tarature che avevo proposto in discussione -- avvio di sessione, fine
+riproduzione, riscadenza a un'ora -- erano sovraccostruzione: chi guarda qualcosa ha sempre una
+misura fresca, chi non guarda niente non sta usando `line_speed` per nulla.
+
+### Il precedente negativo, e perche' non si ripete
+
+`modules/band_probe.py` e' la sonda dei lotti 191-195, staccata perche' **non prediceva**: il 07/09
+dichiarava 3,39 Mbit/s e mezzo secondo dopo Kodi, sullo stesso nodo, ne consegnava 11,16. Quella
+sonda pero' faceva una cosa diversa: misurava il link della sorgente per giudicare quella sorgente,
+confrontando direttamente il proprio numero col bitrate richiesto. Un errore sistematico li' e'
+fatale.
+
+Qui il numero **non viene confrontato con niente**: viene diviso per un margine tarato su misure
+prese esattamente cosi'. Un bias costante finisce dentro la costante. Cio' che resterebbe fatale e'
+un bias **variabile**, ed e' precisamente cio' che questa raccolta deve stabilire.
+
+Le due cose che nella v2 potevano produrre il numero basso, e che qui non ci sono:
+
+1. **fermata anticipata** su "velocita' stabile" -- due mezzi secondi simili *durante* la salita del
+   tcp sono simili fra loro e non sono il regime: la v2 poteva chiudere dentro la rampa;
+2. **finestra cortissima** -- tetto a 5 s con 1,2 di rampa scartata, cioe' fino a 3,8 s di misura:
+   su una linea da 46 Mbit/s con 343 ms di ttfb il tcp li' dentro sta ancora salendo.
+
+Adesso: rampa scartata 2,0 s, budget 12,0 s, **nessuna fermata anticipata**, e la curva a mezzi
+secondi finisce nel log apposta -- serve a verificare la taratura di `SECONDI_SALITA` invece di
+crederci.
+
+### Il bersaglio
+
+Il link dell'ultima riproduzione che ne ha lasciato uno, letto dall'archivio. Soddisfa le tre
+condizioni che contano: stesso cdn da cui l'utente riproduce davvero, grande abbastanza per dodici
+secondi di lettura, ed **esiste anche all'avvio di una sessione**, quando non c'e' nessun film
+appena riprodotto -- perche' sta in archivio, non in memoria.
+
+L'offset e' **a caso** dentro il file (5%-85%), diverso a ogni sonda, calcolato sulla dimensione
+vera del `Content-Range` gia' in archivio: i primi byte sono quelli che la riproduzione precedente
+ha gia' chiesto e su un cdn possono essere caldi in un nodo di bordo.
+
+`link` si scrive **sempre**, anche quando la sonda non c'e' stata: se dipendesse dalla sonda, una
+sonda fallita lascerebbe l'archivio senza bersaglio e la successiva fallirebbe per la stessa
+ragione, per sempre.
+
+### Le due protezioni
+
+**La sonda molla appena un film parte** (`ferma()`, chiamata da `set_constants`). Se lo scraping e'
+stato veloce -- risultati gia' in cache, prescrape -- la riproduzione puo' cominciare mentre la
+sonda legge ancora, e da li' in poi ogni byte lo toglierebbe alla riproduzione che deve misurare.
+Cio' che ha letto prima resta valido: si tronca, non si butta.
+
+**Non parte durante una riproduzione**: la ricerca sorgenti dell'episodio successivo puo' scattare a
+film in corso, e li' la banda non e' ferma.
+
+### Come si tara il margine (e perche' l'archivio poi non serve piu')
+
+Ogni riga diventa una terna: **C** la sonda presa trenta secondi prima, **B** il bitrate del film,
+**salute** cio' che le colonne di cache gia' dicono. Si ordina **B/C** su venti-trenta righe: sotto
+un certo valore tutte sane, sopra tutte sofferenti. Quel confine e' **1/MARGINE**.
+
+Da li' in poi la logica distribuita e' `line_speed = sonda / MARGINE` e **nessuno legge l'archivio**.
+Gli otto lotti da 214 a 221 non si perdono: cambiano mestiere, dalla domanda difficile (quanto va la
+linea) a quella facile (ha tenuto o no), su cui erano affidabili da un pezzo.
+
+### Cosa NON fa
+
+Non scarta niente, non scrive impostazioni, **non tocca `results.line_speed`**. Il valore finisce in
+una colonna accanto all'esito della riproduzione che segue. Collegare la sonda al filtro e' una
+decisione successiva.
+
+Vive con `fenlight.perf.instrumentation`: spento vuol dire zero traffico.
+
+### Verifica
+
+`tests/test_222.py` **88/88**. Il modulo e' una foglia -- a livello di modulo importa solo
+`http.client`, `random`, `threading`, `time` -- quindi la prova esegue il codice **di produzione**
+riga per riga contro una rete finta a velocita' programmabile e un orologio controllato: si verifica
+che la lorda venga trascinata in basso dalla salita mentre il regime dichiara 46,0; che una rampa
+piatta di 4 s non chiuda la sonda (il caso della v2); che con meno di `SECONDI_MINIMI` oltre la
+salita si dichiari `None` e non un numero; che l'abbandono tronchi senza buttare, e che troppo
+presto non inventi nulla. Piu' `bersaglio()` e le colonne nuove sul database vero, e i tre agganci
+nel codice di produzione.
+
+`test_212.py` 103/103, `test_215.py` 60/60, suite **36/40** (i 4 rotti sono preesistenti).
+Simboli: `player.py` 54 -> 55 (`_campi_sonda`), `playback_stats.py` 14 -> 15 (`bersaglio`),
+**PERSI: nessuno**. Schema cambiato -> la tabella si rifa' alla prossima partenza, e la prima sonda
+tace finche' non c'e' un bersaglio.
+
+## Lotto 223 -- La sonda leggeva dove il film non legge
+
+Prime tre sonde vere, 10/09. La macchina funziona -- il valore arriva in archivio, `sonda_eta` dice
+30 e 66 secondi, `sonda_cdn` e `cdn` differiscono su una riga e la colonna si guadagna il posto al
+primo giro. Ma il **numero e' sbagliato**, e il perche' e' dentro una scelta mia.
+
+	17:14:24  offset  2,41 GB su 12,16 (20%)  ->  37,5 Mbit/s
+	17:15:05  offset  7,97 GB su 12,16 (65%)  ->   3,0 Mbit/s   <- stesso file, stesso nodo
+	17:20:50  offset 23,45 GB su 43,12 (54%)  ->   4,6 Mbit/s
+
+Nella stessa mezz'ora le riproduzioni misuravano **45-47 Mbit/s** (The Housemaid: portata 46,8 prima
+e 45,1 dopo il salto, con Kodi che dichiarava `maxRate 45,91`). Due sonde sullo stesso file, sullo
+stesso nodo, a quaranta secondi di distanza, danno **dodici volte** di differenza: l'unica variabile
+che cambia e' la profondita'.
+
+Il cdn di TorBox consegna la **testa** del file in fretta e le profondita' pianissimo. Le curve lo
+mostrano nella forma, non solo nel totale:
+
+	3,0 Mbit/s   0.8 2.0 2.3 3.3 3.5 3.6 3.7 3.8 ...   2 MB nel primo secondo, poi ~0,3 MB/s
+	37,5 Mbit/s  1.1 2.2 5.5 8.2 10.8 12.8 15.4 ...    ~2,3 MB ogni mezzo secondo, sempre
+
+Il primo secondo e' il buffer di bordo che si svuota; il resto e' la lettura dall'origine.
+
+**Non era una sonda rotta: era una misura giusta di una cosa sbagliata.** Una riproduzione legge
+sequenzialmente dalla testa, non a caso in mezzo. E la stessa mezz'ora conferma il rovescio della
+medaglia: dopo un salto -- l'unico momento in cui una riproduzione legge davvero in profondita' --
+il buffer e' rimasto **a secco 62 s** su The Housemaid e **16 s** su Fantastic Four. Il difetto dei
+salti che ci portiamo dietro da settimane e questa misura sono la stessa cosa vista da due lati.
+
+L'offset iniziale (5%-85%) nasceva da un timore ragionevole -- rileggere byte caldi in un nodo di
+bordo -- ma il timore era il piu' piccolo dei due problemi. Adesso si legge **dove legge il film**:
+un po' a caso per non ripetersi, ma dentro la fascia che una riproduzione attraversa davvero. Due
+tetti insieme, `FRAZIONE_MAX = 0.20` e `OFFSET_MASSIMO = 2 GB`, perche' non sappiamo se la testa
+veloce sia una frazione o un numero fisso di byte: vale il piu' stretto.
+
+### Durata variabile con un pavimento
+
+Osservazione dell'utente, e il log gli da' ragione per assenza: in queste tre sonde la finestra di
+scraping durava 60-70 secondi, ma **per una sorgente gia' in cache quella finestra non esiste**. Il
+film parte subito, `chiudi()` molla la sonda dopo un secondo, e nel caso piu' frequente -- il
+rilancio dello stesso contenuto -- non si misurerebbe mai niente.
+
+Quindi la finestra dura **quanto lo scraping le concede**, fra un pavimento e un tetto:
+
+- **tetto** `SECONDI_TOTALI = 20` (era 12): piu' la finestra e' lunga piu' la misura e' vera --
+  sulle riproduzioni 4,4 s -> 47,5 Mbit/s contro 48,3 s -> 43,2 -- e se il tempo c'e' va usato;
+- **pavimento** `PAVIMENTO_UTILE = salita + bucket + minimi = 5,5 s`: il minimo sotto cui non
+  esisterebbe nessun regime da dichiarare. Sotto, la sonda avrebbe speso traffico per restituire `?`.
+
+L'abbandono non vince piu' sul pavimento. Il prezzo e' che l'avvio del film puo' aspettare fino a
+5,5 secondi, **ma solo quando lo scraping e' stato istantaneo**, e l'attesa pagata si scrive nel log
+(`avvio ritardato di N s`) invece di essere invisibile. `ferma()` resta per chi vuole solo mollare;
+il player chiama `chiudi()`, che molla e aspetta.
+
+### Verifica
+
+`tests/test_222.py` **104/104** (era 88). Il blocco nuovo `1bis` non prova che l'offset sia
+"ragionevole": prova che **le due profondita' che il 10/09 hanno prodotto 3,0 e 4,6 Mbit/s non sono
+piu' raggiungibili**, e che quella che ha prodotto 37,5 resta dentro la fascia. Il blocco `6bis`
+esegue `chiudi()` contro una sonda finta in volo e verifica che aspetti quando serve e non aspetti
+quando non serve.
+
+Suite **36/40** (i 4 rotti sono preesistenti). Simboli invariati piu' `offset_per`, `chiudi`,
+`_riga_log`.
+
+### La profondita' va in archivio, non solo nel log
+
+`sonda_offset`. Senza, una riga letta in testa e una letta a meta' file sono **indistinguibili in
+archivio**, e il margine si tarerebbe mescolandole: e' lo stesso errore che il lotto 218 ha pagato
+con diciassette righe di quattro annate diverse. La colonna e' l'unica cosa che rende leggibile una
+riga senza sapere quando e' stata scritta.
+
+Effetto collaterale voluto: lo schema cambia, quindi la tabella si rifa' e le tre righe con
+`sonda_mbps` presa in profondita' se ne vanno da sole invece di restare come trappola. Le misure di
+portata che portavano sono gia' state lette qui sopra.
+
+## Lotto 224 -- Il collo di bottiglia non era il cdn: era il nostro ciclo di lettura
+
+Il lotto 223 aveva letto tre punti e ne aveva tratto una legge. La sonda successiva l'ha smentita
+al primo colpo: **4,18 Mbit/s letti allo 0,76 GB su 36,15**, cioe' al **2,5%** del file, dove la
+teoria della "profondita' lenta" prometteva la testa veloce. La linea, nella stessa mezz'ora,
+misurava 41-50 Mbit/s (`portata_prima 41,6 / dopo 45,2`, e Kodi dichiarava `maxRate 37,72`).
+
+### Il controllo che ha chiuso la questione
+
+Lo **stesso link**, con lo **stesso codice**, eseguito dal Mac invece che dalla stick:
+
+	testa          offset  0,00 GB  ->  224,19 Mbit/s
+	come la sonda  offset  0,76 GB  ->  211,72 Mbit/s
+	meta' file     offset 18,08 GB  ->  217,11 Mbit/s
+
+Nessuna penale di profondita', link non scaduto, codice corretto. **Quei tre punti del 10/09 erano
+una coincidenza**, e io ci ho costruito sopra una spiegazione fisica che non esisteva. Vale la pena
+scriverlo per esteso: la spiegazione era coerente con tutti i dati che avevo, spiegava anche un
+difetto vecchio (il buffer a secco dopo i salti) e per questo l'ho creduta. Tre punti non sono una
+legge, e una diagnosi che spiega troppo va sospettata proprio per quello.
+
+Il difetto che il 223 ha risolto davvero -- la durata variabile col pavimento -- resta valido: era
+un'osservazione dell'utente sul codice, non una deduzione dai tre punti.
+
+### Cosa c'e' davvero
+
+Il collo di bottiglia e' **la lettura dentro il processo di Kodi sulla stick**. A 8 KB per giro una
+linea da 46 Mbit/s vuol dire 700 iterazioni al secondo di ciclo Python -- ognuna con una
+allocazione, una copia e un rilascio del GIL -- dentro un interprete dove nello stesso momento venti
+thread di scraper stanno analizzando JSON.
+
+Due cambiamenti:
+
+- **`PASSO` da 8 KB a 256 KB**, e lettura con `readinto()` dentro un `memoryview(bytearray(PASSO))`
+  riusato: i giri passano da 700 al secondo a 22, e non si alloca piu' niente. 256 KB a 46 Mbit/s
+  sono 45 ms contro un bucket da 500, quindi la risoluzione della curva non ne soffre.
+- **`thread_time` e `process_time` attorno al ciclo**, scritti nel log accanto alla curva. Sono la
+  regola "lavoro o attesa" applicata qui: senza, le tre spiegazioni possibili si sceglierebbero a
+  naso. Molta cpu propria = si decifra e si copia, e il rimedio e' il passo grosso. Poca cpu propria
+  ma processo pieno = il GIL e' occupato dagli scraper e aspettiamo il turno -- e allora **la
+  finestra di scraping e' il momento sbagliato**, che ribalterebbe la scelta del lotto 222. Poca di
+  entrambe = si aspetta la rete davvero.
+
+La prossima raccolta non serve a tarare il margine: serve a leggere quei due numeri.
+
+### Verifica
+
+`tests/test_222.py` **111/111**. La rete finta ora risponde a `readinto`, e il blocco `1bis` e' stato
+riscritto: prova il meccanismo dei due tetti sull'offset, **non piu' la diagnosi**, che e' caduta.
+Suite 36/40.
+
+## Lotto 225 -- La sonda misurava se stessa
+
+Le due righe di cpu aggiunte dal lotto 224 hanno risposto al primo giro, e la risposta e' netta.
+
+	18:03  REGIME 26,00 Mbit/s | cpu proprio 5105 ms (25%) | processo 38973 ms (195%)
+	18:08  REGIME  8,01 Mbit/s | cpu proprio 2019 ms (10%) | processo 41695 ms (206%)
+
+La linea, nella stessa mezz'ora, faceva 41-45 (`portata 41,6 / 45,2`, Kodi `maxRate 37,72`).
+
+### Il conto torna al 5%
+
+La sonda decifra TLS, e sulla stick costa **80-92 ms di cpu per MB**. Con un core intero il suo
+tetto e' quindi ~90-100 Mbit/s. Moltiplicato per la quota di core che ha ottenuto:
+
+	18:03   tetto 99,0 Mbit/s x 0,25 = 24,8 previsti   ->  letti 26,00
+	18:08   tetto 87,2 Mbit/s x 0,10 =  8,7 previsti   ->  letti  8,01
+
+Non stava misurando la linea: **stava misurando la propria quota di CPU.**
+
+E la prova sta dentro **una sola sonda**, quindi non c'e' bisogno di credere al modello. Nei primi
+dieci secondi, con gli scraper al lavoro, la media e' 13,8 Mbit/s; negli ultimi otto, finiti gli
+scraper, e' **36,5** con picchi a 43:
+
+	primi 10 s : 22 21 48 24 24 24 16 13 3 13 3 8 5 3 3 10 3 8 16 8
+	ultimi 8 s : 3 32 32 37 37 38 48 42 35 40 40 40 32 43 42 43
+
+### La causa era gia' scritta in questo file
+
+Da `service.startServices`, lotto di avvio del 08/09: *"su Android il Python di Kodi vive dentro un
+solo processo e i sotto-interpreti si dividono UN core: la quota di CPU di ogni invocazione e' circa
+1/N. Misurato sulla stick: con 6 interpreti 16%, con 4 il 25%, da sola l'86%."*
+
+La sonda ha preso esattamente il 25% e il 10%. Il ragionamento del lotto 222 -- *lo scraping e'
+latenza, non banda, quindi la sonda occupa una risorsa ferma* -- era vero **sulla rete** e falso
+**sulla CPU**. La finestra di scraping non e' il momento migliore: e' il peggiore che ci sia.
+
+### La misura che mancava, e perche' non si poteva dedurre
+
+`quota_cpu()`: un ciclo occupato puro, 50 ms, che dice quanta CPU si riesce a ottenere adesso.
+
+Serve un ciclo **senza I/O** perche' il rapporto cpu/tempo della sonda **non distingue i due casi**:
+leggere 26 Mbit/s perche' la linea fa 26, e leggerne 26 perche' si ha un quarto di core, consumano
+la stessa cpu e hanno la stessa firma. L'unico modo di separarli e' misurare a parte la quota
+disponibile.
+
+Da cui l'invariante, nello spirito di `portata_secchi`: **sotto `QUOTA_MINIMA` (mezzo core) il regime
+non esiste**. Non si pubblica un numero piu' basso: si dichiara `None`, perche' quel numero non
+descrive la linea. Mezzo core e' la soglia giusta e non un gusto: sotto, il tetto di decifratura
+scende sotto la linea che vogliamo misurare.
+
+### La sonda si sposta nel servizio
+
+`service.SondaLinea`. Il servizio non ha nessuno che lo aspetta, quindi puo' fare la sola cosa che
+qui conta: **aspettare un momento in cui il core c'e'**, e tacere quando non c'e'. Poll ogni 30 s,
+rimisura ogni 10 minuti, mai a riproduzione in corso, due giri di calma dopo l'ultima attivita', e
+poi il cancello vero -- `quota_cpu()`.
+
+Il valore finisce nella **bacheca**, una proprieta' di `Window(10000)`: chi misura e chi scrive la
+riga in archivio non sono piu' lo stesso interprete. L'invocazione che riproduce trova il numero
+gia' pronto e **non aspetta niente**.
+
+Cade quindi tutto il macchinario del lotto 222/223 che serviva a convivere con la riproduzione:
+`avvia`, `ferma`, `chiudi`, `attendi`, `ultima`, `_FERMA`, `_THREAD`, `ATTESA_MASSIMA`, l'attesa
+pagata all'avvio del film e il lancio dentro `get_sources`. Restano dieci funzioni al posto di
+quattordici, e nessun percorso in cui l'avvio di un film aspetta la sonda.
+
+Una misura senza regime **non si pubblica**: sostituirebbe una buona con una che non dice niente.
+
+### Verifica
+
+`tests/test_222.py` **127/127** (era 111). I blocchi nuovi: la guardia della cpu provata forzando la
+quota a 0,25 e verificando che il regime sparisca e il motivo resti scritto; la bacheca provata
+avanti e indietro sullo stub di `xbmcgui`, compreso il caso "una sonda fallita non cancella l'ultima
+buona"; il servizio verificato nel codice -- misura la quota, non parte sotto soglia, mai a
+riproduzione in corso, passa una `molla` perche' `_FERMA` vive in un altro interprete.
+
+Suite 36/40. Schema **non** cambiato. `compileall` pulito.
+
+## Lotto 226 -- La prima misura buona, e il muro che le stava a tre Mbit/s
+
+Prima sonda eseguita dal servizio, 10/09 18:24:58. **Funziona.**
+
+	REGIME 42,77 Mbit/s su 18,1 s | 102,2 MB | ttfb 759 ms | offset 0,11 GB
+	curva  2.0 4.8 7.5 10.0 12.5 15.5 18.2 20.8 23.2 26.0 28.8 31.0 33.8 ...
+
+La curva e' una retta: ~2,7 MB ogni mezzo secondo per tutti i venti secondi, senza il crollo che
+avevano tutte le sonde prese dentro la finestra di scraping. E la riproduzione partita 100 secondi
+dopo ha misurato **45,4 e 44,5**:
+
+	sonda 42,77  contro  portata 45,4 / 44,5   ->  -5,5% / -3,9%
+
+E' la prima volta che i due strumenti dicono la stessa cosa.
+
+### Ma il numero era un pavimento, non una misura
+
+	cpu proprio 9882 ms (49%) | processo 28640 ms (142%)
+
+97 ms di cpu per MB, cioe' un tetto di **82,7 Mbit/s con un core intero**. Il cancello di allora
+lasciava passare da 0,55 in su, quindi il tetto effettivo garantito era 45,5 -- e la sonda ne ha
+letti 42,77. **Due virgola sette Mbit/s dal muro.** Il che spiega anche perche' esce sotto la
+riproduzione: non stava leggendo la linea, stava iniziando a leggere il proprio limite.
+
+Tre correzioni, tutte sullo stesso difetto:
+
+- **`QUOTA_MINIMA` da 0,55 a 0,75.** Tetto effettivo ~62 Mbit/s, che lascia spazio vero sopra una
+  linea da 45. La sonda partira' piu' di rado; ma il servizio non ha nessuno che lo aspetta, e una
+  sonda in meno costa molto meno di una sonda che mente.
+- **La quota si scrive nel log.** Era calcolata dal lotto 225 e non stampata: il 49% qui sopra e' il
+  CONSUMO, non la disponibilita', e senza la seconda il primo non si sa leggere. Ora la riga porta
+  consumo, quota, tetto e ms per MB, e **avvisa** quando il consumo supera l'85% della quota: li' il
+  regime va letto come un minimo.
+- **`sonda_quota` e `sonda_cpu` vanno in archivio.** Stesso argomento di `sonda_offset`: senza,
+  una riga letta con un quarto di core e una letta con un core intero sono indistinguibili -- ed e'
+  successo davvero, le righe 2-4 dell'archivio portano 4,18 / 26,0 / 8,01 Mbit/s su una linea da 45.
+  Lo schema cambia, quindi quelle righe se ne vanno da sole.
+
+Il log non si riempie di rinvii: `SondaLinea` ripete "rimandata" al massimo ogni cinque minuti.
+
+### Le righe buttate, per memoria
+
+	id 1  Final Destination   bitrate 36,15  sonda --      portata 50,8/47,1
+	id 2  Devil's Advocate    bitrate 35,96  sonda  4,18   portata 41,7/45,2   quota ~0,10
+	id 3  Anaconda            bitrate 39,18  sonda 26,0    portata 47,4        quota ~0,25
+	id 4  Wicked For Good     bitrate 31,02  sonda  8,01   portata 55,9/37,6   quota ~0,10
+	id 5  Insidious 3         bitrate 28,58  sonda 42,77   portata 45,4/44,5   quota >=0,55
+
+Solo la riga 5 e' una coppia utilizzabile, e anche quella con la riserva del muro.
+
+### Verifica
+
+`tests/test_222.py` **140/140**. La soglia di cpu non e' provata come "almeno mezzo core" ma contro
+il tetto misurato: `82,7 x QUOTA_MINIMA > 55`. Le due colonne nuove sono provate sul database vero,
+compreso il calcolo del tetto a partire da `sonda_byte` e `sonda_cpu`, e attraverso la bacheca.
+Suite 36/40, `compileall` pulito.
+
+## Lotto 227 -- Leggere con Kodi, non con Python
+
+Domanda dell'utente: *se il problema e' la CPU, non possiamo usare un altro core? La stick ne ha
+quattro e Kodi ne usa uno.* La domanda e' giusta, la risposta e' piu' interessante del previsto.
+
+### Perche' i quattro core non si possono semplicemente prendere
+
+Il vincolo non e' una scelta di Kodi: e' che **tutto il Python del processo e' serializzato da un
+solo GIL**. I sotto-interpreti di Python 3.11 lo condividono, quindi tutto il Python di Kodi messo
+insieme non puo' superare un core, comunque lo si distribuisca.
+
+E qui non basterebbe nemmeno se si potesse. Il conto della prima sonda buona:
+
+	102,2 MB letti / 9,882 s di cpu del thread = 10,3 MB/s
+
+Il modulo `ssl` di Python su questa stick **decifra AES a 10,3 MB/s**, cioe' 82 Mbit/s con un core
+intero e basta. Non e' contesa da aggirare: e' il costo della decifratura, e su quattro core non si
+distribuisce, perche' una connessione vive in un thread solo. Aprire quattro connessioni in
+parallelo alzerebbe il tetto ma misurerebbe una cosa diversa da quella che fa il film, che di
+connessione ne apre una.
+
+### Il lettore giusto ce l'avevamo gia' in casa
+
+Kodi lo stesso https lo legge a 46 Mbit/s mentre riproduce, e lo fa con `CCurlFile`. `xbmcvfs.File`
+e' quella. Tre vantaggi, e il terzo e' quello che conta:
+
+1. decifra in **C++ col GIL rilasciato**: un core libero diventa davvero utilizzabile;
+2. usa la libreria TLS di Kodi, che sulla piattaforma puo' avere l'accelerazione hardware che il
+   Python di Kodi non ha;
+3. e' **lo stesso percorso di codice che riprodurra' il film**. Una sonda che misura la strada vera
+   vale piu' di una che ne misura una parallela -- ed e' esattamente l'obiezione con cui era morta
+   la sonda dei lotti 191-195, che qui cade da sola.
+
+Il lettore Python resta come **ripiego** e come banco di prova: e' quello che le prove sanno guidare
+con una rete finta. Quando si ripiega, il log lo dice, perche' una sonda letta col lettore lento ha
+un tetto dieci volte piu' basso e non va confusa con una letta da Kodi.
+
+Cosa si perde: con `xbmcvfs` non si vede il nodo finale dopo i redirect (`cdn` e' l'host chiesto) ne'
+lo stato HTTP -- un link scaduto si presenta come "non arriva niente", che per noi vuol dire la
+stessa cosa.
+
+### La guardia sulla cpu ora sa CHI ha letto
+
+Il lotto 226 bocciava una sonda quando la quota di GIL era bassa. Con il lettore di Kodi quella
+regola diventa **sbagliata**: la quota misura il tempo di Python, che non c'entra piu', e il consumo
+del thread puo' tranquillamente superarla. Un solo numero non copre i due casi:
+
+- **lettore di Kodi**: puo' essere limitato solo da un core saturo -> `consumo >= 0,95`;
+- **lettore Python**: anche dal GIL conteso, che dal consumo **non si vede** -- 0,10 puo' voler dire
+  "linea lentissima" o "un decimo di core" -> serve il confronto `consumo / quota`.
+
+`_limitata_da_cpu()` applica la regola giusta al lettore giusto e restituisce il motivo, che finisce
+in `errore`. `QUOTA_MINIMA` scende da 0,75 a 0,50 e cambia ruolo: non e' piu' la guardia sulla
+validita' ma un cancello di **cortesia** per il servizio -- non sprecare banda in un momento
+chiaramente sbagliato.
+
+### Un difetto trovato dalle prove
+
+Il `finally` chiudeva ancora `conn`, che dopo il rifacimento non esiste piu': `NameError` inghiottito
+dall'`except`, e **il lettore non veniva chiuso mai**. Con il lettore di Kodi avrebbe lasciato aperta
+una `CCurlFile` a ogni sonda. L'ha trovato l'assert "il lettore viene chiuso", che c'era da tre
+lotti e non era mai fallito.
+
+### Verifica
+
+`tests/test_222.py` **156/156** (era 140). I blocchi nuovi provano la guardia su una tabella di casi
+-- core saturo con entrambi i lettori, GIL conteso col solo lettore Python, e il caso opposto in cui
+col lettore di Kodi una quota di GIL bassa **non** deve bocciare niente -- e il ripiego, forzando
+`_LettoreKodi` a fallire e verificando che si passi a Python e che l'errore venga annotato.
+Suite 36/40, `compileall` pulito. Schema invariato.
+
+## Lotto 228 -- La sonda funziona. Tre difetti attorno
+
+Prime misure col lettore di Kodi, 10/09 sera. **Il criterio che avevo posto e' passato.**
+
+### Ripetibilita': 0,5%
+
+	19:04  lettore Python  REGIME 46,04 Mbit/s   consumo 52%  quota 92%   96 ms/MB
+	19:09  lettore Kodi    REGIME 46,28 Mbit/s   consumo 41%  quota 95%   75 ms/MB
+
+Due sonde a cinque minuti di distanza, **con due lettori diversi e due offset diversi**, danno
+46,04 e 46,28: **mezzo punto percentuale**. Avevo detto che sopra il 15% la strada era chiusa.
+
+### Il lettore di Kodi mantiene la promessa
+
+Da 96 a **75 ms di cpu per MB**: il tetto sale da 87 a **112 Mbit/s** e il consumo scende dal 52%
+al 41%. Non siamo piu' vicini al muro, e la riga porta ora l'etichetta `| Kodi |` che dice quale
+lettore ha letto.
+
+### Contro la riproduzione: -6%, e probabilmente ha ragione la sonda
+
+	sonda 46,04  vs  portata 49,78 (finestra 13,8 s)   -7,5%
+	sonda 46,28  vs  portata 48,92 (finestra  8,8 s)   -5,4%
+
+Le due portate sono misurate su finestre da 13,8 e 8,8 secondi, e il lotto 219 ha stabilito che le
+finestre corte leggono sistematicamente alto (4,4 s -> 47,5 | 48,3 s -> 43,2). La sonda misura su 18
+secondi con una curva rettilinea. **Lo scarto e' nella direzione giusta**, ed e' costante: e'
+esattamente il genere di cosa che una costante di margine assorbe.
+
+### Difetto 1 -- `sonda_eta` e' uscita **-1**
+
+Cioe' una misura presa *dopo* la riproduzione che doveva descrivere. L'istante veniva timbrato alla
+fine della funzione, dopo `quota_cpu()`, che puo' bruciare fino a un secondo e mezzo. Ora si timbra
+alla fine della **lettura**, che e' quando la misura e' stata presa davvero.
+
+### Difetto 2 -- due righe, una sola sonda
+
+Le righe 2 e 3 dell'archivio hanno `sonda_mbps`, `sonda_cpu`, `sonda_byte` e `sonda_offset`
+**identici**: la seconda riproduzione e' partita prima della sonda successiva e ha scritto quella
+precedente. E' giusto che accada -- una misura di sette minuti fa descrive ancora la linea -- ma per
+il wizard non sono due punti: hanno lo stesso denominatore, e contarli come due gonfia la fiducia in
+un numero misurato una volta.
+
+`playback_stats.coppie_indipendenti()` tiene una riga per sonda, la piu' fresca (`sonda_eta` minore
+in valore assoluto). L'impronta di una sonda sono **byte, cpu e offset**, non il valore letto: due
+sonde diverse possono dare lo stesso numero su una linea stabile, ed e' proprio cio' che vogliamo
+che accada. Accanto, `rapporto_sonda()` -- `bitrate / sonda_mbps` -- che e' il numero su cui si
+tarera' il margine.
+
+### Difetto 3 -- il servizio aspettava dieci minuti per riprovare a leggere l'archivio
+
+	18:43  non eseguita: nessun bersaglio in archivio
+	18:53  non eseguita: nessun bersaglio in archivio
+
+Fra i due c'era stata una riproduzione. Ora se **non si e' misurato niente** si riprova dopo 60 s e
+non dopo il giro lungo; il giro lungo scende da 10 a 7 minuti, perche' con dieci due riproduzioni
+consecutive condividevano la stessa sonda; e una stick **lasciata accesa senza che nessuno guardi
+niente** smette di sondare dopo un'ora, invece di consumare ~850 MB l'ora per nessuno.
+
+### Verifica
+
+`tests/test_222.py` **168/168** (era 156). Il blocco nuovo prova la regola di indipendenza sulle
+righe VERE del 10/09, compreso il caso dell'eta' negativa, e verifica che due sonde con lo stesso
+valore ma offset diverso restino due punti distinti. Suite 36/40, `compileall` pulito. Schema
+invariato: le tre righe raccolte restano buone.
+
+## Lotto 229 -- La coda di una sonda abbandonata e' concorrenza nostra
+
+Quattro sonde col lettore di Kodi, 10/09 sera. Tre su quattro **abbandonate** dall'avvio di un film,
+e le abbandonate sono sistematicamente piu' basse:
+
+	19:09  46,28  regime 11,8 s   abbandonata
+	19:26  39,20  regime 10,8 s   abbandonata
+	19:33  40,88  regime  3,5 s   abbandonata
+	19:41  42,51  regime 18,0 s   budget pieno
+
+Diciotto per cento di dispersione, dopo che le prime due ne avevano dato mezzo. La causa sta nella
+forma della curva, non nel valore.
+
+### Cosa succede negli ultimi secondi
+
+Curva del 19:26, in Mbit/s per mezzo secondo:
+
+	45 38 48 42 48 43 40 48 45 51 45 48 48 48 48 48 43 43 42 | 16 32 22 5 5
+
+Il corpo sta fra 42 e 48; gli ultimi cinque mezzi secondi valgono 16, 32, 22, 5, 5. La sonda molla
+quando `molla()` vede la bandiera di riproduzione, che il player alza subito prima di `play()`. Ma
+**prima** di quel momento Fen Light ha gia' risolto il link e letto l'intestazione del flusso -- due
+richieste di rete -- e **subito dopo** Kodi comincia a riempire il buffer a tutta velocita'. Quei
+secondi la sonda li legge come linea lenta, e non lo sono: sono concorrenza nostra.
+
+Togliendo gli ultimi tre secondi:
+
+	19:26  38,55 -> 45,87  (+19,0%)   e la sonda pulita di cinque minuti prima diceva 46,28
+	19:33  38,86 -> non resta abbastanza, si scarta
+	19:41  41,19 -> 41,52  (+0,8%)    chiusa dal budget: la regola non costa niente dove non serve
+
+`CODA_ABBANDONO = 3,0`: su una sonda abbandonata il regime si calcola fino all'ultimo campione che
+precede la coda, e se cio' che resta e' sotto `SECONDI_MINIMI` il regime **non esiste**. Il log lo
+dice: *"abbandonata: riproduzione avviata, ultimi 3 s scartati"*.
+
+### E cade il pavimento del lotto 223
+
+Il pavimento teneva la sonda in lettura per un minimo di 5,5 s **anche dopo l'ordine di mollare**,
+perche' allora la sonda partiva dentro la ricerca sorgenti e sotto quel minimo non avrebbe prodotto
+niente. Col taglio della coda quel minimo diventerebbe 8,5 s -- otto secondi e mezzo di sonda che
+compete col buffer di un film che sta partendo, cioe' il momento piu' delicato dell'intera
+riproduzione.
+
+Da quando la sonda vive nel servizio (lotto 225) quella ragione non esiste piu': se la finestra e'
+troppo corta non si misura e si riprova fra un minuto, che non costa niente a nessuno. **Meglio una
+misura in meno che un buffer rubato.** La sonda ora molla all'istante, e `PAVIMENTO_UTILE` sparisce.
+
+### Un difetto silenzioso nel contratto del risultato
+
+`misura()` dichiarava nel dizionario iniziale solo i campi delle prime versioni: `quota`, `lettore`,
+`ripiego`, `coda_tagliata` e `quando` nascevano per assegnazione, quindi **su un percorso di errore
+non esistevano affatto**. Nessuno era ancora inciampato perche' tutti i lettori usavano `.get()`, ma
+era una trappola pronta. Ora tutti i campi si dichiarano in testa, e una prova verifica che il
+risultato di una sonda fallita abbia le stesse chiavi di una riuscita.
+
+### Verifica
+
+`tests/test_222.py` **169/169**. Il blocco 6 e' riscritto sul comportamento nuovo con tre casi: una
+curva pulita seguita da un crollo di concorrenza (il regime deve essere quello del corpo), una
+chiusa dal budget (nessun taglio, stesso risultato), e un abbandono precoce (si molla all'istante e
+non si dichiara niente). Suite 36/40, `compileall` pulito. Schema invariato.
+
+### Le otto righe buttate dal lotto 229, per memoria
+
+	id nome                    bitr  sonda   sec    B/C   eta   portata psec  secco salti
+	1  Decision to Leave      37,66     --    --      --    --    49,8  13,8    37   1
+	2  Wicked                 30,02  46,28  11,8   0,649    -1    48,9   8,8    13   1
+	3  La La Land             38,00  46,28  11,8   0,821   406      --    --    14   1
+	4  Guilty of Romance      34,01  39,20  10,8   0,868    -2    48,6  11,2    19   1
+	5  The Others             39,68  40,88   3,5   0,971    -7    46,4  21,2    29   1
+	6  Gremlins               28,35  40,88   3,5   0,694   297    41,0   6,2     9   1
+	7  Five Nights at Freddy  31,76  42,51  18,0   0,747    27    48,5   9,9    16   1
+	8  Halloween 2018         36,62  42,51  18,0   0,861   301    47,5  15,0    31   2
+
+Solo la coppia 7-8 porta una sonda chiusa dal budget; le altre sono abbandonate e quindi
+sottostimate dalla coda, e in archivio non c'e' modo di distinguerle. Si notino anche i tre
+`sonda_eta` negativi: sono le sonde abbandonate DALLA riproduzione che poi descrivono, quindi
+contemporanee ad essa -- corretto di per se', ma il lotto 228 ha spostato il timbro alla fine della
+lettura e da qui in avanti saranno vicini a zero e non negativi.
+
+## Lotto 230 -- La sonda va dove serve: prima del filtro, sulla sorgente che partirebbe
+
+Decisione dell'utente, dopo che le tre collocazioni precedenti erano tutte sbagliate per la stessa
+ragione di fondo: **una misura che non sa quando servira' non serve.**
+
+	lotto 222  dentro lo scraping   -> competeva per la CPU, dichiarava 8,0 e 26,0 su una linea da 45
+	lotto 225  nel servizio         -> tre sonde su quattro abbandonate a meta'
+	lotto 230  QUI                  -> subito dopo la risposta di TorBox sulla cache, prima del filtro
+
+Il flusso e': cocoscraper restituisce le sorgenti -> TorBox dice quali sono in cache -> **si ordina
+come farebbe l'autoplay, si risolve la prima, si misura la linea su quella** -> il filtro della
+dimensione decide sul numero appena misurato -> l'elenco mostrato all'utente e' gia' filtrato su
+cio' che la sua linea regge adesso.
+
+Il momento non e' solo quello giusto per definizione: e' anche **il piu' pulito della sessione**.
+Gli scraper hanno finito (CPU libera), la risoluzione non e' ancora partita (rete libera), e il nodo
+CDN che misuriamo e' quello che consegnera' il film, perche' e' la stessa sorgente.
+
+### Il costo, e come si dimezza
+
+Il link risolto per sondare viene **riusato per riprodurre** (`_link_gia_risolto`, consumabile una
+volta sola). La risoluzione sarebbe avvenuta comunque: cosi' quella parte dell'attesa non e'
+aggiunta, e' anticipata. Si provano al massimo `TENTATIVI_SONDA = 2` sorgenti, per coprire il caso
+"la prima non si risolve" senza regalare tempo su un caso raro.
+
+Nessuna sorgente in cache vuol dire che non c'e' niente da riprodurre per quel titolo: niente banda
+da misurare e niente da filtrare. Il filtro ripiega sull'impostazione, come prima.
+
+### I tre numeri che costano tempo, presi dalle curve vere
+
+**La finestra: 5 secondi.** Facendo scorrere una finestra di lunghezza L dentro le quattro curve
+misurate e confrontandola col regime dell'intera curva:
+
+	1 s -> 37% peggiore / 7,0% medio    4 s -> 11% / 4,0%     8 s -> 4,9% / 2,3%
+	2 s -> 23% / 5,3%                   5 s ->  8,6% / 3,5%   10 s -> 4,7% / 1,8%
+	3 s -> 16% / 4,8%
+
+Sopra i sei secondi la curva e' piatta. Gli errori sono quasi tutti **verso il basso**: una finestra
+corta sottostima, cioe' sbaglia dalla parte prudente.
+
+**La rampa: 1 secondo, non 2.** Il primo pezzo da 256 KB e' gia' scartato prima del cronometro e si
+porta via quasi tutta la salita del tcp: nel secondo successivo le quattro curve stanno a -0%, -0%,
+-13%, -12% dal regime. Il secondo scartato dal lotto 222 era attesa regalata.
+
+**L'offset: fra il 10% e il 25% del file.** Non piu' per la velocita' del cdn -- il lotto 227 ha
+dimostrato che la profondita' non conta -- ma perche' la testa e' proprio la parte che il film sta
+per leggere: sondarla la scalderebbe nel nodo di bordo, la riproduzione partirebbe piu' veloce del
+normale e **la taratura del margine ne uscirebbe falsata verso il basso**, cioe' verso il meno sicuro.
+
+Totale a carico dell'utente: apertura (1,0-1,9 s misurati) + rampa 1 s + finestra 5 s = **7-8 secondi**.
+
+### Il margine, che e' l'unica cosa ancora da guadagnare
+
+`line_speed = capacita / MARGINE`, ed e' letteralmente una riga. `MARGINE = 1,25` e' **provvisorio**
+e nasce da due indizi: la curva di salute misurata sulla stick (fluida fino a ~34 Mbit/s, in affanno
+da ~40, su una linea che la sonda misura a ~46) e il rapporto portata/sonda osservato, 1,04-1,08.
+Entrambi lo collocano fra 1,15 e 1,4. Si tara ordinando `playback_stats.rapporto_sonda` su venti-
+trenta righe indipendenti e guardando dove le sane finiscono: quel confine e' 1/MARGINE.
+
+### Cosa cade
+
+Con la sonda sincrona dentro la ricerca, **nessuna riproduzione puo' piu' partirle sotto**: e' lo
+stesso thread che la farebbe partire. Quindi sparisce tutto il macchinario nato per convivere con
+una riproduzione concorrente -- `CODA_ABBANDONO` e il taglio della coda (lotto 229), il servizio
+`SondaLinea` (lotto 225), `playback_stats.bersaglio()` e la ricerca del bersaglio in archivio.
+Resta un solo motivo per mollare -- l'utente che annulla la ricerca -- e li' la misura non serve
+piu' a nessuno, quindi si butta invece di salvarne un pezzo.
+
+### Verifica
+
+`tests/test_222.py` **171/171**. I profili della rete finta sono ricalibrati sul budget da sei
+secondi; il blocco dell'offset verifica che la testa del file non sia mai raggiungibile; il blocco
+degli agganci verifica **nel codice** che la sonda stia dopo gli altri filtri e prima di quello
+della dimensione, che il link risolto venga riusato e consumato una volta sola, e che il servizio
+non la ospiti piu'. Suite 36/40, `compileall` pulito. Schema invariato.
+
+## Lotto 231 -- Due cancelli, due numeri diversi
+
+Tre sonde col nuovo impianto, 10/09 sera. **Meccanicamente e' perfetta**: eseguita a ogni ricerca,
+sempre chiusa dal budget, quota 74-96%, consumo 35-37%, nessun limite di cpu, nessun abbandono.
+
+	20:38  nexus-156  REGIME 33,42  ttfb 3384 ms  quota 96%  85 ms/MB
+	20:40  nexus-226  REGIME 38,90  ttfb 2860 ms  quota 74%  80 ms/MB
+	20:44  nexus-227  REGIME 33,35  ttfb 1476 ms  quota 86%  89 ms/MB
+
+### Il difetto: il cancello esatto giudicava contro un numero vecchio
+
+Nel log: `19.3 Mbit/s veri (21.87 GB in 151:20), entro i 50 impostati`. Cinquanta e'
+`results.line_speed`, l'impostazione scritta a mano -- mentre il filtro di `sources` stava gia'
+decidendo su **26,7 Mbit/s misurati dalla sonda**.
+
+Sono due cancelli sulla stessa domanda con due stime diverse dello stesso bitrate: il filtro sulla
+dimensione DICHIARATA, il cancello del lotto 209 sui byte e i secondi LETTI DENTRO IL FILE. Il
+secondo e' il piu' preciso dei due, ed era quello che leggeva la soglia sbagliata. Finche' la
+misurata resta piu' bassa dell'impostazione il cancello non scatta mai e il difetto e' invisibile;
+appena la sonda misura una linea piu' veloce dell'impostazione, il cancello comincia a bocciare
+sorgenti che il filtro aveva accettato.
+
+`_linea_utile()` e' ora l'unica soglia: la misura della sonda se c'e', l'impostazione altrimenti, e
+**restituisce anche da dove viene**, che finisce nella riga di log. Senza quella provenienza una riga
+di scarto non dice se il numero era misurato o scritto a mano, e non si puo' piu' verificare a
+posteriori se il cancello ha tolto roba buona.
+
+### Il ttfb e' esploso, e va misurato prima di rimediare
+
+Col lettore Python il ttfb stava fra 604 e 1077 ms; col lettore di Kodi sta fra **1476 e 3384**. Sono
+secondi che l'utente paga **senza misurare**, e sono piu' della meta' dell'attesa totale.
+
+Il sospetto e' che siano due giri di rete invece di uno: `xbmcvfs.File` non sa aprire gia' a un
+offset, quindi si apre e **poi** si fa `seek()`, e su un file http quello e' una seconda richiesta.
+Ma e' un sospetto, non una misura -- e su questa strada le diagnosi plausibili si sono gia'
+rivelate false due volte (lotto 223, lotto 227). Quindi si misura: `t_apertura`, `t_posizione`,
+`t_primo`, scritti nel log. Il prossimo giro dira' quale dei tre pezzi consuma i secondi, e solo
+allora si decide.
+
+### Sulla dispersione: 16,6%, ed e' quasi tutta vera
+
+Le tre sonde stanno fra 33,35 e 38,90. Allungare la rampa da 1 a 2 secondi **peggiora** (18,6%),
+quindi non e' la salita del tcp. Guardando i singoli mezzi secondi dentro una sonda:
+
+	20:40   37 38 37 32 48 37 35 29 38 37 40      -> fra 29 e 48 attorno a 37
+
+La linea oscilla del ±25% da un mezzo secondo all'altro. Con dieci mezzi secondi l'errore standard
+della media e' 25%/sqrt(10) = **8%**, e due sonde possono quindi differire del 16% senza che nulla
+sia rotto. E' esattamente cio' che si osserva.
+
+Non si cura con una media troncata o con una mediana: quei mezzi secondi lenti **sono reali** e il
+film li subira'. Una media che li butta misurerebbe una linea che non esiste. L'unico rimedio vero e'
+una finestra piu' lunga -- ed e' tempo che l'utente paga. Per questo il ttfb conta: se i tre secondi
+di apertura si possono comprimere, quel tempo si puo' spostare dentro la finestra a parita' di attesa.
+
+Nota di contesto: alle 19:40 la stessa linea misurava 42-46, alle 20:40 misura 33-39. Il calo e'
+reale e lo vede anche la riproduzione (`portata dopo 33,3` sul film delle 20:41).
+
+### Verifica
+
+`tests/test_222.py` **178/178**. I blocchi nuovi provano che i tre pezzi del ttfb esistono e
+ricostruiscono il totale, e che il cancello del player e il filtro di sources leggono la stessa
+soglia con lo stesso ripiego.
+
+`tests/test_209.py` **48/48** -- si era rotto, ed e' giusto che si sia rotto: estraeva il cancello da
+`player.py` e gli passava un `get_setting` finto, quindi la soglia spostata in `_linea_utile` lo
+faceva cadere nel ramo "cancello banda fallito", che risponde sempre *passa*. Ora estrae anche
+`_linea_utile` e verifica il ripiego. Suite 36/40, `compileall` pulito.
+
+## Lotto 232 -- Il seek costava due terzi dell'attesa
+
+Il ttfb spezzato dal lotto 231 ha risposto al primo giro, e il colpevole non era quello che pagavo:
+
+	ora     apertura  posizione  1o pezzo   ttfb   quota del seek
+	20:57      1329       1750        91    3169         55%
+	21:02      1301       3695       122    5118         72%
+	21:06       666       1344        94    2103         64%
+	media      1098       2263       102
+
+**Il posizionamento costa 2,26 secondi di media**, il 55-72% dell'attesa, mentre il primo pezzo di
+dati ne costa 102. `xbmcvfs.File` non sa aprire gia' a un offset: si apre, e poi si fa `seek()`, che
+su un file http e' una **seconda richiesta con un secondo handshake TLS**.
+
+### Si torna al lettore Python, e la ragione e' un numero
+
+Il lotto 227 aveva scelto il lettore di Kodi perche' decifra in C++ e costa meno cpu -- 78 ms per MB
+contro 96, cioe' un tetto di 107 Mbit/s contro 82. Resta vero. Ma il lettore Python la Range la mette
+nella **prima** richiesta: un giro solo, ttfb misurato 604-1077 ms contro 2103-5118.
+
+Su una linea da 47 Mbit/s il consumo passa dal 45% al 55% di un core -- dentro la quota misurata
+(76-95%) e con `_limitata_da_cpu` a fare la guardia. **Duemila e trecento millisecondi di attesa
+valgono piu' di venticinque punti di tetto che non stiamo usando.**
+
+Serve pero' conoscere l'offset PRIMA di aprire, quindi la dimensione va saputa in anticipo: la da'
+`item['size']` dello scraper. Quando non c'e' si ripiega sul lettore di Kodi, che la dimensione la sa
+dopo l'apertura e paga il seek.
+
+E `item['size']` e' stato trovato sbagliato di 25 volte (lotto 192), quindi la Range si **verifica**:
+con un offset chiesto, uno stato 200 vuol dire che non e' stata onorata e staremmo leggendo proprio
+la testa che non vogliamo scaldare; 416 vuol dire offset oltre la fine. Entrambi rifiutano, e si
+ripiega su Kodi. In cambio il `Content-Range` porta a casa gratis la **dimensione vera**, che finisce
+nel log accanto a quella dichiarata quando le due divergono di piu' del 5%.
+
+### Come sta andando la sonda
+
+Cinque riproduzioni, cinque sonde, **nessuna mancata**. `sonda_eta` fra 0 e 13 secondi: la misura
+arriva sempre pochi secondi prima del film che deve descrivere.
+
+	id  ora    bitrate  sonda  line_speed  portata (finestra)  B/C
+	1   20:43   19,27   38,90     31,1        1,4 (9,3 s)     0,495
+	2   20:46   11,30   33,35     26,7       37,3 (3,8 s)     0,339
+	3   21:00   27,69   45,94     36,8       46,6 (8,8 s)     0,603
+	4   21:05   27,62   47,08     37,7       46,3 (8,8 s)     0,587
+	5   21:19   13,44   37,70     30,2       42,0 (4,6 s)     0,356
+
+Le due righe con una finestra di portata decente sono la validazione piu' forte finora:
+
+	sonda 45,94  contro  portata 46,6   ->  -1,4%
+	sonda 47,08  contro  portata 46,3   ->  +1,7%
+
+Due strumenti indipendenti, due riproduzioni consecutive, **entro il 2%**. Le altre tre hanno
+finestre di portata da 3,8-4,6 s, che il lotto 219 ha dimostrato leggere alto.
+
+E la correzione del lotto 231 si vede nel log: `27.7 Mbit/s veri, entro i 36.8` -- il numero
+misurato, non piu' i 50 dell'impostazione.
+
+### Cosa resta
+
+Il **margine** non e' ancora verificabile: tutti i `B/C` stanno fra 0,34 e 0,60, cioe' riproduzioni
+comode, tutte sane. Il confine si vede solo con materiale nella fascia 34-45 Mbit/s.
+
+Il tempo tolto al seek **non e' stato speso nella finestra**: resta a 5 secondi come deciso
+dall'utente, e l'attesa totale scende da 8-11 s a circa 6-7. Con la finestra a 7 s l'errore casuale
+scenderebbe da circa +/-8% a +/-5,5% pagando lo stesso tempo di prima -- ma e' una decisione sua.
+
+### Verifica
+
+`tests/test_222.py` **184/184**. Il blocco del lettore prova la scelta in tutti e tre i casi --
+offset noto, Python rifiuta e si ripiega su Kodi, offset ignoto -- e due prove nuove verificano che
+con la dimensione nota l'offset venga scelto **prima** di aprire, e che senza dimensione lo decida il
+lettore dopo l'apertura. Suite 36/40, `compileall` pulito.
+
+## Lotti 233-237 -- Quattro processi, un refresh token
+
+Il dispositivo di mio padre — profilo `Maurizio` sulla Shield, non aperto dal 30/08 — ha chiesto di
+riautenticare Trakt. L'ipotesi di partenza era una scadenza del refresh token per inattività. È
+falsa: l'access token dura **7 giorni** (era 90, poi 24 ore da marzo 2025) e il refresh token,
+secondo Trakt, resta valido «way longer than 90 days» e non scade per inattività. Undici giorni
+spenti non spiegano niente.
+
+La causa è nostra, ed è nel log della Shield alle 21:11:43 del 10/09:
+
+	21:11:43.297  T:9340  400 per .../oauth/token
+	21:11:43.304  T:9332  400 per .../oauth/token
+	21:11:43.341  T:9344  400 per .../oauth/token
+	21:11:43.408  T:9331  token refresh SUCCESS (604800 s)
+	21:11:43.464  T:9332  received 401 -> attempting token refresh
+	21:11:43.794  T:9340  token refresh SUCCESS (604800 s)
+	21:11:43.815  T:9332  400 per .../oauth/token
+	21:11:44.259  T:9344  400 per .../oauth/token
+	21:11:44.673  T:9356  400 per .../oauth/token
+
+Quattro interpreti — il servizio e tre invocazioni del plugin — spediscono lo **stesso** refresh
+token nello stesso decimo di secondo. Uno vince, tre prendono 400. Nella seconda ondata i perdenti
+rileggono il token appena ruotato e **se lo giocano a loro volta**: T:9340 vince il secondo giro e
+brucia il token che T:9331 aveva appena ottenuto. In 1,4 secondi il token è stato ruotato tre volte
+e riusato cinque. Per Trakt il refresh token è monouso e ogni riuso è un tentativo di replay.
+
+Nello stesso log, il conto per l'utente: due `BUILD FALLITA ... 'NoneType' object is not iterable`
+sulla watchlist e un `TraktMonitor Service Update Failed`.
+
+### Perché il lucchetto non serviva a niente
+
+`refresh_lock` era un `threading.Lock` di modulo. Con `reuselanguageinvoker=false` ogni invocazione
+del plugin è un **interprete nuovo**: quattro interpreti, quattro oggetti `Lock` distinti, zero
+mutua esclusione. Serializzava thread che non esistono. E la guardia di riletto a valle
+(`if get_setting(...) != refresh_token: return True`) non frenava: chi rilegge trova il token
+*nuovo* e lo spende subito. Era un amplificatore.
+
+### Da dove nasceva la richiesta di riautenticare
+
+Le tre impostazioni si scrivevano una alla volta:
+
+```python
+set_setting('trakt.refresh', ...)   # 1
+set_setting('trakt.token', ...)     # 2
+set_setting('trakt.expires', ...)   # 3
+```
+
+Chi legge **fra la 1 e la 2** vede un refresh token nuovo accanto a un access token scaduto: la
+guardia conclude «ha già rinnovato qualcun altro», la richiesta viene rispedita con il token vecchio,
+torna un altro 401 — ed è quel ramo, l'unico, ad aprire *«You must authenticate with Trakt»*. Non
+serve nessun token morto: basta leggere nel millisecondo sbagliato. Chi legge **fra la 2 e la 3**
+trova token nuovi e scadenza vecchia, e rinnova di nuovo: è così che le ondate si alimentavano.
+
+### Le tre proprietà, e come sono ottenute
+
+**Atomicità (234).** `access`, `refresh` e scadenza sono un solo valore JSON in un solo setting
+(`trakt.auth`), scritto una volta sola. Nessuno può più osservare uno stato misto. I tre vecchi id
+restano *dichiarati* in `settings_cache` — `sync_settings` cancella gli id che non conosce — ma
+svuotati alla migrazione: una sola fonte di verità.
+
+**Unicità (235).** Il lucchetto è una **riga di `settings.db`**, non un oggetto di memoria: è l'unico
+arbitro che servizio e plugin vedono entrambi. `UPDATE trakt_auth_lock SET expires = ? WHERE id = 1
+AND expires < ?` è atomico fra processi — o cambia una riga, o zero. La colonna `expires` *è* la
+proprietà del lucchetto: nel passato libero, nel futuro preso, e la scadenza fa da recupero per un
+processo morto con il lucchetto in mano. La scadenza scritta torna al chiamante e va ripassata al
+rilascio: fa da **gettone**, perché un processo rimasto indietro non deve liberare il lucchetto di
+chi è subentrato. `ROTATION_LOCK_TTL = (timeout * 2) + 5` e non un numero a caso: deve superare il
+tempo peggiore di una richiesta, altrimenti il lucchetto si può rubare a rotazione in corso.
+
+Chi non lo ottiene **aspetta l'esito altrui** invece di spendere il token, ed eredita anche il
+verdetto: un rifiuto vale per tutti, è lo stesso token.
+
+**Leggibilità (233).** Un 400 di Trakt è una risposta — porta `error` e `error_description` —
+non un guasto. `raise_for_status` lo trasformava in eccezione, `call_trakt` tornava `None`, e il ramo
+`invalid_grant` era **codice irraggiungibile**: ogni rifiuto finiva a log come «Trakt unreachable».
+Le rotte `oauth/*` ora non passano più da `call_trakt` ma da `_oauth_post`, che torna `(stato,
+payload)`. La separazione era dovuta comunque: `call_trakt` è il trasporto dell'API — bearer, rinnovo
+su 401, 429, paginazione — e per l'autenticazione non serve niente di quello, mentre il rinnovo su
+401 sarebbe per giunta circolare.
+
+Nella stessa direzione, un rifiuto non è uno solo: `invalid_grant` è il token dell'utente che muore
+— riautorizzare ripara, e si chiede — mentre `invalid_client` è la **chiave dell'applicazione** che
+non vale più, e lì riautorizzare fallirebbe allo stesso modo. Il verdetto viene ricordato per la
+sessione accanto al token che l'ha subito, così si azzera da solo appena il token cambia. Non è un
+caso teorico: il 12/08/2026 Trakt cancellò l'app originale di Fen Light.
+
+I tre esiti di `trakt_refresh_token` sono ora distinti e significano cose diverse: `True` c'è un
+token valido, `False` Trakt ha rifiutato (**l'unico caso in cui abbia senso disturbare l'utente**),
+`None` non si è concluso e nel dubbio non si chiede niente a nessuno.
+
+### Il resto (236, 237)
+
+- Il servizio chiama `trakt_ensure_token()` a ogni giro: esiste prima dei widget e vive quanto Kodi,
+  quindi il lucchetto resta raramente conteso. Non lo sostituisce — all'avvio servizio e widget
+  partono insieme, e in quel log li separavano 110 ms.
+- Il dialogo di riautenticazione è **uno per sessione** di Kodi: prima ogni interprete poteva aprirne
+  uno per conto suo. Il guardiano chiude anche una ricorsione: `trakt_authenticate` chiama a sua
+  volta `call_trakt`.
+- `trakt_revoke_authentication` **cattura il token prima di azzerarlo**. Prima spediva a Trakt un
+  token vuoto: da noi l'account risultava scollegato, su Trakt la sessione restava viva.
+- `trakt_authenticate` verifica la coppia **prima** di scrivere. Prima scriveva l'access token e poi
+  leggeva `token["refresh_token"]`: se fosse mancato restava un access token orfano, cioè una
+  riautenticazione forzata ogni sette giorni.
+- `cache_trakt_object` non memorizza più `None`: una chiamata mai arrivata non è una lista vuota, e
+  memorizzarla svuotava la watchlist fino alla scadenza della cache. È la causa dei due
+  `BUILD FALLITA` del log.
+- `checkpoint_database('settings_db')` dopo ogni scrittura del record. `synchronous = NORMAL` non
+  forza fsync a ogni commit: un riavvio duro — e su queste macchine capitano — poteva perdere il
+  token appena ruotato, che è l'unico dato dell'applicazione che **non si può riottenere**.
+- Residuo ripulito: `trakt.client` su entrambi i profili della Shield conteneva ancora
+  `1038ef32…`, il client id revocato (verificato: 403, contro 200 del nuovo). Era inerte solo perché
+  `trakt_client()` restituisce la costante e ignora l'impostazione — ma il pannello lo mostrava.
+
+### La regola del rinnovo anticipato, in un posto solo
+
+`_needs_renewal` è nato da un'incoerenza fra due chiamanti: una scadenza **sconosciuta** (0, un
+record migrato) non significa «rinnova adesso». Con la rete assente si tradurrebbe in un tentativo di
+rotazione da venti secondi davanti a ogni chiamata; se il token è davvero morto lo dice Trakt con un
+401, che costa una richiesta sola e non consuma nessuna rotazione.
+
+### Le prove
+
+`tests/test_233_trakt_auth.py`, dieci sezioni. La prima riproduce il 10/09 con **quattro processi
+veri** — non thread, perché il difetto originale era proprio un lucchetto che fra interpreti separati
+non serializza — contro un finto Trakt che applica la regola vera dell'API: refresh token monouso,
+400 `invalid_grant` / `session not found` a chi ripresenta un token speso. I figli hanno anche
+proprietà di finestra separate, che in Kodi sono condivise: la prova è **più severa della realtà**,
+a serializzare resta il solo lucchetto.
+
+	rotazioni    3  ->  1
+	riusi        5  ->  0
+
+Suite 37/41 (i quattro rotti vogliono argomenti da riga di comando e non passano da `run.py`).
+
+### Cosa resta aperto
+
+I token vivono anche in una **proprietà di finestra**, perché `get_setting` legge la proprietà prima
+del database e `set_setting` pubblica sempre. È così per ogni impostazione da sempre, quindi non è
+un'esposizione nuova, ma resta vero che un altro addon nello stesso Kodi può leggerli. Toglierli di
+lì significa mettere mano allo strato delle impostazioni, non a questo blocco: è una decisione a
+parte.
+
+`api.trakt.tv/oauth/*` continua a funzionare — Mac, stick e Shield lo dimostrano — anche se dopo la
+migrazione OAuth di metà luglio 2026 Trakt indica `auth.trakt.tv`. Non l'ho toccato: cambiare host
+rischierebbe ciò che già va. Da sorvegliare.
+
+## Lotto 238 -- Tre guardie: la sonda che si difende, la ruota che si ferma, la macchina che tace
+
+Tre correzioni indipendenti, nate tutte dalla stessa serata di log sulla stick (10/09, 21:53-22:21).
+
+### 1. La sonda scarta la misura presa senza CPU
+
+Alle 22:02 la sonda ha dichiarato **6,62 Mbit/s** su una linea che due minuti dopo ne misurava 46,23.
+La misura e' stata **pubblicata**: il filtro ha lavorato con `line_speed` 5,3 e la lista sorgenti di
+Mad Max Fury Road si e' svuotata.
+
+```
+REGIME 6.62 Mbit/s su 4.8 s
+curva  0.8 1.0 1.2 1.8 2.0 2.5 3.0 3.2 3.8 4.2 4.5 4.8   <- a scatti, 3x fra bucket vicini
+cpu    consumo 9% | quota 27% | processo 185%
+```
+
+`_limitata_da_cpu` non l'ha fermata perche' cerca `consumo/quota >= 0,95`, e li' era **0,33**. Il suo
+presupposto e' che la fame di CPU si veda come consumo ALTO. Per un thread che fa I/O non e' cosi':
+il GIL conteso non toglie cicli, toglie **occasioni** -- fra due `recv()` il thread aspetta il
+lucchetto, il socket non viene svuotato, la finestra TCP si chiude. Portata e consumo crollano
+insieme e il loro rapporto resta innocente.
+
+Che non sia un tetto di decifratura lo dice l'aritmetica: 27% di 74 Mbit/s fa 20, e la sonda ne ha
+letti 6,62, un terzo. **Nessun prodotto `tetto x quota` spiega quel numero.** L'unica grandezza che
+separa quella sonda dalle altre cinque della serata e' la quota nuda.
+
+`QUOTA_MINIMA` era **dichiarata e mai usata** (zero riferimenti in tutto il progetto): era rimasta
+orfana quando il lotto 230 ha tolto la sonda dal servizio. Ora e' la prima riga di
+`_limitata_da_cpu`, alzata da 0,50 a **0,60**, ed e' l'unica guardia che **non ha bisogno di una
+diagnosi** -- cosa occupasse la macchina alle 22:02 non l'ho mai scoperto, e non serve saperlo.
+
+Le sei quote della serata: 27 (rotta), 70, 74, 76, 78, 80, 81, 86, 87, 95. La soglia sta nel vuoto,
+verso l'alto. Scartare costa un ripiego sull'impostazione dell'utente; tenere una misura falsa svuota
+la lista o fa stallare un film. Si sbaglia dalla parte che costa meno.
+
+### 2. La ruota da 30 secondi dell'avanzamento Trakt (TRAKT.md §9.2)
+
+21 giri in 28 minuti, uno ogni 30 s, per tutto il log. Ogni giro accende un interprete Python nuovo:
+**928 ms di orologio, 538 di CPU, di cui 465 solo per diventare Python** -- e vale anche mentre un
+film e' in riproduzione.
+
+Il difetto non e' aritmetico: **il rilevatore e la sua riparazione parlano alfabeti diversi.** Si
+chiede "lo snapshot ha un `resume_id` che non abbiamo?" mentre la riparazione scrive **una riga per
+chiave**. Con due voci gemelle su Trakt la seconda non potra' mai entrare in tabella: una differenza
+che la propria riparazione non sa togliere non e' un rischio di ciclo, e' un ciclo per costruzione.
+
+Corretto **alla sorgente**, non nel confronto: `trakt_playback_progress()` deduplica lo snapshot per
+chiave, cosi' tutti i consumatori vedono cio' che la tabella puo' contenere. Ripararlo nel solo
+confronto avrebbe zittito il sintomo lasciando la ricostruzione a scegliere **a caso** quale gemello
+scrivere -- prima di questo lotto la scelta la faceva l'ordine di arrivo dei thread.
+
+Il dettaglio completo sta in TRAKT.md §9.2. Va letto anche §9.3, ri-analizzato qui: **sa ancora far
+girare la ruota per un'altra via**, e la correzione tocca `progress_sync.reconcile`, che merita un
+lotto suo.
+
+### 3. La fase di ricerca ferma i servizi, come gia' fa la riproduzione
+
+`fenlight.playback.active` si alza subito prima di `play()`. Ma fra "l'utente ha scelto un titolo" e
+quell'istante ci sono scraping, controllo cache TorBox, sonda e filtri: per Mad Max, **98 secondi**.
+In tutta quella finestra l'interfaccia era libera di ricostruirsi.
+
+Nuova bandiera `fenlight.ricerca.attiva`, alzata in `sources.get_sources` e abbassata in un
+`finally` **prima** della scelta e della riproduzione -- da li' in poi il testimone passa a
+`playback.active`: due fasi contigue, due bandiere, nessuna finestra scoperta e nessuna
+sovrapposizione. La leggono TraktMonitor, WidgetRefresher, WidgetPaginator e DubResolver. PerfSampler
+**no**, ed e' voluto: durante la ricerca e' proprio quando vogliamo che misuri.
+
+**Porta una SCADENZA, non un `true`.** Questa bandiera la alza il plugin, e un interprete di plugin
+puo' morire in qualunque momento; le proprieta' di `Window(10000)` sopravvivono al processo che le ha
+scritte, quindi un `true` rimasto acceso congelerebbe monitor e widget fino al riavvio di Kodi. E'
+lo stesso ruolo della colonna `expires` nel lucchetto del rinnovo Trakt: chi muore col lucchetto in
+mano lo rilascia. Una proprieta' sola e non due -- due si leggono in momenti diversi e possono
+contraddirsi, che e' il guasto descritto in `decide_pending_refresh`.
+
+**Questo da solo non avrebbe salvato la sonda delle 22:02**, e il log lo dice chiaramente: i due
+rebuild piu' vicini a una sonda (8 s e 10 s) hanno dato le due quote piu' alte, 81% e 87%. La
+correlazione non regge. Le due cose sono complementari -- la 3 riduce quanto spesso capita, la 1
+garantisce che non passi -- e se ne dovessi tenere una sola terrei la 1.
+
+### Prove
+
+`tests/test_238.py` (nuovo). Il blocco 3 fa due giri di riconciliazione e pretende che
+**convergano**; il **3bis** rifa' lo stesso giro senza la correzione e pretende che **non**
+converga, cosi' a passare non puo' essere il caso. Usa il `progress_out_of_sync` vero contro un
+sqlite vero, non un modello.
+
+`tests/test_222.py` 188/188 (era 184: la tabella della guardia CPU e' cambiata insieme al
+comportamento, deliberatamente). `tests/test_210.py` 28/28 -- l'avevo rotto aggiungendo
+`search_running` alle due guardie che quel test estrae e valuta, ed e' stato riparato aggiungendo
+anche i due casi nuovi. Suite 38/42; i quattro rotti sono i preesistenti `test_202-205`.

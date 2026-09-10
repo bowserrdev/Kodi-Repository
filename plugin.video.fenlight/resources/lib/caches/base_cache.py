@@ -83,6 +83,19 @@ PROGRESS_CREATE = (
 	"sync_state text not null default 'synced', misses integer not null default 0, "
 	'unique (db_type, media_id, season, episode))')
 
+# LOTTO 235 -- IL LUCCHETTO DEL RINNOVO TRAKT E' UNA RIGA, NON UN OGGETTO DI MEMORIA.
+# Gli interpreti di Kodi non condividono memoria: con reuselanguageinvoker=false ogni invocazione
+# del plugin e' un interprete nuovo e il servizio e' un altro ancora, quindi un threading.Lock di
+# modulo produce N lucchetti distinti e serializza zero. L'unico arbitro che tutti vedono e' questo
+# file. Una riga sola, e la colonna `expires` E' la proprieta' del lucchetto: nel passato = libero,
+# nel futuro = preso da qualcuno. La scadenza fa anche da recupero, perche' un processo che muore
+# con il lucchetto in mano lo rilascia da solo invece di bloccare tutti gli altri per sempre.
+# NON va aggiunta a integrity_check: li' una tabella mancante fa CANCELLARE il database, e
+# settings.db contiene i token.
+TRAKT_AUTH_LOCK_CREATE = (
+	'CREATE TABLE IF NOT EXISTS trakt_auth_lock (id integer primary key check (id = 1), expires real not null default 0)',
+	'INSERT OR IGNORE INTO trakt_auth_lock (id, expires) VALUES (1, 0)')
+
 table_creators = {
 	'navigator_db': (
 		'CREATE TABLE IF NOT EXISTS navigator (list_name text, list_type text, list_contents text, unique (list_name, list_type))',),
@@ -94,7 +107,7 @@ table_creators = {
 	'favorites_db': (
 		'CREATE TABLE IF NOT EXISTS favourites (db_type text not null, tmdb_id text not null, title text not null, unique (db_type, tmdb_id))',),
 	'settings_db': (
-		'CREATE TABLE IF NOT EXISTS settings (setting_id text not null unique, setting_type text, setting_default text, setting_value text)',),
+		'CREATE TABLE IF NOT EXISTS settings (setting_id text not null unique, setting_type text, setting_default text, setting_value text)',) + TRAKT_AUTH_LOCK_CREATE,
 	'trakt_db': (
 		'CREATE TABLE IF NOT EXISTS trakt_data (id text unique, data text)',
 		'CREATE TABLE IF NOT EXISTS watched \
@@ -141,9 +154,48 @@ table_creators = {
 		'  salti integer,'
 		'  portata_prima real,'               # Mbit/s sostenuti, surplus + bitrate
 		'  portata_dopo real,'
+		# LOTTO 212 -- COME e' stata presa la misura, non solo quanto vale. `portata_campioni` sono i
+		# campioni del tratto piu' lungo rimasto sotto il tetto del buffer, `portata_punti` i punti
+		# percentuali che quel tratto ha coperto (negativi se la cache CALAVA, cioe' se la linea non
+		# ce la faceva: e' una misura, non un errore). Servono al wizard per pesare o scartare, e
+		# servivano a me: davanti alla vecchia "sostenuta" che usciva 5,1%/s dieci volte su ventisette
+		# non c'era modo di accorgersi che non era una misura ma la lunghezza della finestra.
+		'  portata_campioni_prima integer,'
+		'  portata_punti_prima integer,'
+		# LOTTO 215 -- la coppia qui sopra descrive portata_PRIMA e basta: nata quando la misura era
+		# una sola, non si rinomina per non perdere le righe gia' raccolte. Questa descrive
+		# portata_DOPO, ed e' servita subito: Boogie Nights (10/09) non aveva nessun tratto valido
+		# prima del salto e uno da 76 campioni dopo -- la seconda misura migliore dell'archivio, che
+		# risultava con campioni NULL e il wizard avrebbe scartato come inaffidabile.
+		'  portata_campioni_dopo integer,'
+		'  portata_punti_dopo integer,'
+		# LOTTO 217 -- quanti campioni del tratto vincente erano a cache ZERO. E' cio' che separa una
+		# misura da un limite superiore: a zero il buffer non puo' scendere oltre, smette di
+		# registrare il deficit e la pendenza legge "capacita' = bitrate" mentre la verita' e'
+		# "capacita' MINORE del bitrate, di quanto non si sa". La regola che li separa e'
+		# playback_stats.e_prova_di_capacita(), e sta li' e non qui perche' il wizard deve poterla
+		# chiamare invece di reinventarla.
+		'  portata_secchi_prima integer,'
+		'  portata_secchi_dopo integer,'
+		# LOTTO 219 -- la DURATA della finestra, in secondi, e non si ricava dai campioni: il passo
+		# non e' costante (250 ms finche' il fitto e' acceso, poi 1 s), quindi 46 campioni valgono
+		# 15,8 s e 77 ne valgono 48,3. Serve perche' le finestre corte leggono sistematicamente piu'
+		# alto: 4,4 s -> 47,5 Mbit/s | 15,8 s -> 46,2 | 48,3 s -> 43,2 | 117 s -> 44,3, su quattro
+		# riproduzioni indipendenti. Senza questa colonna il wizard non puo' distinguere una raffica
+		# di apertura da una portata sostenuta, e mediarle insieme sovrastima la linea.
+		'  portata_secondi_prima real,'
+		'  portata_secondi_dopo real,'
+		# LOTTO 221 -- quanto la finestra e' andata in una direzione sola (1,0 monotona, ~0 andata e
+		# ritorno). E' il numero su cui la regola decide, conservato per poterla verificare
+		# dall'archivio invece che dai log -- come `portata_secchi` per la guardia sul pavimento.
+		'  portata_direzione_prima real,'
+		'  portata_direzione_dopo real,'
 		'  cache_media_prima integer, cache_max_prima integer,'
 		'  cache_media_dopo integer, cache_max_dopo integer,'
-		'  secondi_a_zero integer,'           # il piu' lungo tratto consecutivo di cache a 0
+		# LOTTO 218 -- "a secco", non "a zero", e la soglia e' player.PAVIMENTO_CACHE. A zero esatto
+		# questo numero usciva sei volte piu' piccolo del vero: su 28 Years Later (10/09) il buffer e'
+		# stato a terra 42 secondi rimbalzando fra 0 e 1, e gli 1% spezzavano la sequenza -> 7.
+		'  secondi_a_secco integer,'         # il piu' lungo tratto consecutivo col buffer vuoto
 		'  campioni integer,'
 		# LOTTO 202. Il guasto dell'08/09 non era di banda: 2,1 Mbit/s su cache piena, e nessuna delle
 		# colonne qui sopra lo avrebbe distinto da una riproduzione riuscita. Il file era HEVC 10 bit
@@ -165,7 +217,45 @@ table_creators = {
 		#                                    i provider fuori da correct_pack_sizes e' l'unica che c'e'
 		'  dimensione_dichiarata real,'
 		'  provider text,'
-		'  pacchetto text)',
+		'  pacchetto text,'
+		# LOTTO 222 -- LA SONDA DELLA LINEA (modules/sonda_linea.py), presa PRIMA di questa
+		# riproduzione mentre gli scraper lavoravano. E' l'altra meta' della coppia con cui si tara
+		# il margine: `sonda_mbps` dice cosa la linea consegnava trenta secondi prima, `bitrate`
+		# dice cosa il film chiedeva, e le colonne di cache qui sopra dicono se ha tenuto. Il
+		# rapporto bitrate/sonda_mbps, ordinato su venti-trenta righe, separa le riproduzioni sane
+		# dalle sofferenti: quel confine e' 1/MARGINE, ed e' l'unico numero che il wizard deve
+		# imparare. Dopo, `line_speed = sonda / MARGINE` e questo archivio non serve piu' a nessuno.
+		'  sonda_mbps real,'                # regime, cioe' il tratto dopo la salita del tcp
+		'  sonda_lorda real,'               # rampa compresa: si tengono entrambe per vedere quanto pesa
+		'  sonda_secondi real,'             # durata del tratto di regime
+		'  sonda_ttfb integer,'             # ms fino al primo byte: latenza, NON banda
+		'  sonda_byte integer,'
+		# LOTTO 223 -- DA CHE PROFONDITA' e' stata letta, in byte. Non e' un dettaglio di diagnosi:
+		# e' la variabile che il 10/09 ha fatto leggere 3,0 Mbit/s dove la linea ne faceva 46, sullo
+		# stesso file e sullo stesso nodo di una sonda che al 20% ne aveva letti 37,5. Senza questa
+		# colonna una riga presa in profondita' e una presa in testa sono indistinguibili in
+		# archivio, e il margine si tarerebbe mescolandole.
+		'  sonda_offset integer,'
+		# LOTTO 226 -- QUANTA CPU C'ERA e QUANTA SE NE E' USATA. Sono le due colonne che rendono
+		# leggibile una riga senza sapere quando e' stata scritta, come sonda_offset. Il rapporto
+		# fra `sonda_cpu / sonda_secondi` e `sonda_quota` dice se la sonda ha misurato la linea o il
+		# proprio tetto di decifratura: vicino a 1 il regime e' un MINIMO. Le tre righe del 10/09
+		# con 4,18 / 26,0 / 8,01 Mbit/s su una linea da 45 avevano quota 0,10-0,25 e in archivio
+		# erano indistinguibili da una misura buona.
+		'  sonda_quota real,'              # frazione di un core disponibile, da un ciclo occupato
+		'  sonda_cpu integer,'             # ms di cpu del thread spesi nella lettura
+		# Eta' della misura all'avvio del film. Una sonda vale se e' fresca: questa colonna e' cio'
+		# che permette di verificarlo invece di darlo per scontato.
+		'  sonda_eta integer,'
+		# Il nodo che ha risposto ALLA SONDA. `cdn` piu' in alto e' il nodo che ha servito il FILM:
+		# quando i due differiscono, la sonda ha misurato un pezzo di rete diverso da quello che ha
+		# riprodotto, ed e' proprio l'obiezione con cui e' morta la sonda dei lotti 191-195. Due
+		# colonne separate perche' la domanda si possa porre ai dati.
+		'  sonda_cdn text,'
+		# Il link risolto di QUESTA riproduzione: e' il bersaglio della PROSSIMA sonda. Sta qui e non
+		# in un'impostazione perche' deve sopravvivere allo spegnimento e perche' va letto insieme a
+		# `dimensione`, che e' cio' che decide da che offset leggere.
+		'  link text)',
 		# LISTA NERA -- tabella A PARTE, e la separazione e' il punto. playback_stats e' una finestra
 		# scorrevole di 50 righe che si pota a ogni scrittura: una bocciatura messa li' sparirebbe
 		# dopo cinquanta riproduzioni, cioe' proprio quando comincia a servire. Stesso database --
@@ -205,6 +295,17 @@ def connect_database(database_name):
 		conn.execute('PRAGMA synchronous = NORMAL')
 		_local.connections[database_name] = conn
 	return conn
+
+def checkpoint_database(database_name):
+	"""Forza su disco cio' che e' appena stato scritto.
+
+	In WAL con synchronous = NORMAL un commit sopravvive alla morte del processo ma non a un riavvio
+	duro, e su queste macchine i riavvii duri capitano (watchdog_reboot). Si usa per il solo dato che
+	non si puo' riottenere: il refresh token di Trakt, che nell'istante in cui ci arriva e' gia' stato
+	ruotato dalla loro parte -- perderlo qui significa perdere l'autenticazione, non una cache.
+	"""
+	try: connect_database(database_name).execute('PRAGMA wal_checkpoint(FULL)')
+	except Exception as e: kodi_utils.logger('Fen Light', 'checkpoint di %s fallito: %s' % (database_name, e))
 
 def get_timestamp(offset=0):
 	# offset is in hours
@@ -259,29 +360,42 @@ def migrate_progress_schema():
 			kodi_utils.logger('Fen Light', 'progress: migrazione di %s FALLITA: %s' % (database_name, e))
 
 def migrate_playback_schema():
-	"""Aggiunge a `playback_stats` le colonne nate dopo la prima stesura (lotto 202).
+	"""Se lo schema di `playback_stats` non e' quello atteso, la tabella si RIFA' da zero.
 
-	CREATE TABLE IF NOT EXISTS non tocca una tabella che esiste gia': su un dispositivo che ha gia'
-	raccolto qualche riga le colonne nuove non comparirebbero mai, e registra() fallirebbe in
-	silenzio a ogni riproduzione -- fallisce zitta di proposito, quindi il guasto non si vedrebbe.
-	Qui non c'e' il dilemma di migrate_progress_schema: queste sono misure, non lo stato dell'utente.
-	Si aggiungono e basta, le righe vecchie restano con NULL, che e' esattamente il loro valore --
-	quelle misure non sono state prese.
+	LOTTO 218 -- niente piu' migrazioni incrementali, e la ragione e' che siamo in taratura. Fino
+	al lotto 217 ogni cambiamento aggiungeva colonne e teneva le righe vecchie, e il risultato erano
+	diciassette righe di quattro annate diverse: portate calcolate includendo il pavimento accanto ad
+	altre che lo escludevano, colonne di peso che descrivevano solo la misura `prima`, un
+	`secondi_a_zero` contato su una soglia poi cambiata. Un archivio cosi' non si puo' leggere --
+	ogni riga andrebbe interpretata sapendo quando e' stata scritta -- e le statistiche che ci si
+	fanno sopra non significano niente.
+
+	Finche' il wizard non esiste, il valore di una riga vecchia e' molto minore del costo di dover
+	ricordare come veniva prodotta. Si butta e si rifa' la raccolta: costa qualche riproduzione.
+
+	`sorgenti_bocciate` NON si tocca: e' un'altra tabella e un altro tipo di dato -- cancellarla
+	farebbe ricomparire sorgenti gia' dimostrate rotte, che non e' una misura da rifare ma una
+	conoscenza da perdere.
 	"""
-	nuove = (('larghezza', 'integer'), ('altezza', 'integer'), ('codec', 'text'), ('esito', 'text'),
-			 ('nome', 'text'), ('dimensione_dichiarata', 'real'), ('provider', 'text'), ('pacchetto', 'text'))
 	try:
 		dbcon = connect_database('playback_db')
-		cols = {r[1] for r in dbcon.execute('PRAGMA table_info(playback_stats)')}
-		if not cols: return
-		aggiunte = [n for n, t in nuove if n not in cols]
-		for nome, tipo in nuove:
-			if nome in cols: continue
-			dbcon.execute('ALTER TABLE playback_stats ADD COLUMN %s %s' % (nome, tipo))
-		if aggiunte:
-			kodi_utils.logger('Fen Light', 'playback_stats: colonne del lotto 202 aggiunte (%s)' % ', '.join(aggiunte))
+		# senza `re`: base_cache e' un modulo sensibile al costo di import (lotto 126) e una regex
+		# non vale un modulo in piu' per leggere una lista di nomi separati da virgole.
+		_sql = table_creators['playback_db'][0]
+		_atteso = [_c.strip().split()[0]
+				   for _c in _sql[_sql.index('(') + 1:_sql.rindex(')')].split(',')]
+		_ora = [r[1] for r in dbcon.execute('PRAGMA table_info(playback_stats)')]
+		if not _ora or _ora == _atteso: return
+		_quante = dbcon.execute('SELECT COUNT(*) FROM playback_stats').fetchone()[0]
+		dbcon.execute('DROP TABLE playback_stats')
+		dbcon.execute(table_creators['playback_db'][0])
+		dbcon.commit()
+		kodi_utils.logger('Fen Light', 'playback_stats: schema cambiato, tabella rifatta da zero '
+						  '(%d misure buttate). Mancavano: %s | in piu\': %s'
+						  % (_quante, ', '.join(_c for _c in _atteso if _c not in _ora) or 'niente',
+							 ', '.join(_c for _c in _ora if _c not in _atteso) or 'niente'))
 	except Exception as e:
-		kodi_utils.logger('Fen Light', 'playback_stats: migrazione FALLITA: %s' % e)
+		kodi_utils.logger('Fen Light', 'playback_stats: rifacimento FALLITO: %s' % e)
 
 def remove_old_databases():
 	try:
