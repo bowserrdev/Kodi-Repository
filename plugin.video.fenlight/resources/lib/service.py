@@ -220,9 +220,9 @@ class CustomFonts:
 class TraktMonitor:
 	def run(self):
 		logger('Fen Light', 'TraktMonitor Service Starting')
-		from apis.trakt_api import trakt_sync_activities
+		from apis.trakt_api import trakt_sync_activities, trakt_ensure_token
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import run_plugin, refresh_age, playback_running
+		from modules.kodi_utils import run_plugin, refresh_age, playback_running, search_running
 		from modules.settings import trakt_sync_interval
 		monitor, player, window = xbmc.Monitor(), xbmc.Player(), xbmcgui.Window(10000)
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
@@ -241,10 +241,17 @@ class TraktMonitor:
 			# (player.py:159, 'l'unico istante che non e' una corsa') e abbassa alla chiusura: e'
 			# l'unico segnale che copre anche l'apertura del file. Durante una riproduzione queste
 			# dinamiche non devono esistere, ed e' questa la riga che lo garantisce.
-			while is_playing() or playback_running() or window.getProperty(pause_services_prop) == 'true':
+			# LOTTO 238 -- e search_running() accanto, per la fase PRIMA di play(): scraping,
+			# controllo cache, sonda della linea, filtri. Vedi kodi_utils.SEARCH_ACTIVE_PROP.
+			while is_playing() or playback_running() or search_running() \
+					or window.getProperty(pause_services_prop) == 'true':
 				wait_for_abort(10)
 			# Prima del giro di sincronizzazione, cioe' sempre mentre non si sta riproducendo nulla.
 			refresh_official_status()
+			# LOTTO 236 -- il token lo tiene fresco il servizio, che e' l'unico processo che esiste
+			# prima dei widget e vive quanto Kodi. Se il rinnovo avviene qui, gli interpreti del
+			# plugin trovano un token gia' buono e non si mettono in coda sul lucchetto.
+			trakt_ensure_token()
 			wait_time = 1800
 			try:
 				sync_interval, wait_time = trakt_sync_interval()
@@ -356,8 +363,8 @@ class WidgetRefresher:
 		logger('Fen Light', 'WidgetRefresher Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, PENDING_NOCHANGE_PROP, refresh_flag_expired, modal_dialog_open, pending_refresh_is_redundant, playback_running, decide_pending_refresh
-		self.playback_running = playback_running
+		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, PENDING_NOCHANGE_PROP, refresh_flag_expired, modal_dialog_open, pending_refresh_is_redundant, playback_running, decide_pending_refresh, search_running
+		self.playback_running, self.search_running = playback_running, search_running
 		self.modal_dialog_open = modal_dialog_open
 		self.refresh_flag_expired = refresh_flag_expired
 		monitor, player = xbmc.Monitor(), xbmc.Player()
@@ -546,8 +553,10 @@ class WidgetRefresher:
 		# playback_running() accanto a is_playing() per la stessa ragione del monitor Trakt (lotto
 		# 210): questo ramo ordina refresh_widgets, cioe' un UpdateLibrary globale, e non deve poterlo
 		# fare nella finestra in cui il file si sta aprendo e isPlayingVideo() risponde ancora di no.
+		# LOTTO 238 -- e search_running() accanto, per la fase PRIMA di play(): scraping,
+		# controllo cache, sonda della linea, filtri. Vedi kodi_utils.SEARCH_ACTIVE_PROP.
 		if self.next_refresh == None or self.is_playing() or self.playback_running() \
-				or self.window.getProperty(pause_services_prop) == 'true': return True
+				or self.search_running() or self.window.getProperty(pause_services_prop) == 'true': return True
 		if self.window.getProperty('fenlight.window_loaded') == 'true': return True 
 		try:
 			# json e' PIGRO (lotto 204), e questo e' il suo unico uso in tutto il file. Misurato sulla
@@ -579,8 +588,8 @@ class WidgetPaginator:
 		from time import time
 		from caches.settings_cache import get_setting
 		from modules.settings import page_limit
-		from modules import paginator
-		from modules.kodi_utils import modal_dialog_open
+		from modules import paginator, cw_head
+		from modules.kodi_utils import modal_dialog_open, search_running
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		window = xbmcgui.Window(10000)
@@ -604,6 +613,12 @@ class WidgetPaginator:
 		token_written = {}   # key -> (istante del TRIGGER, scope, id contenitore, nome proprieta')
 		# key -> (istante in cui la chiave e' comparsa in coda, movimento gia' ordinato?). Vedi lotto 166.
 		rehead_moved = {}
+		# LOTTO 216, le due memorie di lavoro del riposizionamento di 'continua a guardare'. Stanno in
+		# RAM e non in una proprieta' apposta: perderle (servizio riavviato a meta') non puo' produrre
+		# un esito sbagliato, solo un giro in piu'. Il debito, che invece non si puo' perdere, sta
+		# nella proprieta' di cw_head.
+		cw_focus = {}   # key -> la riga aveva il fuoco al giro scorso?
+		cw_moved = {}   # key -> (istante dell'ultimo Control.Move, quanti ne sono stati ordinati)
 		token_reported = set()  # una diagnosi per chiave per sessione: e' un guasto di configurazione, non un evento
 		last_current = {}  # key -> last observed focus index, so we load ahead on real downward movement only
 		last_log = None  # dedup: only log when the observed state actually changes
@@ -618,9 +633,11 @@ class WidgetPaginator:
 				# proprieta' di finestra, finisce in una query SQLite. Nell'ordine precedente era una
 				# lettura da disco al secondo per tutta la durata del film, sulla stessa eMMC lenta su
 				# cui il player sta scrivendo la cache dello stream.
-				if is_playing() or window.getProperty(pause_services_prop) == 'true' \
+				# LOTTO 238 -- search_running(): paginare un widget mentre l'utente aspetta le sorgenti
+				# toglie cpu allo scraping e alla sonda. Vedi kodi_utils.SEARCH_ACTIVE_PROP.
+				if is_playing() or search_running() or window.getProperty(pause_services_prop) == 'true' \
 						or get_setting('fenlight.paginate.interactive', 'true') != 'true':
-					log_change('idle (off/playing/paused)')
+					log_change('idle (off/playing/paused/ricerca)')
 					wait_for_abort(1); continue
 				# Never paginate a widget inside an overlay dialog (e.g. the video-info card). Its related
 				# lists (cast/recommendations/credits/sets) are bounded, not meant for infinite scroll, and the
@@ -664,13 +681,66 @@ class WidgetPaginator:
 						# un'identificazione sbagliata perche' il watcher cancellasse il token del widget
 						# giusto. Il censimento ora si limita a censire.
 						paginator.registry_add(scope, cid)
-				# LOTTO 138 -- la testa nuova si porta in cima ANCHE se il widget non e' a fuoco.
+				# LOTTO 216 -- 'continua a guardare' torna sul primo elemento quando arriva un titolo
+				# nuovo, e solo allora. La regola sta per esteso in modules/cw_head.py; qui c'e' la
+				# parte che solo il servizio puo' fare, cioe' guardare il contenitore DOPO che Kodi lo
+				# ha aggiornato e sapere dove sta il fuoco.
+				#
+				# IL CANCELLO DEL FUOCO, e la sua unica sottigliezza. Non si tocca una riga su cui
+				# l'utente sta scegliendo: se ha il fuoco, il debito aspetta. Ma la domanda giusta non
+				# e' 'ha il fuoco adesso', e' 'ce l'aveva GIA' al giro scorso' -- altrimenti chi rientra
+				# in Home da un hub e trova il fuoco atterrato proprio su questa riga non vedrebbe mai
+				# il titolo nuovo, che e' il caso da cui e' partito tutto. Con 'al giro scorso':
+				#   - stai dentro la riga da prima          -> il fuoco c'era anche al giro scorso, si aspetta
+				#   - ci arrivi ora da un'altra riga        -> al giro scorso non c'era, si riporta in testa
+				#     (ed e' quello che l'utente vuole: al rientro il fuoco sul primo elemento)
+				#   - la finestra non era nemmeno a schermo -> per definizione non aveva il fuoco, si agisce
+				# Alla PRIMA occhiata a un debito appena nato non c'e' un giro scorso, e allora vale
+				# l'adesso: un titolo che arriva mentre stai nella riga non ti sposta niente.
+				#
+				# Il comando e' Control.Move e non SetFocus: SetFocus PORTEREBBE il fuoco sul widget, e
+				# strappare l'utente da dov'e' sarebbe un danno peggiore del difetto. Control.Move manda
+				# GUI_MSG_MOVE_OFFSET, che CGUIControlGroup consegna al controllo per ID senza toccare il
+				# fuoco (Kodi 21.1: `return SendControlMessage(message)`), e che CGUIBaseContainer esegue
+				# come N chiamate a MoveUp dentro UN SOLO messaggio: una scorsa sola, non N animazioni.
+				# L'offset e' esattamente `1 - current`, e con il cursore oltre il primo elemento
+				# l'ultimo passo ci arriva esatto senza eccedere.
+				if window.getProperty(cw_head.PENDING_PROP):
+					for ckey in cw_head.pending():
+						cscope, _, ccid = ckey.rpartition('.')
+						qui = cscope == scope and ccid.isdigit()
+						fuoco = qui and xbmc.getCondVisibility('Control.HasFocus(%s)' % ccid)
+						prima = cw_focus.get(ckey)
+						cw_focus[ckey] = fuoco
+						if not qui: continue          # altra finestra: il debito resta e si salda al ritorno
+						if cw_head.hold(prima, fuoco): continue
+						ccur = int(get_infolabel('Container(%s).CurrentItem' % ccid) or 0)
+						mosso_da, tentativi = cw_moved.get(ckey, (None, 0))
+						azione = cw_head.step(cw_head.head_of(ckey),
+												get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % ccid),
+												ccur, xbmc.getCondVisibility('Container(%s).Scrolling' % ccid),
+												mosso_da, tentativi, time())
+						if azione == 'attendi': continue
+						if azione == 'muovi':
+							xbmc.executebuiltin('Control.Move(%s,%s)' % (ccid, 1 - ccur))
+							cw_moved[ckey] = (time(), tentativi + 1)
+							paginator.log('cw testa nuova key=%s: riga riportata in cima (era %s)'
+											% (paginator.short(ckey), ccur))
+							continue
+						if azione == 'mollo':
+							paginator.log('cw testa nuova key=%s: mollo dopo %s tentativi, il Control.Move '
+											'non morde (fermo a %s)' % (paginator.short(ckey), tentativi, ccur))
+						else:
+							paginator.log('cw testa nuova key=%s: in testa e ferma, debito chiuso' % paginator.short(ckey))
+						cw_head.done(ckey); cw_moved.pop(ckey, None); cw_focus.pop(ckey, None)
+				# LOTTO 138 -- la riga si riporta in cima ANCHE se il widget non e' a fuoco.
 				# Sta QUI, sopra il cancello del fuoco, e la posizione e' il punto del lotto. Nel 137 la
 				# consumazione stava dentro il ramo del widget a fuoco, quindi con il fuoco sull'icona della
-				# Home 'continua a guardare' restava scorsa sull'elemento vecchio finche' non ci si passava
-				# sopra -- e allora si riposizionava di scatto. L'utente lo ha detto meglio di cosi': una
-				# modifica fatta su Trakt compare a prescindere da dove sia il fuoco, e questo deve fare lo
-				# stesso.
+				# Home la riga restava scorsa sull'elemento vecchio finche' non ci si passava sopra -- e
+				# allora si riposizionava di scatto. L'utente lo ha detto meglio di cosi': una modifica
+				# fatta su Trakt compare a prescindere da dove sia il fuoco, e questo deve fare lo stesso.
+				# Dal lotto 216 questa coda ha un committente solo, reconcile_position: 'continua a
+				# guardare' ha una regola sua e un consumatore suo, qui sopra.
 				# Il comando e' Control.Move e non SetFocus: SetFocus PORTEREBBE il fuoco sul widget, che
 				# strappando l'utente dall'icona della Home sarebbe un danno peggiore del difetto.
 				# Control.Move manda GUI_MSG_MOVE_OFFSET, che CGUIControlGroup consegna al controllo per ID
@@ -721,6 +791,52 @@ class WidgetPaginator:
 				if widget_id is None:
 					log_change('idle cur_ctrl=%s prop=%s' % (cur_ctrl, prop_id))
 					wait_for_abort(0.3); continue
+				# LOTTO 217 -- L'INTESTAZIONE DEL MENU CONTESTUALE NELLE FINESTRE A WIDGET.
+				#
+				# 'TMDbHelper.ListItem.base_label' e 'base_poster' (nome vecchio, meccanismo tutto della
+				# skin) sono cio' che il menu contestuale mostra su home, hub e ricerca: li' l'elemento
+				# visibile sta in un contenitore che non ha il fuoco, e 'ListItem' nudo non lo vede.
+				# Le scriveva solo l'onfocus del pulsante nascosto della riga widget, che e' un trigger
+				# SUL FRONTE: scatta quando il fuoco si muove. Ma sotto un fuoco fermo l'elemento puo'
+				# cambiare lo stesso -- il contenitore si ricostruisce -- e allora nessuno riscrive
+				# niente. E l'onfocus e' anche guardato da !String.IsEmpty(ListItem.Label), messo il
+				# 03/09 per non pubblicare il vuoto di meta' ricostruzione: giustissimo, ma vuol dire
+				# che DURANTE una ricostruzione ogni spostamento del fuoco non scrive affatto.
+				#
+				# Le due cose insieme fanno il difetto misurato sulla stick il 10/09 alle 03:29:
+				#   03:26:24.148  menu contestuale sull'elemento 6 di 1101.502 -> tmdb_id=1304313 (La Mummia)
+				#   03:26:43      riproduzione, 03:29:15 stop, 03:29:16.192 Window Init (Custom_1101_Hub)
+				#   03:29:16.533  contenitore 502 ricostruito (set_bookmark)   -> arriva 03:29:18.165
+				#   03:29:20.378  contenitore 502 ricostruito (Trakt)          -> arriva 03:29:21.593
+				#   03:29:20.581 / 21.030 / 21.245  tre Destra: 6 -> 7 -> 8 -> 9   TUTTI dentro la ricostruzione
+				#   03:29:22.397  menu contestuale sull'elemento 9 -> tmdb_id=1233413 (Sinners)
+				# Il menu di Kodi era giusto (playback_choice&meta=1233413); sbagliata era solo
+				# l'intestazione della skin, ferma su La Mummia, cioe' sull'ultima scrittura riuscita
+				# PRIMA della riproduzione. Dopo che la ricostruzione atterra il fuoco non si muove piu',
+				# quindi non c'e' nessun altro fronte e nessuno rimedia.
+				#
+				# Il rimedio storico era il ciclo di blur_service, spento dal lotto 48. Non lo si
+				# riaccende: quel ciclo compare in ogni crash da avvio catturato. Il lavoro va invece
+				# dove il fuoco e' gia' seguito A LIVELLO, giro per giro -- qui. Questo watcher sa gia'
+				# quale contenitore ha il fuoco, gira a 0,3 s, e si ferma da solo quando si apre un
+				# dialogo modale ('idle (modal dialog open)'): quando il menu contestuale si apre, il
+				# valore pubblicato all'ultimo giro utile e' esattamente quello dell'elemento giusto.
+				#
+				# Il confronto e' col VALORE ATTUALE della proprieta', non con una variabile locale: cosi'
+				# si RIPRISTINA anche quando l'onfocus della skin l'ha azzerata (ri-fuoco a menu chiuso,
+				# con l'elemento vuoto per un istante). Una variabile locale crederebbe di aver gia'
+				# pubblicato e non riscriverebbe.
+				# Poster e label si scrivono INSIEME, seguendo l'identita' dell'elemento: se il nuovo
+				# elemento non ha poster la proprieta' va CANCELLATA, altrimenti resta quello di prima ed
+				# e' di nuovo lo stesso difetto, solo sull'immagine invece che sul nome.
+				# Costo: una getInfoLabel per giro, piu' una o due solo quando l'elemento cambia davvero.
+				base_label = get_infolabel('Container(%s).ListItem.Label' % widget_id)
+				if base_label and base_label != window.getProperty('TMDbHelper.ListItem.base_label'):
+					base_poster = get_infolabel('Container(%s).ListItem.Art(poster)' % widget_id) \
+									or get_infolabel('Container(%s).ListItem.Art(tvshow.poster)' % widget_id)
+					window.setProperty('TMDbHelper.ListItem.base_label', base_label)
+					if base_poster: window.setProperty('TMDbHelper.ListItem.base_poster', base_poster)
+					else: window.clearProperty('TMDbHelper.ListItem.base_poster')
 				key, first_url = paginator.container_head(widget_id, scope)
 				if not key:
 					# Contenitore VUOTO con un token residuo: e' la ricerca a casella vuota, dove il path di
@@ -848,7 +964,7 @@ class DubResolver:
 		from time import time
 		from modules.settings import dub_filter_enabled, dub_filter_country, tmdb_api_key
 		from modules import dub_queue, paginator
-		from modules.kodi_utils import modal_dialog_open
+		from modules.kodi_utils import modal_dialog_open, search_running
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		window = xbmcgui.Window(10000)
@@ -858,7 +974,9 @@ class DubResolver:
 		breaker_reported = False
 		while not wait_for_abort(self.POLL):
 			try:
-				if is_playing() or window.getProperty(pause_services_prop) == 'true': continue
+				# LOTTO 238 -- search_running(): risolvere i doppiaggi vuol dire scaricare schede TMDb
+				# e macinarle, la cosa piu' cara che questo servizio fa. Vedi kodi_utils.SEARCH_ACTIVE_PROP.
+				if is_playing() or search_running() or window.getProperty(pause_services_prop) == 'true': continue
 				now = time()
 				# --- la ricarica in sospeso viene prima: e' cio' che l'utente aspetta di vedere -------
 				# Si aspetta che la coda sia VUOTA, non che il lotto sia finito. Un lotto e' 8 titoli:
@@ -1047,6 +1165,11 @@ class PerfSampler:
 							% (mem, mem - last_mem, win, worst_drop[0], worst_drop[1]))
 					last_mem, last_beat = mem, now
 			except: pass
+
+# LOTTO 230 -- LA SONDA NON VIVE PIU' QUI. Il servizio poteva aspettare un momento con la CPU
+# libera, ma non sapeva mai quando l'utente avrebbe fatto partire un film: tre sonde su quattro sono
+# finite abbandonate a meta'. Adesso sta in sources.process_results, subito dopo che TorBox ha detto
+# quali sorgenti sono in cache, e misura la sorgente che sta per partire. Vedi modules/sonda_linea.py.
 
 class AutoStart:
 	def run(self):

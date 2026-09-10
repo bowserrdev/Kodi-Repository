@@ -855,6 +855,51 @@ PLAYBACK_ACTIVE_PROP = 'fenlight.playback.active'
 def playback_running():
 	return get_property(PLAYBACK_ACTIVE_PROP) == 'true'
 
+# LOTTO 238 -- L'ALTRA META' DELLA TRANSIZIONE, che fino a qui non aveva segnale.
+# PLAYBACK_ACTIVE_PROP si alza subito prima di play(), e da li' in poi i servizi si fermano. Ma fra
+# 'l'utente ha scelto un titolo' e quell'istante ci sono lo scraping, il controllo cache di TorBox,
+# la sonda della linea e il filtro: il 10/09 sulla stick, per Mad Max Fury Road, 98 secondi. In
+# tutta quella finestra l'interfaccia era libera di ricostruirsi, e la sonda -- che e' l'unica cosa
+# in tutto Fen Light a misurare una grandezza fisica -- se la doveva vedere con quello che trovava.
+# Quella sera ha letto 6,62 Mbit/s su una linea da 46 con il 27% di un core in mano.
+#
+# PERCHE' UNA SCADENZA E NON UN 'true'. Questa bandiera la alza il PLUGIN, e un interprete di plugin
+# puo' morire in qualunque momento -- Kodi lo uccide, l'utente chiude, un'eccezione risale oltre il
+# finally. Le proprieta' di Window(10000) sopravvivono al processo che le ha scritte: un 'true'
+# rimasto acceso congelerebbe il monitor Trakt e i widget fino al riavvio di Kodi. Con una scadenza
+# la bandiera si spegne da sola, che e' esattamente il ruolo della colonna `expires` nel lucchetto
+# del rinnovo Trakt (base_cache.TRAKT_AUTH_LOCK_CREATE): chi muore col lucchetto in mano lo rilascia.
+# UNA proprieta' sola e non due (bandiera + scadenza come hold_refresh_flag): due proprieta' si
+# leggono in due momenti e possono contraddirsi, ed e' il guasto descritto in decide_pending_refresh.
+#
+# I 300 secondi sono un TETTO DI RECUPERO, non una previsione: la ricerca piu' lunga misurata ne ha
+# presi 98. Serve solo a limitare il danno di un interprete morto, e la via normale resta il finally
+# di sources.get_sources.
+SEARCH_ACTIVE_PROP = 'fenlight.ricerca.attiva'
+SEARCH_LEASE_SECONDS = 300
+
+def mark_search_phase(attiva):
+	"""Alza o abbassa la bandiera 'sto cercando le sorgenti'. La chiama sources.get_sources."""
+	try:
+		if not attiva: return clear_property(SEARCH_ACTIVE_PROP)
+		from time import time
+		set_property(SEARCH_ACTIVE_PROP, str(time() + SEARCH_LEASE_SECONDS))
+	except: pass
+
+def search_running():
+	"""La ricerca sorgenti e' in corso? Scaduta = no, e la lettura non puo' fallire in modo bloccante.
+
+	Nel dubbio si risponde NO: un errore qui deve lasciare i servizi liberi di lavorare, non fermarli.
+	Sbagliare in quella direzione costa una sonda meno precisa; sbagliare nell'altra costa
+	un'interfaccia che non si aggiorna piu'.
+	"""
+	try:
+		_fino = get_property(SEARCH_ACTIVE_PROP)
+		if not _fino: return False
+		from time import time
+		return time() < float(_fino)
+	except: return False
+
 # Istante in cui la riproduzione e' stata dichiarata attiva, e istante del Select (lotto 113).
 # Servono alla DIAGNOSTICA: la riga PERF di ogni costruzione stampa la distanza da questi due
 # momenti, cosi' il prossimo log dice quanto lavoro di interfaccia cade davvero nella finestra di

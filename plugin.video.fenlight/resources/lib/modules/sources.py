@@ -17,6 +17,7 @@ get_icon, notification, sleep, xbmc_monitor = kodi_utils.get_icon, kodi_utils.no
 select_dialog, confirm_dialog, close_all_dialog = kodi_utils.select_dialog, kodi_utils.confirm_dialog, kodi_utils.close_all_dialog
 show_busy_dialog, hide_busy_dialog, xbmc_player = kodi_utils.show_busy_dialog, kodi_utils.hide_busy_dialog, kodi_utils.xbmc_player
 get_property, set_property, clear_property = kodi_utils.get_property, kodi_utils.set_property, kodi_utils.clear_property
+mark_search_phase = kodi_utils.mark_search_phase
 auto_play, active_internal_scrapers, provider_sort_ranks, audio_filters = settings.auto_play, settings.active_internal_scrapers, settings.provider_sort_ranks, settings.audio_filters
 check_prescrape_sources, external_scraper_info, auto_resume = settings.check_prescrape_sources, settings.external_scraper_info, settings.auto_resume
 store_resolved_to_cloud, source_folders_directory, watched_indicators = settings.store_resolved_to_cloud, settings.source_folders_directory, settings.watched_indicators
@@ -131,19 +132,40 @@ class Sources():
 
 	def get_sources(self):
 		if not self.progress_dialog and not self.background: self._make_progress_dialog()
-		results = []
-		if self.prescrape and any(x in self.active_internal_scrapers for x in default_internal_scrapers):
-			if self.prepare_internal_scrapers():
-				results = self.collect_prescrape_results()
-				if results: results = self.process_results(results)
-		if not results:
-			self.prescrape = False
-			self.prepare_internal_scrapers()
-			if self.active_external: self.activate_external_providers()
-			elif not self.active_internal_scrapers: self._kill_progress_dialog()
-			self.orig_results = self.collect_results()
-			if not self.orig_results and not self.active_external: self._kill_progress_dialog()
-			results = self.process_results(self.orig_results)
+		# LOTTO 225 -- LA SONDA NON PARTE PIU' DA QUI. Il lotto 222 la lanciava in sfondo insieme
+		# agli scraper, ragionando che lo scraping e' latenza e non banda. Vero sulla rete, falso
+		# sulla CPU: i sotto-interpreti si dividono un core, la sonda decifra TLS e qui prendeva il
+		# 10-25% di quel core, dichiarando 8,0 e 26,0 Mbit/s su una linea da 43. Adesso vive nel
+		# servizio (service.SondaLinea), che puo' aspettare un momento con un core libero, e chi
+		# riproduce trova il valore gia' pronto in bacheca senza aspettare niente.
+		# LOTTO 238 -- DA QUI A FINE FILTRO LA MACCHINA E' NOSTRA. Dentro questo tratto stanno lo
+		# scraping, il controllo cache di TorBox, la sonda della linea e i filtri, ed e' il tratto in
+		# cui l'utente sta aspettando: qualunque ricostruzione di widget che ci cada dentro e' lavoro
+		# che ruba cpu a una misura fisica e a un'attesa. Il segnale lo leggono TraktMonitor,
+		# WidgetRefresher, WidgetPaginator e DubResolver, che si fermano come gia' fanno durante la
+		# riproduzione -- e come li' non perdono niente: cio' che non disegnano resta in coda.
+		# Si ABBASSA PRIMA della scelta e della riproduzione, non dopo: da quel punto in avanti il
+		# testimone passa a PLAYBACK_ACTIVE_PROP, che il player alza prima di play(). Due bandiere
+		# per due fasi contigue, nessuna finestra scoperta in mezzo e nessuna sovrapposizione.
+		mark_search_phase(True)
+		try:
+			results = []
+			if self.prescrape and any(x in self.active_internal_scrapers for x in default_internal_scrapers):
+				if self.prepare_internal_scrapers():
+					results = self.collect_prescrape_results()
+					if results: results = self.process_results(results)
+			if not results:
+				self.prescrape = False
+				self.prepare_internal_scrapers()
+				if self.active_external: self.activate_external_providers()
+				elif not self.active_internal_scrapers: self._kill_progress_dialog()
+				self.orig_results = self.collect_results()
+				if not self.orig_results and not self.active_external: self._kill_progress_dialog()
+				results = self.process_results(self.orig_results)
+		finally:
+			# SEMPRE: sorgenti trovate, nessuna sorgente, ricerca annullata, eccezione. E' la via
+			# normale; la scadenza della bandiera copre solo il caso in cui nemmeno questo giri.
+			mark_search_phase(False)
 		if not results: return self._process_post_results()
 		if self.autoscrape: return results
 		else: return self.play_source(results)
@@ -199,13 +221,98 @@ class Sources():
 			results = self.sort_results(results)
 		else:
 			results = self.sort_results(results)
-			results = self.filter_results(results)
+			# I filtri sono indipendenti fra loro, quindi l'ordine fra loro non conta; conta che
+			# quello della DIMENSIONE venga per ultimo, perche' la soglia su cui decide la misura la
+			# sonda qui in mezzo.
 			results = self.filter_audio(results)
 			for file_type in filter_keys: results = self.special_filter(results, file_type)
+			# LOTTO 230 -- LA SONDA. Il bersaglio si sceglie su una COPIA ordinata come la ordinerebbe
+			# l'autoplay: e' la sorgente che partirebbe, quindi il nodo che misuriamo e' lo stesso che
+			# consegnera' il film. La lista vera non si tocca -- il suo ordine finale lo decidono le
+			# tre righe in fondo, come sempre.
+			self._sonda_la_prima(self._ordine_autoplay(list(results)))
+			results = self.filter_results(results)
 		results = self.sort_preferred_autoplay(results)
 		results = self.sort_preferred_language(results)
 		results = self.sort_first(results)
 		return results
+
+	def _ordine_autoplay(self, results):
+		"""L'ordine in cui l'autoplay proverebbe le sorgenti. Le stesse tre righe che chiudono
+		process_results, applicate a parte per poter scegliere il bersaglio della sonda."""
+		try:
+			return self.sort_first(self.sort_preferred_language(self.sort_preferred_autoplay(results)))
+		except: return results
+
+	# LOTTO 230 -- quante sorgenti si prova a risolvere prima di rinunciare. Ogni tentativo costa una
+	# chiamata a TorBox: due sono la copertura del caso "la prima non si risolve", tre sarebbero
+	# attesa regalata su un caso raro.
+	TENTATIVI_SONDA = 2
+
+	def _sonda_la_prima(self, ordinate):
+		"""Misura la linea sulla prima sorgente in cache che si risolve, e tiene il link per dopo.
+
+		Il link risolto QUI e' lo stesso che servira' a riprodurre: `_link_gia_risolto` lo riusa, e
+		cosi' una parte dei cinque secondi non e' aggiunta ma anticipata.
+
+		Una volta sola per ricerca: `process_results` puo' essere chiamata due volte -- prescrape e
+		poi ricerca piena -- e sondare due volte costerebbe il doppio del tempo per lo stesso numero.
+		"""
+		if getattr(self, '_sondato', False): return
+		self._sondato = True
+		self._capacita, self._link_sondato = None, (None, None)
+		try:
+			from caches import playback_stats
+			from modules import sonda_linea
+			for item in (ordinate or [])[:self.TENTATIVI_SONDA]:
+				url = self.resolve_sources(item)
+				if not url: continue
+				self._link_sondato = (playback_stats.chiave(item), url)
+				# L'unico motivo per mollare a meta': l'utente che annulla la ricerca. Nessuna
+				# riproduzione puo' partire mentre leggiamo -- e' questo stesso thread che la
+				# farebbe partire.
+				# La dimensione dichiarata dallo scraper serve a scegliere l'offset PRIMA di aprire:
+				# e' cio' che permette di mettere la Range nella prima richiesta invece di aprire e
+				# poi cercare, e il seek costava 2,26 s misurati. Se mente -- e' stata trovata
+				# sbagliata di 25 volte, lotto 192 -- la Range non viene onorata e la sonda ripiega
+				# sul lettore di Kodi da sola.
+				try: _dim = int(float(item.get('size') or 0) * 1073741824) or None
+				except: _dim = None
+				esito = sonda_linea.misura_sorgente(url, self._ricerca_annullata, _dim)
+				self._capacita = (esito or {}).get('regime')
+				return
+			# Nessuna sorgente in cache vuol dire che non c'e' niente da riprodurre per questo
+			# titolo: non c'e' banda da misurare e non c'e' niente da filtrare.
+		except: pass
+
+	def _ricerca_annullata(self):
+		try: return bool(self.progress_dialog and self.progress_dialog.iscanceled())
+		except: return False
+
+	def _link_gia_risolto(self, item):
+		"""Il link che la sonda ha gia' risolto, se la sorgente e' quella. Si consuma una volta sola:
+		riusarlo due volte vorrebbe dire riusare un link vecchio."""
+		try:
+			from caches import playback_stats
+			_ch, _url = getattr(self, '_link_sondato', (None, None))
+			if _ch and _url and playback_stats.chiave(item) == _ch:
+				self._link_sondato = (None, None)
+				return _url
+		except: pass
+		return None
+
+	def _line_speed(self):
+		"""La soglia del filtro: quella MISURATA se la sonda ce l'ha fatta, altrimenti l'impostazione.
+
+		Il ripiego non e' una cortesia: senza sonda (nessuna sorgente in cache che si risolva, TorBox
+		muto, lettura troppo corta) il filtro deve continuare a funzionare come prima, non sparire.
+		"""
+		try:
+			from modules import sonda_linea
+			_v = sonda_linea.line_speed_da(getattr(self, '_capacita', None))
+			if _v: return _v
+		except: pass
+		return string_to_float(get_setting('results.line_speed', '25'), '25')
 
 	def sort_results(self, results):
 		for item in results:
@@ -278,7 +385,9 @@ class Sources():
 				# wizard di line_speed, che ricava il numero dal percentile 20 della portata misurata,
 				# il margine ce l'ha gia' dentro per costruzione: applicarne un altro lo conterebbe
 				# due volte. Adesso l'impostazione vale quello che dice.
-				max_size = ((0.125 * string_to_float(get_setting('results.line_speed', '25'), '25')) * duration) / MB_PER_GIB
+				# LOTTO 230 -- il numero non viene piu' da un'impostazione scritta a mano ma dalla
+				# sonda, misurata pochi secondi fa sulla sorgente che sta per partire.
+				max_size = ((0.125 * self._line_speed()) * duration) / MB_PER_GIB
 			elif self.filter_size_method == 2:
 				max_size = string_to_float(get_setting('fenlight.results.%s_size_max' % self.media_type, '10000'), '10000') / MB_PER_GIB
 			results = [i for i in results if i['scrape_provider'] == 'folders' or min_size <= i['size'] <= max_size]
@@ -731,7 +840,9 @@ class Sources():
 					player = FenLightPlayer()
 					try:
 						if self.progress_dialog.iscanceled() or monitor.abortRequested(): break
-						url = self.resolve_sources(item)
+						# Se la sonda ha gia' risolto questa sorgente, il link e' quello: risolverla
+						# una seconda volta costerebbe un'altra chiamata a TorBox per lo stesso file.
+						url = self._link_gia_risolto(item) or self.resolve_sources(item)
 						# La posizione nell'elenco serve alla riga di diagnosi: senza, non si sa
 						# quante sorgenti Fen Light abbia provato prima di arrivare a quella buona.
 						self._posizione_sorgente = '%02d/%02d' % (count, len(items))

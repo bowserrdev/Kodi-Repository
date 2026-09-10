@@ -468,6 +468,11 @@ default_settings = [
 {'setting_id': 'mpaa_region_display_name', 'setting_type': 'string', 'setting_default': 'United States'},
 {'setting_id': 'external_scraper.module', 'setting_type': 'string', 'setting_default': 'empty_setting'},
 {'setting_id': 'trakt.next_daily_clear', 'setting_type': 'string', 'setting_default': '0'},
+# LOTTO 234 -- i tre valori del token sono UN valore solo. Scriverli separatamente lasciava
+# osservare uno stato misto (refresh nuovo + access scaduto), ed e' quello ad aprire il dialogo
+# di riautenticazione. I tre id sotto restano DICHIARATI perche' sync_settings cancella gli id
+# che non conosce, ma il loro valore viene svuotato alla migrazione: una sola fonte di verita'.
+{'setting_id': 'trakt.auth', 'setting_type': 'string', 'setting_default': ''},
 {'setting_id': 'trakt.expires', 'setting_type': 'string', 'setting_default': '0'},
 {'setting_id': 'trakt.refresh', 'setting_type': 'string', 'setting_default': '0'},
 {'setting_id': 'trakt.token', 'setting_type': 'string', 'setting_default': '0'},
