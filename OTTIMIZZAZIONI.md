@@ -35132,6 +35132,177 @@ posto.
 
 ### Difetto dello strumento, trovato qui
 
-sonda.sh prende l'id del thread dell'interfaccia dalla prima riga di kodi.log. Se la sonda parte a Kodi spento,
-quel file e' ancora il log della sessione precedente: il resoconto a riposo segna 0 ms/s per il thread GUI. Le
-cifre sopra sono ricalcolate con l'id delle righe `HandleKey` del log della sessione misurata. Da correggere.
+sonda.sh prende l'id del thread dell'interfaccia dalla prima riga di kodi.log, e il resoconto a riposo segna
+0 ms/s per il thread GUI. Le cifre sopra sono ricalcolate con l'id delle righe `HandleKey` del log della sessione
+misurata. La causa vera e la correzione sono nel lotto 305 (non era il log della sessione precedente).
+
+## LOTTI 303 e 304 -- widget vuoti nascosti negli hub: provati, RITIRATI in attesa di una correzione in Kodi
+
+Obiettivo: con "nascondi widget vuoti" una riga che si svuota o si riempie non deve mai spostare la vista, e
+gli aggiornamenti devono restare istantanei. Senza toppe: niente fuoco spostato a mano, niente timer.
+
+### Cosa e' stato fatto
+
+- **303 (skin).** Il controllo predefinito degli hub standard diventa il grouplist 602. Se la riga col fuoco
+  sparisce, il fuoco va alla riga che ne prende il posto. In piu' `allowhiddenfocus` vale anche per le righe vuote
+  nascoste, cosi' rileggono l'indirizzo e ricompaiono quando si riempiono. Funzionava.
+- **304 (plugin).** Una riga vuota sopra il fuoco non si ricarica: resta in attesa, e il watcher la ricarica
+  quando non sta piu' sopra il fuoco. Funzionava.
+- **Residuo del 304.** Una riga PIENA sopra il fuoco che la ricostruzione svuota (la watchlist con un solo
+  titolo, tolto) sposta ancora la vista.
+- **Regola ad hoc per il residuo, scartata dall'utente.** Watchlist e continua a guardare rimandati anche da
+  pieni. Continua a guardare e' la prima riga della home e non si aggiornerebbe quasi mai.
+
+### La causa, nel sorgente (identica in Kodi 21.1 e 22.0b2)
+
+Il grouplist ricorda lo scorrimento come pixel dall'inizio della lista (`m_scroller`), non come riga in cima.
+
+- Una riga sopra il fuoco che sparisce fa salire tutto di 440 px, riga col fuoco compresa. Lo scorrimento resta
+  uguale, e l'inquadratura cade sulla riga sotto.
+- Una riga che compare fa l'opposto.
+- Lo scorrimento si ricalcola solo quando il fuoco cambia controllo (GUIControlGroupList.cpp, `GUI_MSG_FOCUSED`).
+- A ogni fotogramma `ValidateOffset` si limita a tenerlo dentro la lista.
+
+Nella skin non c'e' un evento "e' cambiata la disposizione". Rimettere il fuoco sulla stessa riga ricalcola lo
+scorrimento, ma mostra un fotogramma sbagliato e poi l'animazione predefinita di 200 ms.
+
+Un controllo "resterebbe vuota?" prima di ricaricare e' possibile solo costruendo la lista due volte. Kodi
+sostituisce il contenuto anche quando la costruzione fallisce o restituisce una lista vuota: `CDirectoryJob`
+torna comunque vero.
+
+### Decisione
+
+Tutto ritirato. Negli hub i widget vuoti mostrano il segnaposto "nessun risultato" (`_Widget_NoResults`). E' un
+elemento vero del contenitore, quindi la riga resta visibile, focalizzabile e della stessa altezza: nessuno
+slittamento, nessun fuoco perso.
+
+La correzione pulita sta nel grouplist di Kodi: se la riga col fuoco resta visibile e cambia posizione perche' e'
+cambiato qualcosa sopra, lo scorrimento si sposta della stessa quantita', senza animazione. Da proporre come PR su
+`xbmc/xbmc` master, che oggi e' Piers. Precedente utile: la #28285 (`Control.ResetGrouplist`), unita l'11/08/2026
+durante la beta. Se viene accolta si riapre il filone: 303 senza 304, con aggiornamenti istantanei.
+
+### La modifica a Kodi, pronta da riprendere (sorgente 22.0b2, xbmc/guilib)
+
+**Principio.** Il grouplist tiene ferma sullo schermo la riga col fuoco quando cambia la disposizione sopra di lei.
+Se la riga col fuoco resta visibile e la sua posizione nella lista cambia di D pixel, lo scorrimento si sposta di D
+pixel nello stesso fotogramma, senza animazione.
+
+**Dove: `CGUIControlGroupList::Process` (GUIControlGroupList.cpp:60-129).** Le visibilita' si aggiornano nel ciclo
+delle righe 67-73, e subito dopo `ValidateOffset()` (riga 77) si limita a tenere lo scorrimento dentro la lista.
+
+1. PRIMA del ciclo di `UpdateVisibility`: trovare il figlio che contiene il fuoco, cioe' quello per cui
+   `control->GetControl(m_focusedControl)` non e' nullo. Se e' visibile, calcolarne la posizione con la stessa
+   somma di `OnMessage(GUI_MSG_FOCUSED)`: `Size(control) + m_itemGap` dei figli visibili precedenti.
+2. DOPO il ciclo, e PRIMA di `ValidateOffset()`: ricalcolare la posizione dello stesso figlio.
+3. Se il figlio era visibile e lo e' ancora, e la posizione e' cambiata di D != 0, spostare lo scorrimento di D.
+   Poi `ValidateOffset()` come oggi.
+4. Se il figlio col fuoco e' sparito, non fare niente: vale il comportamento attuale, cioe' il fuoco passa al
+   `defaultcontrol` e il grouplist sceglie la prima riga a schermo (lotto 303).
+
+**Lo scorrimento in corso: `CScroller` (VisibleEffect.h:222-265, VisibleEffect.cpp:784-840).** `SetValue` da solo
+non basta durante un'animazione: `Update` ricalcola il valore come `m_startPosition + tween * m_delta` e annullerebbe
+lo spostamento al fotogramma dopo. Serve un metodo nuovo che sposti insieme valore attuale e partenza, lasciando
+invariati distanza e tempo:
+
+    void Shift(float delta) { m_scrollValue += delta; m_startPosition += delta; }
+
+**Cosa copre.**
+- Riga sopra il fuoco che sparisce: D = -440, la vista resta ferma.
+- Riga sopra il fuoco che compare: D = +440, la vista resta ferma.
+- Fuoco che scende su una riga mentre sparisce quella sopra, nello stesso giro: il bersaglio di `GUI_MSG_FOCUSED`
+  e' calcolato con la vecchia disposizione, e `Shift` corregge partenza e arrivo insieme.
+- Righe sotto il fuoco: D = 0, niente cambia.
+- Orientamento orizzontale: stessa logica, `Size()` e' gia' simmetrico.
+
+Da decidere nella PR: ancorare anche quando il grouplist non ha il fuoco, usando l'ultimo figlio focalizzato
+(`m_focusedControl` resta valorizzato). E' probabilmente desiderabile, perche' al ritorno del fuoco la vista e' gia'
+giusta. Conservativo: solo con `HasFocus()`.
+
+**Test (gtest, `xbmc/guilib/test`, sul modello di TestGUIFixedListContainer.cpp).** Grouplist verticale con 5 figli
+alti 440 e viewport 1020, fuoco sul quarto, scorrimento sul suo offset.
+- Nascondere il secondo: dopo `Process` la posizione a schermo del quarto (offset meno scorrimento) e' invariata.
+  Oggi cambia di 440.
+- Stessa verifica mostrando un figlio nascosto sopra il fuoco, e con uno scorrimento a meta' animazione.
+
+**Dopo, nel nostro setup.** Kodi 22 con la patch, poi `tests/ritirati/lotti_303_304.patch`. Si riapplica SOLO la
+parte 303 della skin (predefinito 602 e `allowhiddenfocus` per le righe vuote). Il rinvio del 304 in
+paginator/service non serve piu'.
+
+Materiale conservato:
+- `tests/ritirati/lotti_303_304.patch`: si riapplica su 982f0af;
+- `tests/ritirati/test_303.py` e `tests/ritirati/test_304.py`.
+
+## LOTTO 305 -- sonda.sh: il thread GUI da 'Starting Kodi', e le decisioni sul resto del blocco A
+
+### La sonda
+
+Il thread GUI si riconosceva dalla PRIMA riga di kodi.log. In af-hub-301-A-normale18 la prima riga l'ha
+scritta il thread Java della rete (`T:26187 CNetworkAndroid::onAvailable`), 2 ms prima di `Starting Kodi` di
+T:26174. Il tid 26187 esisteva nel processo, quindi il controllo "vivo nel processo attuale" passava: la sonda ha
+campionato il thread sbagliato. Stesso caso in campagna-20260913-2049 (4040 contro 4032). Il "log della
+sessione precedente" scritto nel 302 era una deduzione sbagliata: quel caso era gia' coperto dal controllo.
+
+`trova_gui` ora legge le prime 80 righe e prende il tid della riga `Starting Kodi`, come log_kodi.tid_avvio.
+Solo builtin, nessun fork. Se la riga non c'e' ancora, o il tid non e' vivo, si ritenta al campione dopo.
+
+Prova: tests/test_305.py esegue la funzione vera estratta da sonda.sh, con /proc sostituito da una cartella
+finta. Rossa sulla versione precedente (3 rotte), verde dopo. Suite 67 su 71 (i soliti 202-205).
+
+### Decisioni dell'utente sul resto del blocco A (14/09/2026)
+
+- **Strappo alla partenza**: archiviato. Circa 55 ms sono l'a-capo quadratico della trama, corretto in Kodi 22
+  (lotto 298).
+- **Ricerca a 60 fps da ferma** (lotto 300): non si cambia.
+- **Misura nelle viste cartella**: non la si fa a parte. Al massimo si aggiunge a un'altra prova.
+- **Audio**: `audiooutput.streamsilence` messo a 1 minuto dall'utente.
+- **Tasti che arrivano a coppie**: succede prima di Kodi (segnale del telecomando). Non risolvibile, chiuso.
+- **Preferiti** che non aggiornano i widget: widget non usato, ignorato.
+- **Resta aperto**: landscape e logo che non stanno al passo nello scorrimento veloce orizzontale.
+
+## LOTTO 306 -- il logo non lascia il buco nello scorrimento veloce: tiene l'ultimo pronto, come la landscape
+
+### Il difetto
+
+Con il tasto tenuto sull'orizzontale la landscape grande resta ferma sull'ultima caricata e il logo sparisce
+lasciando un buco. Succedeva anche con la skin senza i nostri lotti.
+
+### La causa (sorgente 21.1)
+
+- **La velocita'.** Con il tasto tenuto l'elemento cambia ogni ~60 ms (gap delle ripetizioni, lotto 304). Ogni
+  elemento chiede due immagini in background. CGUILargeTextureManager accoda un job (PRIORITY_NORMAL, conteso con le
+  locandine della riga). Al cambio di elemento la richiesta vecchia viene annullata se non e' partita, e se e'
+  partita il lavoro va perso (GUILargeTextureManager.cpp:179-228).
+- **Non e' la rete.** Nella campagna 302, su 1256 spostamenti orizzontali, solo 8 fra loghi e landscape sono stati
+  scaricati (`Caching image`). Il resto veniva dalla cache: il limite e' la preparazione (lettura, decodifica,
+  caricamento sulla GPU).
+- **La landscape** (Background_FlixArt) ha `fadetime` 400. Con la dissolvenza, `CGUIImage::SetFileName` NON mette in
+  dissolvenza una texture che sta ancora caricando, e `Process` tiene l'ultima vecchia finche' la nuova non e' pronta
+  (GUIImage.cpp:338-350, 140-158). Da qui la landscape ferma.
+- **Il logo** (Info_Title) ha `fadetime` 0 e nessuna riserva, quindi `SetCrossFade` lascia 0 (GUIImage.cpp:323-328):
+  il file cambia subito e finche' non e' pronto non si disegna niente. Da qui il buco.
+- **Caricare in anticipo i vicini non basta.** A ~17 elementi al secondo servirebbero piu' di 30 immagini al secondo,
+  e il caricamento sulla GPU sta sul thread GUI: si perderebbero fotogrammi.
+
+### Scelta dell'utente e modifica
+
+Fra le opzioni proposte (titolo scritto durante la navigazione veloce, ultimo logo pronto, logo nascosto),
+l'utente ha scelto: **logo come la landscape, landscape invariata**.
+
+`Info_Title` (Includes_Info.xml): i due loghi, `Art(clearlogo)` e `Art(tvshow.clearlogo)`, passano da `fadetime` 0 a
+1. Basta una dissolvenza qualunque per entrare nel ramo che tiene l'ultima texture pronta. Con 1 ms, appena il logo
+nuovo e' pronto il cambio e' istantaneo come prima: sparisce solo il buco.
+
+Effetto collaterale: per un attimo, durante lo scorrimento, si vede il logo di un titolo gia' passato, come per la
+landscape. Se un elemento non ha logo il controllo si nasconde e compare il titolo scritto, come prima; il logo
+successivo parte senza texture da tenere, e li' un buco breve resta possibile. Info_Title e' usato anche da
+Includes_OSD.xml (riproduzione), dove il logo non cambia di continuo: nessun effetto visibile.
+
+Prova: tests/test_306.py rifa' `SetFileName`/`Process` di CGUIImage 21.1 su uno scorrimento simulato (60 ms per
+elemento, 90 ms di caricamento):
+- `fadetime` 0 da' buchi, 1 e 400 nessuno, e alla fermata c'e' il logo giusto;
+- la skin ha 1 su tutti e due i loghi;
+- Background_FlixArt resta a `background_fadetime`.
+
+Rossa sulla skin precedente (4 rotte), verde dopo. Suite 68 su 72 (i soliti 202-205).
+
+DA VERIFICARE a occhio sulla stick, tasto tenuto sull'orizzontale.

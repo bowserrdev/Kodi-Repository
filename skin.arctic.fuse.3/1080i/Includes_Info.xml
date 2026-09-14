@@ -370,17 +370,22 @@
                 <left>$PARAM[left]</left>
                 <width>$PARAM[width]</width>
                 <height>info_title_h</height>
+                <!-- LOTTO 306: fadetime 1, non 0. Con il tasto tenuto l'elemento cambia ogni ~60 ms e il logo non fa in
+                     tempo a caricarsi: con 0 Kodi passa subito al file nuovo e non disegna niente finche' non e' pronto
+                     (il buco). Con una dissolvenza qualunque CGUIImage tiene l'ultimo logo pronto finche' il nuovo non
+                     lo e' (GUIImage.cpp:338-350, 140-158), come la landscape. 1 ms: a caricamento finito il cambio
+                     resta istantaneo come prima. tests/test_306.py -->
                 <control type="image">
                     <height>info_title_logo_h</height>
                     <aspectratio align="left" aligny="center">keep</aspectratio>
-                    <fadetime>0</fadetime>
+                    <fadetime>1</fadetime>
                     <texture background="true">$INFO[$PARAM[container]$PARAM[listitem].Art(clearlogo)]</texture>
                     <visible>!String.IsEmpty($PARAM[container]$PARAM[listitem].Art(clearlogo))</visible>
                 </control>
                 <control type="image">
                     <height>info_title_logo_h</height>
                     <aspectratio align="left" aligny="center">keep</aspectratio>
-                    <fadetime>0</fadetime>
+                    <fadetime>1</fadetime>
                     <texture background="true">$INFO[$PARAM[container]$PARAM[listitem].Art(tvshow.clearlogo)]</texture>
                     <visible>String.IsEmpty($PARAM[container]$PARAM[listitem].Art(clearlogo))</visible>
                     <visible>!String.IsEmpty($PARAM[container]$PARAM[listitem].Art(tvshow.clearlogo))</visible>
