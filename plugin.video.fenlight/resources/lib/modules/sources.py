@@ -43,7 +43,17 @@ cloud_scrapers, folder_scrapers = ('rd_cloud', 'pm_cloud', 'ad_cloud', 'oc_cloud
 default_internal_scrapers = ('easynews', 'rd_cloud', 'pm_cloud', 'ad_cloud', 'oc_cloud', 'tb_cloud', 'folders')
 main_line = '%s[CR]%s[CR]%s'
 int_window_prop = 'fenlight.internal_results.%s'
+# LOTTO 256 -- era una costante, ed era la SECONDA manopola per la stessa cosa: `results.timeout`
+# governa il percorso esterno (cocoscrapers), questa governava quello interno e il prescrape. Due
+# numeri diversi per "quanto tempo hanno gli scraper" sono due comportamenti che nessuno puo'
+# prevedere. Resta solo come ripiego se l'impostazione non si legge.
 scraper_timeout = 25
+
+
+def _tetto_scraper():
+	"""Secondi concessi agli scraper, 0 = nessun tetto. La stessa manopola del percorso esterno."""
+	try: return int(get_setting('fenlight.results.timeout', str(scraper_timeout)))
+	except: return scraper_timeout
 filter_keys = {'hevc': '[B]HEVC[/B]', '3d': '[B]3D[/B]', 'hdr': '[B]HDR[/B]', 'dv': '[B]D/VISION[/B]', 'av1': '[B]AV1[/B]', 'enhanced_upscaled': '[B]AI ENHANCED/UPSCALED[/B]'}
 preference_values = {0:100, 1:50, 2:20, 3:10, 4:5, 5:2}
 
@@ -219,6 +229,14 @@ class Sources():
 		if self.ignore_scrape_filters:
 			self.filters_ignored = True
 			results = self.sort_results(results)
+			# LOTTO 244 -- SI SONDA ANCHE QUI, e prima no perche' la chiamata stava solo nel ramo
+			# `else`. Era un difetto di collocazione, non una scelta: a filtri ignorati sparisce il
+			# filtro della dimensione, ma il CANCELLO DEL PLAYER resta -- `_esamina_sorgente` chiama
+			# `_banda_sufficiente` a ogni riproduzione, comunque sia stata costruita la lista. Quindi
+			# la banda serviva eccome: si decideva senza averla misurata.
+			# Nessun filtro da applicare, quindi il bersaglio e' semplicemente il primo dell'ordine
+			# di autoplay.
+			self._sonda_la_prima(self._ordine_autoplay(list(results)))
 		else:
 			results = self.sort_results(results)
 			# I filtri sono indipendenti fra loro, quindi l'ordine fra loro non conta; conta che
@@ -230,12 +248,73 @@ class Sources():
 			# l'autoplay: e' la sorgente che partirebbe, quindi il nodo che misuriamo e' lo stesso che
 			# consegnera' il film. La lista vera non si tocca -- il suo ordine finale lo decidono le
 			# tre righe in fondo, come sempre.
-			self._sonda_la_prima(self._ordine_autoplay(list(results)))
+			#
+			# LOTTO 240 -- SULLA LISTA GIA' FILTRATA, e prima non era cosi'. `filter_results` toglie
+			# per dimensione, e cio' che sta in cima all'ordine di autoplay PRIMA di quel taglio e'
+			# quasi sempre il remux piu' grosso -- cioe' esattamente la sorgente che il taglio sta
+			# per togliere. Misurato sull'archivio delle tre serate: l'offset della sonda cadeva
+			# fuori dalla fascia 10-25% del file riprodotto **11 volte su 16**, e nelle due sonde
+			# dell'11/09 alle 04:08 stava al 54% e all'87% -- file diversi, piu' grossi.
+			#
+			# Due danni, e il secondo e' quello che conta. Il link risolto si butta: `_link_gia_risolto`
+			# non trova mai la sorgente giusta, quindi la `resolve_sources` in piu' e' costo puro e
+			# l'attesa non e' "anticipata" come promette l'intestazione della sonda. E soprattutto si
+			# misura su un remux 4K letto in profondita', che TorBox dichiara in cache ma puo' non
+			# avere caldo a quell'offset: la sonda delle 04:12 ha fatto **3 secondi di buco dentro
+			# 6,4** con il 6% di cpu -- attesa di rete pura -- e ha dichiarato 4,76 Mbit/s dove la
+			# riproduzione ne ha poi consegnati 8,8.
+			#
+			# LA CIRCOLARITA', e come si scioglie. Il filtro ha bisogno della sonda e la sonda
+			# vorrebbe il filtro. Si rompe usando `filter_results` DUE VOLTE: la prima qui, e senza
+			# misura `_line_speed` ripiega da solo sull'impostazione, quindi taglia con una soglia
+			# conservativa nota; la seconda sotto, con il numero misurato. E' la STESSA funzione,
+			# non una copia della sua regola: cosi' "il bersaglio e' una sorgente che il filtro
+			# terrebbe" e' una conseguenza e non una convenzione che qualcuno deve ricordarsi di
+			# mantenere allineata. Costa una comprensione di lista su qualche centinaio di elementi.
+			# LOTTO 244 -- col RIPIEGO sulla lista non filtrata. Se la soglia provvisoria svuota la
+			# lista non si rinuncia a misurare: si sonda comunque, perche' una sorgente in cache che
+			# non passa il filtro descrive la linea esattamente come una che lo passa. Rinunciare
+			# voleva dire cadere sul gradino piu' basso della scala per un motivo che non c'entra
+			# niente con la rete -- ed era un caso che non esisteva prima del lotto 241, cioe' me
+			# lo ero introdotto da solo.
+			_candidate = self._ordine_autoplay(self.filter_results(results))
+			self._sonda_la_prima(_candidate or self._ordine_autoplay(list(results)))
 			results = self.filter_results(results)
 		results = self.sort_preferred_autoplay(results)
 		results = self.sort_preferred_language(results)
 		results = self.sort_first(results)
+		self._verifica_bersaglio(results)
 		return results
+
+	def _verifica_bersaglio(self, finali):
+		"""Il bersaglio della sonda e' sopravvissuto fino alla lista vera? E in che posizione?
+
+		LOTTO 240 -- e' la riga che rende questo lotto verificabile da sola, come la riga `forma` lo
+		e' per il 240/rampa. Senza, per sapere se il bersaglio e' quello giusto bisogna ricavare la
+		dimensione del file sondato dall'offset e confrontarla a mano con quella riprodotta -- che e'
+		come ho dovuto misurare l'11 su 16, e non e' un metodo.
+		"""
+		try:
+			from modules.perf import log as perf_log
+			# LOTTO 242 -- QUALE GRADINO DELLA SCALA ha deciso questa ricerca. Va scritto sempre,
+			# anche quando non c'e' stato nessun bersaglio: il caso che interessa di piu' e' proprio
+			# quello in cui la sonda non ha misurato, perche' e' li' che prima si cadeva sui 50
+			# dell'impostazione senza che niente lo dicesse.
+			_fonte = getattr(self, '_fonte_soglia', None)
+			if _fonte: perf_log('FenLight PERF SONDA', '  soglia     %s' % _fonte)
+			_nota = getattr(self, '_nota_sonda', None)
+			if _nota: perf_log('FenLight PERF SONDA', '  non misurata: %s' % _nota)
+			_ch = getattr(self, '_chiave_sondata', None)
+			if not _ch: return
+			from caches import playback_stats
+			for _i, _item in enumerate(finali or []):
+				if playback_stats.chiave(_item) == _ch:
+					perf_log('FenLight PERF SONDA', '  bersaglio  %s -> posizione %d/%d nella lista '
+							 'finale' % (_ch, _i + 1, len(finali)))
+					return
+			perf_log('FenLight PERF SONDA', '  bersaglio  %s -> NON sopravvissuto ai filtri '
+					 '(%d sorgenti in lista)' % (_ch, len(finali or [])))
+		except: pass
 
 	def _ordine_autoplay(self, results):
 		"""L'ordine in cui l'autoplay proverebbe le sorgenti. Le stesse tre righe che chiudono
@@ -244,30 +323,98 @@ class Sources():
 			return self.sort_first(self.sort_preferred_language(self.sort_preferred_autoplay(results)))
 		except: return results
 
-	# LOTTO 230 -- quante sorgenti si prova a risolvere prima di rinunciare. Ogni tentativo costa una
-	# chiamata a TorBox: due sono la copertura del caso "la prima non si risolve", tre sarebbero
-	# attesa regalata su un caso raro.
-	TENTATIVI_SONDA = 2
+	# LOTTO 244 -- UN BUDGET DI TEMPO, NON UN CONTEGGIO.
+	#
+	# Il 230 si fermava a due tentativi: "tre sarebbero attesa regalata su un caso raro". Ma due e'
+	# un numero che non descrive niente -- il costo di un tentativo e' una chiamata a TorBox, e
+	# quella si misura in secondi, non in unita'. Nel log dell'11/09 il tratto fra la risposta
+	# "CACHED" di TorBox e l'avvio della sonda (dentro c'e' la resolve) e' durato 2,7 / 4,6 / 6,3 s.
+	#
+	# Quindi: si continua finche' una si risolve o finche' si sono spesi SECONDI_TENTATIVI a
+	# provarci. Dieci secondi coprono due tentativi quasi sempre e tre quando sono rapidi, e il
+	# limite e' sulla cosa che l'utente paga davvero invece che su un conteggio arbitrario.
+	#
+	# L'ASIMMETRIA e' la stessa del lotto 242: rinunciare a misurare non costa "un ripiego", costa
+	# scendere la scala -- e il caso peggiore di quella scala e' l'impostazione dell'utente, che su
+	# questa stick valeva 50 su una linea da 12 e ha prodotto 94 secondi a secco.
+	SECONDI_TENTATIVI = 10.0
 
 	def _sonda_la_prima(self, ordinate):
 		"""Misura la linea sulla prima sorgente in cache che si risolve, e tiene il link per dopo.
 
+		`ordinate` arriva GIA' FILTRATA dal lotto 240 -- vedi process_results: e' una lista di
+		sorgenti che il filtro della dimensione terrebbe con la soglia di ripiego, quindi candidate
+		vere a partire, non il remux piu' grosso che il taglio sta per togliere.
+
 		Il link risolto QUI e' lo stesso che servira' a riprodurre: `_link_gia_risolto` lo riusa, e
-		cosi' una parte dei cinque secondi non e' aggiunta ma anticipata.
+		cosi' una parte dei cinque secondi non e' aggiunta ma anticipata. Quanto spesso ci riesca
+		davvero lo dice la riga `bersaglio` nel log, che per questo esiste.
 
 		Una volta sola per ricerca: `process_results` puo' essere chiamata due volte -- prescrape e
 		poi ricerca piena -- e sondare due volte costerebbe il doppio del tempo per lo stesso numero.
 		"""
 		if getattr(self, '_sondato', False): return
-		self._sondato = True
 		self._capacita, self._link_sondato = None, (None, None)
+		self._instabilita, self._fonte_sonda = 0.0, None
+		self._chiave_sondata, self._nota_sonda = None, None
+		# LOTTO 250 -- SOLO IN MODO AUTO (3). Questa guardia mancava del tutto: la sonda partiva a
+		# ogni riproduzione anche con il filtro su Off o su Use Size, dove nessuno dei due cancelli
+		# usa il suo numero (il player esce con 'cancello banda non attivo', `filter_results` non
+		# chiama `_line_speed`). Erano cinque-sei secondi di attesa a ogni film in cambio di niente.
+		# Sta QUI e non nei tre chiamanti perche' i punti d'ingresso sono tre e uno si dimentica --
+		# e' gia' successo due volte, lotto 244.
+		#
+		# Si legge l'ATTRIBUTO, gia' preso in __init__, e non si importa niente: questo metodo viene
+		# chiamato anche su percorsi che non importano nulla, e aggiungere qui un import lo farebbe
+		# fallire dove prima degradava. E' lo stesso numero su cui decide `filter_results`, quindi
+		# i due non possono divergere.
+		if self.filter_size_method != 3:
+			self._sondato = True
+			self._nota_sonda = ('sonda non richiesta: filtro dimensione in modo %s'
+								% self.filter_size_method)
+			return
+		if not ordinate:
+			# NIENTE IN CACHE non e' un guasto: se TorBox non ha nulla non c'e' niente da riprodurre
+			# e quindi niente da misurare. Si distingue da "non si sono risolte" perche' sono due
+			# cose diverse e prima erano lo stesso silenzio (lotto 244).
+			self._sondato = True
+			self._nota_sonda = 'nessuna sorgente in cache: niente da misurare'
+			return
+		# LOTTO 256 -- CHI C'E' ANCORA QUANDO LA SONDA PARTE. La sonda misura la linea, ma se un
+		# thread di scraping e' ancora vivo lei sta in coda sul GIL e misura la coda: il 12/09 alle
+		# 06:44 e' uscita con quota 34% e consumo proprio 8%, cioe' ferma. Senza questa riga quel
+		# caso resta un numero basso senza colpevole. Con `results.timeout` a 0 deve dire sempre
+		# zero; se dice altro, il tetto sta abbandonando qualcuno e si vede subito chi.
+		try:
+			# `logger` in cima al modulo e' commentato: si usa lo stesso perf_log delle altre righe
+			# della sonda, cosi' la riga esce nello stesso blocco e non in mezzo al log generale.
+			from modules.perf import log as perf_log
+			_vivi = [x.getName() for x in (self.threads + self.prescrape_threads) if x.is_alive()]
+			if _vivi:
+				perf_log('FenLight PERF SONDA', 'ATTENZIONE: la sonda parte con %d scraper interni '
+						 'ancora vivi (%s) -- misurera\' anche la loro contesa sul GIL'
+						 % (len(_vivi), ', '.join(_vivi)))
+			else:
+				perf_log('FenLight PERF SONDA', 'nessuno scraper interno ancora vivo: cpu libera')
+		except: pass
+		_provati, _t0 = 0, time.perf_counter()
 		try:
 			from caches import playback_stats
 			from modules import sonda_linea
-			for item in (ordinate or [])[:self.TENTATIVI_SONDA]:
+			for item in ordinate:
+				# LOTTO 244 -- il budget si guarda PRIMA di cominciare un tentativo nuovo. Quello in
+				# corso si lascia finire: interromperlo a meta' butterebbe via la chiamata a TorBox
+				# che si e' gia' pagata.
+				if _provati and time.perf_counter() - _t0 >= self.SECONDI_TENTATIVI:
+					self._nota_sonda = ('%d sorgenti provate in %.1f s, nessuna risolta: budget finito'
+										% (_provati, time.perf_counter() - _t0))
+					self._sondato = True
+					return
+				_provati += 1
 				url = self.resolve_sources(item)
 				if not url: continue
 				self._link_sondato = (playback_stats.chiave(item), url)
+				self._chiave_sondata = self._link_sondato[0]
 				# L'unico motivo per mollare a meta': l'utente che annulla la ricerca. Nessuna
 				# riproduzione puo' partire mentre leggiamo -- e' questo stesso thread che la
 				# farebbe partire.
@@ -280,10 +427,24 @@ class Sources():
 				except: _dim = None
 				esito = sonda_linea.misura_sorgente(url, self._ricerca_annullata, _dim)
 				self._capacita = (esito or {}).get('regime')
+				# LOTTO 253 -- instabilita' e fonte viaggiano con la capacita': il margine non e' piu'
+				# una costante, dipende da quanto quella misura e' affidabile.
+				self._instabilita = (esito or {}).get('instabilita') or 0.0
+				self._fonte_sonda = (esito or {}).get('regime_fonte')
+				# `_sondato` si alza SOLO adesso, e il lotto 244 lo sposta qui apposta. Prima si
+				# alzava all'ingresso, quindi un prescrape in cui nessuna sorgente si risolveva
+				# impediva alla ricerca piena di riprovare -- e la seconda lista e' proprio quella
+				# piu' grande. Il criterio giusto e' "abbiamo speso il tempo dell'utente in una
+				# lettura", non "ci abbiamo provato".
+				self._sondato = True
 				return
-			# Nessuna sorgente in cache vuol dire che non c'e' niente da riprodurre per questo
-			# titolo: non c'e' banda da misurare e non c'e' niente da filtrare.
-		except: pass
+			self._nota_sonda = ('%d sorgenti provate in %.1f s, nessuna si e\' risolta'
+								% (_provati, time.perf_counter() - _t0))
+		except Exception as _e:
+			# LOTTO 244 -- non piu' `except: pass`. Se questo ramo e' mai scattato non lo sapremo
+			# mai, ed e' inaccettabile per una guardia: se la sonda non parte, il log deve dire
+			# perche'. Il silenzio qui e' costato l'unica risposta che non sapevo dare.
+			self._nota_sonda = 'errore: %s: %s' % (type(_e).__name__, _e)
 
 	def _ricerca_annullata(self):
 		try: return bool(self.progress_dialog and self.progress_dialog.iscanceled())
@@ -302,14 +463,23 @@ class Sources():
 		return None
 
 	def _line_speed(self):
-		"""La soglia del filtro: quella MISURATA se la sonda ce l'ha fatta, altrimenti l'impostazione.
+		"""La soglia del filtro. LOTTO 242: la decide `sonda_linea.soglia`, non piu' questo metodo.
 
 		Il ripiego non e' una cortesia: senza sonda (nessuna sorgente in cache che si risolva, TorBox
-		muto, lettura troppo corta) il filtro deve continuare a funzionare come prima, non sparire.
+		muto, lettura troppo corta) il filtro deve continuare a funzionare, non sparire. Ma "come
+		prima" voleva dire l'impostazione scritta a mano, e su questa stick vale 50 su una linea da
+		12-20: e' il numero che l'11/09 ha lasciato passare il film dei 94 secondi a secco. Adesso
+		fra la sonda e l'impostazione ci sono due gradini di misure vere -- vedi sonda_linea.soglia.
+
+		E il player passa dalla STESSA funzione: prima i due cancelli potevano giudicare lo stesso
+		film con numeri diversi, e quando la sonda non partiva succedeva davvero.
 		"""
 		try:
 			from modules import sonda_linea
-			_v = sonda_linea.line_speed_da(getattr(self, '_capacita', None))
+			_v, _fonte = sonda_linea.soglia(getattr(self, '_capacita', None),
+											getattr(self, '_instabilita', 0.0),
+											getattr(self, '_fonte_sonda', None))
+			self._fonte_soglia = _fonte
 			if _v: return _v
 		except: pass
 		return string_to_float(get_setting('results.line_speed', '25'), '25')
@@ -378,7 +548,9 @@ class Sources():
 		if self.filter_size_method:
 			min_size = string_to_float(get_setting('fenlight.results.%s_size_min' % self.media_type, '0'), '0') / MB_PER_GIB
 			if min_size == 0.0 and not self.include_unknown_size: min_size = 0.02
-			if self.filter_size_method == 1:
+			# LOTTO 250 -- il modo 3 (Auto) calcola il tetto come il modo 1: e' la stessa regola,
+			# cambia solo da dove viene il numero, e a deciderlo e' `sonda_linea.soglia`.
+			if self.filter_size_method in (1, 3):
 				duration = self._durata_filtro()
 				# LOTTO 208 -- niente piu' 0,90. Era un margine di sicurezza scritto a mano, invisibile
 				# nell'impostazione: chi scriveva 11 otteneva 9,9 senza che nulla glielo dicesse. E il
@@ -542,17 +714,27 @@ class Sources():
 		def _scraperDialog():
 			monitor = xbmc_monitor()
 			start_time = time.time()
+			# LOTTO 256 -- lo stesso tetto del percorso esterno, e lo stesso significato dello zero.
+			# Questo ciclo serve al PRESCRAPE (collect_prescrape_results) e al percorso senza scraper
+			# esterni: erano gli altri due punti che lasciavano indietro dei thread, e aspettare solo
+			# cocoscrapers non avrebbe liberato la cpu davvero.
+			_tetto = _tetto_scraper()
+			_senza_tetto = _tetto <= 0
 			while not self.progress_dialog.iscanceled() and not monitor.abortRequested():
 				try:
 					remaining_providers = [x.getName() for x in _threads if x.is_alive() is True]
 					self._process_internal_results()
 					current_progress = max((time.time() - start_time), 0)
 					line1 = ', '.join(remaining_providers).upper()
-					percent = int((current_progress/float(scraper_timeout))*100)
+					if _senza_tetto:
+						_totali = len(_threads) or 1
+						percent = int(((_totali - len(remaining_providers)) / float(_totali)) * 100)
+					else:
+						percent = int((current_progress/float(_tetto))*100)
 					self.progress_dialog.update_scraper(self.sources_sd, self.sources_720p, self.sources_1080p, self.sources_4k, self.sources_total, line1, percent)
 					sleep(self.sleep_time)
 					if len(remaining_providers) == 0: break
-					if percent >= 100: break
+					if not _senza_tetto and percent >= 100: break
 				except:	return self._kill_progress_dialog()
 		if self.prescrape: scraper_list, _threads = self.prescrape_scrapers, self.prescrape_threads
 		else: scraper_list, _threads = self.providers, self.threads
@@ -618,6 +800,13 @@ class Sources():
 		results = self.sort_preferred_autoplay(results)
 		results = self.sort_preferred_language(results)
 		results = self.sort_first(results)
+		# LOTTO 244 -- la SECONDA porta d'ingresso senza filtri, e non l'avevo vista: la ricerca
+		# normale non da' risultati, l'utente accetta "Access Filtered Results?" e si arriva alla
+		# riproduzione da qui. Il cancello del player si applica lo stesso, quindi la banda serve.
+		# `_sondato` adesso e' alzato solo da una lettura davvero fatta, quindi se la ricerca di
+		# prima non aveva misurato niente questa lista -- che e' piu' grande -- puo' riprovare.
+		self._sonda_la_prima(results)
+		self._verifica_bersaglio(results)
 		return self.play_source(results)
 
 	def _no_results(self):

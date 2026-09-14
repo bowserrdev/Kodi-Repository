@@ -97,6 +97,19 @@ def routing(sys):
 	params = dict(parse_qsl(sys.argv[2][1:], keep_blank_values=True))
 	_get = params.get
 	mode = _get('mode', 'navigator.main')
+	# LOTTO 261 -- L'INVOCAZIONE SI PRESENTA. Kodi crea un thread `LanguageInvoker` per ogni
+	# invocazione del plugin, ma su Android non lo NOMINA (pthread_setname_np e' compilato solo per
+	# glibc, vedi modules/diagnostica.battezza), quindi in /proc tutte le nostre invocazioni portano
+	# il `comm` ereditato dal thread Java e sono indistinguibili fra loro. Scrivendo il mode nel
+	# `comm` la sonda esterna vede "FL:movies" invece di un anonimo, e si capisce quale widget sta
+	# mangiando il core SENZA dover incrociare il log.
+	# Una scrittura di 16 byte, una volta per invocazione, e solo a diagnostica accesa: a log
+	# normale questa riga non tocca niente. E' qui e non in fenlight.py perche' qui il `mode` e' gia'
+	# stato letto e non costa una seconda analisi di sys.argv.
+	try:
+		from modules.diagnostica import battezza
+		battezza('FL:' + mode.split('.')[-1])
+	except Exception: pass
 	# LOTTO 176, PASSO 1.2 BIS. Chi ha un pgctl E' la costruzione di un widget, e questo e' l'istante
 	# piu' presto in cui lo si sa: i parametri sono appena stati letti e non e' ancora stato importato
 	# nessun indexer. Prima si dichiarava l'inizio in get_pages e in mark_build_start, che pero'

@@ -15,6 +15,54 @@
     <value name="widget_next_id">$MATH[501 + {item_x} + 1]</value>
     <value name="widget_nextnext_id">$MATH[501 + {item_x} + 2]</value>
     <value name="widget_nextnextnext_id">$MATH[501 + {item_x} + 3]</value>
+    <!-- LOTTO 302. I vicini per le righe congelate (Includes_Widgets.xml, Widget_Congela_Contenitore): una riga
+         resta attiva se il fuoco e' fra id-2 e id+2, e la skin non sa fare somme. Prima delle prime righe
+         vale 0, che non e' l'id di nessun controllo: 499 e 500 invece esistono nella skin. congela_testa
+         dice se la riga e' fra le prime tre, quelle che si vedono con il fuoco sull'intestazione. -->
+    <rules name="widget_congela_prec2">
+        <rule>
+            <condition>{item_x}==0</condition>
+            <value>0</value>
+        </rule>
+        <rule>
+            <condition>{item_x}==1</condition>
+            <value>0</value>
+        </rule>
+        <rule>
+            <condition>True</condition>
+            <value>$MATH[501 + {item_x} - 2]</value>
+        </rule>
+    </rules>
+    <rules name="widget_congela_prec1">
+        <rule>
+            <condition>{item_x}==0</condition>
+            <value>0</value>
+        </rule>
+        <rule>
+            <condition>True</condition>
+            <value>$MATH[501 + {item_x} - 1]</value>
+        </rule>
+    </rules>
+    <value name="widget_congela_succ1">$MATH[501 + {item_x} + 1]</value>
+    <value name="widget_congela_succ2">$MATH[501 + {item_x} + 2]</value>
+    <rules name="widget_congela_testa">
+        <rule>
+            <condition>{item_x}==0</condition>
+            <value>True</value>
+        </rule>
+        <rule>
+            <condition>{item_x}==1</condition>
+            <value>True</value>
+        </rule>
+        <rule>
+            <condition>{item_x}==2</condition>
+            <value>True</value>
+        </rule>
+        <rule>
+            <condition>True</condition>
+            <value>False</value>
+        </rule>
+    </rules>
     <value name="widget_widgetfade_include">true</value>
     <value name="widget_widgetfade_disable">false</value>
     <value name="widget_guid">{item_guid}</value>

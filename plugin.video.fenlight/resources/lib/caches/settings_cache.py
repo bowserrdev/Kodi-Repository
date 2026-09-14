@@ -382,7 +382,9 @@ default_settings = [
 #====================================RESULTS====================================#
 #===============================================================================#
 #==================== Display
-{'setting_id': 'results.timeout', 'setting_type': 'action', 'setting_default': '20', 'min_value': '1'},
+# LOTTO 256 -- min_value da 1 a 0, e lo zero ha un significato: NESSUN TETTO, gli scraper hanno
+# tutto il tempo che serve e si va avanti quando hanno finito davvero. Vedi scrapers/external.py.
+{'setting_id': 'results.timeout', 'setting_type': 'action', 'setting_default': '20', 'min_value': '0'},
 {'setting_id': 'results.list_format', 'setting_type': 'string', 'setting_default': 'List'},
 #==================== General
 {'setting_id': 'results.auto_rescrape_with_all', 'setting_type': 'action', 'setting_default': '0', 'settings_options': {'0': 'Off', '1': 'Auto', '2': 'Prompt'}},
@@ -391,7 +393,7 @@ default_settings = [
 #==================== Sorting and Filtering
 {'setting_id': 'results.sort_order_display', 'setting_type': 'string', 'setting_default': 'Quality, Size, Provider'},
 {'setting_id': 'results.size_sort_direction', 'setting_type': 'action', 'setting_default': '0', 'settings_options': {'0': 'Descending', '1': 'Ascending'}},
-{'setting_id': 'results.filter_size_method', 'setting_type': 'action', 'setting_default': '0', 'settings_options': {'0': 'Off', '1': 'Use Line Speed', '2': 'Use Size'}},
+{'setting_id': 'results.filter_size_method', 'setting_type': 'action', 'setting_default': '0', 'settings_options': {'0': 'Off', '1': 'Use Line Speed', '2': 'Use Size', '3': 'Auto (Measure Line Speed)'}},
 {'setting_id': 'results.line_speed', 'setting_type': 'action', 'setting_default': '25', 'min_value': '1'},
 {'setting_id': 'results.movie_size_max', 'setting_type': 'action', 'setting_default': '10000', 'min_value': '1'},
 {'setting_id': 'results.episode_size_max', 'setting_type': 'action', 'setting_default': '3000', 'min_value': '1'},

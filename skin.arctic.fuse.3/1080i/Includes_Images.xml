@@ -534,6 +534,41 @@
         <value>indicator/dot.png</value>
     </variable>
 
+    <!-- ============================================================================================ -->
+    <!-- LOTTO 292: l'indicatore, deciso da una variabile invece che da una catena di gruppi.           -->
+    <!-- L'ordine dei <value> E' la priorita' (in riproduzione, episodi, avanzamento, visto, libreria,  -->
+    <!-- collezione): Kodi si ferma al primo vero, esattamente come la catena si fermava al primo ramo  -->
+    <!-- con la condizione soddisfatta. La differenza e' che qui non resta niente da attraversare.      -->
+    <!-- ============================================================================================ -->
+
+    <!-- L'icona davanti. Il ramo "episodi" non ha icona: al suo posto si vede la label col conteggio. -->
+    <variable name="Object_Indicator_Icona">
+        <value condition="$EXP[Exp_Ind_Playing]">indicator/play.png</value>
+        <value condition="$EXP[Exp_Ind_Episodes]" />
+        <value condition="$EXP[Exp_Ind_Progress]">indicator/timer.png</value>
+        <value condition="$EXP[Exp_Ind_Watched]">indicator/checkmark.png</value>
+        <value condition="$EXP[Exp_Ind_Library]">indicator/library.png</value>
+        <value condition="$EXP[Exp_Ind_Collection]">indicator/movieset.png</value>
+    </variable>
+
+    <!-- Solo il segno di spunta era colorato: gli altri erano immagini senza colordiffuse, cioe' bianche. -->
+    <variable name="Object_Indicator_Icona_Colore">
+        <value condition="$EXP[Exp_Ind_Playing]">ffffffff</value>
+        <value condition="$EXP[Exp_Ind_Episodes]">ffffffff</value>
+        <value condition="$EXP[Exp_Ind_Progress]">ffffffff</value>
+        <value condition="$EXP[Exp_Ind_Watched]">$VAR[ColorWatchedProgress]</value>
+        <value>ffffffff</value>
+    </variable>
+
+    <!-- L'anello dietro. Nel ramo "in riproduzione" si vedeva solo se l'elemento aveva anche episodi o
+         avanzamento (era il <visible> Percentage): il primo valore, vuoto, e' quel caso. Nel ramo "visto"
+         l'anello e' pieno. Negli altri non c'e'. -->
+    <variable name="Object_Indicator_Anello">
+        <value condition="$EXP[Exp_Ind_Playing] + ![$EXP[Exp_Ind_Episodes] | $EXP[Exp_Ind_Progress]]" />
+        <value condition="[$EXP[Exp_Ind_Playing] | $EXP[Exp_Ind_Episodes] | $EXP[Exp_Ind_Progress]]">$VAR[Defs_PercentPlayed,progress/circle/p,.png]</value>
+        <value condition="$EXP[Exp_Ind_Watched]">progress/circle/p100.png</value>
+    </variable>
+
     <variable name="Image_PVRGuide_Indicator">
         <value condition="ListItem.IsRecording">indicator/record.png</value>
         <value condition="ListItem.HasTimer">indicator/timer.png</value>

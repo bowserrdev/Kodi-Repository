@@ -29,6 +29,7 @@ import http.client
 import json as _json
 import gzip
 import socket
+import re as _re
 from _thread import allocate_lock as Lock  # builtin, vedi la nota in caches/base_cache.py
 
 DEFAULT_TIMEOUT = 20
@@ -297,6 +298,66 @@ class _Pool:
 				try: conn.close()
 				except: pass
 
+# --- normalizzazione del request-target (lotto 260) ---------------------------------------------
+# Il buco lasciato aperto dal lotto 84. requests non mandava l'URL sul filo come gli arrivava: lo
+# passava per `requote_uri()`, che percent-codifica tutto cio' che in un request-target non ci puo'
+# stare. Togliendo requests abbiamo tolto anche quello e nessuno l'ha rimpiazzato -- ma i chiamanti
+# hanno continuato a costruire l'URL concatenando testo dell'utente (tmdb_api ha otto punti cosi').
+#
+# Cosa accadeva, misurato sul Mac il 13/09 con la ricerca testuale dell'hub:
+#   'one piece' -> http.client.InvalidURL, "URL can't contain control characters (found at least
+#                  ' ')". putrequest rifiuta qualunque carattere in [\x00-\x20\x7f]: la richiesta non
+#                  partiva affatto, ed e' il motivo per cui nel log il fallimento arriva 40 ms dopo
+#                  la TMDB CALL -- troppo presto per essere rete. InvalidURL deriva da HTTPException,
+#                  quindi cadeva nell'except di _attempt: due riprove del tutto inutili (il guasto e'
+#                  deterministico, non puo' che rifallire), un guasto contato dall'interruttore, e un
+#                  TemporaryError che il bare-except di tmdb_api.get_tmdb riduceva a None. Da li'
+#                  `get_tmdb(url).json()` -> AttributeError, la riga 'BUILD FALLITA' nel log, e
+#                  zero risultati per qualunque ricerca di piu' di una parola.
+#   'citta''    -> UnicodeEncodeError da _encode_request, che fa request.encode('ascii'). E' un
+#                  ValueError, quindi l'except di _attempt NON lo prende: scavalcava classificazione
+#                  e interruttore e usciva grezzo. Piu' insidioso del primo, e su un catalogo
+#                  italiano non e' un caso limite.
+# Per questo si corregge QUI e non nei chiamanti: il difetto e' del trasporto, i chiamanti che
+# concatenano sono otto oggi e non si sa quanti domani, e soprattutto i redirect -- dove la Location
+# la scrive il server -- non passerebbero da nessuna toppa messa in tmdb_api.
+#
+# COSA SI CONSIDERA SICURO. Lo stesso insieme di requests.utils.requote_uri: i non riservati di
+# RFC 3986 (lettere, cifre, _.-~) piu' i riservati che nel target hanno un significato e non vanno
+# toccati (!#$&'()*+,/:;=?@[]). Fuori restano lo spazio, i caratteri di controllo, " < > \ ^ ` { | }
+# e tutto il non-ASCII, che diventano %XX dei loro byte UTF-8.
+#
+# IDEMPOTENTE, ed e' il requisito che conta davvero: qui passano URL che possono essere GIA' in parte
+# codificati, perche' chi usa `params=` arriva dopo quote_plus. Un '%XX' valido si lascia com'e',
+# quindi '%20' non diventa mai '%2520'.
+# Sul '%' isolato ci discostiamo da requests, in meglio: requests lo lascia letterale e spedisce un
+# escape malformato ('50% off' -> '50%%20off'), noi lo codifichiamo ('50%25%20off'). L'idempotenza
+# regge perche' al secondo giro '%25' e' un escape valido e viene conservato.
+#
+# `re` non aggiunge un file all'albero degli import: http.client lo carica per conto suo.
+_TARGET_SAFE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-~!#$&'()*+,/:;=?@[]"
+_TARGET_SAFE_SET = frozenset(_TARGET_SAFE)
+_HEXDIGITS = frozenset('0123456789abcdefABCDEF')
+_PCT = ['%%%02X' % _i for _i in range(256)]
+# Un solo passaggio in C per dire "non c'e' niente da fare", che e' il caso di ogni chiamata che non
+# nasce da una ricerca: matcha qualsiasi carattere fuori dall'insieme sicuro, oppure un '%' NON
+# seguito da due esadecimali (cioe' un escape da produrre, non uno da conservare).
+_TARGET_DIRTY = _re.compile('[^%s%%]|%%(?![0-9A-Fa-f]{2})' % _re.escape(_TARGET_SAFE)).search
+
+def _requote_target(path):
+	if not _TARGET_DIRTY(path): return path
+	out, i, n = [], 0, len(path)
+	while i < n:
+		ch = path[i]
+		if ch == '%':
+			if path[i+1:i+2] in _HEXDIGITS and path[i+2:i+3] in _HEXDIGITS:
+				out.append(path[i:i+3]); i += 3; continue
+			out.append('%25'); i += 1; continue
+		if ch in _TARGET_SAFE_SET: out.append(ch)
+		else: out.extend([_PCT[b] for b in ch.encode('utf-8')])
+		i += 1
+	return ''.join(out)
+
 def _split_url(url):
 	# Niente urllib.parse: vedi _encode_params. Lo scomponimento serve solo per http(s).
 	scheme, _, rest = url.partition('://')
@@ -307,7 +368,7 @@ def _split_url(url):
 	if '@' in netloc: netloc = netloc.rsplit('@', 1)[1]
 	host, _, port = netloc.partition(':')
 	port = int(port) if port else (443 if scheme == 'https' else 80)
-	return scheme, host, port, path or '/'
+	return scheme, host, port, _requote_target(path or '/')
 
 class _CookieJar:
 	"""Barattolo dei cookie di sessione. LOTTO 93.

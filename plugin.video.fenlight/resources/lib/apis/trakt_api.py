@@ -1891,6 +1891,34 @@ def dedup_playback(progress_info):
 	_fuori = [migliori[_k] for _k in ordine] + senza_chiave
 	return _fuori, len(progress_info) - len(_fuori)
 
+# LOTTO 239 -- LO STESSO DIFETTO DI FORMA DI §9.2, SU UN SECONDO ASSE, e questa volta l'ha trovato
+# la riga di log che il 238 aveva aggiunto: `film [1 in piu' su Trakt [1844144333]]`, ogni 30 s,
+# sempre lo stesso id, con ZERO voci gemelle accorpate. Non erano i doppioni.
+#
+# Il ricostruttore tiene solo le voci sopra l'1% (`progress_items`, sotto): una pausa a meta' del
+# primo minuto non e' un 'continua a guardare', e non deve comparire. Il confronto invece contava
+# TUTTE le voci dello snapshot. Una voce sotto l'1% risultava quindi "in piu' su Trakt" per sempre,
+# perche' la ricostruzione non la scrivera' mai -- per scelta, non per errore.
+# La prova sta nel log: `DIAG progress movie: da Trakt 4 | in locale 4 (4 synced)` mentre il
+# confronto ne vedeva 5.
+#
+# LA REGOLA E' LA STESSA DEL 238, e vale la pena scriverla una volta sola: un rilevatore di
+# differenze puo' segnalare solo differenze che la sua riparazione sa togliere. Qui non si ripete la
+# soglia in due posti sperando che restino uguali -- si usa la STESSA funzione da entrambe le parti,
+# cosi' l'invariante non e' una convenzione ma una conseguenza.
+PROGRESSO_MINIMO = 1
+
+def voci_da_tenere(progress_info, tipo):
+	"""Le voci dello snapshot che la ricostruzione terrebbe davvero. L'unica definizione.
+
+	Una voce senza `progress` leggibile vale zero e resta fuori da entrambe le parti: non potrebbe
+	essere scritta in tabella, quindi non deve nemmeno poter far dichiarare una differenza.
+	"""
+	try:
+		return [i for i in (progress_info or []) if i.get('type') == tipo
+					and (i.get('progress') or 0) > PROGRESSO_MINIMO]
+	except: return []
+
 def trakt_playback_progress():
 	params = {'path': 'sync/playback%s', 'with_auth': True, 'pagination': False}
 	_snapshot = get_trakt(params)
@@ -1932,7 +1960,7 @@ def trakt_progress_movies(progress_info):
 		insert_append(obj)
 	insert_list = []
 	insert_append = insert_list.append
-	progress_items = [i for i in progress_info  if i['type'] == 'movie' and i['progress'] > 1]
+	progress_items = voci_da_tenere(progress_info, 'movie')
 	# Torna QUALI film hanno cambiato avanzamento, per la ricarica mirata (lotto 119). Anche il caso
 	# 'nessun film in corso' e' un cambiamento da mostrare -- e' l'ultimo film che ESCE da 'continua a
 	# guardare' -- quindi passa dallo stesso calcolo invece di uscire a mani vuote.
@@ -1968,7 +1996,7 @@ def trakt_progress_tv(progress_info):
 									0, p_item['paused_at'], p_item['id'], p_item['show']['title'])
 			except: pass
 	shows_info = {}
-	progress_items = [i for i in progress_info if i['type'] == 'episode' and i['progress'] > 1]
+	progress_items = voci_da_tenere(progress_info, 'episode')
 	# Gemella di trakt_progress_movies: torna le triple 'tmdb:stagione:episodio' cambiate, non i soli
 	# id di serie. Vedi kodi_utils.episode_uid per il perche' della tripla.
 	if not progress_items: return trakt_watched_cache.set_bulk_tvshow_progress([])
@@ -2240,8 +2268,9 @@ def trakt_sync_activities(force_update=False):
 		if trakt_watched_cache.has_any_progress():
 			progress_info = trakt_playback_progress()
 			if progress_info is not None:
-				movie_ids = {i['id'] for i in progress_info if i['type'] == 'movie'}
-				ep_ids = {i['id'] for i in progress_info if i['type'] == 'episode'}
+				# LOTTO 239 -- gli STESSI insiemi che vedra' la ricostruzione, non tutto lo snapshot.
+				movie_ids = {i['id'] for i in voci_da_tenere(progress_info, 'movie')}
+				ep_ids = {i['id'] for i in voci_da_tenere(progress_info, 'episode')}
 				# Simmetrica dal lotto 140: non piu' 'Trakt ha tolto qualcosa?' ma 'lo snapshot e noi
 				# diciamo cose diverse?'. Lo snapshot lo scarichiamo intero comunque, quindi l'altra
 				# meta' dell'informazione era gia' in mano. Vedi trakt_cache.progress_out_of_sync.
@@ -2375,13 +2404,13 @@ def trakt_sync_activities(force_update=False):
 			# cambiato, il contenuto dice se e' cambiato QUALCOSA CHE NOI NON ABBIAMO. La seconda non
 			# dipende dalla prima, ed e' per questo che una marca mancata o ambigua non fa piu' danno.
 			if not refresh_movies_progress:
-				trakt_ids = {i['id'] for i in progress_info if i['type'] == 'movie'}
+				trakt_ids = {i['id'] for i in voci_da_tenere(progress_info, 'movie')}   # lotto 239
 				_perche = trakt_watched_cache.progress_out_of_sync('movie', trakt_ids)
 				if _perche:
 					refresh_movies_progress = True
 					logger('FenLight Trakt', 'avanzamento film fuori sincrono: %s' % _perche)
 			if not refresh_shows_progress:
-				trakt_ids = {i['id'] for i in progress_info if i['type'] == 'episode'}
+				trakt_ids = {i['id'] for i in voci_da_tenere(progress_info, 'episode')}   # lotto 239
 				_perche = trakt_watched_cache.progress_out_of_sync('episode', trakt_ids)
 				if _perche:
 					refresh_shows_progress = True

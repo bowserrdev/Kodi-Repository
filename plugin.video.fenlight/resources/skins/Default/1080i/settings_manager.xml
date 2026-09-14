@@ -1932,7 +1932,7 @@
                           <property name="setting_label">Scraper Timeout</property>
                           <property name="setting_type">numeric</property>
                           <property name="setting_value">$INFO[Window(10000).Property(fenlight.results.timeout)]</property>
-                          <property name="setting_description">Choose the amount of time Fen Light will allow all scrapers to search for results</property>
+                          <property name="setting_description">Choose the amount of time Fen Light will allow all scrapers to search for results. Set to 0 for no timeout: scrapers are given all the time they need and the search proceeds only when every one of them has finished, so that scraping never overlaps what comes after it</property>
                           <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_numeric&amp;setting_id=results.timeout)</onclick>
                       </item>
                       <item>
@@ -2011,7 +2011,7 @@
                           <property name="setting_label">    - Internet Speed (Mbit/s)</property>
                           <property name="setting_type">numeric</property>
                           <property name="setting_value">$INFO[Window(10000).Property(fenlight.results.line_speed)]</property>
-                          <property name="setting_description">Enter here your internet line speed. It is a good idea to choose a value slightly below your true internet speed, although Fen Light will still reduce this value by 10% before filtering results by size</property>
+                          <property name="setting_description">Enter here your internet line speed. It is a good idea to choose a value slightly below your true internet speed, this value is used exactly as entered. Choose Auto instead if you want Fen Light to measure the line itself before each playback</property>
                           <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_numeric&amp;setting_id=results.line_speed)</onclick>
                       </item>
                       <item>
@@ -2034,7 +2034,7 @@
                       </item>
                       <item>
                           <visible>Container(2000).HasFocus(60)</visible>
-                          <visible>String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),1) | String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),2)</visible>
+                          <visible>String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),1) | String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),2) | String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),3)</visible>
                           <property name="setting_label">    - Movies Minimum Size (MB)</property>
                           <property name="setting_type">numeric</property>
                           <property name="setting_value">$INFO[Window(10000).Property(fenlight.results.movie_size_min)]</property>
@@ -2043,7 +2043,7 @@
                       </item>
                       <item>
                           <visible>Container(2000).HasFocus(60)</visible>
-                          <visible>String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),1) | String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),2)</visible>
+                          <visible>String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),1) | String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),2) | String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),3)</visible>
                           <property name="setting_label">    - Episodes Minimum Size (MB)</property>
                           <property name="setting_type">numeric</property>
                           <property name="setting_value">$INFO[Window(10000).Property(fenlight.results.episode_size_min)]</property>
@@ -2052,7 +2052,7 @@
                       </item>
                       <item>
                           <visible>Container(2000).HasFocus(60)</visible>
-                          <visible>String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),1) | String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),2)</visible>
+                          <visible>String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),1) | String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),2) | String.IsEqual(Window(10000).Property(fenlight.results.filter_size_method),3)</visible>
                           <property name="setting_label">    - Include Results with Unknown Size</property>
                           <property name="setting_type">boolean</property>
                           <property name="setting_value">$INFO[Window(10000).Property(fenlight.results.size_unknown)]</property>

@@ -1122,10 +1122,15 @@
 
                     <bottom>25</bottom>
 
-                    <control type="image">
+                    <!-- LOTTO 294: stessa cosa. Qui `selected` puo' essere una condizione di runtime in
+                         ALTRE parti della skin (ListItem.IsSelected, il profilo attivo), ma non lungo le
+                         catene che arrivano a questo layout: ci arriva solo dai layout di List_Core, che
+                         passano true o false scritti a mano. La prova di invarianza lo verifica su tutte
+                         le finestre, non a parole. -->
+                    <include content="Object_Control" condition="$PARAM[selected]">
+                        <param name="control">image</param>
                         <include>Texture_Menu_Highlight_H</include>
-                        <visible>$PARAM[selected]</visible>
-                    </control>
+                    </include>
                     <control type="group">
                         <width>$PARAM[misc]</width>
                         <top>20</top>
@@ -2224,11 +2229,15 @@
         <param name="aligny">top</param>
         <param name="textbox_offset_y">7</param>
         <definition>
-            <control type="image">
+            <!-- LOTTO 294: era un controllo con <visible>$PARAM[fade]</visible>, e `fade` nella skin vale
+                 solo `true` o `false` scritti a mano (due soli punti di chiamata, verificati). Con false
+                 restava nell'albero di OGNI elemento a farsi attraversare a ogni fotogramma per niente:
+                 15 copie nella Home, 9 nella cartella. Come condizione di include non viene emesso. -->
+            <include content="Object_Control" condition="$PARAM[fade]">
+                <param name="control">image</param>
                 <texture border="20" colordiffuse="e7ffffff">common/poster_fade.png</texture>
-                <visible>$PARAM[fade]</visible>
                 <height>$PARAM[item_h]</height>
-            </control>
+            </include>
 
             <control type="group">
                 <top>$PARAM[item_h]</top>
@@ -2283,7 +2292,8 @@
                             <selectedcolor>$PARAM[textcolor]_70</selectedcolor>
                             <align>left</align>
                         </include>
-                        <include content="Object_InfoCircle_Text_Sub" condition="$PARAM[include_detailed_labels]">
+                        <!-- LOTTO 290: orario e data del canale servono solo alla TV in diretta -->
+                        <include content="Object_InfoCircle_Text_Sub" condition="$PARAM[include_detailed_labels] + System.HasPVRAddon">
                             <label>$INFO[$PARAM[listitem].StartTime]$INFO[$PARAM[listitem].EndTime, - ,]</label>
                             <include condition="$PARAM[selected]">Color_SelectedText</include>
                             <textcolor>$PARAM[textcolor]_70</textcolor>
@@ -2292,7 +2302,8 @@
                             <visible>!String.IsEmpty($PARAM[listitem].ChannelNumberLabel)</visible>
                             <visible>ListItem.InProgress</visible>
                         </include>
-                        <include content="Object_InfoCircle_Text_Sub" condition="$PARAM[include_detailed_labels]">
+                        <!-- LOTTO 290: orario e data del canale servono solo alla TV in diretta -->
+                        <include content="Object_InfoCircle_Text_Sub" condition="$PARAM[include_detailed_labels] + System.HasPVRAddon">
                             <label>$INFO[$PARAM[listitem].Date]</label>
                             <include condition="$PARAM[selected]">Color_SelectedText</include>
                             <textcolor>$PARAM[textcolor]_70</textcolor>

@@ -59,6 +59,8 @@
         <param name="widgetfade_disable">false</param>
         <param name="widget_hideartwork">false</param>
         <param name="widget_showoverlay">false</param>
+        <param name="congela">false</param>
+        <param name="congelata">false</param>
         <definition>
             <include content="Widget_Label">
                 <param name="groupid">$PARAM[groupid]</param>
@@ -99,6 +101,10 @@
                 <height>$PARAM[widgetheight]</height>
                 <animation effect="fade" start="100" end="0" time="0" condition="[Container($PARAM[id]).IsUpdating | $PARAM[busy_isupdating]] + $PARAM[busy_visible]">Conditional</animation>
                 <visible>$PARAM[visible] + [Container($PARAM[id]).IsUpdating | !Integer.IsEqual(Container($PARAM[id]).NumItems,0) | $PARAM[altvisible]]</visible>
+                <include content="Widget_Congela_Contenitore" condition="$PARAM[congela]">
+                    <param name="id">$PARAM[id]</param>
+                    <param name="congelata">$PARAM[congelata]</param>
+                </include>
 
                 <onfocus condition="!$EXP[Exp_InfoDialogs] + $PARAM[widget_hideartwork]">SetProperty(Background.HideArtwork,True)</onfocus>
                 <onfocus condition="$EXP[Exp_InfoDialogs] + $PARAM[widget_hideartwork]">SetProperty(Background.DialogInfo.HideArtwork,True,Home)</onfocus>
@@ -117,6 +123,61 @@
                     <param name="condition">$PARAM[conditional_fade]</param>
                 </include>
             </include>
+            <include content="Widget_Congela_Segnaposto" condition="$PARAM[congela]">
+                <param name="id">$PARAM[id]</param>
+                <param name="widgettop">$PARAM[widgettop]</param>
+                <param name="widgetheight">$PARAM[widgetheight]</param>
+                <param name="visible">$PARAM[visible]</param>
+                <param name="congelata">$PARAM[congelata]</param>
+            </include>
+        </definition>
+    </include>
+
+    <!-- LOTTO 302. RIGHE CONGELATE NEGLI HUB DELL'UTENTE.
+         CGUIControlGroupList::Process elabora TUTTI i figli, anche quelli fuori schermo
+         (GUIControlGroupList.cpp:70-81): ogni riga widget costa sempre, e un hub pieno costa in proporzione.
+         Misura 301 sulla stick, stesso hub a 18 righe: a riposo 432-447 ms/s del thread dell'interfaccia con
+         tutte le righe attive, 219-228 congelando quelle lontane; scorrimento orizzontale tenuto 12,7 -> 23,5 fps.
+         Un controllo nascosto non viene elaborato: una riga lontana dal fuoco si nasconde e un segnaposto della
+         stessa misura le tiene il posto. Gli elementi restano in memoria, riaccenderla e' solo tornare a disegnarla.
+
+         QUANDO UNA RIGA E' CONGELATA (tutto insieme):
+         - nessuno si sta spostando fra le righe (fenlight.congela.muovendo vuota): durante la navigazione
+           verticale la vista insegue il fuoco con un'animazione e mostra righe gia' oltre il raggio; con le
+           righe congelate passavano vuote (misura 301 B). Ogni riga che prende il fuoco accende la proprieta'
+           e riarma una sveglia da 1 s che la spegne (AlarmClock ferma e riparte, GUIBuiltins.cpp:211-216).
+         - e' gia' caricata e non sta caricando: una riga mai caricata sparirebbe, e una che carica deve farsi vedere.
+         - e' fuori dal raggio: fuoco nel grouplist e su una riga fra id-2 e id+2; fuoco sull'intestazione
+           (300/301/302) e riga fra le prime tre, perche' li' la vista e' quella della prima riga; fuoco
+           altrove (dialoghi sopra l'hub) e riga lontana dall'ultima che aveva il fuoco.
+         Gli id dei vicini li calcola il generatore (setup/widgets_row.xml): la skin non sa fare somme.
+
+         allowhiddenfocus = congelata, SCRITTO PER ESTESO. Il grouplist scorre in cima se la riga che riceve il
+         fuoco e' la prima focalizzabile (GUIControlGroupList.cpp:181); con le righe sopra congelate e non
+         focalizzabili, risalendo la vista tornava in cima mostrando una riga congelata (prova 5). Il raggio
+         da solo non basta appena una riga in mezzo e' vuota o nascosta e Kodi la salta.
+         $EXP NON FUNZIONA in questo attributo: Kodi risolve $EXP solo nel testo di visible/enable e
+         nell'attributo condition (GUIIncludes.cpp:79-84, 377-398), l'attributo restava letterale e quindi
+         falso (prove 4 e 5). $PARAM invece si risolve in ogni attributo (GUIIncludes.cpp:581-604).
+         Il segnaposto DEVE avere un id: il grouplist collega su/giu' per id (GUIControlGroupList.cpp:257-297)
+         e con id 0 la catena si interrompe. -->
+    <include name="Widget_Congela_Contenitore">
+        <definition>
+            <visible allowhiddenfocus="$PARAM[congelata]">![$PARAM[congelata]]</visible>
+            <onfocus>SetProperty(fenlight.congela.riga,$PARAM[id])</onfocus>
+            <onfocus>SetProperty(fenlight.congela.muovendo,1,Home)</onfocus>
+            <onfocus>AlarmClock(fenlight_congela_fermo,ClearProperty(fenlight.congela.muovendo,Home),00:01,silent)</onfocus>
+        </definition>
+    </include>
+
+    <include name="Widget_Congela_Segnaposto">
+        <definition>
+            <control type="group" id="79$PARAM[id]">
+                <description>segnaposto della riga congelata $PARAM[id]</description>
+                <top>$PARAM[widgettop]</top>
+                <height>$PARAM[widgetheight]</height>
+                <visible>$PARAM[visible] + $PARAM[congelata]</visible>
+            </control>
         </definition>
     </include>
 
@@ -534,15 +595,26 @@
                 <param name="widgetfade_disable">$PARAM[widgetfade_disable]</param>
                 <param name="widget_hideartwork">$PARAM[widget_hideartwork]</param>
                 <param name="widget_showoverlay">$PARAM[widget_showoverlay]</param>
+                <param name="congela">$PARAM[congela]</param>
+                <param name="congelata">$PARAM[congelata]</param>
                 <nested />
             </include>
         </definition>
     </include>
 
+    <!-- congela: acceso SOLO dal generatore degli hub (parts/widgets_row.xmltemplate), vedi Widget_Congela_Contenitore.
+         Spento di default: la ricerca usa Widget_Row da un altro modello, e un file generato vecchio che non
+         passa i vicini deve comportarsi come prima, non con id vuoti. -->
     <include name="Widget_Row">
         <param name="grouplistid">5000</param>
         <param name="widgetconstants_affix" />
         <param name="widgetpath" />
+        <param name="congela">false</param>
+        <param name="congela_prec2">0</param>
+        <param name="congela_prec1">0</param>
+        <param name="congela_succ1">0</param>
+        <param name="congela_succ2">0</param>
+        <param name="congela_testa">false</param>
         <definition>
             <include content="_Widget_Row">
                 <param name="id">$PARAM[id]</param>
@@ -562,6 +634,9 @@
 
                 <param name="widgettop">widget_items_t$PARAM[widgetconstants_affix]</param>
                 <param name="labelheight">widget_label_h$PARAM[widgetconstants_affix]</param>
+
+                <param name="congela">$PARAM[congela]</param>
+                <param name="congelata">[String.IsEmpty(Window(Home).Property(fenlight.congela.muovendo)) + !Integer.IsEqual(Container($PARAM[id]).NumItems,0) + !Container($PARAM[id]).IsUpdating + ![[ControlGroup($PARAM[grouplistid]).HasFocus() + [Control.HasFocus($PARAM[congela_prec2]) | Control.HasFocus($PARAM[congela_prec1]) | Control.HasFocus($PARAM[id]) | Control.HasFocus($PARAM[congela_succ1]) | Control.HasFocus($PARAM[congela_succ2])]] | [!ControlGroup($PARAM[grouplistid]).HasFocus() + [Control.HasFocus(300) | Control.HasFocus(301) | Control.HasFocus(302)] + $PARAM[congela_testa]] | [!ControlGroup($PARAM[grouplistid]).HasFocus() + !Control.HasFocus(300) + !Control.HasFocus(301) + !Control.HasFocus(302) + [String.IsEmpty(Window.Property(fenlight.congela.riga)) | Integer.IsEqual(Window.Property(fenlight.congela.riga),$PARAM[congela_prec2]) | Integer.IsEqual(Window.Property(fenlight.congela.riga),$PARAM[congela_prec1]) | Integer.IsEqual(Window.Property(fenlight.congela.riga),$PARAM[id]) | Integer.IsEqual(Window.Property(fenlight.congela.riga),$PARAM[congela_succ1]) | Integer.IsEqual(Window.Property(fenlight.congela.riga),$PARAM[congela_succ2])]]]]</param>
 
                 <include content="Action_Widget_OnBack">
                     <param name="id">$PARAM[id]</param>

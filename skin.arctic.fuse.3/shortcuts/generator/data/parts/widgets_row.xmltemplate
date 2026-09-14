@@ -14,6 +14,13 @@
     <param name="widgetfade_disable">{widget_widgetfade_disable}</param>
     <param name="widgetconstants_affix">{widgetconstants_affix}</param>
     <param name="widgetpath">{widget_path}</param>
+    <!-- LOTTO 302: righe congelate negli hub, vedi Widget_Congela_Contenitore in Includes_Widgets.xml -->
+    <param name="congela">True</param>
+    <param name="congela_prec2">{widget_congela_prec2}</param>
+    <param name="congela_prec1">{widget_congela_prec1}</param>
+    <param name="congela_succ1">{widget_congela_succ1}</param>
+    <param name="congela_succ2">{widget_congela_succ2}</param>
+    <param name="congela_testa">{widget_congela_testa}</param>
 
     <onfocus>ClearProperty(HomeSwitcher.IsVisible,Home)</onfocus>
     <onfocus>ClearProperty(InfoPanel.FullSwitch,Home)</onfocus>

@@ -252,10 +252,90 @@ table_creators = {
 		# riprodotto, ed e' proprio l'obiezione con cui e' morta la sonda dei lotti 191-195. Due
 		# colonne separate perche' la domanda si possa porre ai dati.
 		'  sonda_cdn text,'
+		# LOTTO 240 -- LA FORMA DELLA CURVA, non solo la sua media, e senza queste colonne il lotto
+		# non e' verificabile. `sonda_media` e' il numero che il codice del lotto 230 avrebbe
+		# dichiarato: sta accanto a `sonda_mbps` proprio per poter misurare quanto la correzione
+		# della rampa ha cambiato invece di crederci. `sonda_salita` e' coda/centro, cioe' quanto la
+		# curva stava ancora salendo quando la finestra e' finita -- l'11/09 valeva 2,86 e 1,60 su
+		# una linea a -72 dBm, e intorno a 1,0 su una linea sana.
+		# LOTTO 245 -- `sonda_buco` E' DIVENTATA `sonda_avvallamento`, e il nome cambia perche'
+		# cambia la GRANDEZZA. Prima era il piu' lungo intervallo fra due campioni, e su linea sana
+		# riportava sempre il primo bucket (0,54 - 0,56 sulle quattro righe dell'11/09): una
+		# costante di campionamento, non un fatto. Adesso e' il tratto piu' lungo, dentro la sola
+		# finestra di regime, in cui la linea ha consegnato meno del 70% del proprio ritmo medio --
+		# e uno stallo e' il caso limite, quindi la misura vecchia ci sta dentro.
+		#
+		# Rinominare COSTA le righe in archivio (il rifacimento qui sotto le butta) e si paga
+		# volentieri: tenere il vecchio nome su un numero nuovo e' esattamente il mescolamento che
+		# `_rebuild_playback_stats` esiste per impedire.
+		'  sonda_media real,'
+		'  sonda_coda real,'
+		'  sonda_centro real,'
+		'  sonda_salita real,'
+		'  sonda_avvallamento real,'
+		'  sonda_campioni integer,'
+		# LOTTO 245 -- QUALE DEI DUE NUMERI HA DECISO. `sonda_secondi` vuol dire due cose a seconda
+		# di questa colonna: con 'media' e' la finestra di regime intera (SECONDI_REGIME), con
+		# 'coda' e' solo il tratto finale (SECONDI_CODA). Finora si poteva solo indovinare
+		# confrontando `sonda_mbps` con `sonda_coda`, e abbassare SALITA_SOSPETTA rende le righe
+		# 'coda' piu' frequenti proprio adesso: senza questa colonna la taratura di 1,12 non
+		# sarebbe verificabile sull'archivio della prossima tornata.
+		'  sonda_fonte text,'
+		# LOTTO 244 -- LO STATO DEL LINK WI-FI, da /proc/net/wireless. Non e' una colonna della
+		# sonda anche se le sta accanto: si scrive a ogni riproduzione, pure quando la sonda non e'
+		# partita, ed e' li' che serve di piu'. `rete_segnale` e' il livello in dBm.
+		#
+		# Perche' esiste: ogni anomalia della fase 4 e' finita sul wi-fi -- 44 Mbit/s il 10/09, 10
+		# l'11/09 alle 03:20, 46 alle 13:57 -- e la spiegazione era sempre la stessa, 5 GHz a -72
+		# dBm contro 2,4 GHz a -55. Ogni volta l'ho scoperto a mano con `dumpsys`, dopo. Senza
+		# questa colonna una riga di ieri non e' interpretabile.
+		# La BANDA non e' ottenibile da un'app e non la fingo: il livello pero' le separa comunque.
+		'  rete_qualita real,'
+		'  rete_segnale real,'
 		# Il link risolto di QUESTA riproduzione: e' il bersaglio della PROSSIMA sonda. Sta qui e non
 		# in un'impostazione perche' deve sopravvivere allo spegnimento e perche' va letto insieme a
 		# `dimensione`, che e' cio' che decide da che offset leggere.
-		'  link text)',
+		'  link text,'
+		# LOTTO 255 -- LA RADIO DURANTE LA SONDA, che e' un'altra cosa da `rete_segnale` qui sopra.
+		# Quella si legge UNA VOLTA, nel player, a riproduzione avviata: dice in che stato era la
+		# radio, non cosa ha fatto durante i sei secondi della misura. Queste tre si campionano
+		# dentro la finestra di regime, allo stesso passo della curva.
+		#
+		# Perche' esistono: raggruppando le 26 sonde del 12/09 per `rete_segnale` le due popolazioni
+		# si separano senza sovrapposizione -- -55 dBm -> 40-48 Mbit/s, -69 dBm -> 1,5-14,8, stessi
+		# host cdn -- e le regole della coda sbagliano SOLO nel gruppo debole (4 accensioni su 8,
+		# contro 0 su 18). Ma dentro la curva non c'e' come distinguere un rallentamento vero da un
+		# affievolimento della radio: la curva sintetica di test_240, dove la coda ha ragione, e il
+		# caso reale in cui ha torto hanno lo stesso `avvallamento` (2,50 contro 2,82).
+		# Queste colonne sono la MISURA che manca per decidere, non una decisione gia' presa: finche'
+		# non dicono che le code in discesa coincidono coi tuffi del segnale, DISCESA_SOSPETTA non si
+		# tocca. Vedi il lotto 254 per cosa costa fare il contrario.
+		'  sonda_rssi_inizio real,'
+		'  sonda_rssi_fine real,'
+		'  sonda_rssi_min real,'
+		# LOTTO 258 -- SE CREDERE A QUELLA MISURA. Le altre colonne della sonda dicono quanto ha
+		# misurato; queste sei dicono in che condizioni, ed esistono per una ragione precisa.
+		#
+		# Il 12/09 alle 18:22 la sonda ha dichiarato 17,32 Mbit/s. Alle 18:15 la stessa linea ne
+		# dava 55,09 e alle 18:27 ne dava 62,48: la soglia che ne e' uscita (13,86) ha tolto 108
+		# sorgenti su 108 sopra i 14 Mbit/s. Gli indizi c'erano tutti e tre -- `ttfb` 3514 ms contro
+		# 544-1414 delle altre sei sonde, ripiego dal lettore Python a quello di Kodi dopo un 416, e
+		# lo scraper che dichiarava 36,42 GB per un file da 2,75 -- ma stavano solo nel log, dove si
+		# leggono un caso alla volta e non si correlano con niente.
+		#
+		# Non decidono niente, e il punto e' quello: con un caso solo non si sa se quei tre indizi
+		# siano una firma o una coincidenza, e scartare quella misura sarebbe stato PEGGIO -- la
+		# bacheca era viva (404 s) e avrebbe rimesso i 55,09 su una linea che ne sosteneva 25.
+		# Prima la raccolta, poi la regola.
+		'  sonda_lettore text,'
+		'  sonda_ripiego integer,'
+		'  sonda_stato integer,'
+		'  sonda_dim_attesa integer,'
+		'  sonda_dim_vera integer,'
+		# La lettura INTERA, che non si ricava da `sonda_secondi` (solo il tratto dichiarato): su
+		# Pulp Fiction valevano 9,6 e 4,7. La differenza fra le due e' quanto la linea ha impiegato
+		# ad assestarsi, cioe' cio' che separa una rampa da una linea gia' ferma.
+		'  sonda_letti_secondi real)',
 		# LISTA NERA -- tabella A PARTE, e la separazione e' il punto. playback_stats e' una finestra
 		# scorrevole di 50 righe che si pota a ogni scrittura: una bocciatura messa li' sparirebbe
 		# dopo cinquanta riproduzioni, cioe' proprio quando comincia a servire. Stesso database --
@@ -382,10 +462,31 @@ def migrate_playback_schema():
 		# senza `re`: base_cache e' un modulo sensibile al costo di import (lotto 126) e una regex
 		# non vale un modulo in piu' per leggere una lista di nomi separati da virgole.
 		_sql = table_creators['playback_db'][0]
-		_atteso = [_c.strip().split()[0]
-				   for _c in _sql[_sql.index('(') + 1:_sql.rindex(')')].split(',')]
+		_pezzi = [_c.strip() for _c in _sql[_sql.index('(') + 1:_sql.rindex(')')].split(',')]
+		_atteso = [_c.split()[0] for _c in _pezzi]
 		_ora = [r[1] for r in dbcon.execute('PRAGMA table_info(playback_stats)')]
 		if not _ora or _ora == _atteso: return
+		# LOTTO 258 -- UNA COLONNA AGGIUNTA IN CODA NON E' UN CAMBIO DI SCHEMA, e buttare
+		# l'archivio per una di quelle e' un costo che non compra niente.
+		#
+		# Il rifacimento qui sotto esiste contro un pericolo preciso, scritto nella docstring: un
+		# nome che resta su una grandezza cambiata (`sonda_buco` -> `sonda_avvallamento`), cioe'
+		# righe che per essere lette vanno datate. Una colonna NUOVA non ha quel problema: sulle
+		# righe vecchie vale NULL, e NULL in questo file vuol dire gia' 'non misurato' e mai 'zero'.
+		#
+		# Quindi la distinzione e' fra PREFISSO e resto: se le colonne di adesso sono esattamente
+		# le prime N di quelle attese -- stesso ordine, nessuna sparita, nessuna rinominata -- si
+		# aggiungono le mancanti e le misure restano. In ogni altro caso si butta come prima.
+		if _atteso[:len(_ora)] == _ora:
+			for _c in _pezzi[len(_ora):]:
+				dbcon.execute('ALTER TABLE playback_stats ADD COLUMN %s' % _c)
+			dbcon.commit()
+			kodi_utils.logger('Fen Light', 'playback_stats: %d colonne aggiunte in coda, le %d '
+							  'misure in archivio restano (%s)'
+							  % (len(_atteso) - len(_ora),
+								 dbcon.execute('SELECT COUNT(*) FROM playback_stats').fetchone()[0],
+								 ', '.join(_atteso[len(_ora):])))
+			return
 		_quante = dbcon.execute('SELECT COUNT(*) FROM playback_stats').fetchone()[0]
 		dbcon.execute('DROP TABLE playback_stats')
 		dbcon.execute(table_creators['playback_db'][0])

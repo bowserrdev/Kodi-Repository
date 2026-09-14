@@ -38,7 +38,19 @@ class source:
 		self.internal_activated, self.internal_prescraped = len(self.internal_scrapers) > 0, len(self.prescrape_sources) > 0
 		self.processed_prescrape, self.threads_completed = False, False
 		self.sleep_time = 100
-		self.timeout = 60 if disabled_ext_ignored else int(get_setting('fenlight.results.timeout', '20'))
+		# LOTTO 256 -- ZERO VUOL DIRE NESSUN TETTO. Fino a qui il tetto scadeva e si andava avanti
+		# LASCIANDO INDIETRO i thread ancora vivi: non si possono uccidere (in Python non esiste), e
+		# quelli continuavano a macinare dentro lo stesso interprete. Misurato il 12/09: DMM impiega
+		# 50-72 s contro un tetto di 60, quindi due ricerche su tre lo abbandonavano a pochi secondi
+		# dalla fine -- e la sua cpu arrivava addosso alla chiamata al debrid e alla sonda, che gira
+		# subito dopo. La sonda delle 06:44 e' stata buttata cosi': quota 34%, consumo proprio 8%,
+		# cioe' ferma in coda sul GIL dietro a due scraper abbandonati.
+		# Con zero non si abbandona nessuno: si esce quando hanno finito DAVVERO, e le tre fasi
+		# (scraping+parsing -> debrid -> sonda) tornano separate. La valvola resta l'annulla
+		# dell'utente, che il ciclo controlla a ogni giro.
+		self.timeout = int(get_setting('fenlight.results.timeout', '20'))
+		self.senza_tetto = self.timeout <= 0
+		if disabled_ext_ignored and not self.senza_tetto: self.timeout = 60
 		self.sources_total = self.sources_4k = self.sources_1080p = self.sources_720p = self.sources_sd = 0
 		self.final_total = self.final_4k = self.final_1080p = self.final_720p = self.final_sd = 0
 		self.count_tuple = (('sources_4k', '4K', self._quality_length), ('sources_1080p', '1080p', self._quality_length), ('sources_720p', '720p', self._quality_length),
@@ -74,21 +86,35 @@ class source:
 			start_time = time.time()
 			while not self.progress_dialog.iscanceled() and not self.monitor.abortRequested():
 				try:
-					alive_threads = [x.getName() for x in self.threads if x.is_alive()]
+					_vivi = [x for x in self.threads if x.is_alive()]
+					alive_threads = [x.getName() for x in _vivi]
 					if self.internal_activated or self.internal_prescraped: alive_threads.extend(self.process_internal_results())
 					line1 =  ', '.join(alive_threads).upper()
-					percent = (max((time.time() - start_time), 0)/float(self.timeout))*100
+					# LOTTO 256 -- senza tetto la barra non puo' misurare il TEMPO (non c'e' un
+					# traguardo), quindi misura il LAVORO: quanti provider hanno gia' finito. E'
+					# anche piu' onesta -- col tetto la barra corre mentre DMM e' fermo al 90%.
+					if self.senza_tetto:
+						_totali = len(self.threads) or 1
+						percent = ((_totali - len(_vivi)) / float(_totali)) * 100 if self.threads_completed else 0
+					else:
+						percent = (max((time.time() - start_time), 0)/float(self.timeout))*100
 					self.progress_dialog.update_scraper(self.sources_sd, self.sources_720p, self.sources_1080p, self.sources_4k, self.sources_total, line1, percent)
 					if self.threads_completed:
 						len_alive_threads = len(alive_threads)
-						if len_alive_threads == 0 or percent >= 100: break
-					elif percent >= 100: break
+						# Finiti tutti: si esce sempre, col tetto e senza. E' la condizione buona.
+						if len_alive_threads == 0: break
+						if not self.senza_tetto and percent >= 100: break
+					elif not self.senza_tetto and percent >= 100: break
 					sleep(self.sleep_time)
 				except: pass
 			return
 		def _background():
 			sleep(1500)
-			end_time = time.time() + self.timeout
+			# LOTTO 256 -- lo sfondo NON eredita "nessun tetto", di proposito. Qui non c'e' dialogo
+			# e quindi non c'e' annulla: un'attesa senza fine non avrebbe valvola. E soprattutto non
+			# serve -- lo sfondo prepara l'episodio successivo mentre si guarda, non c'e' nessuna
+			# sonda dopo di lui da proteggere. Col tetto a zero si usa il valore di sempre.
+			end_time = time.time() + (60 if self.senza_tetto else self.timeout)
 			while time.time() < end_time:
 				alive_threads = [x for x in self.threads if x.is_alive()]
 				len_alive_threads = len(alive_threads)
@@ -113,6 +139,18 @@ class source:
 			Thread(target=self.process_episode_threads).start()
 		if self.background: _background()
 		else: _scraperDialog()
+		# LOTTO 256 -- L'INVARIANTE, CONTROLLATA INVECE CHE SPERATA. Da qui si va al debrid e poi
+		# alla sonda: se qui sopravvive qualcuno, la sua cpu finisce addosso a entrambi. Col tetto a
+		# zero questa riga deve dire sempre zero; con un tetto dice QUANTO si sta abbandonando, che
+		# e' il numero che serve per decidere se il tetto e' tarato bene.
+		try:
+			_vivi = [x.getName() for x in self.threads if x.is_alive()]
+			if _vivi:
+				logger('FenLight SCRAPER', 'si prosegue con %d scraper ANCORA VIVI (%s): la loro cpu '
+					   'arrivera\' addosso al debrid e alla sonda' % (len(_vivi), ', '.join(_vivi)))
+			else:
+				logger('FenLight SCRAPER', 'tutti gli scraper hanno finito: nessuno lasciato indietro')
+		except: pass
 		current_results = list(self.sources)
 		if current_results: return self.process_results(current_results)
 		return []
