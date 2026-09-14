@@ -29458,3 +29458,5680 @@ sqlite vero, non un modello.
 comportamento, deliberatamente). `tests/test_210.py` 28/28 -- l'avevo rotto aggiungendo
 `search_running` alle due guardie che quel test estrae e valuta, ed e' stato riparato aggiungendo
 anche i due casi nuovi. Suite 38/42; i quattro rotti sono i preesistenti `test_202-205`.
+
+## Lotto 240 -- La rampa dura piu' di un secondo quando la linea e' lenta
+
+Tre correzioni **separabili di proposito**, scelte fra sei diagnosi possibili proprio perche' non si
+sovrappongono: nessuna delle tre puo' essere scambiata per un'altra leggendo il log. Le altre tre
+(stallo, bersaglio della sonda, `MARGINE`) restano fuori da questo lotto perche' scriverebbero sullo
+stesso numero o cambierebbero cosa si misura, e allora la prossima serata di prove non direbbe piu'
+quale ha fatto cosa.
+
+### Da dove viene: la serata dell'11/09, 03:19-03:34
+
+Prima di guardare il codice, la banda. `dumpsys wifi`:
+
+```
+mWifiInfo  BSSID: ...fa:55  RSSI: -72  Link speed: 97Mbps  Frequency: 5180MHz
+2026-09-11T02:38:31 - Current network RSSI[-72] - acceptable but not qualified
+[ TIM-54441376 ...fa:51 RSSI:-54 ]      <- l'AP a 2,4 GHz, 18 dB piu' forte
+```
+
+La stick e' agganciata al 5 GHz a **-72 dBm**. Il 10/09 la linea stava a 33-47 Mbit/s, l'11/09 a
+7-19. **La sonda non sbaglia il verso: la linea e' davvero crollata.** Il che rende le tre misure di
+quella sessione un banco di prova nel regime dove il filtro decide sul serio.
+
+| riga | sonda | line_speed | bitrate scelto | portata prima | portata dopo | zero piu' lungo |
+|---|---|---|---|---|---|---|
+| 14 Disclosure Day | 10,48 | 8,4 | 3,7 | 15,3 | 12,1 | 4 s |
+| 15 Passenger | 15,36 | 12,3 | 10,3 | 19,4 | 10,3 | **90 s** |
+| 16 Greenland 2 | 7,48 | 6,0 | 3,8 | 9,9 | 13,7 | 3 s |
+
+portata/sonda: **1,46 / 1,26 / 1,83**. Il 10/09, su linea veloce, la mediana era **1,00**. La sonda
+sottostima **solo quando la linea e' lenta**.
+
+### 1. La rampa -- la correzione che fa il lavoro
+
+Le curve (righe 14 e 15: 12 campioni in 6,1 s, quindi passo 0,5 s e nessun bucket saltato):
+
+```
+riga 14   1o terzo 7,2 | 2o terzo  5,6 | 3o terzo 16,0 Mbit/s   coda/centro 2,86
+riga 15   1o terzo 8,8 | 2o terzo 12,0 | 3o terzo 19,2 Mbit/s   coda/centro 1,60
+```
+
+**La curva sta ancora salendo quando la finestra finisce.** Non e' rumore: e' monotona in entrambe, e
+nella 14 gli ultimi quattro bucket sono i quattro piu' veloci in assoluto.
+
+`SECONDI_SALITA = 1,0` viene dalle quattro curve del lotto 230, prese tutte su una linea da 45
+Mbit/s, dove nel primo secondo si stava a -0%, -0%, -13%, -12% dal regime: **curve piatte**. Lo slow
+start di TCP cresce per RTT, non per secondo, e a -72 dBm le ritrasmissioni tengono giu' la finestra
+molto piu' a lungo: **la rampa si allunga esattamente quando la linea e' peggiore**, cioe' quando il
+filtro sta per tagliare davvero.
+
+E il numero giusto la sonda ce l'ha gia' in mano -- lo sta diluendo dentro la propria rampa:
+
+| | media su 5 s | coda della curva | portata vera |
+|---|---|---|---|
+| riga 14 | 10,48 | **15,24** | 15,3 |
+| riga 15 | 15,36 | **17,45** | 19,4 |
+
+Quindi: `coda/centro >= SALITA_SOSPETTA` (1,30) vuol dire che la finestra e' finita troppo presto, e
+si dichiara la coda invece della media. **Su curva piatta non cambia niente**, ed e' la proprieta'
+che rende il lotto verificabile da solo: su linea sana deve essere un non-evento.
+
+Due vincoli deliberati. **Non si allunga la finestra**: su linea veloce si pagherebbe attesa per un
+numero gia' giusto. E la correzione **non puo' abbassare una misura** (`coda > regime`): puo' solo
+smettere di diluirla. E' cio' che la rende sicura da provare insieme al punto 3.
+
+`1,30` e' empirico come `QUOTA_MINIMA` e va detto: le due curve in salita misurate stanno a 1,60 e
+2,86, una curva piatta sta intorno a 1,0, e il vuoto in mezzo non l'ha visitato nessuno. Ma qui
+l'**asimmetria e' rovesciata** rispetto a `QUOTA_MINIMA`: li' si scartava con generosita' perche' il
+ripiego era un numero conservativo noto, qui alzare la misura ammette file piu' grossi. Soglia alta,
+e mai verso il basso.
+
+### 2. La curva leggibile -- lo strumento, non una decisione
+
+`_registra_log` stampava `'%.1f' % _mb(_b)` e **buttava via `_t`**. La riga 16 ha prodotto **7
+campioni per 6,4 s di lettura** -- bucket saltati -- e senza i tempi non c'era modo di sapere dove
+fosse il buco, che era l'unica cosa che quella riga avesse da dire. Le righe 14 e 15 le ho potute
+ricostruire solo perche' 12 campioni in 6,1 s implicano il passo 0,5: una fortuna, non un metodo.
+
+Adesso la curva e' `t:MB`, e una riga `forma` porta media, centro, coda, `coda/centro` e quale delle
+due e' stata dichiarata -- cioe' **c'e' sempre accanto il numero che il lotto 230 avrebbe detto**, e
+l'effetto della correzione si misura invece di crederci. Sei colonne nuove in archivio
+(`sonda_media`, `sonda_coda`, `sonda_centro`, `sonda_salita`, `sonda_buco`, `sonda_campioni`).
+
+`sonda_buco` **non decide niente in questo lotto**: e' il piu' lungo intervallo fra due campioni, ed
+e' li' per poter tarare la soglia dello stallo sui dati, in un lotto separato dove si veda cosa ha
+cambiato.
+
+E il campionamento non recupera piu' a raffica: `prossimo += BUCKET` lasciava la soglia indietro dopo
+uno stallo. Nemmeno risalire alla griglia bastava -- il confine successivo puo' cadere venti
+millisecondi dopo (misurati campioni a 3,48 s e 3,53 s). Adesso `prossimo = trascorso + BUCKET`: la
+griglia non serve piu' a nessuno da quando la curva porta i propri tempi.
+
+### 3. Il ripiego che non posizionava nessuno
+
+`_apri_lettore` ripiega su `_LettoreKodi` quando il lettore Python non apre gia' all'offset -- ed e'
+un ramo che **ci si aspetta** di percorrere: `item['size']` e' stato trovato sbagliato di 25 volte
+(lotto 192), e il 10/09 dichiarava 28,17 GB per un file da 20,37 e 36,48 per uno da 14,49. Ma in
+`misura` la chiamata a `posiziona()` stava dentro `if offset is None`, che sul ripiego e' **falso**.
+Riprodotto:
+
+```
+ripiego      : Python: OSError: range non onorata (stato 416)
+posiziona() chiamata con      : None          <- mai posizionato
+offset DICHIARATO nell esito  : 1773111262 (16,5% del file)
+```
+
+Si legge da **byte 0** e si dichiara 1,65 GB. Due danni: si scalda nel nodo di bordo proprio la parte
+che il film sta per leggere -- la ragione per cui `FRAZIONE_MIN/MAX` esistono -- e **la taratura di
+`MARGINE` ne esce falsata verso il basso, cioe' verso il meno sicuro**; e `sonda_offset` mente,
+quindi a posteriori non ci si puo' nemmeno accorgere. Adesso `posiziona()` sta fuori dall'`if`, torna
+l'offset **effettivo**, e se la dimensione dichiarata mentiva verso l'alto lo ricalcola sulla
+dimensione vera -- che questo lettore, a differenza dell'altro, la sa -- invece di leggere zero byte
+e buttare via la sonda.
+
+E' isolabile perche' **si firma da solo nel log**: `ripiego` + `lettore Kodi` + `t_posizione > 0`.
+Qualunque sonda lo percorra e' riconoscibile a colpo d'occhio ed escludibile dall'analisi della
+rampa. Nelle due sessioni raccolte non e' mai scattato (tutte e tre le sonde dell'11/09: `Python`,
+`posizione 0 ms`).
+
+### Cosa questo lotto NON risolve, e va detto
+
+La riga 15 e' passata dal cancello con margine (bitrate 10,33 contro `line_speed` 12,3, cioe'
+`b/s` 0,67 ben sotto lo 0,80 di `MARGINE`) e ha fatto **90 secondi di buffer a zero**, con `portata
+dopo` 10,3 -- esattamente il bitrate. Una misura di cinque secondi presa prima del film **non puo'**
+garantire fluidita' per due ore su un link instabile: puo' solo non sbagliare di 2x la capacita'.
+Correggere la rampa alza `line_speed` e quindi **rende piu' probabile** un caso come quello: e' il
+prezzo consapevole di smettere di tagliare 1,8x troppo. La domanda "quanto margine serve" e'
+`MARGINE`, e resta deliberatamente ferma -- tararla adesso vorrebbe dire tararla sull'errore della
+sonda invece che sulla linea.
+
+### Prove
+
+`tests/test_240.py` (nuovo, 38 assert). Le due curve vere dell'11/09 sono **riprodotte byte per
+byte** dentro la sonda con orologio e rete finti, e il test pretende che il numero nuovo cada vicino
+alla portata che la riproduzione ha poi consegnato. Piu' i tre casi che devono **non** cambiare
+niente: curva piatta (si resta sulla media), curva in discesa (idem), stallo lungo (nessun regime,
+come prima -- e la coda non lo aggira). Il ripiego e' provato in entrambe le forme, offset valido e
+offset oltre la fine del file.
+
+Una prova era **flaky** e l'ho scoperta rieseguendola otto volte, non una: l'offset usciva da
+`uniform(0.10, 0.25)` e cadeva oltre la fine del file finto solo tre volte su quattro. Una prova che
+passa a volte non prova niente.
+
+Suite 39/43; i quattro rotti sono i preesistenti `test_202-205`, che chiedono `sys.argv[1]`.
+
+L'archivio del 10-11/09 (16 righe + il log) e' salvato in `tests/archivio_sonda/` prima del cambio
+di schema: `_rebuild_playback_stats` rifa' la tabella da zero quando le colonne cambiano.
+
+## Lotto 241 -- La sonda misurava un file che non sarebbe mai partito
+
+Il punto 5 della diagnosi dell'11/09, tenuto fuori dal 240 di proposito: cambia **cosa** si misura, e
+mescolarlo a una correzione che cambia **come** si calcola il regime avrebbe reso il log illeggibile.
+
+### La prova che era sbagliato
+
+L'offset della sonda deve cadere fra il 10% e il 25% del file (`FRAZIONE_MIN/MAX`). Confrontandolo
+col file effettivamente riprodotto, su tre serate di archivio cade fuori fascia **11 volte su 16**.
+Le due sonde dell'11/09 dopo il lotto 240:
+
+| | file riprodotto | offset della sonda | |
+|---|---|---|---|
+| Backrooms | 3,44 GiB | 1,86 GB | **54%** |
+| Il Diavolo Veste Prada 2 | 3,06 GiB | 2,65 GB | **87%** |
+
+Un offset all'87% non e' un offset sbagliato: e' un **altro file**. Dall'offset si ricava che quello
+sondato stava fra 10,6 e 26,5 GB -- un remux 4K.
+
+### Perche' succedeva, ed era strutturale
+
+`_sonda_la_prima` girava **prima** di `filter_results`, sulla lista non ancora tagliata per
+dimensione. Ma cio' che sta in cima all'ordine di autoplay prima di quel taglio e' quasi sempre il
+remux piu' grosso, cioe' **esattamente la sorgente che il taglio sta per togliere**. Non un caso
+sfortunato: una conseguenza dell'ordinamento.
+
+Due danni, e il secondo e' quello che conta.
+
+Il **link risolto si butta**: `_link_gia_risolto` non trova mai la sorgente giusta, quindi la
+`resolve_sources` in piu' e' costo puro e l'attesa non e' "anticipata" come promette l'intestazione
+della sonda. Undici volte su sedici.
+
+E si **misura su un remux 4K letto in profondita'**, che TorBox dichiara in cache ma puo' non avere
+caldo a quell'offset. La sonda delle 04:12 dell'11/09:
+
+```
+curva  1.1:0.5 1.8:1.5 2.4:2.5 3.0:3.0 6.0:3.2    <- 3 secondi di buco dentro 6,4
+forma  media 4.76 | centro 11.26 | coda 1.23 | coda/centro 0.11 | 5 campioni, buco 3.0 s
+cpu    consumo 6% | quota 81%                     <- attesa di rete pura, non nostra
+```
+
+Ha dichiarato **4,76 Mbit/s** dove la riproduzione subito dopo ne ha consegnati **8,8**. Il filtro ha
+lavorato con `line_speed` 3,8: tetto **3,2 GiB**, e il file riprodotto ne misura **3,06**. E' passato
+per il 4%.
+
+E' questa la ragione per cui il punto 5 va **prima** del punto 3 (la guardia sullo stallo), e ho
+cambiato l'ordine che avevo proposto: se il buco viene dal sondare un remux freddo, il punto 3
+sarebbe una guardia contro un sintomo che il 241 elimina alla radice.
+
+### La circolarita', e come si scioglie
+
+Il filtro ha bisogno della sonda e la sonda vorrebbe il filtro. Si rompe usando `filter_results`
+**due volte**: la prima per scegliere il bersaglio -- e senza misura `_line_speed` ripiega da solo
+sull'impostazione, quindi taglia con una soglia conservativa nota -- la seconda con il numero
+misurato, per la lista vera.
+
+E' la **stessa funzione**, non una copia della sua regola: cosi' "il bersaglio e' una sorgente che il
+filtro terrebbe" e' una conseguenza, non una convenzione che qualcuno deve ricordarsi di mantenere
+allineata. E' la regola del lotto 239 (`voci_da_tenere`) applicata a un'altra coppia. Costa una
+comprensione di lista su qualche centinaio di elementi.
+
+Caso limite, e resta coerente: se il filtro conservativo **svuota** la lista non si sonda -- ma senza
+misura il filtro vero usa la stessa soglia, quindi la lista che l'utente vede e' quella stessa lista
+vuota. Nessuna sorgente persa che prima ci fosse.
+
+### La riga che lo rende verificabile
+
+```
+bersaglio  torrentio|Nome.Del.File -> posizione 3/47 nella lista finale
+bersaglio  torrentio|Nome.Del.File -> NON sopravvissuto ai filtri (47 sorgenti in lista)
+```
+
+Senza, per sapere se il bersaglio e' quello giusto bisogna ricavare la dimensione del file sondato
+dall'offset e confrontarla a mano con quella riprodotta -- che e' come ho dovuto misurare l'11 su 16,
+e non e' un metodo.
+
+### Cosa questo lotto NON risolve
+
+La soglia di ripiego e' l'**impostazione** (25 Mbit/s), non l'ultima misura in bacheca. Su una linea
+sana il tetto provvisorio esce piu' **basso** di quello vero (25 contro ~36 misurati), quindi si
+sonda un file piu' piccolo di quello che partira' e il riuso del link puo' ancora mancare -- meno di
+prima, ma puo'. Su una linea degradata esce piu' **alto** (25 contro 3,8), e allora il bersaglio puo'
+restare troppo grosso.
+
+Far ripiegare `sources._line_speed()` sulla bacheca prima dell'impostazione risolverebbe entrambi i
+versi, e sanerebbe insieme la divergenza dei due cancelli (`sources` guarda solo la ricerca corrente,
+`player._linea_utile` guarda la bacheca senza limite d'eta'). E' tenuto fuori di proposito: la riga
+`bersaglio` dira' quanto spesso il bersaglio sopravvive e in che posizione, e quello sara' il dato su
+cui decidere invece che l'intuizione.
+
+### Prove
+
+`tests/test_241.py` (nuovo, 12 assert). I metodi veri -- `process_results`, `filter_results`,
+`_ordine_autoplay`, `_sonda_la_prima`, `_verifica_bersaglio` e i tre ordinatori -- sono **estratti
+con ast da sources.py** e montati su una classe finta: si prova il codice vero, non una riscrittura.
+Il primo assert pretende che esistano ancora tutti, cosi' una rinomina fa fallire il test invece di
+farlo passare a vuoto.
+
+Oltre al bersaglio, le due cose che NON devono cambiare: `filter_results` chiamata due volte da' lo
+stesso risultato e non tocca la lista che riceve (se non fosse pura, il lotto avrebbe spostato anche
+cio' che l'utente vede), e il caso della lista svuotata resta coerente.
+
+Suite 40/44; i quattro rotti sono i preesistenti `test_202-205`.
+
+## Lotto 242 -- Il ripiego era il numero piu' pericoloso del sistema
+
+Punto 1 della diagnosi delle 04:40. Tocca **solo** il percorso "misura assente", che nel log si
+riconosce a vista (`impostati` contro `dalla sonda`): per questo va da solo, separato
+dall'estimatore per forma di curva che scrive sullo stesso numero finale.
+
+### Il numero e' 94
+
+L'11/09 alle 04:30 la sonda di Nosferatu e' stata **scartata**: uno stallo di 2,5 s proprio
+all'inizio aveva spinto `base` a 3,1 s, lasciando 2,9 s di regime contro `SECONDI_MINIMI` 4,0.
+
+```
+curva  0.6:0.2 3.1:1.8 3.8:2.0 4.3:3.0 4.8:4.0 5.4:5.0 5.9:6.0
+forma  media ? | centro ? | coda ? -> dichiarata: nessuna (misura buttata) | 7 campioni, buco 2.5 s
+SORGENTE 01/62 ACCETTATA ... 12.7 Mbit/s veri, entro i 50.0 impostati
+                                                   ^^^^^^^^^^^^^^^^^
+-> 94 SECONDI a secco
+```
+
+`results.line_speed` su questa stick vale **50**, su una linea che faceva 12-20.
+
+E la misura buttata **non era sbagliata**: ricalcolandola dalla curva valeva **13,60 Mbit/s**, contro
+i 14,9-22,4 che la riproduzione ha poi consegnato. Con `line_speed` 10,9 quel file da 12,7 sarebbe
+stato rifiutato. **La sonda aveva ragione e l'abbiamo buttata; il ripiego aveva torto e ha deciso.**
+
+In archivio, in quel momento, c'erano quattro portate misurate venti minuti prima -- 13,8 / 7,6 /
+6,0 / 8,8. Mediana **8,2**, cioe' `line_speed` **6,56**: quel file rifiutato. Il dato per non
+sbagliare c'era gia', scritto da noi, e nessuno lo leggeva.
+
+### Demolisce una premessa scritta dentro le guardie
+
+`QUOTA_MINIMA` dice, per giustificare la propria generosita': *"scartare costa un ripiego
+sull'impostazione dell'utente -- un numero conservativo e noto -- mentre tenere una misura falsa
+svuota la lista o fa stallare un film"*. Su questo dispositivo **l'impostazione non e' conservativa,
+e' quattro volte la linea**. L'asimmetria con cui `QUOTA_MINIMA` e `SECONDI_MINIMI` sono state
+tarate poggiava su un assunto falso. Con questo lotto l'assunto torna vero, e quelle guardie tornano
+difendibili senza doverle toccare.
+
+### La scala, e perche' erano due
+
+Prima c'erano **due** definizioni della soglia, e divergevano:
+
+* `sources._line_speed` -- solo la misura della ricerca in corso, poi l'impostazione;
+* `player._linea_utile` -- la bacheca **senza nessun limite d'eta'**, poi l'impostazione.
+
+Il 10/09 e' successo davvero: le righe 12 e 13 sono state giudicate dal player con una misura di
+**quattro minuti prima presa su un altro titolo**, mentre il filtro delle dimensioni, nella stessa
+ricerca, usava l'impostazione scritta a mano. Adesso esiste `sonda_linea.soglia()` e ci passano
+tutti e due.
+
+1. **la sonda di questa ricerca** -- misurata adesso, sulla sorgente che sta per partire;
+2. **la bacheca**, se non piu' vecchia di `ETA_BACHECA` (600 s) -- l'ultima sonda buona di questa
+   sessione: stessa rete, quasi sempre stesso nodo;
+3. **l'archivio** -- la mediana delle portate misurate nelle ultime sei ore. E' il gradino che
+   mancava: alle 04:30 la bacheca era vuota perche' Kodi era appena partito, e si cadeva dritti sul
+   gradino 4;
+4. **l'impostazione**.
+
+Chi decide quali righe dell'archivio contano non e' codice nuovo: e' `misure_di_capacita`, che era
+gia' l'unica definizione di "misura utilizzabile" (esito nullo, tratto non contaminato). Si aggiunge
+solo l'eta'.
+
+**La MEDIANA, non un percentile basso.** `line_speed = capacita / MARGINE` il suo margine ce l'ha
+gia' dentro; applicarne un secondo qui lo conterebbe due volte -- e' esattamente l'errore che il
+lotto 208 ha tolto dal filtro della dimensione.
+
+Due numeri sono **giudizi** e non misure, e lo scrivo: `ETA_BACHECA` 10 minuti ("questa
+navigazione"; oltre, una mediana di molte misure descrive la linea meglio di un singolo punto
+vecchio) e `FINESTRA_RIPIEGO` 6 ore. Sei ore e' gia' larga -- il 10/09 la linea stava a 44 Mbit/s
+alle 23:51 e a 10 alle 03:20, tre ore e mezza dopo -- ma stringerla vuol dire ricadere
+sull'impostazione, che e' il caso che questo codice esiste per evitare.
+
+### Il costo
+
+Il gradino 3 apre il database e legge cinquanta righe. Succede **solo** quando i due gradini sopra
+hanno fallito, cioe' quando la sonda non ha misurato e la bacheca e' vuota o vecchia: raro, e in un
+percorso dove si sta gia' pagando molto di piu' in rete.
+
+### La riga di log
+
+```
+soglia     dall'archivio (8.2 Mbit/s, mediana delle portate recenti / 1.25)
+soglia     dalla bacheca (15.0 Mbit/s di 120 s fa / 1.25)
+soglia     impostati
+```
+
+Scritta **sempre**, anche quando non c'e' stato nessun bersaglio: il caso che interessa di piu' e'
+proprio quello in cui la sonda non ha misurato, perche' e' li' che prima si cadeva sui 50 senza che
+niente lo dicesse.
+
+### Prove
+
+`tests/test_242.py` (nuovo, 20 assert). `capacita_recente` e `misure_di_capacita` sono **estratte
+con ast da playback_stats** -- si prova la funzione vera, con l'archivio vero delle 04:30 -- e
+`FINESTRA_RIPIEGO` si legge dal file invece di riscriverla nel test, perche' e' un argomento di
+default e un valore diverso passerebbe inosservato.
+
+I quattro gradini, uno per uno, con la provenienza. Il caso della **bacheca vecchia** (44 Mbit/s di
+un'ora fa) che non deve piu' vincere sull'archivio: e' il difetto che il lotto chiude. E il caso
+Nosferatu per intero: prima 12,7 Mbit/s accettato contro 50, adesso rifiutato contro 6,56.
+
+`tests/test_222.py` 190/190 (era 188). Due asserzioni **cambiate deliberatamente**: pretendevano
+`line_speed_da` dentro i due cancelli, mentre adesso la scala completa sta in `soglia()`. Non sono
+state indebolite ma rafforzate -- oltre a "il player non si inventa la soglia" adesso si pretende
+che non possa nemmeno divergere da quella del filtro, che e' la proprieta' che il 10/09 non valeva.
+
+Suite 41/45; i quattro rotti sono i preesistenti `test_202-205`.
+
+## Lotto 243 -- La finestra di regime si prende, non si spera
+
+Punto 5 della diagnosi: l'unica delle sei cause per cui la sonda non produce un numero che si sia
+presentata davvero nei log. Va da solo perche' cambia il numero misurato.
+
+### Il conto che rende il difetto inevitabile
+
+Il budget era di **orologio**: `SECONDI_TOTALI = 6,0`. Meno `SECONDI_SALITA` 1,0 fa 5,0, e ne servono
+4,0 (`SECONDI_MINIMI`): **un secondo di margine**.
+
+`base` e' il primo campione a `t >= SECONDI_SALITA`. Quindi basta **una** lettura a cavallo fra 1,0 s
+e 2,0 s -- cioe' 256 KB sotto i 2 Mbit/s -- e `base` slitta oltre i 2,0: finestra sotto i 4,0,
+niente regime. Su un link che stalla non e' sfortuna, e' questione di quando.
+
+L'11/09 alle 04:30, Nosferatu:
+
+```
+curva  0.6:0.2 3.1:1.8 3.8:2.0 4.3:3.0 4.8:4.0 5.4:5.0 5.9:6.0
+       ^^^^^^^ ^^^^^^^ una lettura sola da 2,5 s (0,84 Mbit/s): base slitta a 3,1
+-> finestra 2,9 s < 4,0 -> REGIME ? -> il filtro ripiega -> 94 SECONDI a secco
+```
+
+E il numero c'era ed era buono: ricalcolato dalla curva vale **13,60 Mbit/s**, contro i 14,9-22,4 che
+la riproduzione ha poi consegnato.
+
+La grandezza che serve non e' "sei secondi di lettura", e' "cinque secondi di osservazione **dopo la
+rampa**". Le due coincidono solo se la rampa dura davvero un secondo.
+
+### Adesso
+
+`SECONDI_TOTALI` sparisce, entra `SECONDI_REGIME = 5,0`: si legge finche' la finestra oltre la rampa
+non e' lunga cinque secondi. Cinque perche' e' **esattamente quello che 6,0 - 1,0 produceva prima**,
+e perche' la tabella del lotto 230 lo misura: errore 8,6% nel caso peggiore, 3,5% tipico.
+
+**Su linea sana non cambia niente**, ed e' la proprieta' che rende il lotto sicuro. Le tre sonde
+dell'11/09 alle 13:57 -- stick tornata sul 2,4 GHz a -55 dBm, linea a 42-46 Mbit/s -- avevano chiuso
+a 4,9 / 5,0 / 5,0 s di regime dentro i 6,0 di budget. Ripassate nel banco col codice nuovo chiudono
+a 5,00 / 5,04 / 5,02 su 6,08 / 6,11 / 6,12 s totali: le stesse identiche letture.
+
+### Dove finisce, senza un tetto a orologio
+
+I limiti veri c'erano gia' ed erano sempre stati quelli giusti, tre:
+
+* il **TIMEOUT del socket**, 8 s per singola operazione. Una lettura che non torna muore da sola,
+  quindi `base` non puo' cadere oltre ~9 s e il caso peggiore reale sta intorno ai 15;
+* `BYTE_MASSIMI`;
+* l'utente che annulla.
+
+Un tetto a orologio non e' un limite: e' una scommessa sul fatto che la linea sia veloce. *Caveat
+che non nascondo:* col lettore di Kodi il primo dei tre non e' nostro -- `CCurlFile` ha i timeout di
+Kodi, che non controlliamo.
+
+### L'errore di lettura non butta piu' una misura gia' fatta
+
+Conseguenza necessaria del punto sopra, non aggiunta opportunistica. Senza il tetto a orologio il
+timeout del socket diventa il modo **normale** in cui una sonda su linea rotta finisce -- ma
+l'`except` in fondo alla funzione salta tutto il calcolo del regime. Una sonda che avesse gia' i suoi
+cinque secondi buoni in mano li butterebbe via per l'ultima lettura andata a vuoto.
+
+Adesso l'errore si prende **dentro** il ciclo e chiude come qualunque altro motivo
+(`chiuso = 'lettura interrotta (...)'`), e cio' che e' stato letto resta una misura. E' lo stesso
+principio per cui `chiuso` esiste.
+
+### Prove
+
+`tests/test_243.py` (nuovo, 35 assert). Le tre curve **vere** delle 13:57 come banco del
+non-evento; la curva **vera** di Nosferatu per il caso che il lotto esiste per risolvere.
+
+E la **controprova**, nello spirito del blocco 3bis del lotto 238: che Nosferatu passi adesso non
+vuol dire niente se non falliva anche prima, quindi il test calcola cosa avrebbe fatto il budget
+vecchio sulla stessa curva e pretende che **non** bastasse -- `finestra 3,5 s < 4,0 -> misura
+buttata`.
+
+Il timeout del socket in **due** casi, perche' uno solo non distingue le due proprieta': rotto a
+5,5 s (finestra gia' piena -> il regime esce lo stesso, ed e' quello che conta) e rotto a 3,0 s
+(finestra di 2 s -> `None`, ed e' giusto cosi': due secondi non sono una misura, e a dirlo e'
+`SECONDI_MINIMI`, non questo lotto).
+
+Piu' gli altri tre limiti, che devono restare quelli di prima: fine del flusso, annullamento, tetto
+di byte.
+
+Due difetti erano nel banco e non nel codice, e li segno perche' costano tempo ogni volta: le curve
+finte finivano i dati prima della finestra (il log si ferma perche' la sonda si ferma, non la rete --
+vanno prolungate) e `[2.8] * 30` non e' una curva cumulativa ma una costante, che il lettore finto
+traduce in un byte al secondo.
+
+`tests/test_222.py` 190/190. Sei asserzioni cambiate **deliberatamente**: pretendevano
+`SECONDI_TOTALI` e `chiuso == 'budget di tempo'`. In particolare quella sulla coerenza --
+`SECONDI_TOTALI >= SALITA + MINIMI + BUCKET` -- reggeva per **un secondo solo**, ed e' proprio quel
+secondo che su Nosferatu e' mancato: adesso la condizione da pretendere e' piu' semplice e piu'
+forte, `SECONDI_REGIME >= SECONDI_MINIMI`, perche' la finestra non si spera piu'.
+
+Suite 42/46; i quattro rotti sono i preesistenti `test_202-205`.
+
+## Lotto 244 -- La sonda parte dove non partiva, il ripiego smette di usare il dato peggiore
+
+Tre pezzi che non si sovrappongono nella diagnosi: il primo cambia **quando** si misura (visibile nel
+log come `non misurata: ...`), il secondo **quale numero** si usa quando non si e' misurato
+(`dall'archivio (... mediana delle sonde ...)`), il terzo non cambia nessuna decisione.
+
+### 1. I sei buchi per cui la sonda non partiva
+
+Erano venuti fuori rispondendo a una domanda: *"la sonda non parte sempre prima di ogni
+riproduzione?"*. No -- parte una volta per **ricerca**, e c'erano sei modi di arrivare a riprodurre
+senza un numero fresco. Quattro erano difetti veri.
+
+**a) A filtri ignorati non partiva affatto.** La chiamata stava solo nel ramo `else` di
+`process_results`. Era una collocazione, non una scelta: a filtri ignorati sparisce il filtro della
+dimensione, ma il **cancello del player resta** -- `_esamina_sorgente` chiama `_banda_sufficiente` a
+ogni riproduzione, comunque sia stata costruita la lista. La banda serviva eccome: si decideva senza
+averla misurata.
+
+**b) E c'era una seconda porta che non avevo visto:** `_process_ignore_filters`, cioe' la ricerca che
+non da' risultati e l'utente accetta *"Access Filtered Results?"*.
+
+**c) Due tentativi erano un numero che non descrive niente.** Il costo di un tentativo e' una
+chiamata a TorBox, e quella si misura in secondi: nel log dell'11/09 il tratto fra la risposta
+`CACHED` e l'avvio della sonda e' durato **2,7 / 4,6 / 6,3 s**. Adesso c'e' `SECONDI_TENTATIVI = 10`:
+si continua finche' una si risolve o finche' si sono spesi dieci secondi a provarci. Il budget si
+guarda **prima** di cominciare un tentativo nuovo -- quello in corso si lascia finire, perche'
+interromperlo butterebbe via la chiamata gia' pagata.
+
+E si distingue finalmente **"TorBox non ha niente in cache"** (niente da riprodurre, quindi niente da
+misurare: giusto non sondare) da **"le prime due non si sono risolte"**. Prima erano lo stesso
+silenzio.
+
+**d) `_sondato` si alzava all'ingresso**, non dopo una lettura. Quindi un prescrape in cui nessuna
+sorgente si risolveva **impediva alla ricerca piena di riprovare** -- e la seconda lista e' proprio
+quella piu' grande. Il criterio giusto e' "abbiamo speso il tempo dell'utente in una lettura", non
+"ci abbiamo provato".
+
+**e) Il ripiego sulla lista non filtrata.** Se la soglia provvisoria svuota la lista non si rinuncia
+piu': una sorgente in cache che non passa il filtro descrive la linea esattamente come una che lo
+passa. Era un caso che non esisteva prima del lotto 241 -- me lo ero introdotto da solo.
+
+**f) `except: pass` senza una riga di log.** Alla domanda *"quali eccezioni possono essere tirate
+su?"* la risposta onesta era **non lo so, perche' il codice le butta senza traccia**. Inaccettabile
+per una guardia. Adesso l'errore finisce in `_nota_sonda` e nel log. Resta un `except` nudo, quello
+stretto attorno a `item['size']`, e va bene che resti: ha gia' il suo ripiego.
+
+### 2. Il gradino 3 della scala: le sonde, non le portate
+
+Il 242 usava `misure_di_capacita` -- le portate -- perche' era l'unica definizione esistente di
+"misura utilizzabile" e di `sonda_mbps` non c'erano ancora abbastanza righe. Adesso ce ne sono, e
+dicono che le due cose non sono paragonabili. Sessione dell'11/09, stessa linea, stessi minuti:
+
+```
+tre sonde su TRE NODI DIVERSI    46,31  46,37  46,47   -> escursione 0,3%
+le portate della stessa sessione 24,5 ....... 46,3     -> escursione 89%
+```
+
+**Perche' la portata non e' una capacita'.** Si misura come `bitrate + crescita del buffer`, e Kodi
+riempie a tutta velocita' solo finche' ha fame. Con `cache_media` al 96-99% su **tutte** le righe, su
+un film leggero non chiede mai tutta la linea: misura il **film**, non la connessione. Col confronto
+contro la sonda, presa nello stesso minuto, si vede senza ambiguita':
+
+| b/s | 0,31 | 0,26 | 0,22 | 0,12 | 0,11 |
+|---|---|---|---|---|---|
+| portata/sonda | 1,06 | 1,00 | 0,91 | **0,57** | **0,53** |
+
+Sui dati di quella finestra la mediana delle portate dava **42,6** su una linea da 46,4 (-8%), quella
+delle sonde **46,31** (-0%). E l'errore peggiora con una serata di film leggeri, perche' ogni film
+leggero aggiunge un pavimento travestito da misura.
+
+Le portate **restano** in archivio e `misure_di_capacita` resta dov'e': servono a tarare `MARGINE`,
+che e' una domanda diversa -- li' interessa proprio cio' che il player ha ottenuto, non cio' che la
+linea poteva dare.
+
+### 3. Lo stato del link in archivio
+
+Ogni anomalia della fase 4 e' finita sul wi-fi -- 44 Mbit/s il 10/09, 10 l'11/09 alle 03:20, 46 alle
+13:57 -- e la spiegazione era sempre la stessa: **5 GHz a -72 dBm contro 2,4 GHz a -55**. Ogni volta
+l'ho scoperto a mano con `dumpsys`, dopo. In archivio non c'era, quindi una riga di ieri non era
+interpretabile senza di me.
+
+`/proc/net/wireless` e' l'unica fonte che il processo di Kodi puo' leggere su questo dispositivo, ed
+e' **verificato non supposto**: il file e' `0444` con contesto `proc_net`, e Android 9 (SDK 28) non
+applica ancora la restrizione su `/proc/net` introdotta dalla 10. Il sysfs risponde "Permission
+denied" su tutto e `dumpsys` a un'app non e' accessibile.
+
+La **banda** non e' ottenibile e non la fingo: non sta in `/proc/net/wireless`, e il MAC del gateway
+in `/proc/net/arp` e' quello del router (`...fa:50`), non il BSSID della radio. Resta il livello, che
+su questo apparecchio le due bande le separa comunque.
+
+Si legge nel **player**, non dalla bacheca, quindi si scrive **sempre** -- anche quando la sonda non
+e' partita. Ed e' li' che serve di piu': una riga senza misura e senza segnale non dice niente, una
+riga senza misura ma con -72 dBm si spiega da sola.
+
+### Prove
+
+`tests/test_244.py` (nuovo, 37 assert). Il budget dei tentativi e' provato **in funzione**, con una
+`resolve` finta che costa 4 s come nel log: si va oltre le prime due, il budget ferma il ciclo dopo
+tre, "niente in cache" non prova nemmeno, e "nessuna risolta" non alza `_sondato` cosi' la ricerca
+piena puo' riprovare. `stato_rete` e' provata sul **formato vero** del file della stick.
+
+Il gradino 3 e' provato sulle righe **vere** delle 13:57-15:11, e le portate sono lasciate dentro
+apposta: se il codice le usasse ancora, la mediana verrebbe 42,6 invece di 46,31 e il test lo direbbe.
+
+**Una regressione l'ha trovata il test, non io:** `test_222` passa un finto `sonda_linea` senza
+`stato_rete`, e l'`AttributeError` faceva uscire tutta `_campi_sonda` -- la riga perdeva anche la
+sonda. La strumentazione nuova adesso ha il suo try, e c'e' un assert che pretende che ce l'abbia.
+
+`tests/test_222.py` 190/190 e `tests/test_242.py` aggiornati **deliberatamente**: il primo
+pretendeva `TENTATIVI_SONDA`, il secondo un archivio di sole portate. Il 242 adesso usa i valori veri
+di quel momento -- sonde 14,10 e 4,76, mediana 9,43 -> `line_speed` 7,5 -- e il film da 12,7 Mbit/s
+resta rifiutato come prima.
+
+Suite 43/47; i quattro rotti sono i preesistenti `test_202-205`.
+
+## Lotto 245 -- Lo stimatore del regime: uno strumento che misurava una costante, una soglia che non scattava mai
+
+Il log delle 15:35-15:57 dell'11/09 e' il primo in cui **la rete di sicurezza non serve mai**: quattro
+sonde su quattro riproduzioni, tutte chiuse con `finestra di regime completa`, `sonda_eta` 0-0-9-14
+(sempre la sonda della ricerca in corso, mai l'archivio, mai l'impostazione). Le colonne del 244 ci
+sono tutte. Il confronto con la portata poi ottenuta davvero da Kodi:
+
+| | sonda | portata vera | rapporto |
+|---|---|---|---|
+| Pianist | 47,14 | 45,7 | 0,97 |
+| Django | 46,44 | 47,4 | 1,02 |
+| Incendies | 41,85 | 46,7 | **1,12** |
+
+Casablanca resta fuori: bitrate 1,92, Kodi ha chiesto 8,8 e basta. Su tre righe la sonda dice il vero;
+sulla quarta sbaglia del 12%, e questo lotto e' il perche'.
+
+### 1. `_buco` misurava due cose sbagliate
+
+**Contava la rampa come un buco.** Partiva da `_prima = 0.0`, quindi il primo intervallo era quello
+fra l'istante zero e il primo campione -- che non e' una pausa, e' l'inizio della misura. Sulle
+quattro righe dell'11/09 `sonda_buco` vale 0,54 / 0,55 / 0,55 / 0,56: sempre e solo il primo bucket.
+Una colonna che su linea sana riporta una **costante di campionamento** invece di un fatto della linea.
+
+**Vedeva solo i vuoti, non i rallentamenti.** La sonda di Incendies ha avuto un bucket a ~26 Mbit/s
+fra 2,1 e 2,6 s, coi vicini a 36-48. I byte continuavano ad arrivare, quindi nessun intervallo si
+allungava e `_buco` non ha visto niente -- ma quel tratto ha tirato la media da ~45 a 41,85. Era
+l'unica riga delle quattro in cui la misura era sbagliata, ed era proprio quella che lo strumento non
+sapeva raccontare.
+
+`_avvallamento(curva, base, fine, riferimento)`: il tratto continuo piu' lungo, **dentro la sola
+finestra di regime**, in cui la linea ha consegnato meno del 70% del proprio ritmo medio. Uno stallo
+e' il caso limite (ritmo zero), quindi la misura nuova **contiene** la vecchia invece di affiancarla.
+Il riferimento e' la media e non il numero dichiarato: se fosse il dichiarato, questo strumento
+cambierebbe valore a seconda che la coda sia scattata, e i due cambiamenti del lotto non sarebbero
+piu' separabili nel log.
+
+Come il `_buco` del 240, **non decide niente**: si scrive in archivio e basta.
+
+**Il limite di risoluzione, che e' emerso dalla prova e va scritto:** la sonda campiona su una griglia
+sua, con deriva, non allineata al calo. Un avvallamento piu' *corto* di un bucket viene mediato coi
+vicini e arriva attenuato -- un calo al 53% per mezzo secondo si presenta come 73% e non scatta.
+Quello di Incendies si e' visto perche' era **profondo** (61%), non perche' fosse lungo. Questo
+strumento vede i rallentamenti sostenuti e quelli profondi, non i singhiozzi brevi e leggeri.
+
+### 2. `SALITA_SOSPETTA` 1,30 -> 1,12
+
+Il 1,30 veniva da due curve a 1,60 e 2,86 e da un vuoto in mezzo che il lotto 240 dichiarava non
+visitato da nessuno. Nel frattempo e' stato visitato. Undici `coda/centro` vere, dai log:
+
+```
+0,25  0,82                                    linea degradata (e la guardia `coda > regime` blocca comunque)
+0,97  0,98  1,01  1,03  1,04  1,05  1,07  1,09   curve piatte: la media era giusta
+1,15  Incendies    media 41,85 | coda 44,94 | consegnati 46,7   -> media -10%, coda -4%
+1,16  Running Man  media 43,44 | coda 46,81 | consegnati 46,0   -> media -5,6%, coda +1,8%
+```
+
+Il confine fra "piatta" e "ancora in salita" cade **fra 1,09 e 1,15**, non a 1,30. 1,12 ci sta in
+mezzo. L'asimmetria del 240 resta valida -- alzare la misura ammette file piu' grossi, quindi si
+corregge con parsimonia -- ed e' rispettata: sopra la piu' inclinata delle piatte osservate, sotto
+entrambi i casi in cui la coda aveva ragione, e la guardia `coda > regime` resta.
+
+**Questo lotto NON impedisce la sofferenza di Incendies.** Con la coda dichiarata la soglia sarebbe
+salita da 33,5 a 35,9 e il film da 32,41 sarebbe passato lo stesso. Misura e cancello sono due cose
+separate: qui si rende vera la misura, il cancello e' il lotto dopo.
+
+### 3. `sonda_fonte`, perche' senza questo lotto non e' verificabile
+
+`regime_secondi` vuol dire **due cose** a seconda di chi ha deciso: con `media` e' la finestra intera
+(5 s), con `coda` e' il solo tratto finale (2 s). Finisce in archivio come `sonda_secondi` e finora si
+poteva solo indovinare confrontando `sonda_mbps` con `sonda_coda`. Abbassare la soglia rende le righe
+`coda` piu' frequenti **proprio adesso**: senza una colonna che dica quale delle due ha deciso, la
+taratura di 1,12 non sarebbe controllabile sull'archivio della prossima tornata. Non cambia nessuna
+decisione, e il rifacimento dello schema lo stavo gia' facendo per la rinomina.
+
+### La rinomina costa l'archivio, e si paga
+
+`sonda_buco` -> `sonda_avvallamento` perche' cambia la **grandezza**, non solo il nome. Tenere il
+vecchio nome su un numero nuovo sarebbe esattamente il mescolamento che `_rebuild_playback_stats`
+esiste per impedire ("un archivio cosi' non si puo' leggere"). Le quattro righe vengono buttate; sono
+salvate in `tests/archivio_sonda/playback_2026-09-11_pre245.db` col log che le ha prodotte.
+
+Bacheca da 16 a 17 campi: il controllo sul **numero** in `letta()` rifiuta una proprieta' scritta
+dalla versione di prima invece di leggerla a meta'.
+
+### Prove
+
+`tests/test_245.py` (nuovo, 56 assert). `_avvallamento` e' provata sulla funzione vera: curva piatta,
+rampa fuori finestra (la regressione del 240), stallo di 2,5 s, zero byte per 2 s (`_ritmo` torna
+None e deve contare come sotto soglia, non essere saltato), due avvallamenti separati (vale il piu'
+lungo, non la somma). Poi le **quattro curve vere** dell'11/09 riga per riga: le tre sane danno 0,0 e
+la coda non scatta, Incendies da' 0,5 e la coda scatta. Infine `misura()` intera col lettore finto, e
+il controllo che schema e `COLONNE` combacino -- letto dal sorgente con `ast`, non a naso: se
+divergessero, il rifacimento girerebbe a ogni avvio buttando le misure ogni volta.
+
+**Tre prove esistenti aggiornate, e due lo meritavano davvero:**
+
+`test_240` chiedeva a `_buco` una cosa che riguardava la curva ("i campioni sono distinti?") e usava
+uno stallo che cadeva **dentro la rampa** e si portava via tutta la finestra: `regime` era None, in
+archivio non finiva niente (`pubblica` rifiuta una misura senza regime) e il vecchio `_buco` un numero
+lo dava lo stesso, perche' si calcolava fuori dalla guardia. **Misurava lo stallo di una sonda che non
+aveva misurato nulla.** Adesso lo stallo sta dentro la finestra, e si vede il lotto per intero: la
+media viene avvelenata a 35,7, la coda riconosce che quello non era il regime, il dichiarato torna 47.
+
+`test_243` pretendeva `regime_secondi == SECONDI_REGIME` su tutte e tre le curve sane. Running Man ha
+`coda/centro` 1,16 e con la soglia nuova dichiara la coda, quindi lo span diventa 2,4. Non e' una
+regressione: il lotto 243 riguarda la finestra di **lettura**, e la prova di quella e' `chiuso`.
+
+**Un controesempio che ho dovuto smontare.** Il banco, sulla curva ricostruita di Running Man, dava
+media 45,95 e coda 49,46 contro i 46,0 veri -- cioe' sembrava che a 1,12 la coda peggiorasse le cose
+del 7,5%, nella direzione permissiva. Il numero del **dispositivo** su quella stessa riga e' media
+43,44 e coda 46,81: la coda aveva ragione. A sbagliare era la ricostruzione del banco, che estrapola
+sei bucket oltre l'ultimo campione stampato e gonfia entrambi i livelli. Le salite ricostruite
+restano fedeli (1,159 contro 1,16), i livelli assoluti no.
+
+Suite 44/48; i quattro rotti sono i preesistenti `test_202-205`.
+
+## Lotto 246 -- Dove va la CPU, per thread
+
+STRUMENTAZIONE PURA: non decide niente, non cambia nessun numero. E' il prerequisito di tutto il
+resto, non una deviazione.
+
+### La domanda che nessuno strumento sapeva chiudere
+
+`_log_invocation_cpu` (lotto 131) sa dire da dieci lotti che il thread ha **atteso** invece di
+macinare. Non ha mai potuto dire **aspettando chi**. L'11/09 quel buco e' costato due diagnosi:
+
+```
+mdblist.list.build_mdblist_list     cpu      parete
+16:29:42                            510 ms   1052 ms     resa 48%
+16:56:11                            863 ms   5642 ms     resa 15%
+```
+
+Stesso lavoro, cpu propria +69%, parete x5,4. E due sonde su cinque buttate con la quota al **36% e
+al 54%** mentre era vivo **un solo interprete Python**: la contesa non veniva da noi, e il log
+taceva. Senza sapere chi consuma non si puo' lavorare sulla causa -- si puo' solo indovinare, e
+indovinare qui e' gia' costato due volte.
+
+### Cosa si puo' leggere davvero
+
+Il commento di `PerfSampler` dice che su questo Android non rootato `/proc/loadavg` e le zone
+termiche sono negate all'app, e resta vero. Ma `/proc/self` -- il **proprio** processo -- e' sempre
+leggibile, anche da `untrusted_app`, e **Kodi e' un processo solo**: GUI, player, JobWorker e tutti
+i sotto-interpreti Python stanno li' dentro. Il censimento per thread non ha bisogno di permessi che
+non abbiamo. Verificato sulla stick: `/proc/<pid>/task/<tid>/stat` leggibile, SDK 28.
+
+`censimento_cpu()` in `modules/perf.py` -- che resta una **foglia**, aggiunge solo `os`. Il totale
+del processo viene da `/proc/self/stat` e **non e' la somma dei thread vivi**: comprende quelli gia'
+morti. La differenza si dichiara come `non attribuito` invece di sparire, se no l'elenco si
+leggerebbe come completo.
+
+`divario_cpu()` aggrega **per nome**, non per tid: dodici JobWorker da 40 ms sono un fatto solo.
+
+### Tre punti di raccolta
+
+**1. Il servizio, ogni 15 s** -- e non a ogni giro da 2 s: il censimento costa una lettura per
+thread (sessanta e piu' su Kodi) e a 2 s sarebbe esso stesso il carico, che e' l'errore gia' fatto
+con DIAG in paginator. Si stampa su soglia (40% di un core) o a battito (60 s), la stessa disciplina
+di `DELTA_MB`/`HEARTBEAT`. Sta **prima** della guardia sui servizi in pausa: durante una
+riproduzione i servizi si fermano ma la cpu no, ed e' proprio allora che serve.
+
+**2. Sempre, quando il ciclo e' in ritardo.** Fino a oggi `PERF CARICO` diceva che la macchina non
+ce la faceva e non poteva dire per colpa di chi. Adesso le due righe escono insieme.
+
+**3. La finestra della sonda**, accanto alla riga `cpu` che gia' c'e': quella dice quanta cpu e'
+stata usata, questa dice da chi.
+
+### Il difetto che la prova ha trovato prima del dispositivo
+
+Avevo messo il censimento della sonda **dopo** `t1 = perf_counter()`. Sessanta letture di file
+dentro la finestra misurata: il costo sarebbe finito dentro `trascorso` **e** dentro `cpu`, cioe'
+avrebbe abbassato la portata dichiarata e alzato il consumo. Uno strumento che sposta la misura a
+cui e' attaccato non serve a niente. Spostato prima del cronometro, e la finestra del divario e'
+adesso quella **vera fra i due censimenti** -- che non coincide con `trascorso` proprio perche' il
+primo censimento sta prima. Usare `trascorso` avrebbe gonfiato tutte le percentuali senza che si
+vedesse. Entrambe le cose sono adesso asserzioni in `test_246`.
+
+### Prove
+
+`tests/test_246.py` (nuovo, 38 assert), su un `/proc` **finto** montato in un temporaneo -- cosi'
+girano anche sul Mac, che `/proc` non ce l'ha. Per questo `censimento_cpu` prende `radice` come
+parametro invece di avere il percorso cablato.
+
+Quello che provano, oltre al caso normale:
+
+- **Il nome del thread con spazi e parentesi** (`Chrome (IO) Thread`). Splittando sugli spazi il
+  campo `utime` slitterebbe di due posizioni e il numero sarebbe sbagliato **senza errore** -- il
+  modo peggiore di sbagliare. Si taglia sull'ultima parentesi chiusa.
+- **Thread nato dentro la finestra**: non c'era prima, tutto il suo tempo e' stato speso qui.
+- **Thread morto dentro la finestra**: il processo l'ha pagato, il censimento finale non lo vede ->
+  `non attribuito`.
+- **Tid riciclato su un altro nome**: Linux riusa i tid, e senza controllare anche il nome il thread
+  nuovo erediterebbe il contatore del vecchio e il delta uscirebbe negativo.
+- **`/proc` assente** -> `None`, e chi chiama non se ne accorge: uno strumento rotto non deve poter
+  fermare ne' il campionatore ne' la sonda.
+
+Due difetti erano nella prova e non nel codice, e vanno detti perche' il secondo poteva passare per
+buono: i dati di prova rendevano `VideoPlayer` e i due `JobWorker` **esattamente pari**, quindi
+l'asserzione sull'ordine non diceva niente; e la ricerca di `pause_services_prop` trovava
+l'occorrenza di **DubResolver** (riga 979) invece di quella di `PerfSampler` (1189) -- una prova che
+sarebbe passata o fallita a caso. Adesso si cerca dentro il solo corpo della classe.
+
+Suite 45/49; i quattro rotti sono i preesistenti `test_202-205`.
+
+### Cosa aspettarsi dal prossimo log
+
+Una riga `PERF CPU` all'avvio che dice se il censimento e' disponibile e quanti thread ha visto, poi
+le coppie riepilogo/colpevoli. Il **costo del censimento** e' stampato in ogni riga del servizio: se
+risultasse caro si alza `CENSIMENTO_OGNI`, ed e' il primo numero da guardare.
+
+## Lotto 247 -- I tid e i thread pronti: chiudere l'identificazione, e separare saturo da conteso
+
+Il 246 ha trovato la famiglia colpevole e non ha potuto nominarne i membri. Questo lotto chiude
+quella lacuna e ne apre la sola domanda strutturale rimasta. Sempre strumentazione: non decide nulla.
+
+### Cosa ha detto il censimento dell'11/09 (log 17:55-18:32)
+
+`Thread-3` e' il primo consumatore in **tutti e tredici** i ritardi del ciclo, e separa da solo la
+sonda buttata dalle quattro buone:
+
+```
+                  quota   letta      Thread-3      processo
+17:58:57 BUTTATA    48%    6.07       x16 207%        219%
+18:05:45 ok         84%   46.02       x11 134%        145%
+18:14:48 ok         98%   47.04        x9 138%        152%
+18:21:31 ok         76%   47.11       x10 139%        152%
+18:30:17 ok         77%   42.30       x13 131%        143%
+```
+
+Per fase: riproduzione tranquilla `Thread-3 x13` al **22%** (il costo di fondo), riproduzione pesante
+`Thread-50 x3` al 98-107% (il player, accanto a `CodecLooper` e `MediaCodec_loop`), **ricerca
+sorgenti x14-x17 al 178-207%**. Non e' la dimensione della lista: la sonda fallita aveva la lista
+piu' PICCOLA della sessione (120 hash contro 785, 870, 1187, 751).
+
+### 1. I tid, perche' i nomi non bastano
+
+Su questa build Kodi non imposta il `comm` dei propri thread, e su Linux un thread **eredita** il
+nome da chi lo crea: `JobWorker`, `VideoPlayer`, `FileCache`, `LanguageInvoker` -- che Kodi stampa
+nel proprio log -- nel kernel finiscono tutti sotto il nome del creatore. Si vedono solo i nomi che
+imposta Android (`org.xbmc.kodi`, `HeapTaskDaemon`, `RenderThread`, `CodecLooper`).
+
+Il tid invece e' univoco **ed e' gia' stampato da Kodi**: ogni riga del suo log porta `T:<tid>` nel
+prefisso. Con i tid nel censimento il confronto diventa meccanico -- si cerca il numero nel log e si
+vede cosa quel thread stava facendo. Si stampano i primi tre di ogni famiglia, i piu' pesanti, col
+tempo di ciascuno; elencarne diciassette renderebbe la riga illeggibile, e il resto si dichiara come
+conteggio (`+13`).
+
+### 2. I thread pronti, perche' saturo e conteso vogliono rimedi opposti
+
+La stick ha **quattro core a 1,416 GHz, tutti uguali**: il tetto e' 400%. Il processo ha tenuto
+mediana 134% e massimo 207% -- meta' macchina libera -- e intanto il ciclo del servizio arrivava a
+**10 s di ritardo** e la sonda, che di cpu ne chiede il 7-9%, non riusciva a ottenerla.
+
+Due spiegazioni opposte: o il carico e' a raffiche che una media su 15 s non vede, o i core ci sono
+e il turno no. La prima si cura facendo meno lavoro, la seconda facendo meno **thread insieme**.
+
+Lo stato del thread era gia' nel file e non lo guardava nessuno: e' il campo subito dopo il nome,
+uno di quelli che si saltavano per arrivare a `utime`. `R` vuol dire pronto **o** in esecuzione -- il
+kernel non li distingue qui, ed e' giusto cosi': un thread pronto che non gira e' esattamente il
+sintomo cercato. `D` (bloccato su I/O) NON e' pronto.
+
+Il conto e' istantaneo, quindi va campionato fitto: il servizio lo prende a **ogni giro da 2 s** e
+riporta media e massimo sulla finestra del censimento, piu' il conto secco sulla riga `PERF CARICO`,
+che e' il momento che lo strumento deve spiegare. Il censimento lo restituisce a sua volta senza una
+seconda passata -- gli stati li stiamo gia' leggendo -- e la sonda lo prende ai due estremi della
+propria finestra (due campioni non sono una serie, e la riga lo dice invece di spacciarli per media).
+
+### Il difetto del 246 che questo lotto corregge
+
+`_t0` stava **dopo** `censimento_cpu()`: "costo del censimento" misurava la formattazione, non le
+cinquanta aperture di file che sono il costo vero. L'11/09 ha riportato 1 ms di mediana, ed **era il
+numero sbagliato**. Contava perche' proprio su quel numero si sarebbe deciso se campionare i pronti a
+ogni giro. Adesso il cronometro parte prima della lettura, e anche il campionamento dei pronti si
+misura -- il **peggiore**, non il medio: se fosse caro lo sarebbe quando la macchina e' occupata, ed
+e' li' che va saputo.
+
+### Prove
+
+`tests/test_246.py` esteso a 61 assert, sempre su un `/proc` finto. Le aggiunte: lo stato letto e
+distinto (`R` conta, `D` no), `conta_pronti` e il conteggio dentro il censimento che devono dare lo
+**stesso** numero, i pronti che compaiono nel riepilogo solo se il chiamante li fornisce, i tid
+ordinati per peso con i primi tre e il conteggio del resto, e l'ordine `_t0` prima della lettura.
+
+Un difetto era nella prova: ritagliavo il blocco del servizio fino a `'costo del censimento'`, che
+pero' compare anche nel **commento** che spiega la correzione -- il blocco si chiudeva prima delle
+righe da controllare. Adesso si confrontano direttamente le due istruzioni, e si verifica che la
+lettura sia una sola per censimento.
+
+Suite 45/49; i quattro rotti sono i preesistenti `test_202-205`.
+
+### Cosa aspettarsi
+
+Se i pronti restano bassi (2-4) mentre il ciclo e' in ritardo, la macchina e' **contesa** e il
+rimedio e' ridurre i thread contemporanei della ricerca sorgenti. Se salgono a dieci e piu', e'
+**satura** a raffiche e il rimedio e' fare meno lavoro. E' la prima volta che i due casi si possono
+distinguere.
+
+## Lotto 248 -- Lo strumento che accusava la macchina del proprio peso, e dove va davvero la CPU
+
+### La correzione, e va detta per prima
+
+**I "10 secondi di blocco" del lotto 247 erano la mia strumentazione.** Il controllo e' netto:
+
+```
+log244  22 min   PerfSampler attivo (88 righe MEM)     ritardi del ciclo: 0
+log245  22 min   PerfSampler attivo (99 righe)         ritardi: 0
+log246  27 min   PerfSampler attivo (128 righe)        ritardi: 0
+log247  36 min   + censimento ogni 15 s                ritardi: 13, fino a 9,8 s
+log248  15 min   + pronti a ogni giro                  ritardi: 13, fino a 3,7 s
+```
+
+Il campionatore non era **mai** andato in ritardo prima del censimento, e la corrispondenza e' al
+millisecondo:
+
+```
+18:56:58  strumento 1792 + 1875 ms  ->  18:57:02 ritardo 3,7 s
+18:57:04  strumento 1712 + 1702 ms  ->  18:57:06 ritardo 3,5 s
+18:57:08  strumento  484 + 1286 ms  ->  18:57:10 ritardo 1,8 s
+```
+
+Il costo dello strumento cadeva dentro la finestra con cui il ciclo misura il proprio ritardo. La
+radice sta nel 246 (cronometro dopo la lettura -> "1 ms", che misurava la formattazione) e nel 247,
+che su quel numero falso ha deciso di campionare a ogni giro. Il costo VERO, su 64 finestre: **53 ms
+di mediana, fino a 1875 ms** per censimento.
+
+Tre riparazioni:
+
+1. **Niente piu' campionamento dei pronti a ogni giro.** `conta_pronti` e' stata **tolta**: leggeva
+   gli stessi cinquanta file, quindi costava quanto il censimento, e `censimento_cpu` quel numero lo
+   restituisce gia' nello stesso passaggio. Due funzioni per lo stesso numero allo stesso prezzo
+   sono un invito a rifare l'errore.
+2. **Il ritardo del ciclo si misura al netto del costo dello strumento.** Quel tempo e' nostro, non
+   della macchina.
+3. **Il censimento si misura in CPU E in parete.** Cinquanta file possono essere lavoro vero
+   (Python, ARM a 32 bit a 1,4 GHz, SELinux a ogni apertura) o attesa, e i due casi hanno rimedi
+   opposti: strumento piu' magro, oppure piu' rado. Finora non si poteva distinguere.
+
+I pronti restano, e hanno gia' risposto: **2-3, massimo 6, su quattro core**. Ne' satura ne' contesa.
+
+### Dove va la CPU: i tid hanno chiuso l'identificazione
+
+`Thread-3 x17` non erano diciassette thread che si spartiscono il carico. Era **uno solo**:
+
+```
+Thread-3 x17 105% (17610 ms) [14224:14380 14354:710 14470:480 +14]
+```
+
+`T:14224` e' il **thread principale di Kodi** -- quello che avvia l'applicazione e gira il ciclo
+GUI. E' il primo consumatore in *ogni singolo censimento* della sessione. Gli altri due tid pesanti
+durante una sonda (`14564`, `14866`, `15216`, diversi ogni volta) sono **la sonda stessa**: 3050,
+3460, 3510 ms su 6100, che corrispondono esattamente al `consumo` 49%, 56%, 57% che dichiara di se'.
+
+E incrociando il suo consumo con la finestra visibile, dal solo log:
+
+```
+finestra                          main (14224)
+Home (10000)                           80%
+video a schermo intero (12005)         24%
+```
+
+**Non e' Kodi a riposo: e' la GUI che disegna la skin.** Quando il video la copre, il thread
+principale scende a un quarto. Tre strumenti nuovi per inseguirlo:
+
+- **utente e sistema separati** per il thread principale, che ha una riga sua invece di stare
+  annegato in una famiglia da diciassette. "Disegnare" puo' essere calcolo in spazio utente
+  (condizioni di visibilita', layout, animazioni) o chiamate di sistema (invio alla GPU, texture
+  dalla flash), e il rimedio cambia.
+- **`System.FPS`** nella riga del censimento: se sono sessanta mentre nessuno tocca niente,
+  quell'80% e' rendering continuo e il rimedio sta nella skin.
+- **il tid del thread principale riconosciuto da solo** (e' quello il cui tid coincide col pid del
+  processo), invece di doverlo indovinare dal log ogni volta.
+
+### La sonda, in tutto questo
+
+Tre su tre, tutte con finestra di regime completa. E la domanda "perche' non usa quattro core" ha
+due risposte, e nessuna delle due e' un difetto:
+
+```
+processo durante le sonde   139%  144%  146%     su 400 disponibili
+la sonda ha usato            49%   56%   57%     di UN core
+quota ottenuta               89%   92%   81%
+tetto con un core intero     82    81    76 Mbit/s
+letto                      40,3  47,1  43,6 Mbit/s
+```
+
+**Due core e mezzo erano liberi** e la sonda aveva ancora il 30% di quota inutilizzata sul proprio:
+i 40-47 sono la LINEA, non un limite di cpu. E per costruzione non potrebbe usarne quattro comunque
+-- una connessione TCP vive in un thread solo e la decifratura TLS di un flusso e' una catena
+seriale (lotto 227). Quattro core vorrebbero dire quattro connessioni, che misurano la banda
+aggregata verso il cdn e non quella che un flusso solo ottiene: un numero piu' alto e meno utile.
+
+### Prove
+
+`tests/test_246.py` a 67 assert. Nuove: utente e sistema separati, il tid principale riconosciuto
+dal pid, il censimento che conta i pronti (e lo stato `D` che NON e' pronto), la funzione separata
+che non deve piu' esistere, il ritardo al netto dello strumento con l'azzeramento a ogni giro, il
+costo in cpu e parete, e i fotogrammi nella riga.
+
+Suite 45/49; i quattro rotti sono i preesistenti `test_202-205`.
+
+### Cosa aspettarsi
+
+Se sulla Home gli fps sono ~60 e l'utente domina il sistema, l'80% di core e' la skin che ridisegna
+in continuazione, e si va a cercare cosa la tiene sveglia (animazioni sempre vive, regioni sporche
+che coprono tutto). Se gli fps sono bassi e la cpu resta alta, non e' il rendering e bisogna
+guardare altrove. E il costo del censimento in cpu contro parete dira' se 53 ms sono lavoro o attesa.
+
+## Lotto 249 -- Il capofila non era il capo, e la curva poteva scendere senza che nessuno lo dicesse
+
+Log delle 19:33 dell'11/09, quattordici minuti, sessantacinque censimenti. Prima cosa da dire,
+perche' e' la verifica del lotto precedente: **zero `PERF CARICO`**. Il ciclo non e' mai andato in
+ritardo. Il costo dello strumento non rientra piu' nella finestra con cui il ciclo misura il proprio
+ritardo, e i tredici ritardi del log 247 erano davvero tutti suoi.
+
+### 1. `main` era il thread sbagliato, e lo era in modo istruttivo
+
+Il lotto 248 aveva dato la riga con utente e sistema -- l'unica che distingue il calcolo dal
+disegno -- al thread con `tid == getpid()`. Su Linux e' il capofila del gruppo e la scelta sarebbe
+giusta. **Su Android no.** Kodi e' una NativeActivity: il capofila e' il thread Java dell'Activity,
+`comm` = `org.xbmc.kodi`, e il ciclo applicativo in C++ gira in un thread diverso, creato da quello.
+
+    capofila   15996  org.xbmc.kodi     3%
+    applicativo 16014  (comm Thread-3)  85%      <- scrive `Starting Kodi`, `HandleKey`, `Loading skin file`
+
+Quindi la riga piu' importante del censimento descriveva un thread al 3% di un core. Ora non si
+indovina piu' chi conta: **si riporta chi ha consumato di piu'**. E' la definizione stessa di "il
+thread che interessa", non dipende dalla piattaforma e sopravvive a un cambio di build.
+`censimento_cpu` continua a restituire il capofila: non e' inutile, e' il dato che ha permesso di
+scoprire la differenza.
+
+### 2. Dove va la CPU: misurato, non piu' dedotto
+
+Incrociando ogni censimento con la finestra attiva e con i tasti premuti nella stessa finestra:
+
+| | thread applicativo | fps | non attribuito |
+|---|---|---|---|
+| Home, **zero tasti** | 82-97% di un core | 21-43 | 11-61% |
+| Video a schermo intero | 19-25% | 23-24 | 0-3% |
+
+Sette censimenti sulla Home con **nessun tasto premuto** e il thread applicativo fra l'82% e il 97%.
+Non e' "Kodi a riposo": e' la GUI che disegna la skin, e quando il video la copre scende a un quarto.
+
+Messo per fotogramma, che e' la forma in cui la domanda ha una risposta netta:
+
+    Home    17-28 ms di cpu per fotogramma
+    Video    9 ms
+
+Il bilancio a 60 fotogrammi al secondo e' 16,7 ms. **La Home non puo' arrivare a 60 per costruzione**,
+ed e' per questo che gli fps misurati stanno fra 21 e 43: non e' un calo, e' il tetto. Da qui il
+costo per fotogramma entra nella riga del censimento, accanto a utente/sistema.
+
+### 3. Cosa dira' il prossimo log, e perche' la domanda e' ancora aperta
+
+Il lotto 248 si era chiuso su una previsione sbagliata nel presupposto: "se gli fps sono ~60 e
+l'utente domina, e' la skin che ridisegna". Gli fps **non** sono 60, e non possono esserlo. La
+domanda giusta non e' *quante volte* disegna ma *cosa costa 22 ms ogni volta*, e la separazione
+utente/sistema sul thread giusto e' cio' che la decide: spazio utente vuol dire il giro sull'albero
+dei controlli della skin (condizioni di visibilita', InfoLabel risolti a ogni fotogramma); sistema
+vuol dire le chiamate di disegno e le texture. I rimedi sono opposti.
+
+Il costo del censimento intanto ha risposto da solo: **27-117 ms di parete contro 26-60 di cpu**
+nella grande maggioranza, con tre punte a 1015-1879 ms di parete e 58-70 di cpu. Quelle punte sono
+**attesa**, non lavoro: letture di `/proc` che si fermano. Coerente con il lotto 248.
+
+### 4. Il secondo consumatore: due costruzioni dei widget per ogni uscita dal player
+
+Ventisette invocazioni del plugin in quattordici minuti. Per azione, il costo in cpu:
+
+| azione | volte | cpu | di cui import |
+|---|---|---|---|
+| `mdblist.list.build_mdblist_list` | 11 | 7,1 s | 4,9 s (68%) |
+| `build_continue_watching` | 10 | 5,7 s | 4,2 s (73%) |
+
+**Il 71% del costo e' reimportare i moduli**, che e' il prezzo fisso di `reuselanguageinvoker=false`
+e non si tocca. Ma le costruzioni si contano, e per ogni uscita dal player `continue_watching` viene
+costruito **due volte**:
+
+    19:47:36.390  ricostruzione #1 (token A)      <- fine riproduzione
+    19:47:37.569  TraktMonitor rimanda: "interfaccia ricostruita 1.2s fa"
+    19:47:38.440  cw #1 finisce
+    19:47:39.508  WidgetRefresher: "rinvio consumato, nessuna costruzione in volo"
+    19:47:39.521  ricostruzione #2 (token B), stessi due widget
+
+Tre volte su tre, in tutte e tre le uscite dal player del log. La guardia chiede *"c'e' una
+costruzione in volo?"* settanta millisecondi dopo che ne e' finita una, e la risposta e' no. **Non
+si tocca in questo lotto**: e' la macchina con la storia di regressioni piu' lunga del progetto
+(lotti 130, 136, 139, 176, 177, 179, 210), e va affrontata con la sua misura davanti, non di
+rimbalzo. Qui si registra il fatto e il costo: ~600 ms di cpu per doppione.
+
+### 5. La sonda: tre su tre, e due difetti chiusi
+
+    45,48 | 44,58 | 48,27 Mbit/s     quota 82-89%, finestra di regime completa, due nodi CDN diversi
+
+**a) `SALITA_SOSPETTA` non e' mai scattata.** Diciassette sonde in archivio, `sonda_salita` da 0,80 a
+1,09, soglia 1,12: zero scatti. L'unico scostamento vero osservato va nell'**altro verso** -- la riga
+a 0,80, coda 35,6 contro centro 44,6 -- e li' si e' dichiarata la media, 40,3, cioe' un numero piu'
+alto di quanto la linea stesse dando negli ultimi due secondi.
+
+Dovendo tarare sulla riproduzione **sostenuta**, e' il verso che conta di piu': una curva che scende
+dice che la linea non ha tenuto il ritmo con cui era partita, e la media e' gonfiata proprio dal
+tratto che non si ripetera'. Da qui `DISCESA_SOSPETTA = 0,89` -- che e' 1/1,12, la stessa distanza
+dall'altra parte -- e la fonte `coda_in_calo`. L'asimmetria e' voluta ed e' l'opposto di quella del
+lotto 240: quella regola puo' solo **alzare**, questa puo' solo **abbassare**. Nessuna delle due puo'
+rendere il filtro piu' permissivo per sbaglio.
+
+**b) Una sonda, un voto.** Difetto segnalato due volte e mai corretto. Una misura presa una volta
+sola finisce su piu' righe -- la bacheca la riusa entro `ETA_BACHECA` -- e ogni riproduzione che ne
+nasce se la porta in archivio. Diciassette righe con sonda portavano **tredici sonde distinte**: una
+contata tre volte, due contate due volte. La mediana di `capacita_recente` dava cosi' piu' voce a chi
+aveva fatto piu' tentativi a ridosso della stessa misura, l'esatto contrario di cio' che una mediana
+serve a fare. L'identita' e' il valore stesso: `sonda_mbps` nasce da un conteggio di byte diviso per
+un `perf_counter`, due misure indipendenti non producono lo stesso float a quindici cifre.
+
+### 6. MARGINE: il dato che sembrava decisivo misurava la cosa sbagliata
+
+`cache_media_dopo` contro `bitrate/sonda` correla a **r = -0,83**, con un gradino netto: sotto 0,45
+il buffer sta all'87% medio, sopra 0,55 crolla al 31%. Con `MARGINE = 1,25` si accettano sorgenti
+fino a 0,80, cioe' in piena zona di crollo -- e la conclusione sarebbe stata di alzare MARGINE fino
+a 2,0.
+
+**E sarebbe stata sbagliata.** Le curve del buffer dicono altro:
+
+    Joker, b/s 0,64:  19:44:38 -> 19:47:02  livello 99-99-99...99   due minuti e mezzo, buffer pieno
+                      19:47:02              il salto
+                      19:47:13              0-0-0-0-0-0-0-0-1-0     16 s a secco, TUTTI dopo il salto
+                      19:47:33              66-75-85-96-99-99       risale e resta pieno
+
+Gli zeri sono tutti **dopo il salto**. `cache_media_dopo` non misura la salute del buffer in
+riproduzione sostenuta, misura il **recupero dal seek** -- cioe' esattamente cio' che la taratura
+deve considerare secondario. Stessa forma su Braveheart (b/s 0,56) e su Amadeus.
+
+Sostenuta, invece: **nessun cedimento a nessun rapporto misurato, fino a 0,77.** Buffer al 99% per
+tutta la durata. L'archivio quindi **non contiene alcuna prova per alzare MARGINE**, e 1,25 resta.
+Cio' che manca e' un caso sostenuto vicino a 0,80-1,00, che e' la zona che MARGINE governa davvero.
+
+### Le prove
+
+`test_240` a 48 (i due assert sulla curva in discesa cambiano risposta di proposito, e l'invariante
+del lotto 240 resta provato sul suo caso piu' la nuova zona morta fra le due soglie), `test_245` a
+57, `test_246` a 76 con il capo, lo split utente/sistema su un thread che **non** e' il capofila, e
+il costo per fotogramma. Suite 45/49, i quattro rossi sono i soliti `test_202-205` che vogliono
+`sys.argv[1]`.
+
+## Lotto 250 -- La sonda partiva sempre, anche per chi non l'aveva chiesta
+
+Domanda dell'utente: "la sonda parte sempre, a prescindere dalle impostazioni di Filter results by
+size?". **Si'.** Nessuno dei tre punti che la avviano guardava `results.filter_size_method`.
+
+Il conto di chi ci rimetteva. Con il filtro su **Off** (che e' il DEFAULT) o su **Use Size**:
+
+    sources.filter_results   con metodo 0 non entra, con metodo 2 usa una dimensione fissa
+                             -> `_line_speed()` non viene mai chiamata
+    player._banda_sufficiente esce alla prima riga con 'cancello banda non attivo'
+
+Nessuno dei due cancelli legge il numero della sonda. Eppure la sonda si apriva un socket, leggeva
+30-36 MB e spendeva cinque-sei secondi a ogni riproduzione. **Costo puro**, e per l'impostazione
+predefinita.
+
+### I quattro modi
+
+Il 3 si aggiunge **in coda** e non si rinumera niente: i valori gia' salvati sui dispositivi
+continuano a significare la stessa cosa, nessuna migrazione.
+
+| | | la sonda parte? | il numero viene da |
+|---|---|---|---|
+| 0 | Off | no | -- (nessun filtro sulla dimensione) |
+| 1 | Use Line Speed | **no** | l'impostazione, scritta a mano |
+| 2 | Use Size | no | -- (dimensione fissa in MB) |
+| 3 | **Auto** | **si'** | la linea misurata pochi secondi prima di riprodurre |
+
+I primi tre non cambiano comportamento. La distinzione fra 1 e 3 e' esattamente cio' che l'utente
+paga: col 1 il numero e' fisso e la riproduzione parte subito, col 3 il numero e' vero e costa
+l'attesa della sonda. **E' una scelta sua, e prima non gliela stavamo dando.**
+
+### Dove stanno le tre modifiche, e perche' li'
+
+**La guardia della sonda** sta dentro `_sonda_la_prima` e non nei tre chiamanti: i punti d'ingresso
+sono tre e uno si dimentica -- e' gia' successo due volte nel lotto 244. Legge `self.filter_size_method`,
+l'attributo che `__init__` prende gia', e **non importa niente**: il primo tentativo ci aveva messo
+`from modules.sonda_linea import modo`, e test_241 -- che chiama questo metodo su un percorso dove
+`modules` non e' importabile -- e' passato da "degrada" a "solleva". La prova lo ha preso subito.
+
+**La scelta fra impostazione e scala** sta dentro `sonda_linea.soglia()`, per la ragione del lotto
+242: il filtro dell'elenco e il cancello del player devono giudicare lo stesso film con lo STESSO
+numero, e mettendo la distinzione nell'unica funzione che decide restano d'accordo per costruzione
+invece che per convenzione. Col modo 1 torna l'impostazione e basta -- servire una mediana
+dell'archivio a chi ha chiesto un valore fisso vorrebbe dire disattendere proprio la sua scelta.
+
+**Il cancello del player** passa da `!= 1` a `not in (1, 3)`: in entrambi i modi l'utente ha chiesto
+di filtrare sulla banda, e quel cancello e' la seconda meta' di quel filtro.
+
+Nel dubbio si torna **Off e non Auto**: un'impostazione che non si riesce a leggere non e' un
+consenso a spendere sei secondi dell'utente a ogni riproduzione.
+
+### Quando non misura, adesso lo dice
+
+`_nota_sonda` finisce gia' nel log tramite `_verifica_bersaglio`, quindi nei modi 0/1/2 comparira'
+`non misurata: sonda non richiesta: filtro dimensione in modo N`. Era la riga che mancava per poter
+verificare dall'esterno che la guardia sta funzionando.
+
+### La schermata
+
+Aggiunta la voce, e le tre righe condivise (minimi e "include unknown size") ora valgono anche per
+il modo 3. La riga "Internet Speed" resta del **solo** modo 1: col 3 quel numero lo misura la sonda,
+e lasciarlo modificabile suggerirebbe che conti ancora. Corretta anche la sua descrizione, che
+prometteva un taglio del 10% tolto dal lotto 208 -- era falsa da quarantadue lotti.
+
+### Le prove
+
+`test_250`, 36 assert: i quattro modi e il fatto che i tre storici non si sono spostati; la soglia
+modo per modo (il modo 1 ignora sia la sonda della ricerca sia la bacheca fresca, il modo 3 percorre
+la scala intera fino all'impostazione); la guardia eseguita sulla funzione VERA per i modi 0, 1 e 2
+con una `resolve_sources` che solleva se qualcuno la chiama; i due cancelli attivi sugli stessi modi;
+le righe della schermata. `test_244` aggiornato -- i `_sondato = True` prima del ciclo ora sono due e
+il secondo e' legittimo: non e' un tentativo fallito ma una condizione permanente della ricerca, e
+riprovare non cambierebbe la risposta. Suite 46/50, i quattro rossi sono i soliti `test_202-205`.
+
+### Lotto 250 -- la verifica sul dispositivo, e un risultato NEGATIVO da mettere agli atti
+
+Quattro riproduzioni, una per modo, log delle 20:15 e delle 20:27. Il comportamento e' quello voluto,
+riga per riga:
+
+| modo | sonda | cancello del player |
+|---|---|---|
+| 0 Off | `non richiesta: filtro dimensione in modo 0` | `cancello banda non attivo` |
+| 1 Use Line Speed | `non richiesta: ... modo 1` | attivo, `entro i 50.0 impostati` |
+| 2 Use Size | `non richiesta: ... modo 2` | `cancello banda non attivo` |
+| 3 Auto | misurata, 43,67 Mbit/s | attivo, `entro i 34.9 dalla bacheca (43.7 di 3 s fa / 1.25)` |
+
+In archivio le tre righe non-Auto hanno `sonda_mbps` NULL e la quarta 43,7: la sonda non e' partita
+dove non doveva. `PERF CARICO` zero in entrambe le sessioni. Le righe non-Auto continuano comunque a
+registrare bitrate e portate, quindi l'archivio impara lo stesso.
+
+Una cosa che il log NON prova, e va detta: il modo 3 e' stato provato per ULTIMO, quindi quando il
+modo 1 ha risposto `impostati` la bacheca era comunque vuota. Che il modo 1 ignori una misura FRESCA
+lo prova solo `test_250`, non questa sessione.
+
+**IL RISULTATO NEGATIVO.** Il lotto 249 aveva separato utente e sistema sul primo consumatore per
+decidere se l'85% di core della GUI fosse calcolo della skin o disegno. Ventitre censimenti puliti
+(nessun cambio di finestra e nessun tasto nei sedici secondi):
+
+| finestra | capo | utente | sistema | utente/sistema | fps | ms/fotogramma |
+|---|---|---|---|---|---|---|
+| Custom_1101_Hub | 86% | 76% | 10% | **8,0x** | 34 | 25,6 |
+| MyVideoNav | 79% | 70% | 9% | **7,7x** | 44 | 19,3 |
+| VideoFullScreen | 20% | 17% | 3% | **6,1x** | 24 | 8,3 |
+
+Il rapporto e' **costante** fra una finestra piena di contenuto e il video nudo. Se disegno e calcolo
+fossero due mescole diverse, il rapporto si sposterebbe fra le tre righe: non si sposta. **Lo
+strumento non discrimina**, e la ragione e' che su Android il driver OpenGL ES gira anche lui in
+spazio utente -- assemblare i command buffer e' lavoro in userspace, e la syscall e' solo lo swap
+finale. Il 3-10% di sistema e' l'overhead per fotogramma, non "il disegno".
+
+Costava poco ed era un'ipotesi ragionevole, ma la domanda del lotto 249 resta aperta: non si e'
+chiusa, e la riga utente/sistema va letta per cio' che e' -- una scomposizione, non una diagnosi.
+
+**Cio' che invece i numeri dicono davvero**, ed e' la pista buona:
+
+    VideoFullScreen   8,3 ms/fotogramma   <- il PAVIMENTO: ciclo applicativo + percorso video
+    MyVideoNav       19,3                 <- +11,0 per una singola vista a elenco
+    Custom_1101_Hub  25,6                 <- +17,3 per l'hub con le righe dei widget
+
+Il costo **scala con cio' che c'e' a schermo**, e una vista a elenco semplice che costa undici
+millisecondi sopra il pavimento e' molta roba per un contenitore solo. La skin ha 2646 `$INFO[]`,
+760 `$VAR[]` e 1000 condizioni `<visible>`; nessuna etichetta scorrevole (`scroll=true`), quindi non
+e' quello. Il passo successivo e' una bisezione -- lo stesso hub con meno righe -- e non un'altra
+scomposizione dello stesso numero.
+
+## Lotto 251 -- L'esperimento nullo, e l'hub che disegnava dietro a un dialogo
+
+### Prima: perche' la prova sulla risoluzione non ha misurato niente
+
+Avevo proposto di cambiare `videoscreen.limitgui` come discriminante fra disegno e `Process`: il
+disegno scala con i pixel, il giro sull'albero dei controlli no. L'impostazione e' passata da 720 a
+1080 e il risultato e' stato **nessun cambiamento**:
+
+| finestra | limitgui 720 | limitgui 1080 |
+|---|---|---|
+| Custom_1101_Hub | 25,6 ms/fotogramma (n=8) | 25,3 ms/fotogramma (n=10) |
+| capo | 86% | 87% |
+
+**Non e' un risultato, e' un esperimento nullo.** La prima pagina del log lo dice:
+
+    CAndroidUtils: selected resolution: 1280x720
+    CAndroidUtils: ProbeResolutions: 1280x720
+
+Lo stick esce a 720p e quella e' l'unica modalita' che offre. `limitgui` e' un TETTO: metterlo sopra
+la risoluzione del display non cambia niente, e infatti la GUI ha disegnato 1280x720 prima e dopo.
+Il numero di pixel non e' mai cambiato, quindi la prova non poteva dire nulla in nessuna direzione.
+Errore mio: andava letta la risoluzione del display prima di proporla. Per farla davvero servirebbe
+scendere sotto i 720p, e da Kodi non si puo' (offre solo cio' che il display dichiara): si potrebbe
+solo dal lato Android, con `wm size`, che e' un cambiamento di sistema e va deciso a parte.
+
+### Poi: cosa pesa davvero, e la prima potatura
+
+Decomposizione, da censimenti puliti (nessun cambio di finestra, nessun tasto nei sedici secondi):
+
+    VideoFullScreen   8,3 ms/fotogramma   <- pavimento, nessun controllo di skin processato
+    MyVideoNav       19,3                 <- +11,0 per una finestra di skin con UN contenitore
+    Home (3 widget)  ~22,5                <- +3,2
+    Custom_1101_Hub  25,6                 <- +6,3, cioe' ~1,5 ms per riga di widget
+
+E una correzione all'intuizione corrente: **il numero di elementi caricati non pesa.** Il contenitore
+503 passa da 55 a 110 a 149 elementi e il costo per fotogramma resta 22-23, piatto. Kodi processa
+solo gli elementi visibili piu' un cuscinetto. Cio' che si sente durante la paginazione e' un picco
+TRANSITORIO: la ricostruzione del widget (600-770 ms di cpu, il 71% reimport) e i JobWorker che
+decodificano le immagini nuove. Il grosso del costo sono gli **11 ms fissi** che compaiono appena una
+finestra di skin e' a schermo, indipendenti dal contenuto.
+
+### La potatura: Kodi non salta cio' che e' coperto
+
+    20:32:14  Window Init (sources_playback.xml)     <- copre tutto lo schermo
+    20:32:19  capo 18316 al 85% | finestra 11101     <- 11101 e' l'HUB, sotto il dialogo
+    20:32:35  capo 18316 al 85% | finestra 11101
+    20:32:52  capo 18316 al 81% | finestra 11101
+    20:32:53  la ricerca finisce
+
+Trentanove secondi a ridisegnare un hub che nessuno poteva vedere. Che sia l'hub sotto e non il
+dialogo sopra lo dicono due fatti: in quei censimenti la ricerca era ancora in corso, quindi il
+dialogo era **vuoto**, e il costo era identico a quello dell'hub popolato a riposo (86%); e quando
+invece parte il video Kodi **sostituisce** la finestra e il costo crolla al 20%. Coperta 85%,
+sostituita 20%: i dialoghi sono sovrapposizioni che potrebbero essere semitrasparenti, quindi Kodi
+continua a processare e disegnare quello che c'e' sotto.
+
+Questo spiega anche perche' la cpu "schizza" quando lo scraper cerca: non e' lo scraper da solo, e'
+lo scraper **sommato** a una GUI che disegna l'invisibile, su quattro core da 1,4 GHz. Ed e' la
+contesa che limita la sonda, che gira dentro la stessa fase: durante la misura il primo consumatore
+stava al 74% di un core.
+
+La guardia sta in `Hub_Window`, che **Home.xml e Custom_1101_Hub.xml includono entrambi**: una sola
+riga copre le due finestre misurate.
+
+    <visible>![System.HasActiveModalDialog + !String.IsEmpty(Window(10000).Property(fenlight.ricerca.attiva))]</visible>
+
+**E' una congiunzione, ed e' voluto.** `fenlight.ricerca.attiva` dice "e' una nostra finestra a
+schermo intero"; `System.HasActiveModalDialog` e' la verita' di Kodi e dice "un modale c'e' davvero".
+Serve la seconda perche' la prima e' una proprieta' che qualcuno deve spegnere: se restasse accesa
+per un errore, da sola nasconderebbe l'hub fino al riavvio di Kodi. Cosi' invece l'hub torna da solo
+appena il dialogo si chiude, qualunque cosa sia successo alla proprieta'. La proprieta' ha gia' una
+scadenza di 300 s lato Fen Light (`mark_search_phase`, spenta in un `finally`), ma la skin non sa
+confrontare un tempo: puo' solo vedere se e' vuota, quindi quella scadenza da sola non basterebbe.
+
+Deploy: **solo `Includes_Hubs.xml`**, non la cartella 1080i, che contiene i quattro file di
+skinvariables generati PER DISPOSITIVO; sostituirli genera gli errori `Error getting &pgctl=`.
+
+### Le prove
+
+`test_251`, 16 assert: che il file si parsi ancora (i commenti XML non ammettono il doppio trattino,
+e la prima stesura ha rotto il file esattamente cosi' -- Kodi non avrebbe detto "XML non valido",
+avrebbe mostrato una finestra vuota); che la guardia sia dentro `Hub_Window` e PRIMA del gruppo dei
+widget; che sia in AND e non in OR; che il nome della proprieta' sia davvero quello che Fen Light
+alza, sulla finestra 10000, e che si spenga in un `finally`; e che la bandiera sia alzata prima di
+`process_results`, cioe' che copra anche la sonda.
+
+Cosa deve mostrare il prossimo log: durante una ricerca sorgenti il primo consumatore deve scendere
+dall'85% verso il pavimento. Se non scende, il gruppo scelto non e' quello che costa.
+
+### Lotto 251, la verifica: la guardia funziona, ma Kodi si e' ripreso il risparmio in fotogrammi
+
+Due riproduzioni, log delle 04:44 del 12/09. La sensazione era "la cpu e' ancora alta, Kodi continua
+a costruire i widget sotto la finestra di Fen Light". **I widget non si ricostruiscono**: nelle due
+finestre di ricerca (04:44:46-04:45:21 e 04:49:09-04:50:18) c'e' UNA sola invocazione del plugin, ed
+e' `playback.media`, cioe' l'avvio della riproduzione. Nessun `CDirectoryProvider ... refresh`,
+nessun `build_continue_watching`, nessun `mdblist`.
+
+E la guardia ha funzionato eccome. Durante la ricerca, con l'hub sotto il dialogo:
+
+| | prima (log 250) | dopo (log 252) | |
+|---|---|---|---|
+| ms di cpu per fotogramma | 28-34 | **12-15** | dimezzato |
+| fotogrammi al secondo | 23-30 | **43-52** | raddoppiati |
+| capo, % di un core | 81-85% | 61-75% | -20% |
+
+    prima  20:32:35   30 fot/s x 28,0 ms = 840 ms di cpu al secondo   84% di un core
+    dopo   04:49:38   52 fot/s x 12,1 ms = 629 ms di cpu al secondo   63% di un core
+    dopo   04:49:52   45 fot/s x 13,6 ms = 612 ms di cpu al secondo   61% di un core
+
+**IL LAVORO PER FOTOGRAMMA E' DIMEZZATO E LA CPU E' SCESA DEL 20%.** La differenza e' finita tutta
+nei fotogrammi: il thread applicativo gira a briglia sciolta, quindi appena ogni fotogramma costa
+meno lui ne disegna di piu'. Il risparmio non torna indietro come cpu libera, torna come fluidita'.
+
+E' il fatto piu' importante emerso finora, perche' riscrive la strategia. **Ogni ottimizzazione sul
+costo per fotogramma verra' convertita in frequenza, non in cpu libera**, finche' qualcosa non
+limita la frequenza. Potare la skin -- meno controlli, meno condizioni, meno righe di widget --
+alzera' gli fps e lascera' la cpu piu' o meno dov'e'. Se l'obiettivo e' la fluidita' va benissimo;
+se l'obiettivo e' liberare cpu per la sonda e per gli scraper, da solo non basta.
+
+I due obiettivi non coincidono e vanno dichiarati separatamente:
+  - piu' fluidita' a parita' di cpu  -> potare il costo per fotogramma (e la guardia lo ha gia' fatto);
+  - meno cpu a parita' di fluidita'  -> mettere un tetto ai fotogrammi.
+
+Nota sul margine residuo: durante la ricerca restano 12-15 ms per fotogramma contro un pavimento di
+8 (il video a schermo intero). Quei 4-7 ms sono cio' che ancora si disegna: la finestra sorgenti di
+Fen Light, che e' sopra e va disegnata, piu' cio' che della Hub_Window e' rimasto fuori dalla
+guardia (sfondo, spotlight list, Home_Control). Estendere la guardia a quelli e' possibile, ma per
+quanto sopra alzerebbe gli fps invece di abbassare la cpu, quindi non si fa adesso: prima si decide
+quale dei due obiettivi si sta inseguendo.
+
+## Lotto 252 -- Le due regole scattano per la prima volta, e una sonda sbaglia di brutto
+
+Log delle 05:06 del 12/09, tre riproduzioni, linea lenta e instabile (mattina presto).
+
+### 1. Le regole del lotto 249, verificate sul campo
+
+Diciassette sonde senza che nessuna delle due soglie scattasse. In questa sessione **scattano
+entrambe**, e nella stessa sessione:
+
+| ora | coda/centro | fonte | dichiarato | media |
+|---|---|---|---|---|
+| 05:07:55 | **1,808** | `coda` | 14,78 | 12,08 |
+| 05:14:07 | **0,716** | `coda_in_calo` | 5,24 | 6,51 |
+| 05:17:22 | 1,014 | `media` | 10,42 | 10,42 |
+
+E hanno fatto bene tutte e due. La prima curva accelera davvero (da 0,4 a 2,0 MB/s fra primo e
+ultimo tratto); la seconda decade davvero (da 1,0-1,4 a 0,3-0,8 MB/s). La regola della discesa ha
+ABBASSATO la stima da 6,51 a 5,24 e la riproduzione che ne e' seguita e' andata liscia.
+
+I tre decimali introdotti in questo lotto si leggono subito: `1.808` e `0.716` sono inequivocabili
+dove `1.81` e `0.72` sarebbero bastati, ma il caso del 12/09 mattina (`0.89` contro soglia `0.89`,
+valore vero 0,8930) aveva gia' dimostrato che due decimali no.
+
+### 2. IL DIFETTO: misuriamo l'avvallamento e non lo usiamo
+
+    film      sonda  fonte         avvall/finestra  bitrate   b/s   cache dopo   secco
+    Memento   14,78  coda                     18%     4,40   0,30       79%        7 s
+    Aliens     5,24  coda_in_calo             90%     3,72   0,71         -        4 s
+    Coco      10,42  media                    41%     8,09   0,78         1%     81 s
+
+**Coco e' un fallimento vero.** La sonda ha dichiarato 10,42, la soglia e' diventata 8,3, il file da
+8,09 e' passato per un soffio -- e la riproduzione ha tenuto la cache all'1% di media con **81
+secondi** a secco. La portata misurata durante la riproduzione: 8,1. La sonda ha sovrastimato del 28%.
+
+E il segnale c'era, scritto nella stessa riga: **il 41% della finestra di misura era un
+avvallamento**. Lo misuriamo dal lotto 245, lo scriviamo nel log, lo salviamo in archivio -- e poi
+dichiariamo la media lo stesso.
+
+Il meccanismo non e' un errore sistematico, e' VARIANZA: su una linea che singhiozza, cinque secondi
+sono un campione troppo corto, e la media di quei cinque secondi non predice i minuti successivi.
+Non serve correggere la stima verso il basso, serve **riconoscere che quella stima vale meno** e
+pretendere piu' margine proprio quando la linea e' instabile. Oggi MARGINE e' 1,25 fisso e tratta
+una linea piatta e una a singhiozzo allo stesso modo: su Coco il margine effettivo e' stato 1,00.
+
+Nota che chiude il quadro: le due sonde in cui una regola e' SCATTATA sono finite bene, quella che
+ha dichiarato la media nuda -- con l'avvallamento piu' grande fra le tre relative alla finestra
+piena -- e' l'unica che ha fallito.
+
+### 3. La guardia del lotto 251 tiene
+
+Durante le tre ricerche, con l'hub sotto il dialogo:
+
+    capo 55-69%   |   12-15 ms per fotogramma   |   40-56 fps
+
+contro 81-85% e 28-34 ms prima della guardia. Costante su tredici censimenti.
+E la sonda ne beneficia: **quota 88%, 99%, 92%**, contro il 77-85% di prima, con il capo sceso da
+74% a 57-61% durante la misura. La sonda non e' piu' disturbata dalla cpu.
+
+Trappola in cui sono caduto analizzando: il filtro dei "censimenti puliti" (nessun cambio finestra,
+nessun tasto) lascia passare i censimenti fatti DURANTE una ricerca -- li' non cambia finestra e
+nessuno preme tasti -- e quelli riportano `finestra 10000`, cioe' la Home SOTTO il dialogo. Per un
+momento sono sembrati una Home a riposo scesa da 85% a 60%. Non lo erano.
+
+### 4. La prova su algorithmdirtyregions
+
+Messo a 1 (unione dei rettangoli sporchi) invece del default 3 (riempi il viewport quando qualcosa
+cambia). Motivo: Kodi ridisegna su richiesta -- col video a schermo intero fa esattamente 23-24
+fotogrammi, il ritmo del film -- e durante una ricerca ne fa 40-56. Un colpevole individuato e'
+lo spinner di `sources_playback.xml`, che porta due animazioni `Conditional` permanenti
+(`rotate loop="true"` e `fade pulse="true"`): una girandola da 30x30 pixel, col default 3, fa
+ridisegnare tutti i 1280x720.
+
+Agisce sul DISEGNO, non sul giro per fotogramma sull'albero dei controlli, ed e' proprio cio' che la
+prova deve dire -- la discriminante che la risoluzione non ha potuto dare, perche' lo stick esce a
+720p e `limitgui` e' un tetto, non un pavimento. Se i ms per fotogramma scendono, il disegno pesa; se
+restano 12-15, e' il `Process` e la riga va tolta.
+Ripristino: `advancedsettings.xml.bak-dirtyregions`, accanto al file.
+
+## Lotto 253 -- Il margine cresce dove la linea singhiozza, e il censimento dice chi lo copre
+
+### 1. L'avvallamento finalmente decide qualcosa
+
+Il caso del 12/09 alle 05:17: sonda 10,42 Mbit/s, soglia 8,3, passa un file da 8,09; la riproduzione
+tiene la cache all'1% di media e resta a secco **81 secondi**. La portata misurata durante quella
+riproduzione: 8,1. Margine effettivo 1,00. Il segnale era sulla stessa riga di log -- il **41% della
+finestra di misura era un avvallamento** -- e lo misuravamo dal lotto 245 senza usarlo.
+
+Il meccanismo non e' un errore sistematico, e' **varianza**: su una linea che singhiozza cinque
+secondi sono un campione troppo corto. Quindi non si corregge la stima, si riconosce che **vale
+meno**:
+
+    margine = MARGINE * (1 + PESO_INSTABILITA * avvallamento/finestra)      PESO_INSTABILITA = 0,5
+
+**SOLO SULLA MEDIA NUDA**, e questa e' la parte che i dati hanno insegnato. Quando una delle due
+regole della coda e' scattata la stima e' gia' stata spostata verso il tratto piu' recente, e
+sommarci la penalita' la conterebbe due volte:
+
+| film | fonte | instab. | bitrate | soglia | esito | reale |
+|---|---|---|---|---|---|---|
+| Memento | `coda` | 10% | 4,40 | 11,82 | passa | andata bene |
+| Aliens | `coda_in_calo` | 36% | 3,72 | 4,19 | passa | andata bene |
+| Coco | `media` | 41% | 8,09 | **6,92** | **rifiuta** | era fallita |
+
+Con la penalita' su tutte le fonti, **Aliens sarebbe stata rifiutata a torto**: instabilita' 36%, ma
+`coda_in_calo` aveva gia' abbassato la stima da 6,51 a 5,24 e la riproduzione era andata liscia. E'
+quella riga a definire la regola.
+
+PESO 0,5 e non 1,0: a Coco basta un margine di 1,29 per rifiutare quel file, 0,5 lo porta a 1,51 --
+abbastanza da prendere il caso osservato con margine, non tanto da svuotare l'elenco al primo
+singhiozzo. Il tetto naturale (instabilita' 1,0) e' 1,875. **Tarato su UN solo fallimento**: va
+rivisto quando l'archivio ne avra' altri, e lo dico.
+
+L'instabilita' si calcola sulla **finestra piena** e non su `regime_secondi`: le regole della coda
+riscrivono quest'ultimo con la durata della sola coda (2-3 s), e dividere per quella darebbe il 90%
+su una riga in cui l'avvallamento copriva il 36% della misura vera. Viaggia in bacheca insieme alla
+misura, perche' il cancello del player legge di li': senza, giudicherebbe la stessa sonda con un
+margine diverso dal filtro dell'elenco -- la divergenza chiusa dal lotto 242. E la riga di log dice
+**perche'** il margine e' cresciuto (`linea instabile: 41% della finestra in avvallamento`): una
+soglia piu' severa del solito, senza spiegazione accanto, e' indistinguibile da un bug.
+
+### 2. Il censimento dice chi copre la finestra
+
+`getCurrentWindowId` torna la finestra **sotto**: con la finestra sorgenti aperta il censimento
+scriveva `finestra 10000`, cioe' la Home, e i censimenti fatti durante una ricerca erano
+indistinguibili da una Home a riposo. Peggio: non cambiando finestra e non premendo tasti, passavano
+anche il filtro dei "censimenti puliti", e il 12/09 mi hanno fatto leggere una Home a riposo scesa
+dall'85% al 60% **che non esisteva**. La funzione c'era gia' nello stesso ciclo, per le righe
+PERF NAV: ora la riga dice `finestra 10000 coperta dal dialogo 13001`.
+
+E' cio' che serve per misurare l'interfaccia NAVIGATA separatamente da quella coperta, che e' il
+margine ancora da esplorare.
+
+### 3. Un difetto preso dalle prove
+
+`instabilita` nasceva solo dentro il ramo del regime: una sonda che non arriva a dichiararne uno
+tornava un dizionario **senza quella chiave**. `test_222` -- "il risultato dichiara tutti i suoi
+campi" -- l'ha presa al primo giro. Ora si dichiara nel dizionario iniziale come tutti gli altri:
+chi legge un esito deve trovare le stesse chiavi sempre, se no ogni lettore ha bisogno di un `.get`
+difensivo.
+
+E due assert sono stati **riscritti invece che aggiornati**: `len(_CAMPI_BACHECA) == 17` andava
+corretto a ogni campo nuovo e non diceva niente (il numero giusto e' "quanti ce ne sono", che e' una
+tautologia). L'invariante vero e' che `letta()` rifiuti una bacheca con un conteggio diverso, ed e'
+quello che ora si prova.
+
+`test_253`, 25 assert. Suite 48/52.
+
+## Lotto 254 -- La CPU durante lo scraping e' lo scraping, e due difetti miei
+
+### 1. Perche' la cpu NON crolla durante la ricerca, ed e' giusto cosi'
+
+Domanda: "abbiamo detto a Kodi di non disegnare l'hub sotto, perche' la cpu resta a 150-200%?".
+Perche' `processo` e' il TOTALE del processo su QUATTRO core (400% il massimo), e la GUI e' solo una
+parte. Scomposizione di un censimento durante lo scraping (06:00:09, processo 168% = 28000 ms):
+
+    Thread-3 x16 122% (20290 ms)
+       30372:  8850 ms   <- il thread applicativo (la GUI): 8850/28000 = 32% del totale
+       30984:  6680 ms   <- uno scraper
+       30982:  3930 ms   <- un altro
+       +13 altri thread
+
+**Due terzi della cpu sono gli scraper che lavorano**, ed e' esattamente dove la vogliamo. Il
+confronto col prima lo dice meglio di qualunque percentuale:
+
+| | processo | thread applicativo | quota della GUI sul totale |
+|---|---|---|---|
+| prima della guardia (log 250) | 124-140% | 85% | ~60-68% |
+| dopo (log 254) | 162-185% | 53-73% | **~32-38%** |
+
+Il totale e' SALITO mentre la GUI e' scesa: la capacita' liberata e' andata alla ricerca, che ora
+gira piu' larga. E' la guardia che funziona, non che non funziona.
+
+### 2. algorithmdirtyregions a 1: nessun effetto. Quindi il costo e' il Process, non il disegno
+
+Kodi ha caricato l'impostazione (il dump di `advancedsettings.xml` nel log la mostra). Confronto a
+parita' di stato -- hub coperto dalla finestra sorgenti, zero tasti:
+
+    log 253 (dirtyregions 3, default):  12-15 ms per fotogramma, capo 55-69%
+    log 254 (dirtyregions 1, unione):   14,3 ms mediano,          capo 54%
+
+Nessuna differenza. E li' dentro cambia solo una girandola da 30x30 pixel, cioe' il caso in cui
+l'unione dei rettangoli sporchi dovrebbe stravincere sul "riempi il viewport". Non vince.
+
+**E' la risposta alla domanda aperta dal lotto 249**: il costo per fotogramma non e' il disegno, e'
+il giro sull'albero dei controlli. La leva non e' ridurre i pixel ne' le regioni sporche, e' ridurre
+quanti controlli e quante condizioni vengono valutati a ogni fotogramma -- o quante volte al secondo
+lo si fa. La riga in `advancedsettings.xml` si puo' togliere: non fa danni, non fa niente.
+
+### 3. Difetto mio del lotto 253: 9999 non e' un dialogo
+
+`getCurrentWindowDialogId` torna WINDOW_INVALID (9999) quando NON c'e' nessun dialogo, e `if _dlg`
+su 9999 e' vero. Il lotto 253 ha quindi passato una sessione intera a scrivere `coperta dal dialogo
+9999` su finestre scoperte -- l'esatto contrario di cio' che quella riga serve a dire. Corretto.
+Nel log 254: 33 righe su 56 dicevano "coperta" senza esserlo.
+
+### 4. Difetto mio del lotto 254: un pavimento provato e RITIRATO
+
+Caso reale (05:58): `coda/centro 0,155`, la regola dichiara **1,49 Mbit/s** contro una media di 6,52;
+il filtro scende a 1,2 e all'utente tocca un file **720x544**. La portata misurata durante quella
+riproduzione: **5,73**. La sonda aveva letto il 26% della linea vera, e la media sarebbe stata quasi
+esatta. La curva lo mostra: l'ultimo campione copre 2,8 s per 0,5 MB, uno stallo netto in coda dopo
+un tratto regolare a 1,0-1,5 MB/s.
+
+Avevo aggiunto un pavimento (`DISCESA_STALLO = 0,50`): sotto, "non e' un calo ma uno stallo, vale la
+media". **Non distingue i due casi.** La curva di prova del lotto 240 ha rapporto 0,363 e col
+pavimento smetteva di scattare, eppure li' il calo e' progressivo e finisce su un altopiano stabile:
+la coda E' il ritmo nuovo, ed e' il caso per cui la regola esiste. Nemmeno `avvallamento` separa i
+due, perche' copre la coda in entrambi. Un solo caso reale contro una regola che riclassifica male un
+caso plausibile: ritirato. Stringere a 0,30 farebbe passare entrambi, ma sarebbe adattare un
+parametro a due punti.
+
+### 5. Il dato che resta, ed e' il piu' utile della sessione
+
+Rapporto **sonda / portata misurata durante la riproduzione**, 23 righe. `portata` e' un limite
+INFERIORE della linea (Kodi smette di chiedere col buffer pieno), quindi un rapporto **sotto 1 e'
+prova certa di sottostima**; sopra 1 e' ambiguo.
+
+| | n | mediana |
+|---|---|---|
+| linea veloce (>30 Mbit/s) | 15 | **1,07** |
+| linea lenta (<30) | 8 | **0,60** |
+| fonte `media` | 19 | 1,01 |
+| fonte `coda` | 2 | 0,84 |
+| fonte `coda_in_calo` | 2 | **0,42** |
+
+**La sonda e' ben tarata sulla linea veloce e legge basso su quella lenta.** E le due regole della
+coda sono proprio quelle che sottostimano di piu'. Questo tempera il lotto 253: li' ho aggiunto una
+penalita' verso il basso sulla `media` (giusta, il caso Coco era un fallimento vero), ma sulla linea
+lenta la sonda gia' legge il 60% del vero, e altra prudenza li' porta l'utente sui 720x544.
+Il prossimo passo sulla sonda e' capire PERCHE' legge basso quando la linea e' lenta -- non aggiungere
+un'altra correzione.
+
+---
+
+## Lotto 255 -- Non era la linea lenta: era la radio. E dirtyregions via
+
+Domanda dell'utente: *"come capiamo perche' si comporta in modo diverso se la linea e' veloce o
+lenta? non dovrebbe semplicemente tracciare la capacita' della banda, a prescindere da come sia?"*
+
+La domanda era giusta e la premessa -- mia, del lotto 254 -- era sbagliata. Non esistono una linea
+veloce e una lenta. Esiste **una sola linea, vista attraverso due stati della radio**.
+
+### 1. Le due popolazioni sono separate dal segnale, non dalla velocita'
+
+Archivio completo, 26 sonde, raggruppate per `rete_segnale` (colonna che c'e' dal lotto 244 e che
+non stavo guardando):
+
+    gruppo                  n   RSSI     sonda        regole    avvallamento   |salita-1|
+                                         min-max      scattate  medio          medio
+    radio buona (>-60)     18   -55,2    40,3-48,3       0/18    0,06          0,056
+    radio scarsa (<=-60)    8   -69,5     1,5-14,8       4/8     1,15          0,298
+
+Separazione **netta, zero sovrapposizione**: -54..-56 dBm da una parte, -69..-70 dall'altra. E
+soprattutto: **gli host sono gli stessi** (`nexus-156/157/226/227.nord.tb-cdn.st`, stesso token) in
+entrambi i gruppi. Stesso server, stessa ora del giorno, stesso addon: **45 Mbit/s a -55 dBm e
+8 Mbit/s a -69 dBm.** Il collo di bottiglia e' il wi-fi dello stick, non il cdn e non la linea.
+
+`dumpsys wifi` conferma che e' una condizione **viva, non storica**: lo stick e' agganciato a
+`98:2c:c6:4d:fa:55` su **5180 MHz a -69 dBm**, con PHY negoziato a 130 Mbps -- contro una portata
+vera misurata di 8 Mbit/s, cioe' quasi tutto il tempo speso in ritrasmissioni. Lo stesso router
+espone `...fa:51` su **2412 MHz a -62 dBm**: quale delle due sia meglio non e' dimostrato qui (7 dB
+in piu' ma banda piu' affollata e PHY piu' basso), ed e' una prova da fare, non una conclusione.
+Quello che e' dimostrato e' che **a -55 dBm lo stesso cdn dava 45 Mbit/s**: il recupero sta nel
+segnale. E' la nota [stick-wifi-banda-prima-del-codice] che si ripresenta, e la leva piu' grande
+dell'intera sessione **non e' codice**.
+
+### 2. Quindi la sonda *sta* tracciando la capacita', a prescindere
+
+La risposta alla domanda dell'utente e' si': la sonda misura il collo di bottiglia in quel momento,
+e a -69 dBm il collo di bottiglia e' davvero 8 Mbit/s. Quello che cambia con la radio non e'
+l'esattezza della sonda, e' la **varianza del segnale che sta misurando**: su radio scarsa
+l'avvallamento e' 19 volte piu' grande e lo scarto di `salita` da 1 e' 5 volte piu' grande.
+
+E li' dentro sta il difetto vero, che e' **delle regole della coda, non della media**:
+
+    regole della coda scattate:   0 su 18 a radio buona    4 su 8 a radio scarsa
+
+Le soglie `SALITA_SOSPETTA=1,12` e `DISCESA_SOSPETTA=0,89` sono strette. Su radio buona `salita`
+sta a 0,056 da 1 e non le tocca mai. Su radio scarsa sta a 0,298 e le scavalca una volta su due --
+**non perche' la curva racconti qualcosa, ma perche' e' rumore**. Un bucket da mezzo secondo vale
+2,8 MB a 45 Mbit/s e 0,3 MB a 5: un decimo dei pezzi, e quindi qualche volta il rumore relativo.
+
+Le quattro accensioni, per esteso:
+
+| id | salita | fonte | media | coda | dichiarato | portata vera | esito |
+|---|---|---|---|---|---|---|---|
+| 25 | 1,808 | `coda` | 12,08 | 14,78 | 14,78 | 12,21 | alza, **giusto** |
+| 30 | 1,213 | `coda` | 5,01 | 5,45 | 5,45 | 11,48 | alza, innocuo |
+| 26 | 0,716 | `coda_in_calo` | 6,51 | 5,24 | 5,24 | 8,98 | abbassa, **la media era meglio** |
+| 29 | 0,155 | `coda_in_calo` | 6,52 | 1,49 | 1,49 | 5,73 | abbassa, **la media era giusta** |
+
+Asimmetria coerente: **una coda che SALE e' informazione** (la rampa non era finita, ed e' il caso
+per cui il lotto 240 ha scritto la regola); **una coda che SCENDE su radio scarsa e' indistinguibile
+da un affievolimento**. Due casi per lato -- pochi -- ma il verso e' quello che ci si aspetta.
+
+### 3. Il gate su `avvallamento` sarebbe stato il secondo DISCESA_STALLO
+
+Sembrava ovvio: `avvallamento` separa le due popolazioni benissimo (0,06 contro 1,15), quindi si
+poteva chiedere "fidati della coda solo se la finestra era per il resto calma". **Provato, e non
+funziona**, per la stessa ragione per cui e' stato ritirato `DISCESA_STALLO`:
+
+    curva sintetica "discesa progressiva verso un altopiano vero" (test 240):  avvallamento 2,50
+    caso reale sbagliato, id 29 (stallo):                                      avvallamento 2,82
+
+Sono lo stesso numero. **Dentro la curva non c'e' l'informazione** che distingue un rallentamento
+vero da un affievolimento della radio -- non ce l'ha `salita`, non ce l'ha `avvallamento`, non ce
+l'ha il rapporto coda/media. Questa e' la conclusione solida del lotto, e vale piu' della tabella:
+ogni prossima soglia ricavata dalla curva sara' un altro parametro adattato a due punti.
+
+### 4. Dove sta l'informazione, e qual e' la misura da fare
+
+Fuori dalla curva, nella radio. `rete_segnale` oggi si legge **una volta sola**, in `player`, al
+momento della riproduzione: dice in che stato era la radio, non cosa ha fatto **durante i sei
+secondi della sonda**. Un affievolimento si vede come un tuffo del RSSI dentro la finestra; un
+server che rallenta no.
+
+Misura proposta (e **misura, non correzione** -- e' cio' che il lotto 254 chiedeva): `sonda_linea`
+legge il RSSI all'inizio e alla fine della finestra di regime e archivia i due valori. Costa una
+lettura di sistema, non allunga la sonda, e dopo qualche riproduzione dice se le code in discesa
+coincidono con i tuffi. Solo allora ha senso decidere se le regole della coda vanno chiuse verso il
+basso. La seconda strada -- due connessioni in parallelo, se cala una sola e' il server, se calano
+entrambe e' la radio -- e' piu' probante e molto piu' cara: da tenere di riserva.
+
+### 5. dirtyregions tolto
+
+Come deciso nel lotto 254: non fa danni e non fa niente, quindi non ha ragione di stare li'.
+`advancedsettings.xml` sullo stick e' tornato al contenuto pre-modifica (md5 `75fa0b45...` identico
+al backup), il blocco `<gui><algorithmdirtyregions>` non c'e' piu' e il backup
+`advancedsettings.xml.bak-dirtyregions` e' stato rimosso perche' non ha piu' niente da ripristinare.
+Resta in piedi la conclusione che quella prova ha prodotto: **il costo per fotogramma e' il giro
+sull'albero dei controlli, non il disegno.**
+
+### 6. Correzione al lotto 254
+
+La riga *"la sonda e' ben tarata sulla linea veloce e legge basso su quella lenta"* va letta cosi':
+la sonda e' ben tarata quando la radio e' sana, e le **regole della coda** sbagliano quando la radio
+e' debole. La tabella sonda/portata resta valida come misura; l'etichetta "linea lenta" era una
+diagnosi sbagliata della causa.
+
+### 7. Cosa e' stato scritto
+
+`sonda_linea.misura()` campiona `/proc/net/wireless` **allo stesso passo della curva**, in una lista
+parallela `radio` di coppie `(secondi, dBm)`. Parallela e non dentro `curva`: `curva` e' fatta di
+coppie `(secondi, byte)` e tre funzioni indicizzano `[0]` e `[1]` su di lei -- cambiarle la forma
+per aggiungere un dato di strumentazione e' il modo di rompere cio' che gia' funziona.
+
+Il costo sta **dentro** il ciclo cronometrato, e va giustificato: `stato_rete()` legge un file di
+tre righe, qualche decina di microsecondi; dodici letture su sei secondi sono lo **0,007%** della
+finestra. E' la ragione per cui questo campione puo' stare dove il censimento dei thread (un file
+per thread, sessanta e piu') ha dovuto stare fuori -- vedi il lotto 246.
+
+In archivio vanno **tre** valori, non la serie, e sulla **finestra di regime**, la stessa su cui si
+calcolano media, centro e coda:
+
+| colonna | cosa dice |
+|---|---|
+| `sonda_rssi_inizio` | il segnale all'inizio del regime |
+| `sonda_rssi_fine` | alla fine -- insieme al primo e' un prima/dopo, confrontabile riga per riga con `sonda_salita`, che e' anche lui un prima/dopo sullo **stesso** intervallo |
+| `sonda_rssi_min` | il minimo dentro la finestra: un affievolimento **in mezzo** lascia i due estremi identici, ed e' proprio quello che si sta cercando |
+
+Sulla finestra di regime e non sull'intera lettura, per la stessa ragione per cui il lotto 253
+calcola li' `instabilita`: un numero che descrive un altro intervallo non si puo' mettere accanto a
+`salita` e confrontare. La rampa resta nella **serie**, che finisce nel log insieme all'escursione
+in dB -- l'analisi si fa li', in archivio ci va il riassunto.
+
+`pubblica()` rifiuta una misura senza regime, quindi una riga in archivio ha sempre una finestra
+vera e le tre colonne non sono mai ambigue. Una sonda fallita **per** un crollo della radio -- il
+caso piu' interessante di tutti -- resta nel log e non in archivio: e' un limite noto, non una
+dimenticanza.
+
+**File toccati:** `modules/sonda_linea.py` (campionamento, riassunti, due righe di log,
+`_CAMPI_BACHECA` da 18 a 21 campi e le conversioni in `letta()`), `caches/base_cache.py` (tre
+colonne), `caches/playback_stats.py` (`COLONNE`), `modules/player.py` (`_campi_sonda`).
+
+**Prove:** `tests/test_255.py`, 57 asserzioni. La piu' importante e' la 5, e non prova una
+funzione: misura la **stessa** curva in discesa con radio ottima, con radio in crollo e senza radio,
+e pretende che `regime`, `regime_fonte`, `salita` e `instabilita` escano **identici**. E' l'unica
+difesa scritta contro il ritorno di `DISCESA_STALLO` sotto un altro nome. Suite **49/53** (i quattro
+rossi sono i soliti `test_202-205`, che vogliono un `sys.argv[1]`).
+
+Un difetto della prova, non del codice, vale la pena registrarlo: la prima stesura dava al finto
+segnale il tempo **assoluto** dell'orologio finto, mentre la sonda ragiona su `trascorso`, che
+riparte da zero dopo apertura, posizionamento e ttfb. Risultato: tutta la finestra cadeva oltre
+`SECONDI_SALITA` e la prova 2 -- "i riassunti stanno sulla finestra di regime, non sulla rampa" --
+passava **senza provare niente**, perche' rampa e regime avevano lo stesso valore finto.
+
+### 8. L'archivio riparte da zero, ed e' voluto
+
+Tre colonne in piu' vuol dire schema diverso, e `migrate_playback_schema` (lotto 218) rifa' la
+tabella: **le 30 righe attuali si perdono** al prossimo avvio. E' la politica giusta -- un archivio
+di annate diverse non si legge -- e le righe di oggi hanno gia' dato quello che avevano da dare, che
+sta nelle sezioni 1-3 qui sopra. Copia integrale in `tests/archivio_sonde_pre255.csv` (fuori da git,
+come tutto `tests/`) per poter rileggere la tabella sonda/portata senza rifidarsi della memoria.
+`sorgenti_bocciate` non si tocca: e' un'altra tabella, ed e' conoscenza, non misura.
+
+**Cosa guardare nel prossimo log.** Le due righe nuove, `radio` e `segnale nella finestra di
+regime`, sotto la riga `curva`. La domanda e' una sola: **quando scatta `coda_in_calo`, il segnale
+era sceso?** Se si, le regole della coda vanno chiuse verso il basso a radio debole e si sapra' su
+quale grandezza. Se no, il calo e' del server e la regola fa bene a scattare -- e a quel punto il
+difetto sta altrove. Finche' non c'e' quella risposta, `DISCESA_SOSPETTA` non si tocca.
+
+### 9. LA PRIMA RISPOSTA, dal log del 12/09 06:36-06:46 -- e non e' quella che mi aspettavo
+
+Tre sonde, radio debole (-69/-70 dBm). Le righe nuove hanno risposto subito:
+
+    sonda 1  06:38  radio  0.0:-69 0.6:-69 1.2:-69 ... 6.1:-69   escursione 0 dB
+    sonda 2  06:41  radio  0.0:-69 0.6:-69 1.1:-69 ... 6.7:-69   escursione 0 dB
+    sonda 3  06:44  radio  0.0:-70 0.6:-70 1.2:-70 ... 6.1:-70   escursione 0 dB
+
+**Il segnale era fermo. Zero dB di escursione in tutte e tre.** E lo strumento non e' cieco: 40
+letture di `/proc/net/wireless` in 20 s danno 36 volte -54 e 4 volte -53, cioe' risolve il dB. Zero
+variazione su 6,5 secondi vuol dire segnale davvero fermo.
+
+**L'ipotesi del lotto 255 non regge**: `coda_in_calo` e' scattata (sonda 2, coda/centro 0,228) con
+la radio immobile. Non sta reagendo a un affievolimento. Una misura fatta, una risposta avuta, e
+l'ipotesi si butta -- che e' esattamente il motivo per cui si misura invece di correggere.
+
+### 10. Ma il log ne dice una piu' grossa: le regole della coda hanno fatto danno in ENTRAMBI i versi
+
+| | fonte | media | dichiarato | esito reale |
+|---|---|---|---|---|
+| sonda 1 | `coda` (alza) | 11,86 | **17,29** | soglia 13,83 -> passa un file da 13,78 -> **31 secondi a secco** |
+| sonda 2 | `coda_in_calo` (abbassa) | 17,33 | **5,70** | portata vera misurata nelle riproduzioni dopo: **17,9** e **14,4** |
+
+In tutte e tre le righe in archivio **la media nuda era la risposta migliore**. La sonda 1 e' il caso
+peggiore visto finora: la curva stalla (1,7 -> 3,1 s per 1 MB) e poi recupera a raffica (2,3 MB in
+0,7 s), la regola legge la raffica come regime e alza la stima del 46%. Col numero gonfiato passa un
+file che la media avrebbe rifiutato (11,86 / 1,25 = 9,5 < 13,78), e la riproduzione resta a secco
+mezzo minuto.
+
+**E il margine del lotto 253 non e' intervenuto**, perche' `margine_per` applica la penalita' solo a
+`fonte == 'media'`. L'esenzione nacque dalla riga Aliens: `coda_in_calo` aveva GIA' abbassato, e
+penalizzarla due volte l'avrebbe rifiutata a torto. Quel ragionamento vale per la regola che
+ABBASSA. Su quella che ALZA si rovescia: la stima piu' gonfiata, presa dalla finestra piu' instabile,
+riceve il margine piu' piccolo.
+
+    sonda 1: instabilita 53%, fonte coda -> margine 1,25 -> soglia 13,83  (passa, e va a secco)
+             con la penalita' estesa a `coda`  -> margine 1,58 -> soglia 10,93  (rifiuta)
+
+**Ma non e' un discriminante, ed e' importante dirlo**: la riga 14 dell'11/09 -- il caso in cui
+`coda` ha avuto RAGIONE -- ha instabilita' 51%, praticamente la stessa. Estendere la penalita' non
+separa i due casi, allarga il margine su tutte le finestre instabili: si perde portata utile dove la
+regola aveva ragione (13,06 -> 10,41 con la linea vera a 15,3) e si evita il secco dove aveva torto.
+E' uno scambio, non un guadagno netto, e va deciso come tale.
+
+### 11. Il bilancio delle regole della coda, su tutti i casi noti
+
+    8 accensioni:  3 giuste (righe 14 e 15 dell'11/09, id 25)
+                   1 innocua (id 30)
+                   4 dannose (id 26, id 29, sonda 1, sonda 2)
+
+E il confronto che conta:
+
+    la MEDIA nuda ha sbagliato al massimo di 1,4x, SEMPRE per difetto (sicura)
+    le REGOLE della coda hanno sbagliato fino a 3x, in ENTRAMBI i versi
+
+Una correzione giusta meta' delle volte e sbagliata di tre volte l'altra meta' e' peggio di nessuna
+correzione, perche' l'errore della media e' piccolo e sempre dal lato sicuro. Il problema che `coda`
+doveva risolvere -- la rampa che diluisce la media su linea lenta -- resta vero, ma e' un problema di
+FINESTRA DI MISURA (`SECONDI_SALITA` troppo corto quando la latenza e' alta), non di stima: la regola
+della coda era un surrogato a buon mercato di "sposta la finestra". Decisione aperta.
+
+### 12. E la CPU ha buttato una sonda su tre
+
+La sonda 3 e' stata scartata dall'invariante del lotto 228: `quota 34%`, processo al 165%, due thread
+di scraper a 2980 e 2260 ms contro i 3520 della GUI. La scala a quattro pioli ha fatto il suo lavoro
+(`soglia dalla bacheca, 5,7 Mbit/s di 183 s fa`), ma la misura e' persa.
+
+Da notare, perche' cambia il bersaglio: dopo la guardia del lotto 251 **il disturbo alla sonda non
+viene piu' dall'interfaccia, viene dagli scraper**. La capacita' liberata dall'hub che non disegna
+piu' se l'e' presa la ricerca, che gira in contemporanea alla sonda. Ridurre altri millisecondi per
+fotogramma non salvera' la prossima sonda: quello che la salverebbe e' non farla girare mentre gli
+scraper saturano i quattro core.
+
+### 13. PERCHE' LA SONDA NON HA UNO SPAZIO SUO, pur girando dopo gli scraper
+
+Domanda dell'utente: la sonda e' stata messa **dopo** lo scraping e dopo la chiamata a TorBox
+apposta per avere la cpu libera. Perche' gli scraper la sporcano ancora?
+
+**La collocazione e' giusta.** `_sonda_la_prima` viene chiamata da `process_results`, cioe' a
+sorgenti raccolte e cache TorBox interrogata. Il log lo conferma: TorBox alle 06:44:21, sonda alle
+06:44:29. Quella parte del disegno funziona.
+
+**Ma "gli scraper hanno finito" e' vero per il FLUSSO, non per i THREAD.** In `scrapers_dialog`:
+
+    scraper_timeout = 25
+    ...
+    if len(remaining_providers) == 0: break
+    if percent >= 100: break          <- si esce ANCHE con thread ancora vivi
+
+Nessun `join()` fuori dalla modalita' background, e **un thread Python non si puo' uccidere**. A 25
+secondi la ricerca *ritorna*; gli scraper lenti continuano a macinare. `remaining_providers` viene
+gia' calcolato -- ma finisce solo nel dialogo, non nel log.
+
+**La prova, dai censimenti del servizio** (riproduzione 3; ricerca avviata 06:43:10, cioe' scadenza
+a 06:43:35):
+
+    06:43:35   32613:4080   32611:2940     <- scaduto il timeout, la ricerca e' "finita"
+    06:43:50   32613:7760   32611:5220
+    06:44:08   32613:8900   32611:6030
+    06:44:23   32613:7610   32611:5210     <- capo del processo: 32613
+    06:44:29 -- 06:44:36  LA SONDA GIRA QUI, con 32613 al 46% e 32611 al 35% di un core
+    06:44:55   32611:10230                 <- 18 s DOPO l'avvio della riproduzione, ancora al 63%
+    06:45:10   spariti
+
+Novanta secondi di vita per una ricerca la cui finestra e' venticinque. E **non e' un caso isolato**:
+lo stesso schema nelle altre due riproduzioni (32001/31999 alle 06:37, 32155/32153 alle 06:40).
+
+**E il danno non e' sui core, e' sul GIL.** `_sonda_la_prima` gira in linea, nello **stesso
+interprete** che ospita quei thread. I numeri della sonda 3 lo dicono da soli:
+
+    cpu    consumo 8% | quota 34% | processo 145%
+
+Poca cpu propria, processo pieno: e' il terzo caso per cui il lotto 246 ha scritto lo strumento --
+*"il GIL e' occupato dagli scraper e noi aspettiamo il turno"*. La sonda non stava lavorando, stava
+in coda.
+
+**Conseguenza: mettere la sonda dopo, nel tempo, non le da' uno spazio suo.** Sequenziare serve solo
+se cio' che precede si ferma, e qui non si ferma.
+
+**E spostarla nel servizio non basta** (ci avevo pensato, il lotto 225 ha gia' la bacheca per farlo):
+Kodi 21 gira su Python 3.11, dove i sotto-interpreti **condividono il GIL**. Cambierebbe interprete,
+non coda. Il GIL separato arriva con 3.12+, che qui non c'e'.
+
+**Cosa resta, in ordine di valore.** (1) Capire perche' uno scraper brucia 60 secondi di cpu UTENTE
+-- `utente 48% / sistema 2%`, cioe' parsing, non rete -- dopo che i suoi risultati non servono piu':
+e' un guasto che pesa su tutto, fps compresi, non solo sulla sonda. Lo strumento costa una riga:
+`remaining_providers` c'e' gia', basta scriverlo nel log quando il timeout scade, e il colpevole
+si chiama per nome. (2) Accettare e appoggiarsi alla scala a quattro pioli, che stanotte ha fatto
+esattamente il suo lavoro. **Non** ridurre `scraper_timeout`: non ferma i thread, li abbandona solo
+prima.
+
+### 14. Il log di cocoscrapers e' rimasto vuoto, e la causa e' un'altra cosa che vale la pena sapere
+
+Debug acceso, quattro ricerche fatte, `cocoscrapers.log` di **0 byte**. Non e' un errore di
+attivazione: l'impostazione non e' mai arrivata al Kodi in esecuzione.
+
+`cocoscrapers/modules/control.py`:
+
+    def setting(id, fallback=None):
+        try: settings_dict = jsloads(homeWindow.getProperty('cocoscrapers_settings'))
+        except: settings_dict = make_settings_dict()
+
+Le impostazioni si leggono da una **istantanea JSON tenuta in una proprieta' di Window(10000)**, e
+`make_settings_dict()` -- l'unica funzione che rilegge il file e aggiorna la proprieta' -- viene
+chiamata **solo nel ramo except**, cioe' solo quando la proprieta' manca o non si parsa. Chi la
+teneva aggiornata a ogni cambio era il service di cocoscrapers, e in `addon.xml` quel service e'
+**commentato**, con la nota che lo dice:
+
+    di cocoscrapers non aggiorna piu' da solo il dizionario in memoria.
+    Per riaccenderlo: togliere questo commento e ripristinare la riga qui sotto.
+    <extension point="xbmc.service" library="lib/service.py" start="startup" />
+
+**Conseguenza generale, non solo per il debug**: nessuna impostazione di cocoscrapers ha effetto
+finche' Kodi non riparte -- provider accesi o spenti, min_seeders, proxy. Al riavvio la proprieta' e'
+vuota, la prima `setting()` cade nell'except, rilegge il file e tutto torna coerente. E' il prezzo
+noto di aver spento il service, ma era scritto in un commento e non in un posto che si guarda.
+
+### 15. La sessione non e' persa: conferma il meccanismo e aggiunge il pezzo che mancava
+
+Ricerca "The Dark Knight", dai censimenti del servizio:
+
+    15:46:57  parte la ricerca (invoker 6282)
+    15:47:26  6291:7140  6289:4400     <- due thread pesanti
+    15:47:42  6291:8120  6289:5450
+    15:47:58  6291:8080  6289:5500
+    15:48:01  CHIAMATA A TORBOX (TB_check: 145 hash) -- 64 s dopo l'inizio
+    15:48:29  6291:7310  6289:4900     <- ancora vivi, 28 s DOPO il debrid
+    15:48:46  6289:5440                <- ancora uno
+    15:49:00  spariti
+
+**L'invariante "nessuno scraping attivo quando si chiede al debrid" e' violata di ~45 secondi.**
+
+**E si e' capito perche' 64 secondi e non 25: i giri sono DUE, non uno.**
+
+    collect_prescrape_results()  -> avvia prescrape_threads -> scrapers_dialog()   (tetto 25 s)
+    se non produce risultati:
+    collect_results()            -> avvia self.threads      -> scrapers_dialog()   (tetto 25 s)
+
+Cinquanta secondi di tetto complessivo, e **due gruppi distinti di thread abbandonati**: quelli del
+prescrape restano a girare per tutto il secondo giro. E' la spiegazione piu' probabile del fatto che
+si vedano sempre ESATTAMENTE due thread pesanti -- uno per giro -- anche se la corrispondenza non e'
+dimostrata.
+
+### 16. Correzione: il timeout NON e' configurabile da Fen Light
+
+`scraper_timeout = 25` e' una costante di modulo in `modules/sources.py:46`, non un'impostazione.
+Esiste `fenlight.results.timeout` (default 60) ma alimenta **solo** la preparazione dell'episodio
+successivo in `player.py:1616` (`nextep_settings['scraper_time']`): non ha niente a che vedere con
+la ricerca delle sorgenti. Quindi oggi non c'e' nessuna manopola -- il che rende il piano dell'utente
+piu' semplice, perche' non c'e' comportamento pregresso da conservare.
+
+### 17. Il log di cocoscrapers parla: DMM confermato, e due CORREZIONI a quanto avevo scritto
+
+Tre ricerche, 10810 righe. Durata di ogni scraper (`#STATS ... took`):
+
+    MEDIAFUSION   3,35   4,53   5,55
+    BITSEARCH     9,21   1,39   8,48
+    ICV          10,05  10,17   5,71
+    TORRENTIO    13,33   6,62   8,02
+    KNABEN       35,43  18,58  36,41
+    COMET        39,61  24,23  32,95
+    DMM          72,44  50,26  63,46      <- da 2 a 5 volte la mediana degli altri
+
+**Il sospetto sull'utente era giusto.** DMM e' l'ultimo sempre, e non di poco.
+
+#### CORREZIONE 1 -- il timeout E' configurabile, e non e' quello che avevo indicato
+
+Avevo scritto che la ricerca e' governata da `scraper_timeout = 25` in `sources.py` e che
+`fenlight.results.timeout` serve solo al prossimo episodio. **Sbagliato.** In `collect_results`:
+
+    if self.active_external or self.background:
+        if self.active_external: self.activate_providers('external', external, False)
+        ...
+    elif self.active_internal_scrapers: self.scrapers_dialog()     <- ELIF
+
+Con cocoscrapers attivo il ramo `elif` **non viene eseguito**: il tetto di 25 s governa solo il
+percorso senza scraper esterni. Quello vero sta in `scrapers/external.py:41`:
+
+    self.timeout = 60 if disabled_ext_ignored else int(get_setting('fenlight.results.timeout', '20'))
+
+ed e' una voce dell'interfaccia di Fen Light. Sulla stick vale **60** (`settings.db`:
+`results.timeout | action | 20 | 60`). Da notare: due ripieghi diversi per la stessa impostazione --
+'20' qui, '60' in `settings.py:139`.
+
+#### CORREZIONE 2 -- i 64 secondi non erano due giri da 25
+
+Avevo dedotto che prescrape e ricerca piena facessero 25+25. **Sbagliato**: sono semplicemente i 60
+secondi del tetto piu' l'avvio. Il prescrape usa `scrapers_dialog` ma solo sugli scraper INTERNI di
+Fen Light (`scrapers/`: cloud, easynews, folders), che sono veloci; cocoscrapers passa tutto dal
+percorso esterno.
+
+#### Il taglio, ricerca per ricerca
+
+    ricerca 1  tt0361748  scraping 15:56:17 -> TorBox 15:57:17 (60 s netti, 999 hash)
+               6 scraper su 7 dentro il tetto; DMM finisce alle 15:57:29, 12 s TARDI -> 640 sorgenti perse
+    ricerca 2  tt0119217  TorBox 16:00:17; DMM finisce 16:00:16 -> dentro per UN SECONDO (742 hash)
+    ricerca 3  tt5311514  TorBox 16:03:00; DMM finisce 16:03:03, 3 s TARDI -> 439 sorgenti perse
+
+DMM sta **esattamente sul confine**: 50, 63, 72 secondi contro un tetto di 60.
+
+#### E il lavoro non e' perso per sempre
+
+In `get_movie_source` la scrittura in cache avviene PRIMA dell'aggiunta alla lista condivisa:
+
+    sources = module().sources(...); sources = self.process_sources(...)
+    external_cache.set(provider, ...)      <- avviene comunque
+    if sources: self.sources.extend(sources)
+
+Quindi un DMM abbandonato **scrive comunque in `external_cache`**: la ricerca successiva sullo stesso
+titolo lo trova pronto. Si perde il primo giro, non il lavoro. E `self.sources` e' una lista
+condivisa estesa da ogni thread man mano: "prendere le sorgenti acquisite" e' gia' disponibile, non
+va costruito.
+
+### 18. DOVE VANNO I 60 SECONDI DI DMM: non in rete, nel parsing
+
+Dai tempi delle sue stesse righe:
+
+    ricerca 1: prima pagina 15:56:19, ultimo lotto 15:56:25, fine 15:57:29
+               rete ~8 s (11 pagine)   ->   PARSING ~64 s su 1054 item
+    ricerca 2: rete ~11 s             ->   PARSING ~39 s su  801 item
+    ricerca 3: rete ~8 s              ->   PARSING ~55 s su 1042 item
+
+**Da 49 a 61 millisecondi per un singolo nome di torrent**, e la rete e' l'8-15% del totale. DMM
+scarica 11 pagine da ~100 risultati e poi le macina una per una; 782 finiscono in
+`SKIP [title mismatch]`, cioe' il grosso del lavoro e' su roba che verra' buttata.
+
+**Avvertenza sulla misura**: con il debug acceso DMM ha scritto 8759 righe per item -- tre per item,
+ognuna con un `open(...,'a')` + write + close. Su questo hardware sono ragionevolmente 6-9 s per
+ricerca, cioe' il 10-15% del tempo misurato. Il parsing vero sara' sui 45-55 s invece di 55-64. Non
+cambia la conclusione: resta 6-7 volte la rete, ed e' li' che sta il collo di bottiglia.
+
+**Conseguenza per il piano**: alzare il tetto a 90 s prenderebbe DMM tutte le volte, ma non toglie i
+60 secondi di CPU -- li sposta dentro la finestra invece che fuori, e la sonda continuerebbe a
+trovarli davanti. L'ottimizzazione di DMM (meno pagine, o filtrare il titolo PRIMA del parsing
+completo) vale piu' di qualunque manovra sul timeout.
+
+---
+
+## Lotto 256 -- Il timeout degli scraper diventa facoltativo: zero vuol dire "aspettali"
+
+Richiesta dell'utente: rendere il timeout opzionale e, senza timeout, dare agli scraper tutto il
+tempo che serve, **in modo che le fasi siano separate** -- scraping+parsing+TorBox, poi cpu libera,
+poi la sonda.
+
+### 1. Perche' e' la mossa giusta
+
+Un thread Python non si puo' uccidere. Finora il tetto scadeva e si andava avanti **lasciando
+indietro** i thread vivi, che continuavano a macinare nello stesso interprete e quindi sullo stesso
+GIL. Misura del 12/09: DMM impiega 50-72 s contro un tetto di 60, cioe' due ricerche su tre lo
+abbandonavano **a pochi secondi dalla fine**, e la sua cpu arrivava addosso alla chiamata al debrid e
+alla sonda. La sonda delle 06:44 e' stata buttata proprio da questo: `quota 34%`, consumo proprio
+`8%` -- non stava lavorando, stava in coda.
+
+Sequenziare nel tempo non serve se cio' che precede non si ferma. Con zero si ferma.
+
+### 2. Il buco: i punti che abbandonavano erano TRE, non uno
+
+Aspettare solo cocoscrapers non avrebbe liberato la cpu. Gli altri due:
+
+    collect_prescrape_results()  -> scrapers_dialog()   tetto: costante `scraper_timeout = 25`
+    collect_results() (ramo elif)-> scrapers_dialog()   idem
+    activate_providers('external')-> external._scraperDialog()   tetto: `results.timeout`
+
+Due manopole diverse per "quanto tempo hanno gli scraper" sono due comportamenti che nessuno puo'
+prevedere. Adesso e' **una sola**: `_tetto_scraper()` in `sources.py` legge la stessa impostazione, e
+`scraper_timeout = 25` resta solo come ripiego se non si riesce a leggerla.
+
+### 3. Cosa fa lo zero
+
+`external.py`: `self.senza_tetto = self.timeout <= 0`, e i due `break` a tempo diventano condizionati.
+Quello buono -- "hanno finito tutti" -- vale sempre, col tetto e senza.
+
+La **barra di avanzamento** senza tetto non puo' misurare il tempo (non c'e' traguardo): misura i
+provider finiti. Ed e' anche piu' onesta -- col tetto la barra corre mentre DMM e' fermo al 90%.
+
+La **valvola** e' l'annulla dell'utente, controllato a ogni giro del ciclo. Non e' teorica: senza
+tetto e' l'unica via d'uscita se uno scraper si impianta davvero. In pratica il rischio e' basso --
+tutti e sette hanno un timeout di rete (bitsearch 7 s, comet/icv/knaben/mediafusion/torrentio 10-11,
+dmm (2,12-15), client condiviso 30) -- ma la valvola serve comunque.
+
+**Lo sfondo NON eredita lo zero**, di proposito: `_background()` non ha dialogo e quindi non ha
+annulla, e un'attesa senza fine li' non avrebbe via d'uscita. E soprattutto non serve -- prepara
+l'episodio successivo mentre si guarda, non c'e' nessuna sonda dopo di lui da proteggere. Col tetto
+a zero usa il valore di sempre (60).
+
+### 4. L'invariante si CONTROLLA, non si spera
+
+Due righe nuove, nei due punti che l'utente ha nominato:
+
+    FenLight SCRAPER    tutti gli scraper hanno finito: nessuno lasciato indietro
+    FenLight SCRAPER    si prosegue con 2 scraper ANCORA VIVI (DMM, COMET): la loro cpu
+                        arrivera' addosso al debrid e alla sonda
+    FenLight PERF SONDA nessuno scraper interno ancora vivo: cpu libera
+    FenLight PERF SONDA ATTENZIONE: la sonda parte con 1 scraper interni ancora vivi (...)
+
+Col tetto a zero devono dire sempre "nessuno". Con un tetto dicono **quanto** si sta abbandonando,
+che e' il numero per decidere se il tetto e' tarato bene. Prima quella domanda non aveva risposta e
+si e' dovuta ricavare dai censimenti del servizio, incrociando i tid.
+
+### 5. File e prove
+
+`scrapers/external.py` (tetto, ciclo, sfondo, invariante), `modules/sources.py` (`_tetto_scraper`,
+ciclo interno, invariante lato sonda), `caches/settings_cache.py` (`min_value` 1 -> 0),
+`skins/Default/1080i/settings_manager.xml` (descrizione).
+
+`tests/test_256.py`, **23 asserzioni**. I cicli provati sono quelli VERI, estratti dal sorgente con
+`ast` e fatti girare con orologio e thread finti: una copia riscritta a mano non proverebbe niente.
+Le prove che contano sono la 2 -- lo scraper lento a 72 s viene aspettato e non si esce a 60 -- e la
+1, che col tetto niente e' cambiato. Suite **50/54** (i quattro rossi sono i soliti `test_202-205`).
+
+**Non serve riavviare Kodi** per l'impostazione: `min_value` si legge dalla lista Python (non e' una
+colonna di `settings.db`) e `set_setting` aggiorna subito. Vale per Fen Light, non per cocoscrapers
+-- vedi la sezione 14.
+
+### 6. VERIFICA SUL CAMPO -- log del 12/09 16:32-16:39, `results.timeout = 0`
+
+Due ricerche. **L'invariante regge in entrambe**, e le fasi sono separate come si voleva:
+
+    16:33:20  parte la ricerca
+    16:34:15  tutti gli scraper hanno finito: nessuno lasciato indietro    <- 55 s, DMM INCLUSO
+    16:34:16  TorBox (926 hash)
+    16:34:22  nessuno scraper interno ancora vivo: cpu libera
+    16:34:32  REGIME 34,48 Mbit/s [media]
+
+#### La sonda non sta piu' in coda
+
+| | prima (06:44, tetto 60) | adesso (tetto 0) |
+|---|---|---|
+| `quota` | 34% | **74-76%** |
+| `consumo` proprio | 8% | **51-55%** |
+| `processo` | 145% | 118-129% |
+
+`consumo 8%` con `processo 145%` era la firma dell'attesa sul GIL -- il lotto 246 aveva scritto lo
+strumento proprio per riconoscerla. Adesso la sonda **lavora** (51-55% di un core per decifrare e
+copiare a 34-41 Mbit/s) invece di aspettare il turno, e la quota disponibile e' piu' che raddoppiata.
+
+E il censimento dice chi e' rimasto: **solo l'interfaccia e la sonda stessa**, zero scraper.
+
+    sonda 1   Thread-3 x14 118% [8683:3800  8969:3210 ...]   GUI 61% | sonda 52%
+    sonda 2   Thread-3 x13 108% [9132:3390  8683:3000 ...]   sonda 55% | GUI 49%
+
+#### E non e' costato tempo
+
+55 e 61 secondi: **meno** del tetto di 90 che l'utente aveva appena messo, e come il vecchio tetto di
+60. Perche' DMM finisce a 49-57 s, cioe' stava venendo abbandonato a pochi secondi dalla fine. Si
+sono guadagnate le sue sorgenti (926 hash nella prima ricerca) **senza pagare un secondo in piu'**.
+
+#### Le due sonde sono pulite, e la realta' le conferma
+
+Fonte `media` entrambe, `avvallamento 0,0`, salita 1,065 e 1,044 -- dentro la zona morta, le regole
+della coda non sono scattate. Radio a -56/-57 dBm, escursione **1 dB**: coerente col lotto 255
+(0 accensioni su radio sana). E la prova vera:
+
+    sonda 2: 40,76 Mbit/s -> soglia 32,6 -> passa un file da 27,11
+             portata misurata in riproduzione: 32,9 su 27,3 s | zero piu' lungo 1 s | cache media 73%
+
+Rapporto sonda/portata **1,24**, e un file da 27 Mbit/s su una linea che ne dava 32,9 ha retto con
+**un secondo a secco in ventisette**. Il margine 1,25 ha fatto esattamente il suo lavoro.
+
+#### Cosa resta
+
+Il thread dell'interfaccia, al 49-61% durante la sonda: e' l'unico altro consumatore rimasto, ed e'
+il costo fisso per fotogramma di una finestra della skin (qui 18-24 ms contro gli 8,5 del video a
+schermo intero -- la finestra delle sorgenti ha due animazioni Conditional permanenti). Non sporca la
+misura (`quota` al 75% e' abbondante) ma e' il prossimo bersaglio se si vuole scendere ancora.
+
+### 7. Quanto ancora conviene inseguire la cpu? (domanda dell'utente, risposta dai numeri)
+
+**La cpu e' una SOGLIA, non una pendenza.** `_limitata_da_cpu` butta la misura sotto
+`QUOTA_MINIMA = 0.60`; sopra, la quota in piu' serve solo se la sonda ne ha bisogno, cioe' se la
+linea si avvicina al suo tetto di decifratura. Quanto margine c'e' davvero, dall'archivio:
+
+    radio sana (18 righe)   sonda 40-48 Mbit/s   tetto 73-82   sonda/tetto 0,49-0,64   quota 76-98%
+    12/09 sera (2 sonde)    sonda 34-41          tetto 63-74   sonda/tetto ~0,55       quota 74-76%
+
+**La sonda gira a meta' del proprio tetto.** Ha gia' 1,5-2 volte il margine che le serve: portare la
+quota dal 76% al 95% non cambierebbe un numero. Diventerebbe vincolante solo sopra i **~55-60
+Mbit/s** di linea vera, che questa connessione non ha mai visto.
+
+E c'e' un motivo strutturale per cui abbassare la GUI non e' nemmeno disponibile: il **lotto 251** ha
+stabilito che il risparmio per fotogramma si converte in FOTOGRAMMI, non in cpu libera. La GUI gira a
+tavoletta e disegna su richiesta: renderla piu' leggera la fa disegnare di piu'. L'unica leva vera e'
+farle disegnare **meno spesso o niente**, che e' quello che la guardia del 251 ha fatto nascondendo
+l'hub.
+
+**E no, la cpu non e' il parametro principale.** In ordine di danno dimostrato:
+
+| | fallisce come | errore osservato |
+|---|---|---|
+| **regole della coda** | **in silenzio, con un numero sbagliato** | fino a **3x**, in entrambi i versi |
+| finestra di misura (rampa) | per difetto | 1,26-1,4x, sempre dal lato sicuro |
+| cpu / GIL | **rumorosamente: misura BUTTATA** | nessun numero sbagliato, solo mancante |
+| tetto di decifratura | misura buttata | ~75-80 Mbit/s il muro |
+| tempo fra sonda e riproduzione | irriducibile | -- |
+
+La cpu contesa **fallisce in sicurezza**: la misura si scarta e la scala a quattro pioli ripiega
+sulla bacheca. Le regole della coda falliscono in silenzio, e consegnano al filtro un numero
+sbagliato che poi costa 31 secondi a secco. E' li' che vale spendere il lavoro.
+
+**Con il 100% di cpu la misura non sarebbe perfetta**, per due ragioni diverse: sotto il tetto non
+cambierebbe niente (margine gia' inutilizzato), sopra non basterebbe comunque (il muro resta). E
+soprattutto la cpu decide **se** la sonda puo' misurare, non **cosa** misura: anche con cpu infinita
+resta una finestra di sei secondi su un segnale variabile, letta con una connessione sola e
+confrontata con una riproduzione che legge in un altro modo (la cache di Kodi col readfactor, non a
+tavoletta).
+
+### 8. Il tetto della SONDA e quello della RIPRODUZIONE sono lo stesso ordine di grandezza
+
+Domanda dell'utente: se la sonda potesse misurare 80 Mbit/s, Kodi saprebbe poi riprodurli?
+
+Misurato sulla riproduzione da 27,11 Mbit/s (16:37:37-16:39:16). `Thread-37` e' il gruppo che legge
+e demultiplexa -- compare con la riproduzione e sparisce con lei:
+
+    16:37:51  Thread-37 48% (7400 ms/15,4 s)   <- buffer in riempimento, legge a ~32,9 Mbit/s
+    16:38:56  Thread-37 29% (4700 ms/16,1 s)   <- regime, legge al ritmo del film (27,11)
+
+    riempimento:  0,48 core / 4,11 MB al secondo  = 117 ms di cpu per MB
+    regime:       0,29 core / 3,39 MB al secondo  =  86 ms di cpu per MB
+
+E la sonda, dalle sue stesse righe: **113 e 133 ms per MB**.
+
+**Sono lo stesso costo.** Il grosso e' la decifratura TLS, che in entrambi i casi la fa una libreria
+nativa -- Python non c'entra quasi niente. Quindi:
+
+    tetto di lettura di Kodi su un core:  1000/86 .. 1000/117 MB/s  =  68-93 Mbit/s
+    tetto della sonda (lettore Python):   63-74 Mbit/s misurati stanotte
+    tetto della sonda (lettore Kodi):     ~107 Mbit/s (lotto 227)
+
+**Il tetto della sonda sta appena SOTTO quello della riproduzione**, ed e' la direzione giusta: se la
+sonda va in saturazione, la riproduzione sarebbe a sua volta al limite. Non e' un caso -- e' lo
+stesso lavoro sullo stesso hardware.
+
+**Conseguenze.** (1) Ridurre la cpu non sbloccherebbe bitrate piu' alti finche' si sta sotto i ~70
+Mbit/s: li' la riproduzione e' limitata dalla rete, non dal processore -- a 27,11 Mbit/s l'intero
+processo sta al 70-76% di UN core su quattro. (2) Sopra i ~70 il vincolo diventa reale, perche' il
+percorso di lettura di Kodi e' un thread solo e satura un core. (3) **L'errore da cpu e' sempre
+verso il BASSO**: poca cpu = si legge piu' piano = si sottostima = soglia piu' prudente. La cpu non
+puo' produrre il guasto pericoloso, quello lo producono le regole della coda.
+
+---
+
+## Lotto 257 -- La finestra diventa adattiva, e le due regole della coda se ne vanno
+
+Decisione dell'utente, dopo le considerazioni del lotto 256: togliere la regola della coda, rendere
+la finestra adattiva, e semmai ripensare dopo le logiche di stima.
+
+### 1. Cosa c'era che non andava
+
+Le regole della coda sceglievano fra DUE numeri -- la media della finestra e il suo tratto finale --
+guardando `coda/centro`. Quel rapporto non distingue una rampa vera da uno stallo seguito da una
+raffica. Su 8 accensioni note: 3 giuste, 1 innocua, **4 dannose**, con errori fino a 3 volte in
+entrambi i versi.
+
+### 2. Cosa c'e' adesso: `_tratto_stabile`
+
+Si cerca il tratto **piu' lungo che finisce con la curva**, lungo almeno `SECONDI_MINIMI`, le cui
+due meta' danno lo stesso ritmo (fra `DISCESA_SOSPETTA` e `SALITA_SOSPETTA` -- le stesse due soglie,
+perche' i dati mettono il salto proprio li': la distribuzione di 45 curve ha un buco netto fra 0,71
+e 0,90 e fra 1,17 e 1,24).
+
+**La differenza non e' la soglia, e' cosa ci si fa.** Prima decideva quale numero dichiarare; adesso
+decide soltanto se il tratto e' piatto -- e quando non lo e' **si legge di piu'** invece di
+indovinare. Il ciclo si ferma appena il tratto c'e', e al piu' a `SECONDI_MASSIMI = 10.0`.
+
+E generalizza le due regole invece di sceglierne una: curva che sale -> il tratto si ferma dove
+finisce la rampa (era `coda`); curva che cala e si assesta -> si ferma dove finisce la discesa (era
+`coda_in_calo`); nessun altopiano -> **nessuna regola**, si dichiara la media con fonte
+`media_instabile`, e `instabilita` allarga il margine (lotto 253).
+
+`coda`, `centro` e `salita` restano CALCOLATE come diagnosi: non decidono piu' niente, ma permettono
+di rileggere l'archivio con lo stesso metro senza cambiare lo schema.
+
+### 3. La prova su 46 curve vere, estratte da tutti i log
+
+| | |
+|---|---|
+| numero **identico** (linee pulite) | **33 su 46** |
+| casi noti come sbagliati, **raddrizzati** | 2 |
+| casi peggiorati | 2 |
+
+I due raddrizzati sono quelli verificabili contro la portata misurata dopo:
+
+    06:41  dichiarava 5,70 (media 17,33)  -> adesso 17,09   portata vera 17,9
+    06:38  dichiarava 17,29 (media 11,86) -> adesso <15      e la soglia RIFIUTA il file da
+                                                             13,78 che ando' a secco 31 secondi
+    riga peggiore  dichiarava 1,49        -> adesso >5       portata vera 5,73
+
+**I due peggiorati sono le curve fondatrici del lotto 240**, e la prova lo dice invece di
+nasconderlo:
+
+    riga 14  la coda dichiarava 16,3 (vero 15,3)  -> adesso 10,85, cioe' il 71% del vero
+    riga 15  la coda dichiarava 18,8 (vero 19,4)  -> adesso 15,43
+
+Entrambe **per difetto**, che e' il lato sicuro. Lo scambio: si tolgono errori da 3x in entrambi i
+versi e se ne aggiungono da 1,3-1,4x sempre verso il basso. Con la penalita' per instabilita' la
+soglia della riga 14 finisce al **45% della linea vera** (su linea pulita e' l'84%): e' il costo, ed
+e' reale.
+
+**Il rimedio non e' un'altra regola, e' `SECONDI_MASSIMI`**: quelle curve salivano ancora quando la
+finestra finiva, e leggendo fino a 10 s l'altopiano si troverebbe. Questo NON e' provato -- nessuna
+delle 46 curve arriva oltre i ~7 s, perche' prima la sonda si fermava li'. E' la cosa da verificare
+nel prossimo log.
+
+Le tre righe di accettazione del lotto 253 (Memento passa, Aliens passa, Coco rifiutato) **reggono
+tutte e tre** col nuovo stimatore, sulle curve vere.
+
+### 4. Un difetto della prova, non del codice
+
+La prima stesura di `test_257` prolungava le curve vere di sei campioni all'ultimo ritmo. Su Coco
+questo **inventa un altopiano che nella realta' non c'e' stato**, e la riga passava il filtro quando
+invece quella riproduzione fallì. Una curva vera si replica com'era. `_dal_log` adesso ha
+`oltre=0` come normale, e la ragione e' scritta nella docstring.
+
+### 5. File e prove
+
+`modules/sonda_linea.py`. Prove: `tests/test_257.py` (32 asserzioni) piu' gli aggiornamenti a
+test_222, test_240, test_243, test_245, test_253, test_255 -- riscritte sull'invariante nuovo, non
+rinumerate. Suite **51/55** (i quattro rossi sono i soliti `test_202-205`).
+Deploy: Kodi spento, 104/104 md5 identici.
+
+### 6. Verifica sul campo, 12/09 ore 17:50-18:00 (quattro riproduzioni)
+
+Quattro sonde, tutte `stabile`, tutte chiuse da "regime stabile raggiunto". Confronto con la
+`portata_prima`, cioe' la capacita' vera misurata dalla pendenza del buffer nella stessa
+riproduzione, pochi secondi dopo la sonda (rapporto 1,00 = perfetto):
+
+    era                          rapporti sonda/portata        errore medio
+    coda (righe 1-3)             0,32  0,40                        0,64
+    media, finestra fissa (4-10) 1,06  1,42  2,11  1,24            0,46
+    stabile, adattiva (11-14)    1,00  1,13  0,77                  0,12
+
+Quattro volte piu' preciso, e soprattutto **non piu' sistematicamente alto**: nell'era `media` tutti
+e quattro i rapporti stavano sopra 1, cioe' la sonda prometteva piu' di quanto la linea desse, che e'
+il verso pericoloso.
+
+**La prova migliore e' la riga 12.** E' l'unica delle quattro dove `_tratto_stabile` cambia la
+risposta rispetto alla media semplice (media 38,61 -> dichiarato 40,63), ed e' anche l'unica curva
+con un avvallamento (0,5 s). La sonda ha letto 6,9 s invece dei 5,2 delle altre tre, ha scartato il
+tratto sporco, e ha dichiarato **40,63 contro una portata vera di 40,6**. Quando la finestra adattiva
+e' servita a qualcosa, ha centrato lo 0,1%.
+
+    letti      5,3   6,9   5,2   5,2 s     (la fissa leggeva sempre ~5,5-6,1)
+    dichiarati 4,3   4,2   4,2   4,1 s
+
+Cioe' il comportamento voluto: su linea pulita si ferma al minimo, su curva sporca legge di piu'.
+
+**Due percorsi nuovi non sono ancora stati esercitati**: zero occorrenze di `media_instabile` e zero
+di "tetto di tempo". `SECONDI_MASSIMI = 10.0` non e' mai scattato, quindi **l'ipotesi del punto 3
+resta non provata**: serve una linea che faccia una rampa lunga, e in queste quattro non c'e' stata.
+
+**La riga 14 va letta bene, non e' un errore della sonda.** Sonda 41,10, soglia 32,9, file da 29,05:
+accettato. La portata dice 53,0, quindi sonda bassa del 23%. Ma quella portata e' misurata sul
+riempimento iniziale, e 66 secondi dopo il buffer e' sceso **da 97% a 48% in ~5 s** (deficit ~18
+Mbit/s su 24 MB di buffer: la linea in quel momento dava circa 11 Mbit/s) per poi risalire a ~36. Su
+quella riproduzione la linea e' andata da ~11 a ~53 Mbit/s: nessun numero singolo e' giusto, e 41,1
+sta in mezzo. La sonda aveva anche stampato da sola `consumata l'88% della quota di GIL: il regime e
+un MINIMO`. Il limite vero e' un altro, e non si chiude con una finestra piu' larga: **la sonda
+misura la linea che c'e', non quella che ci sara' tra un minuto.**
+
+Contorno: RSSI piatto (escursione 0-1 dB) in tutte e quattro, -56/-58 dBm. Lotto 256 tiene, 4 volte
+su 4 "tutti gli scraper hanno finito: nessuno lasciato indietro" e "nessuno scraper interno ancora
+vivo: cpu libera" prima della sonda.
+
+### 7. Seconda verifica, 12/09 ore 18:14-18:35: hotspot del telefono, e la sonda sbaglia di 2x
+
+Tre riproduzioni su rete mobile condivisa dal telefono (RSSI -32/-33 dBm: la tratta WiFi e'
+perfetta, il collo di bottiglia e' la radio del telefono).
+
+    film     sonda  soglia  bitrate  portata vera   sonda/vera  esito
+    Pulp     55,09  44,07   33,65    26,4              2,09     44 s a zero
+    Inception 17,32 13,86   13,80    20,8 -> 30,5      0,83     ok
+    Ryan     62,48  49,98   44,10    34,4 -> 49,5      1,82     175 s a zero
+
+**Non e' un difetto dello stimatore, e' la durata del campione.** Su Pulp la sonda ha letto 9,6 s --
+quasi il tetto di 10 s, la finestra adattiva ha fatto il suo -- e ha visto una curva in rampa
+continua, da ~20 a ~60 Mbit/s. Ha dichiarato 55,09 sulla coda. Ma **anche la media dell'intera
+lettura era 43,05**, cioe' 1,6x sopra i 26,4 sostenuti: il numero giusto non stava nella finestra, e
+nessuna regola applicata a quei 9,6 secondi lo avrebbe trovato. Su Ryan la curva era piatta a 56-64
+per 5 s: la linea *era* davvero a 62 in quel momento, e poi non ci e' rimasta.
+
+Per proteggere queste due riproduzioni MARGINE avrebbe dovuto valere ~2,1 e ~1,8, contro 1,25.
+
+**Il caso Inception e' un difetto vero, e sta a monte della sonda.** La sorgente sondata era
+dichiarata dallo scraper 36,42 GB contro 2,75 GB reali: l'offset e' caduto oltre la fine del file,
+416, ripiego sul lettore di Kodi (il ramo documentato al lotto 192/240, che ha funzionato:
+`posiziona` ha ricalcolato sulla dimensione vera). La lettura e' pero' avvenuta su nexus-156 e ha
+dato 17,32 Mbit/s, contro 55 e 62 su nexus-226 a quattro e dodici minuti di distanza. E quella
+sorgente **non e' nemmeno sopravvissuta ai filtri**. Quindi la soglia per 108 sorgenti e' uscita da
+una misura fatta su un file che nessuno avrebbe riprodotto. La rete non si era degradata: la sonda
+aveva sondato la cosa sbagliata.
+
+**Su Ryan la sonda ha misurato nexus-226 e la riproduzione e' andata su nexus-157** (colonne
+`sonda_cdn` e `cdn`): la sonda misura un nodo che il film puo' non usare.
+
+**Aggiornamento al tetto di cpu.** Con 62,48 Mbit/s letti davvero si e' finalmente superata la stima
+di 63-74 Mbit/s: il costo per MB scende da 107-123 ms a **82 ms quando la portata e' alta**, e il
+tetto calcolato sale a ~103 Mbit/s. La vecchia stima era bassa perche' estrapolata da letture lente,
+dove pesa di piu' l'overhead per chiamata.
+
+**Ipotesi da verificare, non conclusione**: la sonda apre un flusso nuovo e corto (25-50 MB in 5-10
+s), misura potenzialmente una finestra di burst dell'operatore, e la riproduzione sostenuta ricade
+sul regime. Su Pulp, dopo i due salti il buffer e' tornato al 96% di media -- e un salto e' un flusso
+nuovo. Ma su Ryan il salto non ha salvato niente (media 15% dopo), quindi l'ipotesi non regge da
+sola.
+
+## Lotto 258 -- Gli indizi sulla credibilita' della sonda entrano in archivio
+
+### 1. Cosa ha deciso questo lotto, e cosa NON ha deciso
+
+Non cambia una riga del modo in cui la sonda misura o sceglie. Raccoglie sei numeri che finora
+vivevano solo nel log, dove si leggono un caso alla volta e non si correlano con niente.
+
+Il caso che lo ha motivato e' il 12/09 alle 18:22: sonda a **17,32 Mbit/s** su una linea che alle
+18:15 dava 55,09 e alle 18:27 dava 62,48. La soglia che ne e' uscita (13,86) ha tagliato ogni
+sorgente sopra i 14 Mbit/s su 108. I tre indizi c'erano tutti:
+
+    ttfb            3514 ms   contro 544-1414 delle altre sei sonde
+    ripiego         lettore Python -> lettore di Kodi dopo un 416
+    dimensione      lo scraper diceva 36,42 GB, il cdn ne dichiarava 2,75
+
+**Perche' non ho scritto anche la regola.** Con un caso solo non si sa se quei tre indizi siano una
+firma o una coincidenza. E scartare quella misura sarebbe stato **peggio**: la bacheca era viva (404
+s fra le due sonde) e avrebbe rimesso i 55,09 su una linea che ne sosteneva 25 -- cioe' Inception
+sarebbe finita come Pulp Fiction. Quella misura era sbagliata per il motivo sbagliato, ma era
+l'unica delle tre che ha prodotto una riproduzione senza buchi. Prima la raccolta, poi la regola.
+
+### 2. Cosa si e' escluso, e questo invece e' un risultato
+
+Avevo indicato un secondo difetto: "la sonda misura un nodo cdn e la riproduzione ne usa un altro".
+Raggruppando l'archivio per `sonda_cdn` e controllando per RSSI (solo le righe sul 2,4 GHz di casa,
+-52..-58 dBm) **i nodi non si separano**:
+
+    nexus-226  n=6   39,1 - 44,7   media 42,2
+    nexus-156  n=3   40,8 - 42,5   media 41,5
+    nexus-157  n=1                        40,6
+    nexus-227  n=1                        34,5
+
+I 17,32 di nexus-156 non erano "un nodo lento": quel nodo, a casa, da' quanto gli altri. Avevo
+chiamato difetto di progetto una cosa che poggiava su una riga sola, confusa con altre due
+variabili. **Niente da correggere, e nessun codice scritto per un problema che non c'era.**
+
+### 3. Le sei colonne
+
+    sonda_lettore        quale lettore ha misurato ('_LettoreKodi' / '_LettorePython')
+    sonda_ripiego        0/1: se si e' dovuto ripiegare sull'altro lettore
+    sonda_stato          lo stato http (206 normale, 416 l'offset oltre la fine del file)
+    sonda_dim_attesa     la dimensione secondo lo scraper
+    sonda_dim_vera       quella che il cdn dichiara
+    sonda_letti_secondi  la lettura INTERA
+
+L'ultima non si ricava da `sonda_secondi`, che e' solo il tratto dichiarato: su Pulp valevano **9,6
+e 4,7**, e la differenza fra le due e' quanto la linea ha impiegato ad assestarsi -- cioe' cio' che
+separa una rampa da una linea gia' ferma.
+
+In bacheca ci va la **bandiera** `ripiegato`, non il messaggio del ripiego: i campi si separano con
+`|` e il testo di un'eccezione non e' sotto il nostro controllo. Il perche' resta nel log, dove
+serve a leggere un caso; la colonna serve a contarli.
+
+### 4. Aggiungere colonne non butta piu' l'archivio
+
+`_rebuild_playback_stats` rifaceva la tabella da zero a ogni differenza di schema. Quella guardia
+esiste contro un pericolo preciso e scritto: un nome che resta su una grandezza cambiata
+(`sonda_buco` -> `sonda_avvallamento`), cioe' righe che per essere lette andrebbero datate. **Una
+colonna aggiunta in coda non ha quel problema**: sulle righe vecchie vale NULL, che in quel file
+vuol dire gia' 'non misurato' e mai 'zero'.
+
+Quindi la distinzione e' fra **prefisso e resto**: se le colonne di adesso sono esattamente le prime
+N di quelle attese -- stesso ordine, nessuna sparita, nessuna rinominata -- si aggiungono le
+mancanti con ALTER TABLE e le misure restano. In ogni altro caso si butta come prima. Verificato sul
+database vero: 56 -> 62 colonne, **17 righe su 17 superstiti**, valori vecchi intatti.
+
+Le righe di prima sono comunque salvate in `tests/archivio_sonde_pre258.csv`.
+
+### 5. File e prove
+
+`caches/base_cache.py`, `caches/playback_stats.py`, `modules/player.py`, `modules/sonda_linea.py`.
+Prove: `tests/test_258.py` (50 asserzioni). Le piu' utili sono la 3 -- rinomina, colonna tolta,
+colonna in piu', ordine diverso: tutti e quattro devono ancora buttare -- e la 8, che confronta le
+chiavi scritte da `_campi_sonda` con COLONNE: un refuso li' non solleva, la colonna resterebbe NULL
+per sempre senza che nessuno se ne accorga.
+
+Due difetti trovati dalle prove stesse, entrambi nel banco e non nel codice: l'estrazione dello
+schema agganciava la chiave `playback_db` di `integrity_check` invece di quella di `table_creators`
+(sono due dizionari diversi), e `thread_time` uguale all'orologio faceva risultare la cpu al 100%,
+per cui la sonda **scartava se stessa** -- giustamente.
+
+Suite **52/56** (i quattro rossi sono i soliti `test_202-205`). Deploy: Kodi spento, 104/104 md5
+identici, 56 `.pyc` rimossi perche' l'intera lib ha mtime nuova.
+
+### 6. Prima raccolta con le colonne nuove, 12/09 ore 19:52-20:00
+
+Migrazione riuscita come progettata: `playback_stats: 6 colonne aggiunte in coda, le 17 misure in
+archivio restano`. Le sei colonne si scrivono tutte.
+
+**Le quattro sonde sono PULITE su ogni indicatore nuovo**: `sonda_ripiego` 0, `sonda_stato` 206, e
+`sonda_dim_attesa` uguale a `sonda_dim_vera` al byte in tutte e quattro. La firma di Inception (416
+piu' ripiego piu' bugia da 13 volte) non si e' ripetuta. E' poco, ma e' la linea di base che non
+avevamo: quegli indicatori sono rari, quindi quando si accendono probabilmente dicono qualcosa.
+
+**Il fatto dominante pero' sta fuori dal database, ed e' la terza volta.** La stick e' tornata sul
+**5180 MHz a -71 dBm, link speed 32 Mbps** -- lo stesso BSSID (...fa:55) delle righe 1-3 di
+stamattina, quelle da 5,7-17,3 Mbit/s. Le sonde sono crollate da 40-44 a 16-33: e' la radio.
+
+**La riga 18 e' un'accettazione sbagliata da manuale.** Sonda 32,88 -> soglia 26,3 -> passa un file
+da 19,0. Ma il PHY del collegamento e' **32 Mbps**: la sonda ha letto il **103% della portata fisica
+del link**, che per costruzione non e' sostenibile (su 802.11 il TCP rende il 50-60% del PHY). Esito:
+buffer mai sopra il 57%, media 8%, 44 secondi di secca piu' lunga, `portata_prima` nemmeno
+misurabile. Ha misurato una raffica -- probabilmente bufferizzata dall'access point -- che la radio
+non puo' tenere.
+
+**Il numero nuovo, da solo, non predice ancora l'errore.** Scarto fra lettura intera e tratto
+dichiarato, contro il rapporto sonda/portata:
+
+    riga 13  scarto 1,0  ->  1,13        riga 12  scarto 2,7  ->  1,00
+    riga 14  scarto 1,1  ->  0,77        riga 19  scarto 2,9  ->  1,69
+    riga 17  scarto 1,1  ->  1,82        riga 20  scarto 2,9  ->  0,84
+    riga 16  scarto 1,6  ->  0,83        riga 15  scarto 4,9  ->  2,08
+
+Le righe 19 e 20 hanno lo stesso scarto e sbagliano in versi opposti; la 12 ha scarto grande ed e'
+perfetta; la 17 ha scarto minimo ed e' la seconda peggiore. Solo l'estremo (4,9) accompagna
+l'errore peggiore. Serve altro materiale: e' esattamente il motivo per cui la colonna esiste.
+
+**Quello che invece si sta profilando** e' il rapporto fra la lettura e il tetto fisico. Il link
+speed non e' leggibile da un addon (`/proc/net/wireless` da' qualita', livello e rumore, non il
+PHY), ma l'RSSI fa da procura e l'archivio comincia a separare: a -69..-71 dBm le sette sonde danno
+5,7 / 5,7 / 16,2 / 16,5 / 17,3 / 22,6 / **32,9**. La riga 18 e' il massimo della propria fascia ed e'
+anche l'unica finita a 44 secondi di secca. Ipotesi da verificare con piu' righe, non una regola:
+**a segnale debole, sono le letture ALTE quelle pericolose.**
+
+## Bilancio della sonda dopo tre giorni (12/09, 14 righe con sonda E portata)
+
+### 1. L'errore e' BIMODALE, quindi la media da sola non dice niente
+
+Errori ordinati (|sonda/portata - 1|):
+
+    0,00  0,06  0,13  0,16  0,17  0,23  0,24  |  0,42  0,60  0,68  0,69  0,82  1,08  1,11
+    ------------- sette buone, media 0,14 ----|--- sette sbagliate, media 0,77 ---
+
+**Fra 0,24 e 0,42 non c'e' niente.** Media complessiva 0,46, mediana 0,235: due numeri che non
+descrivono nessuna delle due popolazioni. L'osservazione dell'utente era giusta.
+
+### 2. La finestra adattiva ha migliorato, e il confronto e' equo
+
+A parita' di condizioni -- sola 2,4 GHz di casa, -54..-58 dBm, stessi giorni:
+
+    media (finestra fissa 5 s)      n=4   err medio 0,46   peggiore 1,11
+    stabile (finestra adattiva)     n=3   err medio 0,12   peggiore 0,23
+
+Quasi quattro volte meglio. Con n=4 contro n=3 non e' una dimostrazione, ma e' l'unico confronto
+possibile senza mescolare reti diverse -- ed e' coerente con le 46 curve del lotto 257.
+
+### 3. IL RISULTATO NEGATIVO: dentro la finestra le sbagliate non si distinguono
+
+Confrontando la forma della curva fra le sette buone e le cinque sbagliate (escluse le due `coda`):
+
+                 n   salita media   avvallamento medio   campioni
+    BUONE        7      1,024             0,46            11,4
+    SBAGLIATE    5      1,080             0,34            12,6
+
+Si sovrappongono, e l'avvallamento va perfino **al contrario**. I due casi che chiudono la
+questione:
+
+    riga 17   err 0,82   salita 0,963   avvallamento 0,0   -- curva piatta da manuale
+    riga 19   err 0,69   salita 0,987   avvallamento 0,0   -- idem
+    riga 12   err 0,00   salita 1,058   avvallamento 0,5   -- curva IMPERFETTA, misura perfetta
+
+E `media_instabile` non si e' acceso **nemmeno una volta** in 21 righe. Quindi: mentre la sbaglia, la
+sonda non ha modo di accorgersene. L'unica eccezione e' la riga 15 (Pulp: salita 1,463,
+avvallamento 1,7, lorda/regime 0,78), dove la rampa era visibile.
+
+### 4. Cosa separa davvero le due popolazioni: se la linea e' stata ferma
+
+    finestra della portata <  7 s    n=5   err medio 0,17
+    finestra della portata >= 10 s   n=9   err medio 0,62
+
+Non e' una proprieta' della sonda: una finestra corta vuol dire che il buffer e' salito subito e si
+e' saturato, cioe' **linea ampia e stabile**; una lunga vuol dire che ha continuato a oscillare. Il
+margine della linea sul bitrate NON separa (0,43 contro 0,51): non conta quanto e' veloce, conta se
+sta ferma.
+
+Prova diretta, nelle due sole righe con due misure della stessa linea nella stessa riproduzione:
+
+    riga 16   la linea e' passata da 20,8 a 30,5 (+46%)   la sonda aveva detto 17,3
+    riga 17   la linea e' passata da 34,4 a 49,5 (+44%)   la sonda aveva detto 62,5
+
+Quando la capacita' vera si muove del 45% dentro una riproduzione, **non esiste un numero giusto** e
+una parte dell'"errore" non e' errore: e' il riferimento che si sposta.
+
+### 5. I limiti veri, in ordine di quanto pesano
+
+1. **La linea non e' una costante.** 44-46% di escursione dentro una singola riproduzione.
+2. **La radio cambia banda da sola.** 2,4 GHz a -55 dBm (PHY 72) contro 5 GHz a -71 (PHY 32), e da
+   un addon non si leggono ne' la banda ne' il link speed: `/proc/net/wireless` da' qualita',
+   livello e rumore. L'RSSI e' l'unica procura, ed e' gia' in archivio.
+3. **Il riferimento ha un'incertezza propria**, misurato su finestre da 3,6 a 27,3 s.
+4. **Quattordici righe.** Ogni sottogruppo e' n=3..9.
+5. Il tetto di cpu (~103 Mbit/s) **non e' piu' un limite**: non lo tocchiamo mai.
+
+`sonda_eta` e' 0-22 s quasi ovunque: la misura NON e' vecchia. Non e' quello il problema.
+
+## Cinque riproduzioni LUNGHE su rete stabile (13/09, righe 22-26)
+
+108-188 minuti l'una, 2,4 GHz di casa a -57/-58 dBm, sorgenti scelte a mano vicine alla soglia.
+E' il materiale migliore raccolto finora: due stalli su cinque, contro zero delle prove brevi.
+
+### 1. La sonda su linea stabile: 11% di errore medio, e nessun difetto residuo
+
+    riga 12  sonda 40,6  vera 40,6  err 0,00   riferimento  3,9 s / 16 campioni
+    riga 13  sonda 40,1  vera 35,5  err 0,13   riferimento  5,7 s / 23
+    riga 14  sonda 41,1  vera 53,0  err 0,23   riferimento  6,7 s / 27
+    riga 23  sonda 41,6  vera 38,0  err 0,10   riferimento 12,5 s / 43
+    riga 24  sonda 39,9  vera 47,0  err 0,15   riferimento  3,6 s / 15
+    riga 25  sonda 38,5  vera 41,2  err 0,06   riferimento 14,2 s / 44
+    riga 26  sonda 43,8  vera 38,8  err 0,13   riferimento 35,5 s / 65
+    --> n=7   errore medio 0,114   peggiore 0,23
+
+Parte del residuo **e' del riferimento, non della sonda**: con riferimento debole (<7 s) l'errore
+medio e' 0,127, con riferimento solido (>=12 s) scende a 0,096. Il caso piu' pulito che abbiamo --
+riga 25, riferimento da 14,2 s e 44 campioni, buffer medio 95%, nessuno stallo -- da' **0,06**.
+
+**E nessuna delle cinque sonde nuove mostra il difetto del caso B.** Tutte e cinque: `ripiego` 0,
+`stato` 206, dimensione dichiarata esatta, e lettura di 5,2-5,4 s per 4,2-4,4 s dichiarati. Hanno
+trovato l'altopiano alla prima occasione, tutte, con lo stesso scarto di ~1,0 s che e' la firma
+della linea ferma. Su linea stabile il caso B non si presenta: **l'obiettivo 1 e' raggiunto**, e il
+residuo e' incertezza del riferimento piu' deriva della linea.
+
+### 2. Il livello medio del buffer e' il predittore migliore, ed e' su OGNI riproduzione
+
+    buffer medio                   n    quante hanno stallato
+    90-99% (comodo)               15    0
+    70-89% (al limite)             7    4     (righe 14, 16, 23, 26)
+    sotto il 70% (in sofferenza)   4    4     (righe 1, 15, 17, 18)
+
+Separazione monotona, e il primo gruppo e' pulito 15 su 15. Batte la vicinanza alla soglia, che
+lascia fuori la riga 18 (stallata al 72%).
+
+**Perche' conta**: il livello del buffer e' un numero **graduato** e presente su ogni riga, anche
+sulle riproduzioni facili. Per imparare non servono i fallimenti. Il limite e' che satura in alto --
+un 98% non distingue 2x da 5x di margine -- quindi le riproduzioni comode restano meno informative,
+ma non sono inutili.
+
+### 3. IL LIMITE DEL MARGINE, dimostrato da due righe quasi identiche
+
+                bitrate  sonda   sonda/bitrate   esito
+    riga 26      34,34   43,75      1,2740       STALLO  (29 s a secco, buffer medio 72%)
+    riga 25      29,97   38,50      1,2845       ok      (buffer medio 95%)
+
+Per rifiutare la 26 serve MARGINE > 1,2755; per tenere la 25 serve MARGINE <= 1,2846. **La finestra
+utile e' larga lo 0,7%: non e' tarabile.** Due situazioni indistinguibili prima della riproduzione,
+esiti opposti.
+
+E per rifiutare anche la riga 23 (stallo a 1,658) servirebbe MARGINE > 1,66, che butterebbe via
+anche la riga 25 -- una riproduzione da 130 minuti andata benissimo.
+
+Conclusione: il margine **non puo' separare** questi casi, perche' la differenza non stava nei dati
+disponibili prima ma in cosa ha fatto la linea durante il film. E' la conferma piu' netta finora che
+il residuo e' caso A e non caso B.
+
+## Lotto 259 -- Il margine si misura sull'archivio invece di essere scritto a mano
+
+### 1. Perche' adesso
+
+Il commento sopra `MARGINE = 1.25` diceva da tre lotti che il numero "non e' ancora guadagnato sui
+dati" e descriveva come guadagnarlo. Al 13/09 l'archivio ha 26 righe e 8 stalli, e la risposta si
+legge. I margini che sarebbero serviti a rifiutare ciascuna riproduzione finita a secco:
+
+    1,25  1,26  1,27  1,42  1,42  1,64  1,66  1,73
+
+Con MARGINE a 1,25 **nessuno degli otto viene evitato**.
+
+E il valore giusto non e' uno solo: sulla 2,4 GHz di casa servirebbe 1,66, sul 5 GHz debole 1,73, e
+la stick salta banda **da sola** -- l'utente ha confermato che non lo decide lui. Una costante
+scritta nel sorgente sarebbe giusta per una rete e sbagliata per l'altra meta' del tempo. Un numero
+rifatto sulle ultime cinquanta riproduzioni segue la rete che c'e'.
+
+### 2. Come si calcola
+
+La soglia vale `sonda / margine`, quindi una riga viene esclusa quando `margine > sonda / bitrate`:
+quel rapporto e' **il margine che sarebbe servito a rifiutarla**. Si prendono le righe finite a
+secco, si ordinano, e si sceglie quanti stallli si accetta di lasciar passare:
+
+    STALLI_TOLLERATI = 0  ->  1,744   accetta 12 righe su 26, 0 stalli residui
+                       1  ->  1,668   accetta 14,              1 residuo
+                       2  ->  1,647   accetta 15,              2 residui
+
+Il default e' 0. **Costo dichiarato**: su quelle 26 righe blocca 6 riproduzioni andate bene su 18.
+Non sono film non visti -- e' una sorgente piu' piccola al posto di una grande -- ma e' qualita'
+persa, ed e' il prezzo della politica.
+
+L'unita' e' la RIPRODUZIONE e non la sonda, al contrario di `coppie_indipendenti`: li' si misurava
+una linea e contare due volte la stessa misura falsava la mediana, qui si conta un esito e due film
+diversi sono due prove diverse anche con la stessa sonda.
+
+### 3. Non puo' fare peggio della costante
+
+Quattro guardie, tutte con una prova dedicata:
+
+    meno di 20 righe giudicabili   -> MARGINE   (un archivio corto descrive un pomeriggio)
+    meno di 3 stalli               -> MARGINE   (senza stalli non si sa DOVE sia il confine:
+                                                 si sa solo che non lo si e' ancora incontrato)
+    calcolo sotto 1,25             -> MARGINE   (gli stalli sono gia' coperti; allargare sarebbe
+                                                 estrapolare in territorio non provato)
+    calcolo sopra 2,0             -> MARGINE_MASSIMO (un archivio raccolto su una rete rotta non
+                                                 deve rendere il filtro inutile)
+
+E qualunque eccezione torna a `MARGINE`, cioe' al comportamento di prima del lotto.
+
+`_perche_margine` scrive nel log su cosa si e' basato -- `misurato su 26 riproduzioni, 8 a secco` --
+perche' una soglia improvvisamente severa non sia distinguibile da un guasto.
+
+### 4. Cosa NON fa
+
+Non condiziona il margine alla rete. I dati lo chiederebbero (1,66 contro 1,73 fra le due bande) ma
+con 8 stalli divisi in tre gruppi ogni gruppo avrebbe 2-3 righe: si taglia un campione gia' piccolo
+per stimare tre numeri invece di uno. Quando l'archivio avra' abbastanza righe nella fascia 70-90%
+di buffer medio -- che e' dove sta l'informazione -- si potra' rifare la domanda.
+
+### 5. File e prove
+
+`modules/sonda_linea.py` (`_margine_base`, le costanti, `_perche_margine`), `caches/playback_stats.py`
+(`ha_stallato`, `margini_necessari`, `righe_giudicabili`). Prove: `tests/test_259.py`, 34
+asserzioni, fra cui la riproduzione esatta degli otto stalli veri del 13/09 col valore atteso 1,744.
+
+Due difetti trovati dalle prove: i due globali `_MARGINE_CACHE` e `_MARGINE_BASATO_SU` non si
+azzeravano insieme (il log avrebbe potuto rivendicare misure che il margine non aveva usato), e
+`_perche_margine` si fidava che qualcuno avesse gia' calcolato il margine -- oggi l'ordine di
+valutazione di `soglia()` bastava, ma non e' una garanzia da lasciare implicita.
+
+Suite **53/57** (i quattro rossi sono i soliti `test_202-205`). Deploy: Kodi spento, 104/104 md5
+identici, `__pycache__` rimossi.
+
+## Lotto 260 -- La ricerca testuale trovava solo una parola: il lotto 84 aveva perso `requote_uri`
+
+### 1. Il sintomo, e perche' sembrava di TMDb
+
+Cercando `one piece` l'hub non restituiva nulla; cercando `piece` restituiva 80 film e 13 serie. Lo
+stesso con `visitor q` -> niente, `visitor` -> Visitor Q. Una parola sola funzionava sempre, due mai.
+Sembrava un difetto del matching di TMDb. Non lo era: **la richiesta non partiva affatto.**
+
+Nel log del Mac del 13/09, alle 03:14:43, con `query=one piece`:
+
+    ###FenLight BUILD FALLITA###: movies action=tmdb_movies_search_filtered:
+        'NoneType' object has no attribute 'json'
+      ... tmdb_api.py, line 313, in _get_filtered
+          data = get_tmdb(url).json()
+
+Il fallimento arriva **40 ms** dopo la riga `TMDB CALL`. Nessuna chiamata a TMDb torna in 40 ms: e'
+il primo indizio che non c'era nessuna rete di mezzo. Le invocazioni con `query=piece`, identiche in
+tutto il resto, tornavano regolarmente con 27 e 15 elementi.
+
+### 2. La causa: cio' che requests faceva gratis
+
+`tmdb_api` costruisce l'URL **concatenando** il testo dell'utente (otto punti: righe 112, 163, 308,
+326, 459, 477, 578, 623). Con "one piece" l'URL contiene uno spazio letterale. `_split_url` lo
+spacca senza toccarlo e `_attempt` lo passa verbatim a `conn.request(method, path, ...)`.
+
+`http.client.putrequest` rifiuta qualunque carattere in `[\x00-\x20\x7f]`:
+
+    http.client.InvalidURL: URL can't contain control characters.
+    '/3/search/movie?api_key=X&query=one piece&page=1' (found at least ' ')
+
+Prima del lotto 84 `make_session()` tornava una `requests.Session`, e `prepare_url` passava l'URL per
+`requote_uri()`, che converte lo spazio in `%20`. **Togliendo requests per il costo di import (337
+moduli contro 66) abbiamo tolto anche quella normalizzazione, e nessuno l'ha rimpiazzata.** La
+ricerca testuale e' l'unico posto dove testo utente arbitrario finisce in un URL, quindi l'unico dove
+si vedeva. `git log --diff-filter=A` su `http_client.py` da' un solo commit: 90cadc0.
+
+### 3. Due modi di guasto, non uno -- e il secondo e' peggio
+
+    'one piece'  ->  InvalidURL, che deriva da HTTPException
+    'citta''     ->  UnicodeEncodeError da _encode_request, che fa request.encode('ascii')
+
+Il primo cadeva nell'`except (HTTPException, socket.error, OSError)` di `_attempt`: **due riprove
+completamente inutili** (il guasto e' deterministico, non puo' che rifallire), un guasto contato
+dall'interruttore, e un `TemporaryError` che il bare-except di `get_tmdb` riduceva a `None`.
+
+Il secondo e' un `ValueError`: l'`except` di `_attempt` **non lo prende**. Scavalcava
+classificazione e interruttore e usciva grezzo. Su un catalogo italiano non e' un caso limite --
+era rotto ogni titolo accentato, e nessuno l'aveva collegato allo stesso difetto.
+
+Nota sull'interruttore: nel log di stanotte **non si e' mai aperto**, perche' le decine di chiamate
+metadati che riescono in parallelo chiamano `breaker_success` e azzerano il contatore dei tre guasti
+consecutivi. Era un rischio latente, non un problema osservato.
+
+### 4. La correzione sta nel trasporto, non nei chiamanti
+
+`_requote_target()` in `modules/http_client.py`, applicata all'uscita di `_split_url`. E' il
+chokepoint da cui passano la richiesta iniziale **e ogni redirect** -- e i redirect sono l'argomento
+che chiude la discussione: la `Location` la scrive il server, quindi non passerebbe da nessuna toppa
+messa in `tmdb_api`. I chiamanti che concatenano sono otto oggi e non si sa quanti domani.
+
+Insieme sicuro identico a `requests.utils.requote_uri`: i non riservati di RFC 3986 (lettere, cifre,
+`_.-~`) piu' i riservati che nel target hanno un significato (`!#$&'()*+,/:;=?@[]`). Fuori restano
+spazio, caratteri di controllo, `" < > \ ^ ` { | }` e tutto il non-ASCII, che diventano `%XX` dei
+byte UTF-8.
+
+**L'idempotenza e' il requisito che conta**, piu' della correzione stessa: qui passano URL che
+possono essere GIA' in parte codificati, perche' chi usa `params=` arriva dopo `quote_plus`. Un
+`%XX` valido si conserva, quindi `%20` non diventa mai `%2520` -- un doppio giro che sbagliasse
+romperebbe in silenzio tutto cio' che oggi funziona, un guasto molto peggiore di quello chiuso.
+
+Il percorso veloce e' una sola `re.search` in C che dice "non c'e' niente da fare", ed e' il caso di
+ogni chiamata che non nasce da una ricerca: l'URL pulito torna come **lo stesso oggetto**, senza
+copie. `re` non aggiunge un file all'albero degli import, perche' `http.client` lo carica per conto
+suo.
+
+### 5. Dove ci discostiamo da requests, di proposito
+
+Differenziale contro il vero `requote_uri` (requests 2.31.0) su 21 URL: **17 identici, 4 diversi**, e
+tutti e quattro sono casi in cui siamo noi i piu' corretti.
+
+    '50% off'  ->  noi 50%25%20off     requests 50%%20off   (escape malformato)
+    '100%'     ->  noi 100%25          requests 100%
+    'a%2'      ->  noi a%252           requests a%2
+    '%41'      ->  noi %41             requests A           (normalizzazione che non serve)
+
+Sul `%` isolato requests lascia un escape malformato; noi lo codifichiamo. L'idempotenza regge
+perche' al secondo giro `%25` e' un escape valido.
+
+### 6. Cosa NON risolve
+
+**Un `&` o un `=` dentro il termine cercato.** Sono i separatori della query string: il trasporto non
+puo' sapere se un `&` e' dato o struttura, e li conserva -- requests fa esattamente lo stesso.
+Cercare `tom & jerry` manda a TMDb un parametro in piu'. Si chiude solo dal lato chiamante, facendo
+passare la query per `params=` invece di concatenarla; sono gli otto punti di `tmdb_api` elencati
+sopra, e restano da fare.
+
+Non tocca l'**host**: un host non-ASCII vorrebbe l'IDNA che requests prendeva da `idna`. Nessun
+chiamante mette testo utente nell'host -- sono tutti letterali nel sorgente -- quindi non serve.
+
+### 7. File e prove
+
+`modules/http_client.py`: `_requote_target` piu' le sue tabelle, e il `return` di `_split_url`.
+Nessun simbolo perso (95 -> 102, verificato sull'AST come vuole la regola sulle modifiche scriptate).
+
+Prove: `tests/test_260.py`, 24 asserzioni in 7 gruppi. **Vista rossa togliendo la correzione: 11
+prove cadute**, fra cui tutti e tre i casi dal vero. Suite **54/58** (i quattro rossi sono i soliti
+`test_202-205`).
+
+Verifica end-to-end contro TMDb vero, attraverso il `Session` reale:
+
+    'one piece'                 movie total_results=80    tv total_results=13  (One Piece in testa)
+    'visitor q'                 total_results=3           (Visitor Q in testa)
+    'kill bill vol 2'           total_results=2
+    'tom hanks'  (search/person) total_results=1
+    'amelie' / 'amélie'         total_results=26 entrambi  (Il favoloso mondo di Amélie)
+    "c'era una volta il west"   total_results=1
+    '進撃の巨人'                  total_results=9
+
+## Lotto 261 -- La diagnostica esce da Kodi: misurare senza essere parte della misura
+
+### 1. Il vincolo che ha deciso l'architettura
+
+La richiesta era una suite per vedere **quali thread crea Kodi, quando, cosa fanno, quando muoiono**,
+accesa dal passaggio del log da `info` a `debug`. Il vincolo aggiunto subito dopo -- *"è fondamentale
+che la suite non alteri le misure che fa"* -- non e' un dettaglio di taratura: **cambia il progetto**.
+
+Perche' il precedente c'e' gia', ed e' il lotto 248. Il censimento per thread del 246 girava in un
+thread Python del servizio, costava 53 ms mediani con punte a **1875**, e ha prodotto da solo i
+tredici ritardi del ciclo che poi denunciava, con corrispondenza al millisecondo:
+
+    18:56:58  strumento 1792 + 1875 ms  ->  18:57:02 ritardo 3,7 s
+
+E non era questione di costanti. Dentro Kodi una sonda Python contende **il GIL** agli altri
+sotto-interpreti e **il lock della GUI** al thread che disegna -- le due risorse che deve misurare --
+e la sua riga di log passa da spdlog, che a debug fa `flush_on(debug)`, cioe' una scrittura sincrona
+per riga **sul thread chiamante** (`xbmc/utils/log.cpp:53`).
+
+Quindi: **la sonda esce dal processo.** Un altro processo legge `/proc/<pid di kodi>/task`. Condivide
+solo i core, e quanto ne prende si scrive in testa a ogni referto.
+
+### 2. I numeri che hanno deciso la forma della sonda
+
+Misurati il 13/09 contro `system_server` (113 thread, piu' di quanti ne abbia Kodi), perche' una
+sonda non provata non la si vuole fra i piedi proprio mentre si misura:
+
+| operazione | costo |
+|---|---|
+| un `fork`+`exec` qualunque, **`sleep` compreso** | **~20 ms di CPU** |
+| 226 file di `/proc` con **un solo `cat`** | ~38 ms (fork incluso) |
+| gli stessi 226 con il builtin `read` (nessun fork) | ~74 ms |
+| un ciclo di `top -H` | ~56 ms |
+
+**Il fork e' la voce dominante, non le letture.** Da qui tutto il resto: `cat` unico invece di
+letture builtin (contro l'intuizione), righe di `/proc` copiate **grezze** senza un solo calcolo sul
+bersaglio, e **due fork per campione** -- il `cat` e lo `sleep`. Niente altro.
+
+La prima stesura ne aveva tre in piu' -- una funzione chiamata con `$(...)` per l'orologio, un
+`ls -l` per la taglia del log -- e costava **223 ms a campione invece di 40**. Due lezioni:
+
+- **ogni `$( )` dentro il ciclo e' un fork**, e va considerato un errore;
+- la taglia del log serviva a misurare l'osservatore, ed era un dato **peggiore** di quello che si
+  ricava gratis dal log stesso (che ha orario al millesimo e tid per riga). Pagare 25 ms al bersaglio
+  per un dato inferiore era l'esempio perfetto dell'errore che questa sonda esiste per non ripetere.
+
+Esito: **~83 ms a campione su 113 thread**, cadenza 2 s, **~1% della macchina**. Contro i 53-1875 ms
+di prima, e senza toccare un solo lock di Kodi.
+
+### 3. Perche' servono due sorgenti
+
+**Su Android Kodi non nomina i propri thread.** `CThreadImplLinux::SetThreadInfo` chiama
+`pthread_setname_np` solo `#if defined(__GLIBC__)` (`ThreadImplLinux.cpp:80-83`) e Android e' Bionic.
+Su Linux il `comm` si **eredita** dal creatore: tutti i `CThread` compaiono col nome del thread Java
+dell'applicazione. E' cio' che ha bloccato il lotto 249 -- `Thread-3` in tutti e tredici i ritardi, e
+nessun modo di dire quale fosse.
+
+I nomi esistono **solo nel log a livello debug**, e Kodi li scrive **dal thread appena nato**
+(`Thread.cpp:147` e `:162`), quindi il `T:<tid>` del prefisso -- che spdlog prende da `gettid()`,
+schema in `log.cpp:34` -- **e' il tid di quel thread**. La giuntura fra le due sorgenti e' il tid.
+
+**Ed e' questa la ragione per cui la suite si accende col livello di log**, come chiesto: a `info` si
+misura tutto ma non si nomina nessuno; a `debug` compaiono i nomi.
+
+### 4. I due modi di accendere il debug non costano uguale
+
+- **impostazione GUI** -> `m_logLevel = max(hint, LOG_LEVEL_DEBUG_FREEMEM)` (`AdvancedSettings.cpp:58-61`)
+  e con essa si apre `CGUIWindowDebugInfo`, che vuole proprio quel livello (`GUIWindowDebugInfo.cpp:45`);
+- **`<loglevel>1</loglevel>`** -> `m_logLevel = max(m_logLevel, m_logLevelHint)` (`:884` e `:892`):
+  stesso log, **niente overlay**.
+
+La differenza non e' cosmetica. L'overlay riscrive di continuo una stringa che contiene i KB liberi,
+quindi sporca una regione quasi a ogni fotogramma -- e con `algorithmdirtyregions` al predefinito **3**
+(`FILL_VIEWPORT_ON_CHANGE`, `AdvancedSettings.cpp:415`) **una qualunque regione sporca fa ridisegnare
+tutto il viewport** (`GUIWindowManager.cpp:1303-1309`). Accendere il debug dal menu trasforma
+un'interfaccia ferma in una che ridisegna a schermo pieno 60 volte al secondo: **chi misura gli FPS
+con l'overlay acceso sta misurando l'overlay**. Il servizio ora lo rileva e **scrive l'avviso nel
+log**, cosi' un referto vecchio resta giudicabile.
+
+### 5. Il ritmo del ciclo si misura, non si assume
+
+Il percorso del fotogramma su Android, verificato su 21.1-Omega: `CApplication::Run` e' un ciclo
+senza pause (`Application.cpp:1903-1943`); `Render()` finisce in `PresentRenderImpl`, che fa
+`eglSwapBuffers` e poi **si blocca** su `CXBMCApp::WaitVSync`
+(`WinSystemAndroidGLESContext.cpp:127-144`); il vsync di EGL e' **spento apposta** -- `SetVSyncImpl`
+chiama `SetVSync(false)` col commento *"We use Choreographer for timing"* (`:121`) -- e a svegliare il
+thread e' `CXBMCApp::doFrame`, che fa `m_vsyncEvent.Set()` una volta per quadro (`XBMCApp.cpp:1591-1599`).
+
+**Conseguenza:** il thread applicativo dorme e viene risvegliato una volta per giro, quindi il terzo
+campo di `schedstat` -- le **fette di schedulazione** -- conta i giri del ciclo. Il referto li misura
+e li confronta col pannello, **senza `System.FPS`** (che costerebbe una traversata nella GUI dal
+thread sbagliato) e **senza overlay**.
+
+Da qui la scomposizione che il lotto 249 aveva lasciato aperta -- sapeva che il thread applicativo
+stava all'85%, non poteva dire se **saturo** o **conteso**:
+
+    CPU       utime+stime          sta macinando        -> togliere lavoro A LUI
+    ATTESA    schedstat[1]         pronto, senza core   -> toglierlo a CHI LO PRECEDE
+    BLOCCATO  parete - cpu - att.  dormiva              -> togliere lavoro non rende niente
+
+**E il denominatore del verdetto e' il giro, non il core.** La prima stesura giudicava sulla quota di
+core e archiviava "6 s di cpu su 10 s di parete" come *non e' lui il collo di bottiglia*; con 600 giri
+misurati sono **10 ms dentro un bilancio di 16,7**, cioe' tre quinti del fotogramma spesi prima
+ancora di disegnare -- l'esatto contrario.
+
+### 6. Due difetti trovati facendo girare lo strumento sul log vero
+
+**a) La riga della priorita' nominava il thread sbagliato.** `[threads] name: 'X' priority: 'N'` esce
+da `CThread::SetPriority` (`Thread.cpp:196-198`), che chiama **chiunque**: il kernel sa qual e' il
+bersaglio (`setpriority` prende `m_threadID`), spdlog no, e nel `T:` finisce il tid del **chiamante**.
+Dal log della stick, allo stesso millesimo:
+
+    T:8886  Thread PeripBusAddon start, auto delete: false
+    T:8844  [threads] name: 'PeripBusAddon' priority: '-9'
+
+8886 e' `PeripBusAddon`; **8844 e' il thread applicativo**, che l'ha creato. Il referto chiamava
+`PeripBusAddon` il thread che regge tutta la GUI -- l'unica etichetta che non ci si puo' permettere di
+sbagliare, sul thread che si legge per primo. Ora la priorita' si unisce **per nome, mai per tid**.
+
+**b) Il thread applicativo non si chiama.** Non e' un `CThread`, quindi non dichiara mai un nome: si
+riconosce perche' e' **il tid che scrive `Starting Kodi`**, e il referto lo etichetta cosi'.
+
+**c) `battezza` scriveva in una forma che il kernel rifiuta.** Provato sulla stick: il gestore `comm`
+accetta una write semplice all'offset zero -- `dd` ci riesce, anche con 22 byte (tronca a 15) -- ma
+rifiuta con `EINVAL` altre forme, e il `printf` di toybox fallisce **sempre**, con e senza a capo.
+`open(percorso, 'w')` di Python aggiunge `O_TRUNC` e un buffer, cioe' proprio le variabili che
+separano i due casi, e non era stato provato su nessun kernel. Ora e' `os.open(O_WRONLY)` +
+`os.write`: una write, senza troncamento, senza buffer. La prova lo blocca verificando che il file
+**non venga troncato**, ed e' stata vista rossa rimettendo la versione vecchia.
+
+### 7. Cosa resta fuori portata su questa macchina, dichiarato
+
+- **GPU**: `/sys/class/mpgpu` esiste ma e' negato **anche a `shell`** (provato: `Permission denied` su
+  tutti i nodi), niente `devfreq`. Serve root. Il carico GPU si **deduce** dal bilancio del fotogramma.
+- **`eglSwapBuffers` fermo sulla GPU** contro **`WaitVSync`**: cadono entrambi in *bloccato* e da fuori
+  non si separano. Il discriminante e' il **ritmo del ciclo**.
+- **`/proc/<pid>/io` di Kodi**: negato da `shell`. **`wchan`**: torna `0` (`kptr_restrict`).
+- **Un thread nato e morto fra due campioni** la sonda non lo vede; il log a debug si', e il referto
+  stampa i due conteggi **affiancati** proprio per non far leggere l'elenco come completo.
+
+### 8. Cosa c'e' adesso
+
+`strumenti/diagnostica/` (`sonda.sh`, `campagna.sh`, `traccia.py`, `log_kodi.py`, `anagrafe.py`,
+`catalogo.py`), **`DIAGNOSTICA.md`** (il manuale), **`CATALOGO-THREAD.md`** (64 thread **generati dal
+sorgente**, non scritti a mano), `modules/diagnostica.py` dentro Kodi -- che fa **solo** due cose:
+rileva il livello di log e **battezza i nostri thread** scrivendo su `/proc/self/task/<tid>/comm`
+(16 byte, una volta per thread, solo a diagnostica accesa). Nella traccia esterna compaiono come
+`FL:servizio`, `FL:trakt`, `FL:paginator`, e **ogni invocazione porta il proprio `mode`** -- si vede
+quale widget mangia il core senza incrociare niente.
+
+`tests/test_261.py`: 40 verifiche, tutte viste **rosse** prima di essere viste verdi. I tre guasti
+iniettati per provarle sono istruttivi -- senza la verifica sul conto degli `schedstat` l'attesa di un
+thread finiva su un altro; senza la distinzione per `starttime` il riuso di un tid produceva un consumo
+**negativo**.
+
+### 9. Quello che questo lotto NON ha fatto
+
+**Non ha ancora misurato niente.** La suite e' costruita e provata, ma la prima campagna vera va fatta
+con Kodi acceso dal telecomando -- `monkey` produce un SIGSEGV a un secondo dal lancio e `input
+keyevent` non e' un tasto fisico. Resta aperta una domanda gia' emersa dal log: il pannello e la GUI
+girano a **1920x1080** (`CAndroidUtils: Current resolution: 1920x1080 @ 60.000004`), mentre il commento
+in `advancedsettings.xml` assume **1280x720** per dimensionare `imageres`/`fanartres`. Se la GUI
+disegna davvero a 1080p, e' 2,25 volte il riempimento supposto, ed e' la prima cosa che la campagna
+deve confermare o smentire.
+
+## Lotto 262 -- Il primo referto vero trova tre difetti nella sonda, e uno invalidava il verdetto
+
+### 1. Il contesto
+
+Prima campagna vera: 9 m 28 s sulla Home, **4285 tasti premuti**, Kodi chiuso dall'utente alla fine
+(non un crash: il log finisce con `Exiting the application...`). Obiettivo dichiarato: capire perche'
+**lo scorrimento** fra gli elementi di un widget e fra widget fa crollare il framerate, mentre il
+numero di widget e di elementi a schermo, da solo, non pesa.
+
+### 2. I tre difetti, tutti trovati dai dati e non dal codice
+
+**a) I "giri del ciclo" non erano i fotogrammi -- e il verdetto ne dipendeva.** Il lotto 261 li
+deduceva dal terzo campo di `schedstat` (le fette di schedulazione) ragionando cosi': su Android il
+thread applicativo dorme in `WaitVSync` una volta per quadro, quindi i risvegli sono i giri. Giusto
+sul vsync, **sbagliato sulle fette**: il kernel conta ogni messa in esecuzione -- lock, code di
+messaggi, prelazioni. Misura: **644,5 fette al secondo su un pannello a 60 Hz**, dieci volte i quadri
+veri. Il bilancio per fotogramma veniva diviso per dieci volte i fotogrammi: 13,9 ms diventavano
+1,30, e il verdetto stampava **LARGO** su un thread all'88% di un core.
+
+Rimedio: i quadri arrivano da **SurfaceFlinger**, che sa quando sono stati davvero presentati --
+`dumpsys SurfaceFlinger --latency <layer>`, che da `shell` funziona senza root, costa ~35 ms di CPU
+e **non tocca Kodi**. 128 quadri sono 2,13 s a 60 Hz: a cadenza 2 s la copertura e' totale. Le
+finestre si sovrappongono, quindi i quadri si **deduplicano** -- sommarli darebbe il doppio dei
+fotogrammi e meta' del tempo per ciascuno, un errore che non si nota perche' il numero resta
+plausibile. Le fette restano stampate col loro nome vero: **risvegli**.
+
+**b) Quasi meta' della macchina non era attribuibile a nessuno.** La macchina all'**82%** (3,3 core
+su 4) con Kodi al **38%**: gli altri 44 punti erano invisibili, perche' la sonda guardava soltanto i
+thread di Kodi. Ora ogni cinque campioni legge `/proc/[0-9]*/stat` di tutti i 234 processi (~35 ms) e
+il referto dice **chi** e' il resto -- thread del kernel compresi, che qui non sono trascurabili:
+`ksmd` da solo ha 4403 s di CPU accumulati.
+
+**c) La campagna e' stata presa con l'overlay di debug ACCESO**, e il referto non lo diceva. Kodi lo
+dichiara da solo a livello info -- `Enabled debug logging due to GUI setting (2)` -- e da 2 in su si
+apre `CGUIWindowDebugInfo`, che riscrive di continuo una stringa con i KB liberi, quindi sporca una
+regione quasi a ogni quadro; con `algorithmdirtyregions` al predefinito 3 una regione sporca fa
+ridisegnare **tutto il viewport**. Il referto ora apre con un riquadro di avviso, perche' il fondo
+del 74% di un core a interfaccia FERMA e' in buona parte l'overlay, non la skin.
+
+### 3. La sezione che mancava: le fasce di attivita'
+
+Senza, il referto da' medie su dieci minuti, cioe' mescola l'utente che scorre con l'utente fermo --
+i due regimi che si vogliono confrontare. Adesso la traccia (quanto consuma ogni thread, campione per
+campione) e il log (cosa stava succedendo, e a che ora) si mettono sullo stesso asse dei tempi e i
+campioni si raggruppano per intensita' di un **segnale**: `tasti`, `azioni`, `immagini`, `incache`,
+`invocazioni`, `finestre`, o una sottostringa qualunque. Le soglie vengono dai dati (terzili), non
+scritte a mano, cosi' la stessa sezione regge segnali con scale diverse.
+
+### 4. Cosa dice il primo referto sullo scorrimento
+
+    fascia                  sec  tasti/s   GUI cpu  GUI coda  Kodi cpu  pronti  nati/min
+    FERMO                  108s      0.0       74%        8%      134%     3.9      34.4
+    poco  (<3,8/s)         152s      1.6       81%        8%      129%     3.4      10.7
+    medio (3,8-12,5/s)     154s      8.9       85%        6%      164%     4.0      17.5
+    MOLTO (>12,5/s)        155s     17.3       91%        5%      182%     4.1      19.8
+
+    chi cambia fra FERMO e MOLTO        fermo    molto   differenza
+    JobWorker                             18%      52%          +35
+    thread applicativo (ciclo GUI)        74%      91%          +17
+
+**Il colpevole principale non e' il ciclo GUI: sono i JobWorker, che triplicano.** E si sa cosa
+fanno, perche' lo scrivono: su ~4500 righe dei quattro JobWorker piu' pesanti, **2262 sono
+`[swscaler] No accelerated colorspace conversion found from yuv420p to bgra`** (piu' 145 da yuv422p).
+E' la decodifica JPEG delle locandine con conversione di colore **non accelerata**, dal percorso
+`CFFmpegImage::Decode` (`xbmc/guilib/FFmpegImage.cpp:505-518`).
+
+Il ritmo segue lo scorrimento in modo netto: **da 0,7 conversioni al secondo da fermo a 6,9 in
+raffica**, 2407 in tutta la sessione contro **339 immagini messe in cache** -- cioe' circa 2070 sono
+**ri-decodifiche di immagini gia' in cache**, la stessa firma gia' vista nel lotto sulle texture.
+
+**E il ciclo GUI non viene affamato: la sua attesa in coda SCENDE** (8% -> 5%) e anche il tempo
+bloccato scende (11% -> 5%). Non e' contesa: il thread fa piu' lavoro suo e non ha piu' margine.
+I quattro JobWorker girano sugli altri tre core -- il tetto e' `5 - (HIGH - priorita)`
+(`JobManager.cpp:434-440`) -- e infatti **non ne nascono di nuovi durante lo scorrimento**: sono
+sempre gli stessi quattro che lavorano di piu'.
+
+Le invocazioni Python (`LanguageInvoker`) restano al 5-6% di un core e **non salgono** con lo
+scorrimento: il costo di costruire i widget non c'entra, come gia' sospettato.
+
+### 5. Cosa questo referto NON puo' ancora dire
+
+- **Di quanto crolli il framerate**: la campagna e' stata presa con la sonda del 261, che i
+  fotogrammi non li contava. La colonna `fps` e' vuota.
+- **Quanto del 74% a riposo sia overlay e quanto skin**: serve la taratura, cioe' la stessa scena
+  ferma misurata con e senza. Finche' non c'e', i **salti** fra fasce valgono, i **livelli assoluti**
+  no.
+
+## Lotto 263 -- La campagna senza overlay: quattro difetti in piu', e il fondo che era due terzi strumento
+
+### 1. La taratura, finalmente
+
+Stessa stick, stessa skin, stessa Home, a ventidue minuti di distanza. L'unica differenza e'
+`debug.showloginfo` tolto e `<loglevel hide="false">1</loglevel>` in advancedsettings.
+
+    a interfaccia FERMA        con overlay (14:05)   senza overlay (15:23)
+    ciclo GUI                          74% di core            25% di core
+    macchina occupata                          82%                    36%
+    Kodi, totale                              134%                    46%
+
+**L'overlay di debug costava 49 punti di core sul solo ciclo GUI, cioe' due terzi del consumo a
+riposo.** Non e' una correzione marginale: e' il fondo su cui erano appoggiate tutte le misure del
+lotto 262, e va detto che quelle andavano lette solo come SALTI, mai come livelli.
+
+### 2. E la conclusione sullo scorrimento cambia di segno
+
+    chi cambia fra FERMO e MOLTO       con overlay        senza overlay
+    thread applicativo (ciclo GUI)     74 -> 91  (+17)    25 -> 93  (+68)
+    JobWorker                          18 -> 52  (+35)     2 -> 34  (+32)
+
+Col fondo gonfiato dall'overlay il ciclo GUI partiva gia' saturo e il suo salto sembrava piccolo:
+il lotto 262 aveva concluso che **il colpevole erano i JobWorker**. Senza overlay il ciclo GUI va da
+25 a 93 -- **+68 punti, il doppio dei JobWorker** -- e arriva quasi a saturazione di un core.
+La decodifica delle immagini resta la seconda voce e resta vera; **non e' piu' la prima.**
+L'attesa in coda del ciclo GUI resta bassissima (2-4%): non e' contesa, e' lavoro proprio.
+
+### 3. Quattro difetti della sonda, tutti trovati dai dati
+
+**a) Il layer sbagliato -- i fotogrammi erano 18189 righe di zeri.** La scelta si fermava al periodo
+del pannello, che **qualunque** layer restituisce, compresi i contenitori che non disegnano mai:
+la sonda ha scelto `AppWindowToken{... org.xbmc.kodi/.Main ...}#0` e ha raccolto zeri per cinque
+minuti senza che niente protestasse, mentre il referto diceva "nessun layer nella traccia". Ora il
+criterio e' l'unico che conta -- il layer deve avere **almeno una riga con un istante di
+presentazione vero** -- e la ricerca si **ritenta** nel ciclo, perche' la sonda parte prima di Kodi e
+fra il processo e una superficie che disegna passano secondi.
+
+**b) L'else penzolante.** Inserendo il riquadro dell'overlay nel corpo di `if log.righe_totali:`
+l'`else` era rimasto attaccato a `if log.overlay:`: ogni referto senza overlay stampava
+`log assente: nessun nome, solo numeri` **subito sotto** la riga che diceva quante righe aveva il
+log. Due righe in contraddizione nello stesso referto.
+
+**c) I nostri thread marcati "ignoto".** `FL:paginator` compariva come `(FL:paginator) ignoto`,
+cioe' trattato come un `comm` **ereditato** -- l'esatto contrario di quello che e'.
+
+**d) Il `comm` fissato alla nascita.** I nostri thread si battezzano DOPO essere nati: Kodi crea il
+thread dell'invocazione, il primo campione lo vede col nome ereditato, e solo dopo `router.routing`
+chiama `battezza`. `Vita.comm` non si aggiornava mai, quindi **dodici invocazioni di Fen Light
+restavano `LanguageInvoker`** mentre altre diciotto si presentavano col proprio mode: la stessa cosa
+sotto due nomi, per un accidente di tempismo del campionamento. Ora il `comm` vale l'ULTIMO visto.
+
+E una scelta di merito che ne discende: **il nostro nome batte quello di Kodi**. `LanguageInvoker`
+dice solo "e' Python"; `FL:build_movie_` dice quale widget sta mangiando il core.
+
+### 4. Cosa funziona, verificato sul campo
+
+Il battesimo dei thread: `###FenLight DIAG###: diagnostica ATTIVA | livello 1 da advancedsettings.xml`,
+nessun errore, e nella traccia compaiono `FL:servizio`, `FL:trakt`, `FL:paginator`, `FL:widgetref`,
+`FL:dub`, `FL:fonts`, `FL:skinupd`, `FL:avvio` piu' le invocazioni col proprio mode --
+`FL:build_movie_`, `FL:build_mdblis`, `FL:build_contin`, `FL:close_panel`, `FL:select_disco`.
+L'attribuzione della macchina risponde: dei 36% occupati, 23 sono Kodi e 12 sono altro --
+`ksmd` 10% di un core, `surfaceflinger` 8%, `audioserver` 5%.
+
+### 5. Cosa manca ancora
+
+**Gli fps.** Il difetto (a) e' corretto ma la campagna era gia' fatta: serve una terza raccolta.
+Finche' non c'e', il bilancio per fotogramma assume 60 al secondo e il referto lo dichiara come
+**limite inferiore** -- se i fotogrammi fossero meno, il costo per ciascuno sarebbe piu' alto.
+L'utente ne ha letti ~40 a riposo e ~5 scorrendo, ma dall'overlay, cioe' dallo strumento che quei
+numeri li falsava.
+
+## Lotto 264 -- Il contatore di fotogrammi: cinque difetti, e il numero che coincide con l'overlay
+
+### 1. Il layer giusto, finalmente, e come si sceglie
+
+Con Kodi acceso si vedono tutti e cinque i suoi layer, e il punteggio chiude la questione:
+
+    127 quadri   SurfaceView - org.xbmc.kodi/org.xbmc.kodi.Main#0     <- la superficie di rendering
+      2 quadri   org.xbmc.kodi/org.xbmc.kodi.Main#0                   <- la finestra dell'Activity
+      0 quadri   AppWindowToken{...}, 925346f ..., Background for -SurfaceView ...
+
+**Kodi disegna su una SurfaceView figlia, non sulla finestra dell'Activity.** I due criteri provati
+prima erano entrambi insufficienti: "il periodo non e' zero" lo soddisfa qualunque layer (campagna
+15:23, contenitore scelto, 18189 righe di zeri); "almeno un quadro presentato" lo soddisfa anche la
+finestra dell'Activity, che ne presenta **due all'avvio e mai piu'** (campagna 15:37).
+Ora si contano i quadri di ogni candidato e si prende il **massimo**, con un minimo di 8 sotto il
+quale non si accetta niente; il punteggio di ogni candidato finisce nella traccia come riga
+`I candidato <quadri>|<nome>`, cosi' una scelta sbagliata si vede invece di indovinarla. E se il
+layer scelto smette di presentare per dieci campioni, si ricomincia da capo.
+
+### 2. Le PAUSE non sono quadri persi -- e il numero che ne esce si puo' controllare
+
+Home a riposo, 12,8 s, layer giusto: 127 quadri, mediana degli intervalli **16,7 ms** (il passo
+esatto del pannello) e intervallo peggiore **4666 ms**. Contati tutti insieme fanno 16,2 fotogrammi
+al secondo, che non descrive niente.
+
+Il motivo e' strutturale: con `algorithmdirtyregions` al predefinito 3, se nessuna regione e' sporca
+il ciclo **non disegna affatto** -- nessun `RenderPass`, nessun `eglSwapBuffers`, nessun quadro
+presentato. A schermo fermo e' il comportamento **giusto**, ed e' l'unico momento in cui la macchina
+riposa. Quindi un intervallo oltre cinque periodi si considera una PAUSA: esce dal conto degli fps e
+non e' una perdita. Tolte le pause:
+
+    ritmo MENTRE DISEGNA   43,2 fps      (pannello 60)
+    quadri persi           48
+    pause                  4,9 s = 39% della finestra
+
+**43,2 contro i ~40 letti sull'overlay**: due strumenti indipendenti, e il secondo e' quello che
+l'utente guarda. E' il primo controllo esterno che questa suite abbia mai avuto.
+
+### 3. Gli altri tre difetti, tutti di presentazione e tutti gravi
+
+**a) Un verdetto costruito su due punti.** Sui 2 quadri della campagna 15:37 il referto ha calcolato
+15,0 fps, 34 ms di cpu per quadro e ha stampato **SATURO** in maiuscolo. Il difetto era nella sonda,
+ma la colpa di averci creduto e' del referto: uno strumento che presenta un verdetto sicuro su due
+dati e' peggio di uno che tace, perche' il numero resta plausibile e nessuno va a contarli.
+
+**b) "Il layer non e' quello giusto" detto a un layer giusto.** La prima guardia accusava il layer
+ogni volta che la copertura era bassa -- ma a Kodi fermo la copertura E' bassa per costruzione.
+Nella prova dal vivo (Kodi idle 30 s, layer corretto, thread applicativo bloccato per l'81%) il
+referto lo dava per sbagliato. Sono **due domande diverse**: *a che ritmo disegna* basta che i quadri
+siano abbastanza; *quanto costa un quadro* richiede che coprano la finestra, perche' la cpu al
+numeratore e' di tutta la finestra. Ora sono separate.
+
+**c) L'intestazione che non torna col conto sotto.** "il bilancio per fotogramma e' 23,2 ms a 43 al
+secondo" sopra una divisione fatta per 60. Adesso l'intestazione dichiara il ritmo **usato** e, se e'
+quello nominale, lo marca `(assunti)`.
+
+### 4. Dove siamo
+
+`tests/test_261.py`: 102 verifiche. La sonda fa 7 fork per campione nel caso peggiore, 111 ms,
+**1,3% della macchina**, dichiarato in ogni referto.
+
+Resta una cosa non ancora vista: **gli fps durante lo scorrimento**. Il contatore e' stato validato
+a Kodi fermo (43,2 fps, confermati dall'overlay) e col layer sbagliato (rifiutato come deve), mai
+sotto carico. E' l'unica colonna del referto -- `fps` per fascia -- che nessuna campagna ha ancora
+riempito.
+
+---
+
+## Lotto 265 -- La colonna vuota era un orologio sbagliato
+
+Campagna `referti/campagna-20260913-1601`: due minuti, un minuto fermo e un minuto di scorrimento
+sulla Home, fatta apposta per riempire l'unica colonna che nessuna campagna aveva mai riempito.
+Non l'ha riempita. Ha spiegato **perche'** era vuota, ed era molto peggio di quanto sembrava.
+
+### 1. Sette ore di scarto fra due orologi che si somigliano
+
+SurfaceFlinger data i fotogrammi in **CLOCK_MONOTONIC**; la sonda legge l'ora da **`/proc/uptime`**.
+`uptime` conta anche il tempo passato in **sospensione**, `CLOCK_MONOTONIC` si ferma. Misurato:
+
+    /proc/uptime                 52725,95 s
+    /proc/timer_list "now at"    27582,99 s
+    scarto                       25142,96 s = 6 h 59 m
+
+L'attribuzione per fascia confrontava l'istante del quadro con i confini `a.cs * 1e7` presi da
+`uptime`: **nessun quadro e' mai caduto dentro nessuna fascia**, in nessuna delle tre campagne. La
+colonna `fps` non era vuota per mancanza di dati -- 527 fotogrammi erano li' -- ma perche' erano
+tutti collocati sette ore prima della finestra. E una colonna vuota si legge come "non e' successo
+niente", che e' il modo peggiore in cui uno strumento puo' sbagliare.
+
+**Rimedio:** i quadri si datano **per campione**, non per istante. Un fotogramma comparso fra il
+campione i-1 e il campione i e' stato presentato in quell'intervallo, per costruzione. Nessun
+allineamento di orologi, e il conto non cambia nemmeno spostando tutti gli istanti di sette ore --
+c'e' una prova che lo verifica proprio cosi'. La sonda registra ora `I monotonic_ns` dalla terza riga
+di `/proc/timer_list` **solo** per far stampare lo scarto nel referto: si legge invece di subirlo.
+
+### 2. La riserva di `--latency` contava come misura
+
+Il primo campione legge 128 posizioni che contengono la storia di *prima* che la sonda partisse: qui
+20 quadri gia' vecchi di 31 s. Contati, allungavano la misura **oltre la sua stessa finestra**, e il
+referto stampava `pause 145,3 s (121% della finestra)` senza protestare. Una percentuale sopra il
+100% e' una dimostrazione di errore, non un dato. Ora il campione 0 serve solo a inizializzare
+l'insieme dei visti.
+
+### 3. La guardia sulla copertura certificava il caso peggiore
+
+`spiegato` misurava lo **span** dal primo all'ultimo quadro invece del tempo **disegnato**. Con i
+quadri anteriori alla finestra lo span la superava: copertura dichiarata **126%**, copertura reale
+**4%** (5,0 s su 119,6). La guardia nata per rifiutare le misure scarse approvava la peggiore di
+tutte. Ora si misura `span - pause`.
+
+### 4. Tre numeri diversi che il referto chiamava tutti "fps"
+
+- **Ritmo** = quadri / secondi di parete. L'unico che risponda a "Kodi sta al passo?".
+- **Cadenza interna** = distanza fra due quadri *consecutivi*. Non puo' scendere sotto un periodo di
+  pannello per costruzione: stampava **50,0 al secondo mentre Kodi ne presentava 4,2**. Descriveva il
+  pannello, non Kodi. Resta, etichettata per quello che e'.
+- **Costo per quadro** = cpu / quadri, ma **solo sugli intervalli in cui ha disegnato**. A riposo
+  Kodi non disegna affatto (`algorithmdirtyregions=3`): quel tempo mette cpu al numeratore e zero al
+  denominatore. Sul totale dava 107,8 ms per quadro; sui 49 s in cui disegnava, **87,8 ms**.
+
+E una pausa non e' sempre riposo: se cade mentre l'utente scorre, vuol dire che il ciclo non arriva a
+preparare il quadro dopo. Il referto ora lo dice.
+
+### 5. Il dato, finalmente
+
+    fascia                       sec eventi/s   GUI cpu  GUI coda  Kodi cpu      fps  pronti
+    FERMO (nessun evento)        70s      0.0       17%        1%       28%      0.0     1.4
+    poco  (<19.4/s)              13s     12.2       83%        3%      136%     16.2     3.5
+    medio (19.4-19.8/s)          17s     19.6       94%        2%      161%      6.2     2.5
+    MOLTO (>19.8/s)              19s     19.9       91%        2%      155%      9.9     3.2
+
+**Sotto scorrimento continuo Kodi presenta 6-10 fotogrammi al secondo su un pannello a 60**, mentre
+il ciclo GUI tiene il 91-94% di un core. Coincide con i "~5" letti sull'overlay: secondo controllo
+esterno indipendente, dopo i 43,2 contro ~40 a riposo.
+
+A **FERMO il ritmo e' 0,0**, e non e' un buco: a schermo immobile Kodi non presenta *niente*. Gli fps
+che l'overlay mostra a riposo sono giri del ciclo, non quadri arrivati al compositore.
+
+Il bilancio, sui soli secondi in cui disegnava: **87,8 ms di cpu per fotogramma contro 16,7 di
+bilancio**. Non e' il compositore e non e' la GPU -- il tempo se ne va prima dello scambio di buffer.
+Il confronto fra le fascie estreme mette il ciclo GUI a **+74 punti di core** e JobWorker a **+32**.
+
+### 6. La cpu del nostro Python valeva zero
+
+Domanda successiva: la sonda distingue i nostri thread Python dal C++ di Kodi? Per **nome** si', dal
+lotto 263 (`FL:<mode>` scritto in `comm` da `diagnostica.battezza`). Per **consumo** no, e proprio
+sui nostri.
+
+I contatori di `/proc` partono da zero alla nascita del thread. `Vita.dtick` faceva
+`tick_ultimo - tick_primo`: per un thread visto in **un solo campione** la differenza e' zero. E
+un'invocazione di Fen Light vive ~2,1 s mentre la sonda campiona ogni 2,14 -- quindi cade quasi
+sempre in un campione solo. I nove `FL:build_mdblis` della campagna 16:01 avevano gia' consumato
+26, 49, 29, 45, 19, 53, 51, 6 e 24 tick alla loro unica osservazione, e il referto ne attribuiva
+**0,00 s a ciascuno**.
+
+Per un thread **nato dentro la finestra** la base non e' il primo campione, e' **zero**: cio' che ha
+gia' speso quando la sonda lo vede e' consumo della finestra. Corretto anche per utente, majflt e
+attesa. Effetto sul referto:
+
+    FL:build_mdblis   9 thread   0.00s  ->  3.02s   (3% di un core)
+    cpu non attribuita    9.0 s (10%)  ->  5.9 s (6%)
+
+Resta cieca solo la cpu dei thread nati **e** morti fra due campioni, che la sonda non vede affatto:
+e' quel 6%, ed e' dichiarato in ogni referto.
+
+### 7. Dove siamo
+
+`tests/test_261.py`: 120 verifiche, tutte verdi; suite completa 55 su 59 (i 4 rossi sono
+`test_202/203/204/205`, script di analisi log che vogliono argomenti da riga di comando,
+preesistenti e non toccati da questo lotto).
+
+La sonda e' stata ora vista funzionare nei tre regimi: a riposo, con il layer sbagliato (rifiutato
+come deve) e **sotto carico**.
+
+**Cosa la sonda NON misura, e non puo' misurare su questa macchina: la GPU.** `/sys/class/mpgpu`
+esiste ma ogni nodo e' `Permission denied` anche a `shell` (riverificato il 13/09), non c'e'
+`devfreq`, e `dumpsys gfxinfo org.xbmc.kodi` riporta 5 fotogrammi in tutto perche' vede solo la
+gerarchia di View di Android, non il GL di Kodi. Della GPU si hanno due indizi indiretti -- i quadri
+davvero presentati e il tempo in cui il ciclo GUI e' **bloccato** -- ma quel blocco mette insieme
+vsync, GPU, flash e rete e da fuori non si separa. Quando serve la GPU, serve root.
+
+---
+
+## Lotto 266 -- Cosa satura durante lo scorrimento: un thread, non la macchina
+
+Analisi della campagna `20260913-1601` (68 s fermo, 49 s di scorrimento continuo sulla Home).
+Nessuna campagna nuova: i dati c'erano gia', mancava la domanda giusta.
+
+### La macchina non e' satura. Un thread si'.
+
+    tratto        ciclo GUI                             macchina    Kodi
+    FERMO         17% di un core  (utente 17, sist 1)    15% (0,59 core su 4)   0,28 core
+    SCORRIMENTO   90% di un core  (utente 87, sist 4)    50% (1,98 core su 4)   1,52 core
+
+Durante lo scorrimento restano **due core liberi su quattro**. La coda del ciclo GUI e' 1,14 s su
+49 (**2%**): non e' contesa, nessuno gli ruba il core. E' **un solo thread al 90%, in spazio utente,
+che non si puo' distribuire**. Questo e' il tetto, ed e' architetturale: il ciclo GUI di Kodi e'
+seriale per costruzione.
+
+La riga che lo dimostra meglio e' il tempo **bloccato**: **81% da fermo, 7% sotto scorrimento**. A
+riposo il ciclo dorme aspettando il vsync; sotto scorrimento non ci arriva mai, perche' sta ancora
+calcolando. Ecco perche' i fotogrammi crollano a 6-10 al secondo: non e' il compositore che li
+scarta, e' il ciclo che non li produce.
+
+### Il numero che spiega tutto: 51 ms contro 51 ms
+
+Android consegna gli eventi del tasto tenuto premuto a **19,6 al secondo** (`repeat:` arriva a 366
+in una sola pressione): un evento ogni **51 ms mediani**, molto regolari (10mo 48, 90mo 53).
+
+    cpu del ciclo GUI nel tratto     44,49 s
+    tasti gestiti                       874
+    costo di UNA pressione          50,9 ms
+
+**Il costo di un evento e' uguale all'intervallo fra gli eventi.** Il ciclo e' esattamente al limite
+e non gli resta niente per disegnare. Non c'e' nessuna coalescenza: 874 `key down` -> 873 `HandleKey`
+-> 873 azioni `Right`/`Left`. Kodi processa ogni singola ripetizione.
+
+Il bilancio del pannello e' 16,7 ms. Servono **tre volte meno** ms per evento, oppure tre volte meno
+eventi.
+
+### Cosa NON e' (escluso sui dati, non per ipotesi)
+
+- **Non e' la cpu della macchina**: 2 core liberi su 4.
+- **Non e' contesa**: coda del ciclo GUI al 2%, e SCENDE in proporzione rispetto al riposo.
+- **Non e' GPU ne' I/O**: il ciclo e' bloccato solo il 7% del tempo; se aspettasse la GPU o la flash
+  sarebbe il contrario. Il tempo se ne va **prima** dello scambio di buffer.
+- **Non e' il nostro Python**: le 9 invocazioni `FL:build_mdblis` fanno 3,02 s su 49, e sono la
+  paginazione che carica le pagine 3->10 mentre l'utente arriva in fondo alla riga. Lavoro dovuto,
+  su thread propri, su core liberi.
+- **Non e' la decodifica delle immagini**: 645 righe `[swscaler]` in 49 s (13 conversioni/s) tutte
+  sui quattro `JobWorker`, 14,7 s di cpu in tutto, su core liberi. Il ciclo GUI paga solo l'upload
+  della texture, che e' tempo **sistema**, ed e' il 4%.
+
+Resta: **87% di un core in spazio utente dentro il ciclo GUI**, cioe' calcolo della skin a ogni
+cambio di fuoco. Da fuori non si puo' scomporre oltre -- Kodi non traccia il lavoro per controllo.
+
+### Nuova colonna nel referto: `ms/ev`
+
+Gli fps dipendono da quanto forte scorre l'utente; il **costo di un evento** no. E' la metrica che
+rende confrontabili due campagne, quindi e' entrata nella tabella per fasce:
+
+    fascia                    sec     ev/s    ms/ev  GUI cpu GUI coda Kodi cpu     fps pronti
+    FERMO (nessun evento)     70s      0.0        -      17%       1%      28%     0.0    1.4
+    poco  (<19.4/s)           13s     12.2     68.3      83%       3%     136%    16.2    3.5
+    medio (19.4-19.8/s)       17s     19.6     48.2      94%       2%     161%     6.2    2.5
+    MOLTO (>19.8/s)           19s     19.9     45.9      91%       2%     155%     9.9    3.2
+
+### Il confondente ancora non tolto
+
+Tutte queste misure sono a **log debug**, e il ciclo GUI ha scritto **1759 righe in 49 s** (36/s).
+`spdlog::flush_on(debug)` fa una scrittura sincrona sulla flash **sul thread che emette**. Non e'
+plausibile che spieghi 51 ms per evento, ma finche' non e' misurato e' una quota ignota dentro ogni
+numero. La taratura descritta in `DIAGNOSTICA.md` cap. 9 non e' mai stata fatta: va fatta adesso, ed
+e' la prossima campagna.
+
+---
+
+## Lotto 267 -- Taratura: quanto costa il microscopio
+
+Campagna `taratura-info-20260913-1643`, con `<loglevel>0</loglevel>` (info) e la spunta GUI spenta.
+Stesso gesto della `20260913-1601`: Home ferma, poi DESTRA tenuto premuto sulla stessa riga.
+E' la taratura prescritta da `DIAGNOSTICA.md` cap. 9, mai fatta prima.
+
+Il tratto si isola dalla traccia senza bisogno di nessun segnale nel log -- a info le righe
+`CAndroidKey`/`HandleKey` non esistono piu' -- perche' il consumo del ciclo GUI lo dichiara da solo:
+avvio fino al campione 7, fermo 8->35 (16-20% di un core), scorrimento 36->55 (76-100%).
+
+### Il risultato
+
+    tratto        righe scritte dal ciclo GUI   cpu/s del ciclo GUI      differenza
+    FERMO         debug ~0  ->  info 0                0,174 -> 0,177 core     +1%  (rumore)
+    SCORRIMENTO   debug 1759 ->  info 2                0,903 -> 0,868 core     -4%
+
+**Milleseicentocinquantasette righe in meno e il ciclo GUI risparmia il 4%.** Il costo di
+`flush_on(debug)` e' **~1,8 ms per evento su 46**. Non e' il colpevole, e ogni numero del lotto 266
+resta valido a meno di quel 4%:
+
+    costo di una pressione   46,1 ms (debug)  ->  44,3 ms (info, a 19,6 ev/s)
+
+Da qui in avanti una misura presa a debug si legge sapendo che sul ciclo GUI vale questo, e solo
+questo. La taratura va rifatta se cambia il volume di log della skin o del plugin.
+
+### L'osservazione che vale piu' della taratura
+
+    tratto         cpu/s ciclo GUI   quadri presentati
+    debug scroll        0,903 core        10,3 al secondo
+    info  scroll        0,868 core        14,7 al secondo
+
+**Il 4% di cpu in meno ha reso il 43% di fotogrammi in piu'.** Il conto torna: a 46 ms per evento
+contro 51 ms di intervallo restano **5 ms di margine**; togliendone 1,8 il margine sale a 6,8, cioe'
+**+36%**, e i quadri sono saliti del 43%.
+
+Questo e' il comportamento di un sistema esattamente sul ciglio: **ogni millisecondo tolto al ciclo
+GUI si ripaga in fotogrammi con un fattore ~10**. E' la ragione per cui vale la pena continuare a
+scavare in quei 44 ms, invece di rassegnarsi al tetto architetturale.
+
+CAUTELA: a info non si possono contare gli eventi, quindi non e' dimostrato che i due gesti avessero
+la stessa intensita' (43,0 s contro 49,3 s, cpu/s quasi uguale ma non identica). Il salto di quadri
+e' **coerente** col calcolo del margine, non **provato** da esso. La campagna su Estuary, a debug, lo
+verifichera' con gli eventi contati uno per uno.
+
+### Stato della configurazione
+
+`<loglevel>` riportato a **1**: per il confronto con Estuary serve contare gli eventi, e ora sappiamo
+quanto costa farlo. Backup in `advancedsettings.xml.bak-taratura`.
+
+---
+
+## Lotto 268 -- Estuary contro Arctic Fuse: il costo dell'evento non e' della skin
+
+Campagna `estuary-cartella-20260913-1651`: Estuary 4.0.0, cartella `Top 250 iMDB` di Fen Light
+(finestra 10025), stesso gesto e stesso livello di log della `20260913-1601`.
+
+    tratto        skin            cpu/s ciclo GUI   eventi/s   ms/evento   quadri/s
+    riposo        Arctic Fuse         0,174 core        0,0          -        0,0
+    riposo        Estuary             0,090 core        0,0          -        0,0
+    scorrimento   Arctic Fuse         0,903 core       17,8       50,8       10,3
+    scorrimento   Estuary             0,781 core       16,9       46,3       24,6
+
+### Il costo di una pressione e' quasi identico: 50,8 contro 46,3 ms
+
+**Il 10% di differenza.** Due skin che non hanno niente in comune spendono quasi lo stesso per
+gestire un tasto direzionale. Quei ~46 ms sono **di Kodi**, non nostri: sono il costo di muovere il
+fuoco in un contenitore su questo hardware. E' il pavimento, e ci siamo dentro.
+
+Sottraendo la base a riposo e risolvendo sulle due scene, il costo per evento viene **41,1 ms in
+entrambe** e il costo per fotogramma presentato viene **-0,1 ms**, cioe' zero: presentare un quadro
+non costa cpu al ciclo GUI, costa il TEMPO che gli avanza.
+
+### Dove sta invece la differenza: la base a riposo, 2x
+
+    Arctic Fuse  0,174 core a schermo fermo
+    Estuary      0,090 core a schermo fermo
+
+E' il lavoro che il ciclo fa a ogni giro **indipendentemente dall'input**: `Process()` su tutti i
+controlli, condizioni di visibilita', animazioni, InfoManager. A schermo fermo nessuna delle due
+disegna un solo fotogramma (`algorithmdirtyregions=3`) -- quei numeri sono puro calcolo a vuoto.
+
+### Perche' 2,4 volte i fotogrammi
+
+    margine che resta (1 core - cpu/s)   quadri/s   quadri per centesimo di core
+    Arctic Fuse   0,098 core               10,3            1,05
+    Estuary       0,219 core               24,6            1,12
+
+**I fotogrammi sono proporzionali al margine, con la stessa costante in tutte e due** (1,05 contro
+1,12, il 6% di scarto) -- e questa non e' una conseguenza del modello, e' un controllo indipendente
+su quantita' misurate. Servono **~10 ms di margine per ogni quadro presentato**.
+
+Da dove viene la differenza di margine (0,122 core):
+
+    base della skin      0,083 core   68%
+    eventi in piu'       0,036 core   30%   (17,8/s contro 16,9/s: gesto leggermente diverso)
+
+**Due terzi del divario sono la base a riposo.** Non il costo dell'evento, non il disegno: il lavoro
+a vuoto di ogni giro del ciclo.
+
+### La cautela che conta
+
+**Le due scene non sono la stessa.** Arctic Fuse e' stata misurata sulla **Home a widget**, Estuary
+in una **cartella**. La differenza di base mescola quindi la skin E la scena, e non e' lecito
+attribuirla tutta alla skin. Va chiusa con la terza campagna: **Arctic Fuse nella stessa cartella,
+stesso gesto**. Se li' la base resta ~0,17 core, il divario e' della skin; se scende verso 0,09, era
+la Home a widget, e il bersaglio cambia completamente.
+
+### Cosa cambia nella strategia
+
+Fino a ieri il bersaglio era "i 51 ms per evento". Ora si sa che ~41 di quei ms sono di Kodi e non
+si toccano. Il bersaglio e' la **base a ogni giro**: ogni centesimo di core tolto li' vale **circa un
+fotogramma al secondo in piu'**, e la relazione e' lineare e misurata.
+
+---
+
+## Lotto 269 -- Stessa cartella, cambia solo la skin: il disegno costa 3,8 volte
+
+Campagna `arcticfuse-cartella-20260913-1702`: Arctic Fuse 3.3.14 ricaricata **nello stesso processo**
+di Kodi (pid 24999) usato per Estuary, stessa cartella `Top 250 iMDB` (finestra 10025), stesso gesto,
+log a debug. E' il primo confronto in cui cambia **una cosa sola**.
+
+### Il dato, senza modelli
+
+    per fotogramma presentato     Estuary            Arctic Fuse
+    cpu del ciclo GUI             31,8 ms            118,1 ms
+    bloccato                       6,5 ms             19,8 ms
+    giro completo                 38,3 ms            137,9 ms     (3,6x)
+    eventi digeriti per giro       0,7                2,7
+    intervallo mediano            33 ms = 2 periodi  150 ms = 9 periodi
+    fotogrammi al secondo         24,6                7,1          (3,5x)
+    cpu/s del ciclo GUI           0,781 core          0,842 core
+    a riposo                      0,087 core          0,127 core
+
+**Con quasi la stessa cpu, Estuary produce 3,5 volte i fotogrammi.** E' esattamente la differenza di
+fluidita' che si vede a occhio.
+
+### Due affermazioni del lotto 268 erano sbagliate
+
+1. **"Il margine sta nella base a riposo."** No. Nella stessa cartella la base differisce di 0,04 core
+   (0,127 contro 0,087): non puo' spiegare un fattore 3,5. Sulla Home sembrava il 68% del divario
+   perche' confrontavo due scene diverse -- esattamente la cautela scritta in fondo al lotto 268.
+2. **"I fotogrammi sono proporzionali al margine, con la stessa costante."** Coincidenza su due punti.
+   Il terzo la smentisce: Arctic Fuse in cartella ha PIU' margine che sulla Home (0,158 contro
+   0,097) e MENO fotogrammi (7,1 contro 10,3) -- 0,45 quadri per centesimo di core, contro 1,06-1,12.
+
+### Il costo del disegno, qualunque sia il costo dell'evento
+
+Per giro: `cpu = a_vuoto + disegno + eventi_digeriti x costo_evento`, con `a_vuoto` dal riposo (60
+giri/s senza disegno: 1,45 ms Estuary, 2,12 ms Arctic Fuse). Il costo di un evento da solo non si
+misura, ma il RAPPORTO fra i costi di disegno delle due skin non dipende da quanto vale:
+
+    costo evento    disegno Estuary    disegno Arctic Fuse    rapporto
+       0 ms             30,4 ms            116,0 ms             3,8x
+      20 ms             16,4 ms             62,0 ms             3,8x
+      30 ms              9,4 ms             35,0 ms             3,7x
+      40 ms              2,4 ms              8,0 ms             3,4x
+
+(oltre ~43 ms il giro di Estuary non basterebbe nemmeno per gli eventi, quindi e' il limite superiore.)
+
+**Arctic Fuse spende 3,4-3,8 volte Estuary per disegnare lo stesso elenco.** Questo e' il bersaglio.
+
+### Il circolo vizioso
+
+Gli eventi arrivano a cadenza fissa (~19,5/s, la decide Android). Un giro lungo 138 ms ne accumula
+2,7, e il giro dopo li deve digerire tutti prima di disegnare: giro lungo -> piu' eventi per giro ->
+giro ancora lungo. Estuary sta sotto la soglia (0,7 eventi per giro) e il circolo non parte. Ogni ms
+tolto al disegno riduce anche gli eventi arretrati: il guadagno e' piu' che lineare.
+
+### Cosa resta da capire
+
+Da fuori non si scompone il disegno per controllo. Il passo successivo e' **bisezione nella skin**:
+stessa cartella, stesso gesto, togliendo un blocco alla volta (sfondo/fanart, pannello info, vista,
+overlay, sfocature) e guardando il giro per fotogramma. Il referto ha tutto quello che serve.
+
+---
+
+## Lotto 270 -- Piano di bisezione, e un sospetto nostro trovato nel sorgente di Kodi
+
+### La struttura di cio' che si disegna
+
+`MyVideoNav.xml` (md5 identico fra repo e stick) e' solo `View_Main` (Includes_Views.xml): `Background`,
+`View_Row_Items` (tutte le 23 viste, una sola visibile: nella cartella di Fen Light Arctic Fuse non ha
+una vista salvata in ViewModes6.db, quindi usa la 500 Square Row, `fixedlist` orizzontale con
+movimento), `View_Row_Line`, `View_Row_Info` (pannello info), `Furniture_Footer_Left/Right`,
+`View_Scrollbar_Strip`.
+
+### Le immagini NON sono la causa in questa scena
+
+Durante lo scorrimento Estuary fa **1611 conversioni swscaler (33,2/s)**, Arctic Fuse **765 (16,3/s)**:
+la skin fluida decodifica il DOPPIO. Stanno tutte sui JobWorker. La correlazione del 01/09 (quadri lenti
+vicini a una decodifica) era vera ma non causale: si decodifica quando entrano elementi nuovi, che e'
+anche il momento del lavoro pesante della skin.
+
+### Il sospetto nostro: la "porta" di FrameMove
+
+Kodi 21.1, `Application.cpp:1836-1850`, dentro `FrameMove` a ogni giro del ciclo GUI:
+
+    if (m_WaitingExternalCalls) {
+      m_frameMoveGuard.unlock();
+      sleepTime = max(2, min(m_ProcessedExternalCalls >> 2, max_sleep));   // max_sleep 80 se non si riproduce
+      Sleep(sleepTime);
+      m_frameMoveGuard.lock();
+      m_ProcessedExternalDecay = 5;
+    }
+    if (m_ProcessedExternalDecay && --m_ProcessedExternalDecay == 0) m_ProcessedExternalCalls = 0;
+
+Chi entra da quella porta: ogni chiamata Python che usa `XBMCAddonUtils::GuiLock`
+(`AddonUtils.cpp:21`, `LockFrameMoveGuard`), cioe' **`xbmc.getCondVisibility`** (`ModuleXbmc.cpp:363`).
+NON ci passano `getInfoLabel` (nessun lock), `Window.getProperty/setProperty` e
+`getCurrentWindowId/getCurrentWindowDialogId` (solo il lock del contesto grafico).
+
+Conseguenza: **per ogni getCondVisibility in attesa il ciclo GUI dorme almeno 2 ms**, e il sonno
+cresce di 1 ms ogni 4 chiamate finche' non passano **5 giri consecutivi** senza chiamate. A 60 giri/s
+5 giri sono 83 ms e il contatore si azzera; a 7 fotogrammi/s sono 700 ms e **non si azzera mai**: il
+sonno puo' salire verso 80 ms. E' un circolo vizioso nel senso letterale -- piu' il ciclo e' lento,
+piu' la porta resta aperta a lungo.
+
+Il `WidgetPaginator` gira ogni 0,3 s mentre un contenitore di Fen Light ha il fuoco e a ogni giro fa
+2-3 `getCondVisibility` (`modal_dialog_open` -> `System.HasActiveModalDialog`, `Control.HasFocus` una o
+due volte): 7-10 porte al secondo. Il tempo bloccato del ciclo GUI e' ~140 ms/s in Arctic Fuse e ~160
+ms/s in Estuary, compatibile con queste porte -- ma da fuori non si separa dall'attesa del vsync.
+
+Nota: questo costo e' SIMILE nelle due skin, quindi non spiega da solo il 3,8x del disegno. Ma e' fino
+al ~15% del tempo del ciclo, e' codice nostro, e se confermato si toglie senza toccare la skin:
+`Control.HasFocus(x)` equivale a `System.CurrentControlID == x` (getInfoLabel, gia' letto una riga
+sopra, nessuna porta) e il dialogo modale si legge con `xbmcgui.getCurrentWindowDialogId()` (solo il
+lock del contesto grafico).
+
+### Ordine delle prove (stessa cartella, stesso gesto, Arctic Fuse)
+
+1. **Paginazione interattiva OFF** (impostazione esistente di Fen Light). Il watcher resta vivo ma a 1 s
+   e senza nessuna getCondVisibility. Nessuna modifica al codice. Misura quanto costano le nostre porte.
+2. **Vista 506 Basic List** dal menu viste della skin, nella stessa cartella. Nessuna modifica. Separa la
+   riga di poster col movimento (`fixedlist` + `List_Poster_Row_Movement`) da sfondo e pannello info.
+3. Solo se serve: un deploy diagnostico con interruttori `Skin.HasSetting` su Background,
+   View_Row_Info, View_Row_Line, footer, uno per prova.
+
+---
+
+## Lotto 271 -- Prova 1: le porte di FrameMove esistono, ma non sono il collo di bottiglia
+
+Campagna `af-cartella-pagoff-20260913-1726`: Arctic Fuse, stessa cartella, stesso processo, paginazione
+interattiva OFF (log 17:25:30: `watcher idle (off/playing/paused/ricerca)`).
+
+Confronto sul SOLO tratto di scorrimento continuo (stessa cadenza di tasti, 19,7/s in entrambi: le
+brevi pause di rilascio falsano i totali perche' li' Kodi recupera fotogrammi):
+
+    per fotogramma          paginazione ON    paginazione OFF
+    cpu del ciclo GUI          141,0 ms          142,2 ms
+    bloccato                    18,1 ms            1,2 ms
+    giro completo              161,6 ms          146,6 ms
+    fotogrammi al secondo        6,2               6,8        (+10%)
+    ciclo GUI                 87% cpu, 11% bloc  97% cpu, 1% bloc
+    a riposo                   0,127 core        0,110 core
+
+### Cosa dice
+
+1. **Il sospetto era giusto.** Col watcher spento il tempo bloccato del ciclo GUI crolla da 18 ms a 1 ms
+   per fotogramma: quel tempo era quasi tutto sonno dentro la porta di `FrameMove`, non attesa del vsync
+   (saturo com'e', il ciclo il vsync non lo aspetta mai). Anche a riposo il watcher costava ~2 punti di
+   core.
+2. **Ma vale solo il 10% dei fotogrammi.** Il tempo liberato non diventa disegno: la cpu per
+   fotogramma resta 142 ms, il ciclo passa dall'87% al 97% e i fotogrammi salgono da 6,2 a 6,8. Il
+   collo di bottiglia e' la cpu, e le porte erano un sovrapprezzo sopra.
+3. **Ora la misura e' pulita.** Con bloccato all'1% il ciclo GUI e' cpu pura: ogni cambiamento della
+   skin si leggera' direttamente nei 142 ms per fotogramma, senza il rumore delle porte. Per la
+   bisezione della skin la paginazione resta OFF.
+
+### Il rimedio nel codice (da fare, non urgente)
+
+Il 10% e' reale e costa poco: nel watcher `Control.HasFocus(x)` -> confronto con `System.CurrentControlID`
+gia' letto (getInfoLabel, nessuna porta); `System.HasActiveModalDialog` -> `xbmcgui.getCurrentWindowDialogId()`
+(solo il lock del contesto grafico). Resta da fare la stessa ricerca negli altri servizi che interrogano
+la GUI in ciclo.
+
+### Metodo: il tratto continuo, non il totale
+
+Nel lotto 269 il costo per fotogramma di Arctic Fuse era 118 ms sul tratto intero; sul solo tratto
+continuo e' 141. I momenti di rilascio del tasto fanno arrivare fotogrammi a raffica e abbassano la
+media. D'ora in poi i confronti si fanno sul tratto a cadenza piena (>=19 tasti/s).
+
+---
+
+## Lotto 272 -- Prova 2: la vista non c'entra. Preparata la prova 3
+
+Campagna `af-cartella-506-20260913-1733`: stessa cartella, paginazione OFF, vista cambiata dal menu
+della skin (script.skinviewtypes ha riscritto `script-skinviewtypes-includes.xml` sulla stick:
+`Exp_View_506 = Container.Content(movies) + PluginName == plugin.video.fenlight`, verificato; skin
+ricaricata alle 17:32:43, tornata su MyVideoNav). Scorrimento GIU'/SU a 19,6 tasti/s.
+
+    tratto continuo            cpu/quadro   giro     fotogrammi/s   ciclo GUI
+    502 Poster Row (pag off)    142,2 ms   146,6 ms      6,8        97% cpu
+    506 Basic List (pag off)    156,1 ms   165,5 ms      6,0        94% cpu
+
+**La Basic List non va meglio, va un filo peggio** -- e l'utente lo ha visto a occhio prima di leggere i
+numeri ("ancora piu' scattoso dell'animazione della riga orizzontale"). La fila di poster col suo
+movimento NON e' il costo. Il peso sta nel resto di `View_Main` o fuori dalla finestra.
+
+### Prova 3 preparata (non ancora sul dispositivo)
+
+Copia diagnostica di `Includes_Views.xml` in scratchpad (`diag-skin/`), md5 `ebb15d81e5a76c67377996ef7a110d6c`,
+contro l'originale `32427780080dff6ac3db368604de4bb1` (identico fra repo e stick). Il repo NON viene
+toccato. Quattro interruttori nel solo `View_Main`, come `<include condition="!Skin.HasSetting(...)">`:
+
+    diag_off_bg     Background (sfondo, sfocatura, artwork, overlay, video di sfondo)
+    diag_off_info   View_Row_Info (pannello info)
+    diag_off_furn   View_Scrollbar_Strip, View_Row_Line, Furniture_Footer_Left/Right
+    diag_off_anim   Animation_Group_Bumper, Animation_View_WindowChange
+
+Verificato nel sorgente che la misura e' quella giusta:
+- la condizione di un `<include>` si valuta AL CARICAMENTO (`GUIIncludes.cpp:413-417`): spento, il blocco
+  non esiste proprio -- nessun controllo, nessuna condizione valutata a ogni giro;
+- `CSkinInfo::ParseSetting` (`Skin.cpp`) carica qualunque `<setting type="bool">` di settings.xml, quindi
+  gli interruttori si accendono scrivendo il file a Kodi fermo, senza toccare di nuovo la skin.
+
+Ordine: prima TUTTI e quattro accesi (resta solo la lista). Se il costo per fotogramma crolla, e'
+dentro la finestra e si bisseca; se resta ~150 ms, e' fuori da `MyVideoNav` e si cambia strada.
+Confronto contro la 506 appena misurata, quindi la vista resta 506 e la paginazione OFF.
+
+---
+
+## Lotto 273 -- Prova 3: il costo e' tutto nei blocchi della finestra
+
+Campagna `af-cartella-diag-tutto-20260913-1748`. Deploy a Kodi fermo: `Includes_Views.xml` diagnostico
+(md5 `ebb15d81...` verificato sulla stick), `settings.xml` della skin con `diag_off_bg/info/furn/anim = true`
+(backup degli originali in `.kodi/temp/diag272/`). Confermato a occhio dall'utente: solo i poster.
+
+Nota: `script-skinviewtypes-includes.xml` e' stato riscritto alle 17:45 e per i film di Fen Light e'
+tornato alla 502 Poster Row (`Exp_View_506 = [False]`). Il confronto si fa quindi con la 502 a
+paginazione OFF del lotto 271. Watcher confermato `idle (off...)` dopo il riavvio.
+
+    tratto continuo, 19,7 tasti/s     502 completa   502 solo lista   Estuary (pag ON)
+    fotogrammi al secondo                 6,8            44,4             20,5
+    cpu per fotogramma                  142,2 ms         16,0 ms          43,7 ms
+    giro completo                       146,6 ms         22,5 ms          48,8 ms
+    eventi digeriti per giro              2,89             0,44             0,96
+    ciclo GUI                          97% cpu         71% cpu, 23% bloc  90% cpu
+    cpu del ciclo per evento             49,2 ms          36,0 ms          45,5 ms
+    a riposo                            0,114 core       0,086 core       0,087 core
+
+L'utente, prima di vedere i numeri: "estremamente piu' reattivo".
+
+### Cosa dice
+
+1. **Tolti sfondo, pannello info, arredi e animazioni della finestra: da 6,8 a 44,4 fotogrammi al
+   secondo (6,5x), da 142 a 16 ms di cpu per fotogramma.** Il costo dello scorrimento in Arctic Fuse sta
+   quasi per intero in quei quattro blocchi di `View_Main`. La lista di poster da sola va il DOPPIO di
+   Estuary intera.
+2. **Il ciclo non e' piu' saturo**: 71% di cpu e 23% bloccato, cioe' aspetta il vsync. Il circolo vizioso
+   si e' spento: 0,44 eventi per giro invece di 2,89.
+3. **Anche il "costo per evento" era in parte skin**: da 49 a 36 ms. Il lotto 268 lo attribuiva tutto a
+   Kodi (41 ms, "non si tocca"): era sbagliato anche quello. Una parte di cio' che succede a ogni
+   cambio di fuoco -- aggiornare pannello info e sfondo sull'elemento nuovo -- e' lavoro dei blocchi
+   rimossi. Il pavimento di Kodi e' al massimo 36 ms, probabilmente meno.
+4. **A riposo** la finestra spoglia costa quanto Estuary (0,086 contro 0,087 core).
+
+### Prossimo passo: attribuire il costo blocco per blocco
+
+Si riaccende UN blocco alla volta partendo dalla finestra spoglia, cosi' ogni prova parte da un ciclo
+non saturo e il costo aggiunto si legge pulito (togliendone uno alla volta dalla finestra completa il
+ciclo resterebbe saturo e i fotogrammi non direbbero niente). Ordine per sospetto: sfondo (artwork per
+elemento con dissolvenza, sfocatura, overlay, video di sfondo), pannello info, arredi, animazioni.
+
+---
+
+## Lotto 274 -- Prova 4: lo sfondo costa poco in fotogrammi, ma consuma margine
+
+Campagna `af-cartella-diag-bg-20260913-1801`: come la prova 3, con `diag_off_bg = false` (sfondo di
+nuovo presente, gli altri tre blocchi spenti). Confermato a occhio: artwork dietro i poster, niente
+pannello info ne' footer. Kodi aveva riscritto `settings.xml` alla chiusura delle 17:59 (riordinato),
+gli interruttori erano sopravvissuti. Vista 502, paginazione OFF.
+
+    tratto continuo, 19,7 tasti/s   solo lista    lista + sfondo
+    fotogrammi al secondo              44,4           43,6        (-2%)
+    cpu per fotogramma                 16,0 ms        18,5 ms     (+2,5)
+    cpu per evento                     36,0 ms        40,8 ms     (+4,8)
+    ciclo GUI                         71% cpu        80% cpu
+    bloccato (margine)                 23%            13%
+    intervalli 1 / 2 / 3 vsync       69/25/4 %      66/30/2 %
+
+L'utente: "non mi sembra calata la fluidita', anche con l'aggiunta della landscape".
+
+### Cosa dice
+
+- **Lo sfondo NON e' la causa del crollo**: da solo toglie meno di un fotogramma al secondo.
+- **Ma non e' gratis**: +4,8 ms di cpu per ogni pressione (cambio di immagine con dissolvenza) e il
+  margine del ciclo scende dal 23% al 13%. Vuol dire che un blocco successivo di costo simile basterebbe
+  a saturare di nuovo il ciclo -- e a quel punto il circolo vizioso riparte e i fotogrammi crollano in
+  modo non lineare. I costi vanno quindi letti in ms di cpu, non in fotogrammi: gli fps restano piatti
+  finche' c'e' margine e poi cadono di colpo.
+
+### Metodo per le prossime prove: cumulativo
+
+Si riaccende il pannello info TENENDO lo sfondo acceso. Il costo del pannello e' la differenza con
+questa prova; il vantaggio e' che si arriva alla finestra completa per gradi, vedendo il punto esatto
+in cui il margine finisce.
+
+---
+
+## Lotto 275 -- Prova 5: il pannello info da solo e' il crollo intero
+
+Campagna `af-cartella-diag-bg-info-20260913-1809`: sfondo acceso, pannello info acceso, arredi e animazioni
+spenti. Confermato a occhio. Utente: "siamo crollati completamente".
+
+    tratto continuo, 19,7 tasti/s   fps    cpu/quadro   giro      eventi/giro   ciclo GUI   a riposo
+    solo lista                      44,4     16,0 ms     22,5 ms     0,44       71% (23% bloc)  0,086
+    lista + sfondo                  43,6     18,5 ms     22,9 ms     0,45       80% (13% bloc)  0,091
+    + pannello info                  7,0    138,2 ms    143,3 ms     2,81       96% ( 2% bloc)  0,119
+    finestra completa                6,8    142,2 ms    146,6 ms     2,89       97% ( 1% bloc)  0,114
+
+**Il pannello info riporta da solo la finestra al livello di quella completa.** Arredi e animazioni non
+aggiungono niente di misurabile ne' sotto scorrimento (6,8 contro 7,0) ne' a riposo (0,114 contro 0,119):
+la prova sul footer si salta, come proposto dall'utente. Cautela: con il ciclo saturo un costo aggiuntivo
+non si vede negli fps; se dopo aver alleggerito il pannello la finestra completa non torna vicina alla
+prova 5 alleggerita, arredi e animazioni si ricontrollano.
+
+A riposo il pannello costa +0,028 core (0,47 ms per giro a 60 giri/s): poco. Il suo costo esplode solo sotto
+scorrimento, quindi e' lavoro innescato dal CAMBIO DI ELEMENTO, non dal disegno statico.
+
+### Cosa contiene (`Info_Panel`, Includes_Info.xml)
+
+Un `grouplist` verticale con quattro parti:
+- **Info_Title**: quattro `image` di clearlogo (`background="true"`) e quattro `label` in `font_title_midi`
+  con `wrapmultiline`, ognuna con 1-6 condizioni di visibilita' su `ListItem.Art(...)` / Title / Artist;
+- **Info_Line**: anno/durata/stelle/pillole qualita';
+- **genere**: una `label`;
+- **trama** (`Info_Panel_Plot_Direct`): `textbox` con `<height max="193">auto</height>` e
+  `<autoscroll delay="6000" time="4000" repeat="10000">`, etichetta con quattro `$INFO` concatenati.
+
+Staticamente sono poche decine di controlli: il costo non viene dal numero. Il sorgente di
+`CGUITextBox` (Process/UpdateInfo) non mostra niente di patologico -- a ogni cambio d'elemento rifa' il
+layout del testo e ricalcola l'altezza -- quindi si misura.
+
+### Sotto-bisezione preparata
+
+Variante di `Includes_Info.xml` in scratchpad, md5 `aeb0f354cc4e213b050ec23ef4ac8d9f` (originale
+`eeed18c6bd8a2617443553b4f4cd4712`, identico fra repo e stick). Interruttori, solo dentro `Info_Panel`:
+`diag_off_title`, `diag_off_line`, `diag_off_plot` (condizione dell'include, al caricamento) e
+`diag_off_genre` (condizione di visibilita' della label). Prima prova: SOLO trama spenta.
+
+---
+
+## Lotto 276 -- Prova 6: la trama e' il punto di rottura. E nasconderla non basta
+
+Campagna `af-cartella-diag-noplot-20260913-1818`. Variante di `Includes_Info.xml` (md5 `aeb0f354...`)
+caricata a Kodi fermo, backup dell'originale in `temp/diag272/`. Sfondo e pannello accesi, dentro il
+pannello solo `diag_off_plot = true`. Confermato a occhio: niente trama. Utente: "la fluidita' e' calata
+veramente pochissimo, siamo ancora a una navigazione molto fluida".
+
+    tratto continuo, 19,7 tasti/s   fps    cpu/evento  ciclo GUI        eventi/giro  intervalli 1/2/3/4+ vsync
+    lista + sfondo                  43,6     40,8 ms   80% (13% bloc)     0,45        66/30/ 2/ 0 %
+    + pannello SENZA trama          32,9     46,0 ms   90% ( 4% bloc)     0,60        38/44/15/ 2 %
+    + pannello completo              7,0     49,2 ms   96% ( 2% bloc)     2,81         0/ 0/ 0/98 %
+    a riposo: 0,091 / 0,120 / 0,119 core
+
+### Cosa dice
+
+- **Titolo + dettagli + genere costano ~5 ms per pressione** e portano il ciclo al 90%: margine del 4%,
+  ma ancora fuori dal circolo vizioso (0,60 eventi per giro).
+- **La trama e' la goccia che fa traboccare.** Con lei il ciclo si satura e si passa da 32,9 a 7 fps.
+  Il suo costo VERO non si legge da qui: col ciclo saturo la cpu per evento non puo' superare ~50 ms
+  (un core diviso 19,7 tasti), quindi i +3,2 ms visibili sono un minimo, non una misura.
+- A riposo la trama non costa niente (0,120 contro 0,119): e' puro lavoro al cambio di elemento.
+
+### Il dettaglio del sorgente che decide la correzione
+
+1. `CGUIControlGroup::Process` (GUIControlGroup.cpp:94) e `CGUIControlGroupList::Process`
+   (GUIControlGroupList.cpp:52) chiamano `UpdateVisibility` su OGNI figlio a ogni giro.
+2. `CGUIControl::UpdateVisibility` finisce con `UpdateInfo(item)` (GUIControl.cpp:645) **senza guardare se
+   il controllo e' visibile**.
+3. Per il textbox `UpdateInfo` fa `CGUITextLayout::Update` (GUITextLayout.cpp:223): se il testo e' cambiato
+   converte UTF-8 -> UTF-16 e rifa' l'impaginazione (`UpdateCommon`), altrimenti esce subito.
+
+Quindi **nascondere la trama durante lo scorrimento con `<visible>` NON toglie il costo**: il controllo
+nascosto reimpagina lo stesso a ogni elemento. Quello che toglie il costo e' che il TESTO NON CAMBI.
+
+### La correzione da provare
+
+Durante lo scorrimento sostenuto l'etichetta della trama legge una stringa vuota e costante; appena lo
+scorrimento finisce torna alla trama. `Container.Scrolling` senza id guarda il contenitore attivo
+(GUIControlsGUIInfo.cpp:564) ed e' vero solo se il timer di scorrimento corre da piu' di
+max(durata dello scorrimento, 300 ms) (GUIBaseContainer.cpp:1365): una pressione singola aggiorna la
+trama come oggi, il tasto tenuto la svuota finche' non si molla.
+
+Implementazione nella variante diagnostica (non nel repo): variabile `Diag_Plot_Label` (vuota se
+`Skin.HasSetting(diag_plot_scroll) + Container.Scrolling`, altrimenti la stessa etichetta di sempre) e
+scelta del textbox AL CARICAMENTO con `<include condition>`, cosi' con l'interruttore acceso il textbox
+originale non esiste proprio. Limite noto della variante: legge `ListItem` fisso, quindi finche'
+l'interruttore e' acceso le altre istanze del pannello con `Container(id)` mostrerebbero la trama
+dell'elemento a fuoco -- si resta nella cartella.
+
+Prova 7: pannello COMPLETO (trama compresa) + `diag_plot_scroll = true`. Riferimenti: 7,0 fps con la
+trama normale, 32,9 senza trama.
+
+### Aggiunta: la trama si impagina DUE volte a ogni pressione
+
+Rileggendo `Info_Panel_Plot_Direct`: sotto il `textbox` c'e' un `label` con la STESSA etichetta,
+`wrapmultiline` e `<visible>$PARAM[visible] + !$PARAM[use_textbox]</visible>`, cioe' sempre nascosto nel
+pannello di questa finestra (`use_textbox` vale true). Ma `CGUILabelControl::UpdateInfo`
+(GUILabelControl.cpp:68) -> `CGUILabel::SetText` (GUILabel.cpp:188-190) -> `CGUITextLayout::Update`: anche
+nascosto reimpagina il testo a ogni cambio. **La skin originale paga l'impaginazione della trama due volte
+per ogni elemento.** Rimedio banale per la versione definitiva: scegliere textbox o label AL CARICAMENTO
+(`<include condition="$PARAM[use_textbox]">`), non con `<visible>`.
+
+La variante diagnostica tiene conto di entrambi: `Diag_Plot_Textbox_Orig` (textbox + label, identici
+all'originale) e `Diag_Plot_Textbox_Var` (entrambi su `$VAR[Diag_Plot_Label]`), scelti al caricamento.
+md5 della variante: `43aaa09a3c295a5642f40c8d0e5c60d6`.
+
+---
+
+## Lotto 277 -- Inventario del pannello info: cosa calcola Kodi e cosa si vede
+
+Contesto dall'utente: il pannello e' stato modificato rispetto ad Arctic Fuse originale (tolti rating dei
+provider, classificazione, stelle, tagline, studio; aggiunti regista, genere, rating IMDb in decimi, piu'
+spazio alla trama). Sospetto: rami morti ancora calcolati. Storia git del file: `c74baf1` (import),
+`6ce726f` infobox finito, `589ccd3` info box pulito e dati da imdb, `04cfb1c`, `880869f`.
+
+### La regola che decide cosa costa (dal sorgente, lotto 276)
+
+Un controllo CARICATO aggiorna la sua etichetta a ogni giro anche se nascosto; se il testo cambia, lo
+reimpagina. Un controllo escluso al caricamento (`<include condition>` falsa) non esiste. Quindi per ogni
+controllo conta: e' caricato? il suo testo cambia da un elemento all'altro?
+
+### Per un film di Fen Light nella finestra MyVideoNav (impostazioni attuali della stick)
+
+Esclusi al caricamento, costo zero: pillole HDR (`InfoTags.EnableHDR` false), pillole canali audio
+(`InfoTags.EnableAudioChannels` false), stelle (`InfoTags.DisableStarRating` true).
+
+Caricati, e cosa fanno a ogni pressione:
+
+    blocco         controllo                          visibile   testo cambia   spreco
+    Info_Title     image croplogo (TMDbHelper)        mai        no (vuoto)     ramo morto: TMDbHelper rimosso
+                   image clearlogo                    se c'e'    si'            -
+                   image tvshow/artist.clearlogo      no         no             poco
+                   label TVShowTitle / Artist         no         no             poco
+                   label Title                        se no logo si'            -
+                   label Label                        no         SI'            IMPAGINAZIONE INUTILE, font grande
+    Info_Line      label Director                     si'        si'            -
+                   5 pillole risoluzione (button)     no         no             condizioni a ogni giro
+                   Gender / Department / Age          no         no (vuoti)     ramo morto per i film
+                   Premiered                          si'        si'            -
+                   ChannelName / ChannelNumber        no         no (vuoti)     ramo morto (PVR)
+                   Rating (IMDb)                      si'        si'            -
+                   Year (solo album/canzoni)          no         SI'            IMPAGINAZIONE INUTILE
+                   Album label                        no         no             ramo morto (musica)
+                   Duration (solo album/canzoni)      no         SI'            IMPAGINAZIONE INUTILE
+                   Duration h+m                       si'        si'            -
+                   Duration solo minuti               no (>1h)   SI'            IMPAGINAZIONE INUTILE
+                   un divisore (image) per etichetta  vari       no             condizioni a ogni giro
+    genere         label Genre                        si'        si'            -
+    trama          textbox                            si'        si'            -
+                   label alternativa (wrapmultiline)  mai        SI'            SECONDA IMPAGINAZIONE DELLA TRAMA
+
+Inoltre `View_Row_Info` carica una SECONDA istanza intera di `Info_Panel` per la vista combinata 521
+(`Exp_View_521_Include = True` sulla stick), legata a `Container(531)` e visibile solo se
+`Window.Property(TMDBHelper.WidgetContainer) == 531`. In questa vista quel contenitore e' vuoto, quindi i
+testi non cambiano: costa condizioni, non impaginazioni.
+
+Bug trovato di passaggio: Gender/Department/Age leggono `$PARAM[container]ListItem.Property(...)` invece di
+`$PARAM[container]$PARAM[listitem]`.
+
+### Cosa e' misurato e cosa no
+
+Misurato: titolo + dettagli + genere ~5 ms per pressione; la trama e' il punto di rottura. NON misurato:
+quanto pesa ciascuno dei rami morti. Le impaginazioni inutili per pressione sono 1 titolo in font grande,
+3 etichette corte e 1 trama intera; le condizioni sono decine di confronti di stringa su DBType, ma Kodi
+registra una volta sola le espressioni identiche e le valuta una volta per giro.
+
+### Decisioni dell'utente e versione pulita del pannello
+
+Decisioni: il pannello deve servire **solo i video di Fen Light** (film, serie, stagioni, episodi); la
+**pillola della risoluzione va tolta**. Quindi si tolgono per intero i rami di persone, musica e TV live.
+
+Usi verificati prima di toccare (il pannello non vive solo in MyVideoNav): `Info_Panel` in
+Includes_Hubs.xml (4), Includes_DialogInfo.xml (4, anche persona con `use_textbox`), Includes_Views.xml,
+Includes_Views_Combined.xml, MyPlaylist.xml; `Info_Line` e `Info_Title` nell'OSD con `listitem=VideoPlayer`
+e `override=true`. La versione pulita tiene tutti i parametri che questi passano.
+
+`Includes_Info.pulito.xml` (scratchpad, md5 `33ce45c8ed7be298de12d00def3d35c2`), costruito dall'originale
+con uno script che si ferma se un pezzo atteso non c'e' (`diag-skin/pulisci.py`):
+
+- **Info_Title**: via l'immagine crop di TMDbHelper, il suo parametro e le sue 7 condizioni; via
+  `artist.clearlogo` e l'etichetta `Artist`. Restano clearlogo, tvshow.clearlogo, TVShowTitle, Title, Label.
+- **Info_Line**: via pillole risoluzione, Gender/Department/Age (con il loro bug), ChannelName/Number,
+  Year e Duration musicali, Album label; dalle condizioni di gruppo e di Premiered tolti album/song/canale;
+  il divisore di Premiered dipende ora solo dal regista. Restano Director, Premiered, Rating IMDb, durata.
+  HDR, canali audio e stelle restano come erano: gia' esclusi al caricamento dalle impostazioni.
+- **trama**: `Info_Panel_Plot_Textbox` O `Info_Panel_Plot_Label` scelti con `<include condition>` su
+  `use_textbox`; tolte dall'etichetta le descrizioni di album e artista. **Una impaginazione per pressione
+  invece di due.**
+
+Aspetto atteso identico a oggi (la pillola risoluzione per i media di Fen Light non compariva). Prova 7: la
+stessa configurazione della prova 5 (sfondo e pannello accesi, arredi e animazioni spenti), con il pannello
+pulito al posto dell'originale. Riferimento: 7,0 fps.
+
+---
+
+## Lotto 278 -- Prova 7: la pulizia rende +56%, ma il ciclo resta saturo
+
+Campagna `af-cartella-info-pulito-bis-20260913-1845` (la `af-cartella-info-pulito-20260913-1842` e' senza
+navigazione: l'utente non ha scorso, vale solo come riposo). Pannello pulito caricato a Kodi fermo (md5
+`33ce45c8...` verificato), confermato a occhio identico al precedente, nessun errore di caricamento skin
+nel log. Stessa configurazione della prova 5.
+
+    tratto continuo, 19,7 tasti/s   fps    cpu/quadro   giro     eventi/giro   ciclo GUI   intervalli 3/4+ vsync   riposo
+    pannello originale               7,0     138,2 ms   143,3 ms     2,81        96%          0 / 98 %            0,119
+    pannello PULITO                 10,9      88,0 ms    91,4 ms     1,80        96%          5 / 94 %            0,108
+    pannello senza trama            32,9      27,5 ms    30,4 ms     0,60        90%         15 /  2 %            0,120
+
+Utente: "sicuramente piu' fluido di prima, di parecchio. Ma non fluido quanto la schermata con solo i
+poster e la landscape".
+
+### Cosa dice
+
+- **La pulizia vale +56% di fotogrammi** (7,0 -> 10,9) e -36% di cpu per quadro, a parita' di aspetto. Anche
+  a riposo scende (0,119 -> 0,108 core). Il sospetto dell'utente sui rami morti era giusto e misurabile.
+- **Ma il ciclo e' ancora saturo** (96%, 1,8 eventi per giro): siamo ancora dentro il circolo vizioso, solo
+  meno a fondo. Per uscirne serve togliere ancora lavoro al cambio di elemento.
+- Il divario che resta e' quasi tutto la trama: senza, 32,9 fps. Una impaginazione per pressione e' ancora
+  troppo, con il tasto tenuto a 19,7 pressioni al secondo.
+
+### Prova 8 preparata: pannello pulito + trama ferma durante lo scorrimento
+
+`Includes_Info.pulito-scroll.xml` (scratchpad, md5 `d379442c1dd6d4b0ac48ea0423dd1ced`): identico al pulito,
+piu' l'interruttore `diag_plot_scroll` che AL CARICAMENTO sostituisce il textbox della trama con uno che
+legge `$VAR[Diag_Plot_Label]` (vuoto se `Container.Scrolling`, altrimenti la trama). Limite della sola
+variante diagnostica: la variabile legge `ListItem` fisso; nella versione definitiva andra' risolto per le
+istanze legate a `Container(id)`.
+
+---
+
+## Lotto 279 -- Goccia o peso? Cosa i dati dicono e cosa no
+
+Domanda dell'utente: la trama pesa davvero, o e' solo l'ultima goccia di una somma?
+
+### Il bilancio per pressione
+
+A 19,7 pressioni al secondo il ciclo GUI ha **50,8 ms di cpu per pressione** (un core diviso 19,7), disegno
+dei quadri compreso. Misurato, sempre in stato NON saturo:
+
+    configurazione                     cpu per pressione   ciclo GUI
+    solo lista                              36,0 ms            71%
+    + sfondo                                40,8 ms  (+4,8)     80%
+    + titolo, dettagli, genere              46,0 ms  (+5,2)     90%
+    + trama                              >= ~50 ms           96%  SATURO
+
+### Risposta
+
+1. **Il crollo e' della somma, per costruzione.** Il ciclo si satura quando il costo totale di una pressione
+   supera ~50,8 ms, chiunque sia l'ultimo arrivato. Oltre quella soglia gli eventi si accumulano, ogni giro ne
+   deve smaltire di piu', il giro si allunga e ne accumula ancora: i fotogrammi non calano, crollano.
+   "Ultima goccia" e "pesante" non si escludono: sono due domande diverse.
+2. **Quanto pesa la trama da sola, oggi NON si sa.** Prima di lei restavano ~4,8 ms di margine; lei li ha
+   sforati, quindi costa almeno ~5 ms. Ma da una misura satura non si ricava il resto: potrebbe costarne 6 o
+   30, e la cpu per pressione satura non puo' salire oltre ~50 ms qualunque sia il carico.
+3. **Si misura con una prova sola**: trama da sola sopra lista + sfondo (40,8 ms, 10 ms di margine). Se resta
+   intorno all'85% e' un peso normale e il problema e' l'accumulo; se da sola satura il ciclo, e' pesante in se'.
+
+Variante preparata: `Includes_Info.pulito-diag.xml` (md5 `0ccbb1c3e3f77a12db7df38d366d95ac`) = pannello pulito +
+interruttore `diag_plot_scroll` + interruttori `diag_off_title/line/genre/plot`. Con lo stesso file si fanno
+sia questa prova (titolo, dettagli, genere spenti) sia la successiva (tutto acceso + trama ferma).
+
+---
+
+## Lotto 280 -- Prova 8: la trama e' pesante da sola
+
+Campagna `af-cartella-solo-trama-20260913-1856`. `Includes_Info.pulito-diag.xml` (md5 `0ccbb1c3...`)
+caricato a Kodi fermo; sfondo acceso, dentro il pannello SOLO la trama (pulita: una impaginazione per
+pressione), `diag_plot_scroll` spento. Confermato a occhio: solo sfondo e trama.
+
+    tratto continuo, 19,7 tasti/s    fps    cpu/pressione   cpu/quadro   eventi/giro   ciclo GUI
+    lista + sfondo                   43,6       40,8 ms        18,5 ms       0,45       80% (13% bloc)
+    + titolo/dettagli/genere         32,9       46,0 ms        27,5 ms       0,60       90% ( 4% bloc)
+    + SOLO trama                     12,1     >=48,9 ms        79,6 ms       1,63       96% ( 1% bloc)  SATURO
+    + pannello pulito completo       10,9     >=48,9 ms        88,0 ms       1,80       96% ( 1% bloc)  SATURO
+
+### Risposta alla domanda del lotto 279
+
+**Tutte e due le cose, ma la trama pesa davvero.** Partendo da lista + sfondo c'erano ~10 ms di margine per
+pressione (40,8 su 50,8): la trama DA SOLA li sfora e satura il ciclo. Quindi costa **piu' di 10 ms per
+pressione**, cioe' piu' di titolo + dettagli + genere insieme (5,2) e piu' dello sfondo (4,8): e' il singolo
+elemento piu' caro della finestra. Aggiungere sopra di lei titolo, dettagli e genere toglie solo un altro
+fotogramma (12,1 -> 10,9): a ciclo gia' saturo il resto conta poco.
+
+Stima, con un'ipotesi dichiarata: separando la cpu di una pressione in costo per quadro disegnato (F) e costo
+per pressione, la trama vale `8,1 + 1,6 x F` ms; con F fra ~3 e ~10 ms (plausibile dalla lista spoglia: 16 ms
+per quadro con 0,44 pressioni per giro) la trama costerebbe **~13-24 ms per pressione**, e anche questo e' un
+minimo perche' la misura e' satura.
+
+A riposo la trama non costa nulla di misurabile (0,099 core contro 0,091 di lista + sfondo).
+
+### Prossima prova
+
+Pannello pulito completo + `diag_plot_scroll = true`: solo impostazioni, lo stesso file e' gia' sulla stick.
+
+---
+
+## Lotto 281 -- Perche' la trama costa piu' delle immagini: l'a-capo di Kodi e' quadratico
+
+Domanda dell'utente: "e' solo testo, e' strano che pesi piu' delle immagini". Risposta dal sorgente (21.1).
+
+### Le immagini lavorano altrove
+
+`<texture background="true">`: la decodifica sta su un JobWorker (le righe `swscaler`), il ciclo GUI scambia
+solo la texture pronta. Per il testo non esiste niente di simile: l'impaginazione e' sincrona, sul ciclo GUI.
+
+### Come Kodi va a capo
+
+`CGUITextLayout::WrapText` (GUITextLayout.cpp:541-645), per ogni riga del testo:
+
+    while (pos < line.m_text.end()) {
+      curLine.emplace_back(letter);                       // aggiunge UNA lettera
+      const float currWidth = m_font->GetTextWidth(curLine);   // e rimisura TUTTA la riga
+      if (currWidth > maxWidth) { ...spezza all'ultimo spazio, curLine.clear()... }
+      ++pos;
+    }
+
+E ogni misura non e' una somma di larghezze in tabella:
+- `CGUIFont::GetTextWidth` (GUIFont.cpp:265-275) prende il lock del contesto grafico;
+- `CGUIFontTTF::GetTextWidthInternal` (GUIFontTTF.cpp:705-707) chiama `GetHarfBuzzShapedGlyphs(text)`: per
+  l'intera riga fin li' calcola lo script di ogni carattere, costruisce i run, crea un `hb_buffer` per run e fa
+  lo shaping HarfBuzz, SENZA cache; poi somma gli avanzamenti glifo per glifo.
+
+Quindi una riga di N caratteri viene sagomata N volte, con lunghezze 1, 2, ..., N: **~N^2/2 caratteri
+sagomati per riga**. Riga da 80 caratteri: ~3.200. Trama da 8 righe: ~25.000 caratteri sagomati, ~650
+buffer HarfBuzz e ~650 prese del lock, a ogni pressione. Un'etichetta da 20 caratteri (il regista): ~200.
+**La trama costa come un centinaio di etichette corte**: e' coerente con i numeri misurati (titolo + dettagli
++ genere ~5 ms; trama da sola >10 ms, stima 13-24).
+
+Poi `BidiTransform` (fribidi, riga per riga, con allocazione) e `CalcTextExtent` (un'altra sagomatura per
+riga) completano il conto.
+
+### Due conseguenze pratiche
+
+1. **Il textbox impagina TUTTA la trama, non solo le righe visibili.** `CGUITextBox` crea il layout senza
+   altezza massima (`CGUITextLayout(labelInfo.font, true)`, GUITextBox.cpp:27 -> `m_maxHeight = 0`), quindi
+   `WrapText` non si ferma mai: gli servono tutte le righe per lo scorrimento automatico. Un `label` riceve
+   invece l'altezza (`m_textLayout(labelInfo.font, overflow == OVER_FLOW_WRAP, height)`, GUILabel.cpp:20) e
+   `WrapText` si ferma alle righe che ci stanno (GUITextLayout.cpp:564-565). Da verificare con una misura
+   come si comporta con `<height max="193">auto</height>`.
+2. **Il costo cresce con caratteri totali x caratteri per riga.** Con larghezza fissa ogni riga costa ~L^2/2 e
+   le righe sono N/L: totale ~N x L/2. Allargare la trama (fatto nella personalizzazione: `plotwidth` 800 e
+   piu' righe) la rende piu' cara anche a parita' di testo.
+
+### Leve, in ordine di effetto atteso
+
+- trama ferma durante lo scorrimento sostenuto: elimina tutto il lavoro mentre si scorre (prova preparata);
+- `label` ad altezza fissa al posto del textbox: impagina solo le righe visibili, perde lo scorrimento
+  automatico (da misurare);
+- larghezza della trama: costo proporzionale ai caratteri per riga.
+
+---
+
+## Lotto 282 -- Prova 9: con la trama ferma si torna alla fluidita' senza trama
+
+Campagna `af-cartella-trama-ferma-20260913-1906`. Solo impostazioni cambiate a Kodi fermo: pannello pulito
+completo + `diag_plot_scroll = true` (file `0ccbb1c3...` invariato). La campagna e' partita mentre l'utente
+verificava a mano il trucco: la traccia contiene due tratti continui (8,6 s in tutto) e 13 s di pressioni
+singole a ~1 al secondo. Riscontri a occhio dell'utente: tenendo premuto la trama resta vuota finche' ci si
+muove e la navigazione e' "molto piu' fluida"; con una pressione singola la trama "compare subito, scompare un
+istante, ricompare".
+
+    tratto continuo, 19,6 tasti/s   fps    cpu/quadro   giro     eventi/giro   ciclo GUI        intervalli 1/2/3/4+
+    pulito, trama normale           10,9     88,0 ms    91,4 ms     1,80       96% (1% bloc)     0/ 0/ 5/94 %
+    pulito + TRAMA FERMA            34,6     25,6 ms    28,9 ms     0,57       89% (5% bloc)    44/40/14/ 1 %
+    pannello senza trama (rif.)     32,9     27,5 ms    30,4 ms     0,60       90% (4% bloc)    38/44/15/ 2 %
+
+**Il trucco toglie per intero il costo della trama durante lo scorrimento sostenuto**: il pannello completo
+(logo, dettagli, genere, trama) si comporta come il pannello senza trama. 10,9 -> 34,6 fps, fuori dal circolo
+vizioso. Tratto breve (8,6 s), ma coincide al fotogramma col riferimento e con la percezione dell'utente.
+
+### Il difetto sulla pressione singola
+
+Confermato dall'utente e spiegabile col sorgente: `Container.Scrolling` e' vero se il timer di scorrimento
+corre da piu' di max(durata dell'animazione, 300 ms) (GUIBaseContainer.cpp:1365). Su questa stick un singolo
+spostamento supera per un attimo la soglia prima che il timer si fermi: trama -> vuoto -> trama, cioe' uno
+sfarfallio e tre impaginazioni invece di una. Da risolvere nella versione definitiva con un criterio che scatti
+solo per pressioni che si susseguono, non per uno spostamento lungo.
+
+Dato di passaggio, NON attribuito: le pressioni singole (1,1 al secondo) costano ~320 ms di cpu ciascuna, quasi
+tutti in fotogrammi da ~21 ms dell'animazione di scorrimento (16 quadri al secondo, 87% al vsync). Non c'e' un
+riferimento nelle altre configurazioni: resta una domanda aperta, non una conclusione.
+
+### Stato della stick (DIAGNOSTICO, non definitivo)
+
+- `Includes_Views.xml` diagnostico (`ebb15d81...`), con footer e animazioni della finestra SPENTI;
+- `Includes_Info.xml` pulito + interruttori (`0ccbb1c3...`), trama ferma ACCESA con `ListItem` fisso: negli hub
+  i pannelli legati a `Container(id)` leggono l'elemento a fuoco;
+- `script-skinviewtypes-includes.xml` rigenerato dalla skin (vista 502 per i film di Fen Light);
+- paginazione interattiva di Fen Light SPENTA;
+- originali in `.kodi/temp/diag272/`.
+
+---
+
+## Lotto 283 -- Kodi 22 ha gia' corretto l'a-capo quadratico. Il resto no
+
+### Le "animazioni spente" delle prove
+
+`diag_off_anim` toglie solo due include di `View_Main`:
+- `Animation_Group_Bumper`: il piccolo rimbalzo (slide di 20 px) quando si urta il bordo, e SOLO se e' visibile
+  la finestra 1180 -- in questa cartella praticamente mai;
+- `Animation_View_WindowChange`: zoom in/out quando il gruppo della vista compare o sparisce (apertura e
+  chiusura della finestra, dialogo info). Contiene anche `<visible>!$EXP[Exp_InfoDialogs]</visible>`: con
+  l'interruttore acceso la lista non si nasconde sotto il dialogo info.
+
+Nessuna delle due interviene durante lo scorrimento: e' il motivo per cui l'utente non ha visto differenze e per
+cui la prova 5 (7,0 fps) e la finestra completa (6,8) coincidono.
+
+### Confronto del sorgente fra versioni
+
+File confrontati: 21.1-Omega (in uso), 21.3-Omega (ultima stabile), 22.0b2-Piers (ultima beta), master.
+`GUITextLayout.cpp`, `GUIFontTTF.cpp`, `GUIFont.cpp`, `GUITextBox.cpp`, `GUIControl.cpp`: **21.3 identici a 21.1**.
+
+**22.0b1 e successive contengono la correzione esatta del problema del lotto 281**: PR #27403 di Stephan
+Sundermann, "[guilib] Optimize text layout rendering by reducing font width calculation", commit `2d67aecc45`,
+fusa il 2025-11-06 (inclusa da 22.0b1, assente in 21.2 e 21.3). Dalla descrizione: "Calculating the text width
+is a very expensive operation because it renders the glyphs for the complete text using harfbuzz. Doing that
+for text wrapping by checking each character in the text calls this operation very often." Effetto dichiarato:
+"Smoother UI and less lag". In 22.0b2 `WrapText` misura una parola alla volta (`widthOf(current, wordEnd)`)
+e accumula le larghezze, invece di rimisurare l'intera riga a ogni lettera: da ~N^2/2 a ~N caratteri sagomati
+per riga.
+
+Ancora uguale in 22.0b2:
+- la porta di `FrameMove` per le chiamate Python (Application.cpp: sonno 2-80 ms) -> il rimedio del watcher
+  (lotto 271) serve anche su 22;
+- `UpdateInfo` sui controlli nascosti (GUIControl.cpp:661) -> la pulizia dei rami morti e la scelta al
+  caricamento servono anche su 22;
+- il textbox impagina tutto il testo (`CGUITextLayout(labelInfo.font, true)`, GUITextBox.cpp:29).
+
+### Cosa ne consegue
+
+Il trucco della trama ferma e' un aggiramento di un difetto di Kodi 21 che Kodi 22 ha corretto. Su 22 la trama
+dovrebbe costare molto meno, ma su questo processore QUANTO meno non si sa senza misurare: una sagomatura per
+parola resta lavoro sul ciclo GUI. La pulizia del pannello vale su entrambe le versioni.
+
+---
+
+## Lotto 284 -- Piano Kodi 22, le due animazioni, trama senza sfarfallio, immagini
+
+### Decisioni dell'utente
+
+- Si finiscono le ottimizzazioni su Kodi 21; poi **backup completo e installazione pulita di Kodi 22** per vedere
+  come risponde (interessano anche i miglioramenti di riproduzione della 22).
+- Pulizia del pannello e correzioni trovate finora: si tengono.
+- Trama ferma durante lo scorrimento: si tiene SE non sfarfalla nella navigazione lenta.
+
+### Le due animazioni di `diag_off_anim`, identificate
+
+- `Animation_Group_Bumper` = il "rimbalzo" di 20 px quando si urta la fine delle righe: condizionato a
+  `Window.IsVisible(1180)`, cioe' `Custom_1180_Dialog_Bumper.xml` (aperto da `Custom_1181_Dialog_Submenu.xml`,
+  direzione in `Window(Home).Property(Bumper.Direction)`). E' quello che l'utente ricorda.
+- `Animation_View_WindowChange` = `Animation_Zoom_In`/`Out` (Includes_Animations.xml): fade 0->100 e zoom
+  85%->100% in 300 ms quando il gruppo della vista compare (entrata nella finestra), l'inverso quando sparisce
+  (apertura del dialogo info). Breve e solo sui cambi di finestra: per questo passa inosservata.
+
+### Trama senza sfarfallio: timer della skin
+
+Causa esatta dello sfarfallio: la lista usa `<scrolltime tween="quadratic">400</scrolltime>` (Includes_Lists.xml:548),
+quindi la soglia di `Container.Scrolling` e' max(400, 300) = 400 ms, cioe' proprio la durata dell'animazione di un
+singolo spostamento. Il timer di scorrimento si ferma solo quando l'animazione e' finita E sono passati 200 ms
+(`SCROLLING_GAP`) dall'ultimo avvio (`UpdateScrollOffset`, GUIBaseContainer.cpp): nel giro in cui l'animazione
+finisce la condizione e' vera per un attimo -> trama vuota per un quadro.
+
+`Container.OnNext/OnPrevious` non aiutano: sono impulsi di un giro, azzerati a ogni FrameMove
+(`ResetContainerMovingCache`, Application.cpp:915).
+
+Soluzione: i **timer della skin** (Kodi 20+, `xbmc/addons/gui/skin/SkinTimerManager.cpp`), file `Timers.xml`
+nella cartella della risoluzione (`CSkinInfo::LoadTimers`, Skin.cpp):
+
+    <timer>
+        <name>diag_scorrimento</name>
+        <start reset="true">Container.Scrolling</start>
+        <stop>!Container.Scrolling</stop>
+    </timer>
+
+e la trama si svuota solo con `Skin.TimerIsRunning(diag_scorrimento) + Integer.IsGreaterOrEqual(Skin.TimerElapsedSecs(diag_scorrimento),1)`.
+Verificato nel sorgente: `Process` avvia solo un timer fermo e ferma solo uno in corsa (SkinTimerManager.cpp:218-230);
+`reset="true"` azzera il cronometro a ogni partenza (SkinTimer.cpp:31-34) -- senza, `CStopWatch::Start`
+riprenderebbe dal tempo accumulato e dopo decine di pressioni singole il secondo arriverebbe comunque.
+
+Compromesso dichiarato: `Skin.TimerElapsedSecs` e' in secondi interi. La trama si svuota dopo ~1,4 s di tasto
+tenuto (400 ms di soglia + 1 s): quel primo tratto va alla velocita' del pannello pulito (~11 fps), poi si passa
+a ~35. Uscire dalla saturazione e' immediato: il ritardo del circolo e' di giri, non una coda che si svuota piano.
+
+File: `Includes_Info.timer.xml` (md5 `af52f1a03f718c084fc5bdc956b37e02`) + `Timers.xml` nuovo
+(md5 `98832926980f53026f39eb88c1dc15bf`); sulla stick `Timers.xml` oggi non esiste.
+
+### Le immagini: si possono dare a Kodi "gia' pronte"?
+
+Dal sorgente 21.1:
+- ogni immagine passa da FFmpeg e viene convertita con `sws_getContext(..., pixFormat, ..., AV_PIX_FMT_RGB32, SWS_BICUBIC)`
+  (FFmpegImage.cpp:505-506). Per un JPEG il formato sorgente e' YUVJ420P (FFmpegImage.cpp:346): e' la conversione
+  "No accelerated colorspace conversion found from yuv420p to bgra" dei log;
+- la cache delle miniature ricodifica: `CPicture::CacheTexture` -> `CreateThumbnailFromSurface`, e il file in cache
+  e' JPEG (`pix_fmt = jpg_output ? AV_PIX_FMT_YUVJ420P : AV_PIX_FMT_RGBA`, FFmpegImage.cpp:602) salvo immagini con
+  trasparenza. Anche un'immagine gia' piccola viene riscritta, non copiata (Picture.cpp:262-267).
+
+Quindi dare a Kodi immagini in un altro formato NON sopravvive alla cache: finiscono comunque in JPEG. E soprattutto
+la misura dice che non e' la leva della fluidita': la decodifica sta sui JobWorker, su core liberi, ed Estuary ne
+decodifica il doppio andando 3,5 volte piu' fluida (lotto 272). Potrebbe contare per il tempo di comparsa dei poster
+e per la cpu totale sulla Home: da misurare a parte, non ora.
+
+### Da ricordare per la Home
+
+Negli hub `Info_Panel` e' incluso con `visible_plot=false` / `visible_line=false` (Includes_Hubs.xml:347, 380): i
+controlli sono CARICATI e nascosti, quindi per la regola del lotto 276 impaginano lo stesso a ogni elemento.
+Candidato forte per la Home.
+
+## Lotto 285 -- Navigazione veloce riconosciuta dalla distanza tra gli spostamenti
+
+### Prova del timer (lotto 284) e obiezione dell'utente
+
+Deploy verificato (`Includes_Info.xml` af52f1a0, `Timers.xml` 98832926). Funziona come progettato, ma l'utente
+osserva che il criterio e' sbagliato: conta la DURATA dello scorrimento, non il suo RITMO.
+- Pressioni singole ripetute per ~2 s: `Container.Scrolling` resta vero (ogni spostamento dura 400 ms e il
+  successivo arriva prima che il timer interno si fermi, SCROLLING_GAP 200 ms), quindi la trama sparisce anche se
+  non si sta scorrendo veloce.
+- Tasto tenuto: per ~2 s le trame si impaginano tutte e la navigazione e' lenta, poi di colpo diventa fluida.
+
+Il segnale giusto e' l'intervallo tra uno spostamento e il successivo.
+
+### Cosa offre Kodi 21.1 (sorgente)
+
+- Il tempo di pressione esiste solo dentro Kodi: `CKeyboardStat` calcola `held` dalla prima pressione
+  (KeyboardStat.cpp:167-173) e `CGUIBaseContainer::OnAction` entra nel ramo "tenuto" oltre HOLD_TIME_START 100 ms
+  (GUIBaseContainer.cpp:376). Nessuna infobool lo espone. Il `mod="longpress"` delle keymap non serve: sposta l'azione
+  breve al rilascio e non ripete (InputManager.cpp:500-525, 689).
+- Timer della skin: solo secondi interi.
+- Ogni spostamento di lista, fixedlist e panel emette `Container.OnNext`/`OnPrevious` (GUIListContainer.cpp:137,162,206;
+  GUIFixedListContainer.cpp:82,97,264; GUIPanelContainer.cpp:315,336,416; GUIBaseContainer.cpp:1186), per UN
+  fotogramma: i tasti sono gestiti in `HandlePortEvents` prima di `WindowManager.Process`, la cache si azzera a fine
+  Render (Application.cpp:915).
+- Cronometro al millisecondo: un'animazione `Hidden` tiene `m_visible = VISIBLE` finche' non e' finita
+  (GUIControl.cpp:815-820), e `Control.IsVisible` legge proprio `m_visible == VISIBLE` (GUIControl.cpp:415-420).
+  Con `reversible="false"` una nuova accensione non inverte l'animazione a meta': la azzera e rende subito visibile
+  (QueueAnimation, GUIControl.cpp:750-769), quindi il cronometro riparte da zero a ogni spostamento.
+  `Animate` gira anche per i controlli nascosti (DoProcess, GUIControl.cpp), i gruppi figli vengono valutati in
+  ordine (GUIControlGroup.cpp:92-99).
+
+### Rilevatore (in View_Main, prima dello sfondo)
+
+    9712  visibile se [OnNext | OnPrevious] + [IsVisible(9711) | IsVisible(9712)]   Hidden 350 ms
+    9711  visibile se  OnNext | OnPrevious                                            Hidden 250 ms
+
+9712 e' valutato prima di 9711, quindi legge lo stato di 9711 lasciato dagli spostamenti precedenti: si accende
+quando uno spostamento arriva entro ~250 ms (+ un fotogramma di ritardo) dal precedente, si autosostiene finche'
+gli spostamenti continuano entro 350 ms, si spegne 350 ms dopo l'ultimo. La trama si svuota con
+`Control.IsVisible(9712)`.
+
+Cosa aspettarsi, con i conti del ramo "tenuto" (GUIBaseContainer.cpp:380-389): il primo spostamento e' immediato,
+l'autorepeat di Android parte dopo ~500 ms, poi in saturazione Kodi avanza di 0,5 elementi per fotogramma (i
+repeat nello stesso fotogramma aggiungono 0: `frameDuration` e' la differenza di frame time), cioe' uno
+spostamento ogni 2 fotogrammi, ~185 ms a 11 fps. Il rilevatore dovrebbe quindi accendersi al terzo spostamento,
+~0,8 s dopo aver premuto (contro ~1,4 s del timer), e da li' il ritmo sale da solo.
+Pressioni singole piu' lente di ~4 al secondo: trama sempre aggiornata, subito. Piu' veloci: trattate come
+navigazione veloce. Le due soglie (250/350) sono da tarare sul dispositivo.
+Limite noto: a ~7 fps (finestra completa senza pulizia) due fotogrammi fanno ~285 ms e il rilevatore non
+scatterebbe; con il pannello pulito siamo sopra.
+
+`Container.OnNext` senza id vale solo per la finestra media (GUIControlsGUIInfo.cpp:602-607): negli hub servira'
+`Container(id).OnNext`.
+
+File (scratchpad `diag-skin/`, non nel repo): `Includes_Views.veloce.xml` (md5 `9bf225f187ef6cf06facf806466af853`),
+`Includes_Info.veloce.xml` (md5 `bbb26cf6e65efe806d500a419993da84`). `Timers.xml` va tolto dalla stick (ogni
+fotogramma valuterebbe `Container.Scrolling` per niente).
+
+### Prova sul dispositivo e decisione
+
+Deploy verificato (Includes_Views 9bf225f1, Includes_Info bbb26cf6, Timers.xml rimosso). Esito riferito dall'utente:
+- tasto tenuto: la trama sparisce sempre, molto prima del timer;
+- pressioni singole fatte di seguito: la trama sparisce anche li'. Atteso: in saturazione il tasto tenuto sposta
+  ogni 2 fotogrammi (~185 ms a 11 fps), lo stesso ritmo di pressioni rapide; abbassare la soglia smetterebbe di
+  riconoscere il tasto tenuto. E' il limite del segnale disponibile su Kodi 21, non una soglia sbagliata;
+- incoerenza visiva: clearlogo, dettagli e landscape seguono l'elemento selezionato mentre la trama sparisce.
+
+Decisione dell'utente: la soluzione pulita e' Kodi 22 (a capo corretto da PR #27403); questa resta come soluzione
+**relativa a Kodi 21**.
+
+### Versione definitiva nel repo (non pubblicata)
+
+- `Includes_Info.xml`: pannello pulito dei lotti 277-279 (generato da `pulisci.py`, identico a 33ce45c8) +
+  `Info_Panel_Plot_Textbox_Frozen` con la variabile `Info_Panel_Plot_Frozen_Label` (`Control.IsVisible(9712)`).
+  Scelta AL CARICAMENTO in `Info_Panel_Plot_Direct`: `$PARAM[use_textbox] + $PARAM[freeze_plot] +
+  String.StartsWith(System.BuildVersion,21)` (GUIIncludes.cpp:414-423). `freeze_plot` vale false di default in
+  `Info_Panel` e `Info_Panel_Plot_Direct`: dialogo info, hub, playlist e vista combinata (Container(53x)) restano
+  com'erano, la variabile legge solo `ListItem` del contenitore della vista.
+- `Includes_Views.xml`: file originale (footer, rimbalzo e zoom di nuovo attivi, nessun interruttore diag) +
+  `View_Main_Fast_Nav` (9712 prima di 9711) incluso in testa a `View_Main` solo con
+  `String.StartsWith(System.BuildVersion,21)`; `freeze_plot=true` passato solo dal pannello di `View_Row_Info`.
+  `View_Main` e' usato da MyVideoNav e MyPrograms: il rilevatore c'e' in entrambe.
+- Su Kodi 22 nessuno dei due blocchi viene caricato: trama sempre visibile, nessun controllo in piu'.
+
+Deploy verificato sulla stick con Kodi fermo: `Includes_Info.xml` `cda7b25c82dbf6c9940fb666de7a2b4c`,
+`Includes_Views.xml` `d5e76cc1b74b2e27cd59496e1bc1cff2`. Il resto di 1080i coincide con il repo, salvo il file
+generato di skinvariables (per-dispositivo, non toccato). Le impostazioni `diag_*` restano in settings.xml ma
+nessun XML le legge piu'.
+Da fare: misura finale a finestra completa nella cartella Top 250 iMDB.
+
+### Misura finale a finestra completa (referto `af-cartella-definitiva-20260913-2001`)
+
+Skin del repo cosi' com'e' (footer, rimbalzo, zoom, pannello pulito, rilevatore), cartella Top 250 iMDB, vista
+502, paginazione interattiva ancora spenta, log a livello 1. Tratti continui a tasto tenuto: campioni 31-34,
+36-40, 44-47 (comprendono l'avvio di ogni tenuta, cioe' i ~0,8 s prima che il rilevatore scatti).
+
+    configurazione                    parete  fps   cpu/quadro  giro   ev/giro  cpu/press  intervalli 1/2/3/4+ periodi
+    finestra completa originale        --     6,8     142,2     146,6   2,89       --     
+    pulito, trama normale (diag)      38,6   10,9      88,0      91,4   1,80      48,9     0/0/5/94 %
+    pulito + trama ferma (diag)        8,6   34,6      25,6      28,9   0,57      45,2     44/40/14/1 %
+    pannello senza trama (diag)       26,5   32,9      27,5      30,4   0,60      46,0     38/44/15/2 %
+    DEFINITIVA, tasto tenuto          21,9   32,5      27,0      30,8   0,61      44,5     37/47/13/1 %
+    DEFINITIVA, pressioni lente       19,4   33,7      17,0      29,7   0,04     383,4     87/8/0/3 %
+
+- A tasto tenuto la finestra completa passa da 6,8 a **32,5 fps** (x4,8), fuori dal circolo vizioso (0,61 eventi per
+  giro, 88% di cpu). Estuary nella stessa cartella faceva 20,5 in continuo (lotto 272): la skin ora e' piu' fluida.
+- Footer, rimbalzo e zoom riaccesi non si vedono nei numeri (32,5 contro 32,9 della prova senza trama con quei pezzi
+  spenti): e' la prima misura che li include, il test del footer era stato saltato.
+- Il rilevatore non costa niente di misurabile e l'avvio della tenuta (~0,8 s a trama visibile) e' gia' dentro il 32,5.
+- Resta aperto il costo della pressione singola (~380 ms di cpu della GUI per pressione, 17 ms per quadro): lavoro
+  distribuito su ~12 quadri dopo ogni pressione, non satura.
+
+## Lotto 286 -- I servizi di Fen Light fuori dalla porta del FrameMove
+
+Il rimedio lasciato in sospeso dal lotto 271. Lo spegnimento del watcher portava il tempo bloccato del ciclo GUI
+da 18,1 a 1,2 ms per quadro e i fotogrammi da 6,2 a 6,8 (+10%) nel tratto continuo: quel tempo era sonno
+dentro la porta di `FrameMove`, aperta a ogni `xbmc.getCondVisibility`.
+
+### Il meccanismo (Kodi 21.1)
+
+- `getCondVisibility` prende `XBMCAddonUtils::GuiLock` (ModuleXbmc.cpp:363), che chiama
+  `CApplication::LockFrameMoveGuard` (AddonUtils.cpp:29-30): `++m_WaitingExternalCalls`, poi il lock del
+  FrameMove e quello grafico (Application.cpp:1784-1790). Il ciclo della GUI, trovando chiamate in attesa,
+  lascia il lock e dorme 2-80 ms (Application.cpp:1836-1850).
+- `getInfoLabel` non prende niente (ModuleXbmc.cpp:292-309).
+- `xbmcgui.getCurrentWindowId` / `getCurrentWindowDialogId` prendono solo il lock grafico
+  (ModuleXbmcgui.cpp:27-39): nessuna porta, nessun sonno imposto.
+- `getGlobalIdleTime` non prende niente (ModuleXbmc.cpp:374-380).
+
+### Chi apriva la porta, e con che cadenza
+
+Censimento di tutte le `getCondVisibility`/`get_visibility` del plugin. Nei cicli periodici:
+- **WidgetPaginator** (giro 0,2-0,5 s, attivo con la paginazione interattiva accesa): `System.HasActiveModalDialog`
+  a ogni giro, piu' una o due `Control.HasFocus` nel cancello del fuoco. La seconda, `Control.HasFocus(cur_ctrl)`,
+  era vera per definizione. Piu' `Control.HasFocus` e `Container(N).Scrolling` nei rami a debito aperto
+  (cw_head, rehead), che girano solo quando c'e' qualcosa da riposizionare.
+- **DubResolver** (giro 2 s): `System.HasActiveModalDialog` a ogni giro, anche senza niente da ricaricare.
+- **WidgetRefresher**: la chiede solo con un rinvio in attesa. Resta com'e'.
+- Il resto e' su richiesta (kodi_refresh_ids, finestre, player, ricerca) o spento (blur_service, lotto 48).
+
+### Le sostituzioni
+
+1. `kodi_utils.modal_dialog_present()`: `xbmcgui.getCurrentWindowDialogId() != 9999`. Torna
+   `GetTopmostModalDialog()` (WINDOW_INVALID se nessuno). Differenza da `System.HasActiveModalDialog`
+   (`HasModalDialog(true)`, GUIWindowManager.cpp:1488-1501): conta anche un modale che sta chiudendo. E' la
+   stessa finestra contro cui si risolve `Container(N)` (GUIInfoHelper.cpp:92-117), quindi per il watcher e per
+   DubResolver, che dopo leggono infolabel dei contenitori, e' la risposta piu' esatta. `modal_dialog_open()`
+   resta per kodi_refresh_ids e WidgetRefresher, su richiesta.
+2. Cancello del fuoco del watcher: `prop_id == cur_ctrl`, con `cur_ctrl = System.CurrentControlID` gia' letto in
+   testa al giro. Senza modali entrambe guardano la finestra attiva (ModuleXbmc.cpp:365-367,
+   GUIWindowManager.cpp:1620-1629). `Control.HasFocus` confronta `GetFocusedControlID()`, CurrentControlID l'id
+   di `GetFocusedControl()` (GUIControlsGUIInfo.cpp:323-332, 663-670). Divergono solo quando l'ultimo id registrato
+   dalla finestra non ha piu' il fuoco (GUIControlGroup.cpp, GetFocusedControlID prima di GetFocusedControl), e li'
+   CurrentControlID e' quella giusta. Il ramo cw_head usa lo stesso confronto.
+3. DubResolver: la domanda sul dialogo diventa l'ultima clausola della condizione di ricarica, quindi si fa solo
+   con `to_show` pieno, tempo di riprova passato, coda vuota e utente fermo.
+
+Restano due `Container(N).Scrolling` nei rami a debito aperto: non esiste un'infolabel equivalente e girano solo
+per il tempo di un riposizionamento.
+
+### Prove
+
+`tests/test_286.py`, provata ROSSA sul codice vecchio in due varianti:
+- modale via getCondVisibility e cancello con `Control.HasFocus`: cadono A e B;
+- modale ancora via `modal_dialog_open` nel watcher e domanda a ogni giro in DubResolver: cadono C e D.
+Il blocco del fuoco e' ESTRATTO da `service.py` ed eseguito con un finto xbmc che solleva su qualunque
+getCondVisibility. `tests/test_216.py` aggiornata: il fuoco del mondo simulato passa da `cur_ctrl`, e una
+`Control.HasFocus` residua fa cadere la prova. Suite: 56 su 60, i quattro rossi sono i preesistenti 202-205.
+
+### Deploy e misura (referto `campagna-20260913-2024`)
+
+Deploy con Kodi fermo: intera lib (105 file, md5 identici al repo; cambiavano solo `service.py` e
+`modules/kodi_utils.py`), `__pycache__` cancellata. Paginazione interattiva riaccesa dall'utente, cartella
+Top 250 iMDB. Nel log il watcher lavora come prima e senza errori: `idle (modal dialog open)` all'apertura delle
+impostazioni, `idle cur_ctrl=500 prop=501`, poi `idle id=502 no-head` nella cartella, cioe' il giro completo a 0,3 s.
+
+    tratto continuo (19,6-19,7 tasti/s)   parete   fps   cpu/quadro  bloccato/quadro  giro   ev/giro
+    lotto 271, finestra originale  OFF       --     6,8    142,2          1,2        146,6    --
+    lotto 271, finestra originale  ON        --     6,2    141,0         18,1        161,6    --
+    lotto 285, skin definitiva     OFF      21,9   32,5     27,0          2,2         30,8   0,61
+    lotto 286, skin definitiva     ON       23,9   34,9     25,1          1,9         28,6   0,56
+      (solo i due tratti lunghi)            10,9   32,7     27,3          1,5         30,6   0,60
+
+- A paginazione ACCESA il tempo bloccato per quadro resta a 1,5-1,9 ms, come a paginazione spenta: prima del
+  rimedio il watcher lo portava a 18. La porta non si apre piu'.
+- Fotogrammi: 32,7-34,9 contro 32,5. Nessun costo misurabile del watcher sul ciclo della GUI.
+- Il lavoro del watcher resta, ed e' dove deve stare: `FL:paginator` 1,28 s di cpu in 2 minuti (1% di un core),
+  su un altro core.
+- A riposo: GUI 12% di un core, Kodi 23% (lotto 285, paginazione spenta: 13% e 25%).
+
+## Lotto 287 -- Home e hub: la stessa trama ferma, e i controlli nascosti non caricati
+
+### Misura di partenza (referto `campagna-20260913-2034`)
+
+Kodi riavviato con la paginazione accesa (quella dei widget si applica solo alle build nuove: dopo averla riaccesa
+dalle impostazioni i widget gia' costruiti restano senza stato e il watcher li vede `no-head`; l'utente ha scelto di
+lasciarlo cosi'). Paginazione verificata nel log: `home.503` 55 -> 75 -> 92 -> 110 mentre si scorre.
+Navigazione sulla riga Top 250 della Home (id 503), modalita' Standard.
+
+    tratto                               parete   fps   cpu GUI  cpu/quadro  giro   ev/giro  cpu/pressione
+    cartella, tasto tenuto (lotto 286)     23,9   34,9     88%      25,1      28,6   0,56       44,7
+    HOME riga 503, tasto tenuto            32,6    9,0     97%     106,9     110,6   2,18       49,0
+    cartella, pressioni lente              13,0   21,9     43%      19,5      45,6   0,05      370,0
+    HOME, pressioni lente                  15,2   33,0     78%      23,5      30,3   0,06      406,2
+    FERMO: GUI 12% di un core in cartella, 17% in Home.
+
+La Home e' nel circolo vizioso (2,18 eventi per giro) come la cartella prima del lotto 285.
+
+### Perche' (dalla skin, con le impostazioni della stick)
+
+`Home.xml` -> `Hub_Window`; `homeswitcher.home.mode` = Standard, quindi righe da `skinvariables-homewidgets-standard`
+e pannelli da `skinvariables-homewidgets-combined-info`: un `Hub_Combined_Info` PER RIGA (501, 502, 503), e ognuno
+contiene DUE `Info_Panel` legati a `Container(id).`:
+- pannello del titolo: `include_details=false`, ma la label del genere era gated con `<visible>` e quindi caricata e
+  reimpaginata a ogni elemento;
+- pannello dei dettagli: Info_Line, genere e trama in **textbox** (`use_textbox` true di default) senza nessuna
+  protezione -- lo stesso costo che nella cartella faceva 10,9 fps.
+Le righe senza fuoco non costano: il loro testo non cambia (GUITextLayout::Update esce subito).
+
+In piu' `Hub_Wall_Info` (hub 1107 e 1108 in modalita' Wall): `visible_line`, `visible_plot`, `visible_meta` tutti
+false ma `include_details` al default true, quindi Info_Line, genere e trama caricati, sempre nascosti, reimpaginati.
+`Hub_Spotlight_Info` non e' in uso (nessun `spotlight.target` impostato).
+
+### Cosa cambia
+
+- `Includes_Views.xml`: il rilevatore diventa una definizione sola, `Fast_Nav_Detector` (params `container`,
+  `id_recent`, `id_fast`). `View_Main_Fast_Nav` la usa con `Container`, 9711, 9712: identico al lotto 285.
+- `Includes_Hubs.xml`, `Hub_Combined_Info`: include il rilevatore per `Container($PARAM[id])` con id `971$PARAM[id]` /
+  `972$PARAM[id]`, solo con `String.StartsWith(System.BuildVersion,21)`; il pannello dei dettagli passa
+  `freeze_plot=true` e `freeze_var=Info_Panel_Plot_Frozen_$PARAM[id]`. `Container(id).OnNext` vale per qualunque
+  contenitore (GUIControlsGUIInfo.cpp:597-600), non solo per la vista della finestra media.
+- `Includes_Info.xml`: le variabili `Info_Panel_Plot_Frozen_501` ... `_550`, una per id perche' le variabili non
+  accettano `$PARAM`. Il generatore numera le righe da 501 in ogni finestra (`widgets_row.xml`) e la skin arriva a
+  `Container(550)`. `$PARAM` si risolve anche dentro `$VAR[...]` e negli attributi (GUIIncludes.cpp,
+  ResolveParametersForNode). `Info_Panel_Plot_Textbox_Frozen` legge `$VAR[$PARAM[label_var]]`; `freeze_var` ha
+  come default la variabile della vista, quindi la cartella resta com'era.
+- `Includes_Info.xml`: il genere va in `Info_Panel_Genre`, incluso con `condition="$PARAM[include_details]"`.
+- `Includes_Hubs.xml`, `Hub_Wall_Info`: `include_details=false`. A schermo non cambia niente: quei controlli erano
+  sempre nascosti.
+
+Id duplicati possibili solo nella ricerca (Discover 505 e una riga di ricerca 505): i due rilevatori guardano lo
+stesso `Container(505)` con le stesse soglie, quindi hanno lo stesso stato.
+
+`tests/test_287.py` fissa il cablaggio (variabili 501-550 con il loro rilevatore e contenitore, include e parametri,
+solo Kodi 21, genere e Wall), provata ROSSA sui file di prima. Suite 57 su 61, i rossi sono i preesistenti 202-205.
+
+### Deploy e misura (referto `campagna-20260913-2049`)
+
+Deploy con Kodi fermo, md5 verificati: `Includes_Info.xml` 2bbcf9ca, `Includes_Views.xml` 20bfa0eb,
+`Includes_Hubs.xml` 098fed1c; il resto di 1080i identico al repo salvo il file generato di skinvariables.
+Comportamento verificato dall'utente sulla Home: tutto corretto. Nel log nessun errore della skin.
+
+    tratto                               parete   fps   cpu GUI  cpu/quadro  giro   ev/giro  cpu GUI al secondo
+    cartella, tasto tenuto (lotto 286)     23,9   34,9     88%      25,1      28,6   0,56       877 ms
+    HOME prima (lotto 287)                 32,6    9,0     97%     106,9     110,6   2,18       967 ms
+    HOME dopo, tasto tenuto                19,8   28,6     90%      31,4      35,0   0,68       897 ms
+    cartella, pressioni lente              13,0   21,9     43%      19,5      45,6   0,05       427 ms
+    HOME dopo, pressioni lente              6,5   33,1     72%      21,7      30,2   0,05       718 ms
+    cartella FERMO                         34,3     --     12%        --        --     --       118 ms
+    HOME dopo FERMO                        40,5     --     18%        --        --     --       179 ms
+
+- Home a tasto tenuto da 9,0 a **28,6 fps** (x3,2), fuori dal circolo vizioso (0,68 eventi per giro).
+- Resta uno scarto con la cartella, non spiegato da questa misura: +6,3 ms di cpu per quadro a tasto tenuto
+  (31,4 contro 25,1), +61 ms di cpu della GUI al secondo da FERMI (18% contro 12% di un core), e piu' lavoro per
+  pressione lenta. Da ferma la GUI non disegna (0 fps): quel costo e' il Process di una finestra con piu'
+  controlli e condizioni, non rendering. Da bisecare come la cartella (lotti 272-276).
+
+## Lotto 288 -- Fase A1: la mappa di cosa carica davvero una finestra
+
+### Lo strumento
+
+`strumenti/diagnostica/mappa_skin.py <1080i> <Finestra.xml> <settings.xml> [file generato] [--profondita N]`.
+Espande la finestra come GUIIncludes al caricamento: definizioni da `Includes.xml` e dai file che include (con le loro
+condizioni), `<include>`/`<include content>`, `<param>` con default e il caso del parametro non definito, `<nested/>`,
+`$PARAM` in attributi e testo, `$EXP` nelle condizioni. Le condizioni degli include si valutano con le impostazioni
+della skin prese dalla stick, a tre valori (cio' che dipende dal runtime resta indeciso e l'include si tiene).
+Stampa l'albero dei controlli caricati con conteggi di `<visible>`, animazioni condizionali, `$INFO`, `$VAR`,
+contenitori e layout, poi gli include esclusi e quelli decisi a runtime.
+
+Il file generato di skinvariables va preso dalla stick: nella cartella del repo ce n'e' una copia con 5 widget
+(la stick ne ha 3), e le definizioni valgono alla prima occorrenza. Prima correzione dello script: il file del
+dispositivo si carica per primo e quello del repo si salta.
+
+### Cosa carica la Home (impostazioni della stick: Standard, nessuno spotlight, menu orizzontale)
+
+663 controlli, 377 `<visible>`, 71 animazioni condizionali, 4 contenitori. La cartella ne carica 839 ma quasi tutti
+nelle viste non attive, dentro gruppi nascosti che Kodi salta interi: il numero di controlli caricati da solo non
+dice il costo. Conta cosa resta ATTIVO a schermo.
+
+    blocco (Home)                         controlli   note
+    3 righe di widget (Hub_Widgets_Grouplist)   496   di cui 324 nei layout degli elementi
+      fixedlist 501 (landscape)                  97   itemlayout 29 ctrl / 15 visible; focusedlayout 67 / 31
+      fixedlist 502, 503 (poster)           115 ciascuna   itemlayout 35 ctrl / 27 visible; focusedlayout 79 / 55
+      Widget_Label + Widget_Busy              47-60 per riga   Widget_Busy nascosto salvo aggiornamento: taglia il sottoalbero
+    Hub_Combined_Info x3                     31 ciascuno   visibile solo quello della riga a fuoco
+    Hub_Spotlight                            30   caricato anche senza spotlight: `condition="$PARAM[spotlight]"`, default true
+    Home_ControlList (menu in alto)          1 lista, 30 visible sugli elementi statici
+    sfondo (due istanze di Background_Main)  ~10
+
+### Perche' le righe costano anche da ferme (Kodi 21.1)
+
+- `CGUIListItemLayout::Process` (GUIListItemLayout.cpp) chiama `m_group.UpdateVisibility(item)` e poi `DoProcess`, e
+  `CGUIListGroup::Process` (GUIListGroup.cpp) rifa' `UpdateVisibility(m_item)` su ogni figlio: A OGNI GIRO, per OGNI
+  elemento visibile di OGNI riga, si rivalutano tutte le `<visible>` e le animazioni condizionali del layout con
+  l'elemento come contesto, quindi senza la cache per fotogramma delle condizioni globali.
+- Testi e immagini invece no: `m_infoUpdateMillis` vale Max se `infoupdate` non e' impostato (GUIListItemLayout.h:64),
+  quindi `UpdateInfo` si fa solo quando l'elemento viene invalidato.
+
+Nel layout di un poster (per elemento, per giro): 27 `<visible>` che contengono 31 `Skin.HasSetting`, 17 condizioni
+PVR (IsRecording, HasTimer, ChannelNumberLabel) e 12 varianti per DBType genre/studio/country. Il focusedlayout ne ha
+il doppio: contiene due copie di Layout_Poster (una per riga a fuoco, una no, scelte da animazioni condizionali).
+Con ~8 poster visibili per riga e ~5 landscape, la Home valuta circa 650 `<visible>` per giro contro le ~270 della
+cartella: coerente con la GUI ferma al 18% di un core contro 12%.
+
+### Candidati per la bisezione (A2)
+
+1. Layout degli elementi: indicatori (Object_Indicator), rami PVR, varianti di icona per genre/studio/country, e le
+   impostazioni di skin dentro condizioni per elemento, che si possono decidere al caricamento. Varrebbe anche per la
+   cartella, che usa gli stessi layout.
+2. Costo per riga intera (immagini comprese): solo la riga a fuoco, prova diagnostica.
+3. Resto della finestra: spotlight caricato senza uso, menu in alto, sfondo.
+
+## Lotto 289 -- Fase A2, prova 1: quanto costano le condizioni per elemento
+
+Copia di prova nello scratchpad (repo intatto), `Includes_Layouts.xml` md5 `93dd08b46435068dd8a395c3908911dc` e
+`Includes_Objects.xml` `39797393d958ce0ff400d417275fda02`, deploy con Kodi fermo. Tolti dai layout delle righe:
+`Object_Indicator` e `Object_ContentBanner`, i due rami da TV in diretta di `Layout_Labels`, le tre varianti di icona
+genre/studio/country di `Object_Layout_Image_Icon` con le loro tre negazioni.
+Effetto sul layout di un poster, per elemento: 35 -> 15 controlli, 27 -> 5 `<visible>`, atomi Skin.HasSetting 31 -> 0,
+PVR 17 -> 0, DBType 12 -> 0 (il focusedlayout tiene ancora la copia "selezionata", che passa da Object_SelectBox).
+
+    Home                        FERMO (cpu GUI)   tasto tenuto (fps)   cpu/quadro   pressioni lente (cpu GUI)
+    lotto 287 (attuale)          179 ms/s (18%)        28,6              31,4 ms         718 ms/s
+    prova 1 (layout leggero)     139 ms/s (14%)        36,0              24,8 ms         540 ms/s
+
+- Da ferma -22% di cpu della GUI; a tasto tenuto +26% di fotogrammi e -21% di cpu per quadro.
+- La Home con i layout leggeri supera la cartella di oggi (34,9 fps): gli stessi layout li usa anche la cartella,
+  quindi il guadagno vale per tutte le liste della skin.
+- Il resto della finestra (spotlight caricato ma nascosto, menu in alto, sfondo, pannelli delle righe senza fuoco)
+  vale ormai poco: 139 ms/s da ferma contro i 118 della cartella. Le prove 2 e 3 si possono rimandare.
+
+### Perche' costano: la catena delle negazioni
+
+`Object_Indicator` mostra UNA cosa per volta, in ordine di priorita', e la priorita' e' scritta ripetendo le
+negazioni: `Object_Indicator_Visible_Collection` contiene le espressioni di playing, episodes, timers, progress,
+watched e library, `_Library` le prime cinque, e cosi' via (Includes_Objects.xml:997-1031). Contando anche la
+condizione del gruppo esterno (`_All`, che e' l'OR di tutte e sette) e `_Percentage`, ogni elemento valuta 36
+espressioni composte per giro, quando i casi possibili sono 7.
+
+La riscrittura a parita' di resa e' annidare: un gruppo per ramo, dentro il ramo negato del precedente. Ogni
+espressione compare una volta sola e i rami scartati non vengono nemmeno processati (un gruppo non visibile taglia
+il sottoalbero). Restano da decidere con l'utente i rami che dipendono da cosa usa: TV in diretta (non la usa) e
+elementi di tipo genere/studio/paese (Fen Light non li produce: `setMediaType` usa solo movie/tvshow/season/episode/video).
+
+## Lotto 290 -- Le condizioni per elemento: annidare invece di ripetere
+
+### Cosa dice il sorgente, e cosa cambia nella lettura del lotto 288
+
+`InfoExpression::InfoAssociativeGroup::Evaluate` (InfoExpression.cpp:95-116) si ferma al primo termine che
+decide, e SPOSTA IN TESTA il figlio che ha deciso, cosi' il giro dopo decide prima. Quindi non conta il numero
+di atomi scritti, conta quanti se ne devono valutare per decidere.
+Conseguenza sul lotto 288: per un elemento SENZA indicatori il gruppo di `Object_Indicator` e' gia' escluso da
+una condizione sola (`_All`) e i sette rami non vengono nemmeno guardati. La catena delle negazioni costa dove
+un indicatore C'E': "Continua a guardare" (tutti gli elementi hanno un avanzamento) e gli elementi visti.
+
+### La riscrittura (resa visiva identica)
+
+- `Object_Indicator`: la stessa priorita' (in riproduzione, episodi, timer, avanzamento, visto, libreria,
+  collezione) scritta ANNIDANDO. Nuovi mattoni `Object_Indicator_Visible_Solo_<tipo>` e `_No_<tipo>`: ogni
+  termine compare una volta sola e il ramo scartato non viene processato. Le vecchie varianti restano perche'
+  le usano altri indicatori della skin.
+- L'anello della percentuale era un fratello di tutti i rami con condizione [episodi | avanzamento]: si vedeva
+  anche dietro l'icona play e dietro quella del timer. E' stato rimesso in QUEI due rami, dove si valuta solo
+  quando quel ramo e' attivo. Senza, la prova ha mostrato 24 combinazioni diverse dall'originale.
+- `Object_Layout_Image_Icon`: genere, studio e paese annidati invece di ripetere le negazioni degli altri due.
+- TV in diretta: `Object_Indicator_Visible` passa `timers` come `false` quando `System.HasPVRAddon` e' falso, e
+  il ramo dei timer e le due etichette di `Layout_Labels` (orario e data del canale) si includono solo con un
+  componente TV installato. Tutto deciso AL CARICAMENTO.
+
+### Prova
+
+`tests/test_290.py`: espande `Object_Indicator` con `strumenti/diagnostica/mappa_skin.py`, ricava dalla skin i
+sette termini e quali icone appartengono a ogni ramo, e verifica su tutte le 128 combinazioni che si accenda
+l'icona della priorita' piu' alta (piu' l'anello quando episodi o avanzamento sono veri). Provata ROSSA sul file
+di prima (la struttura cade) e usata per il confronto diretto vecchio/nuovo: **0 combinazioni diverse su 128**.
+Suite 58 su 62, i rossi sono i preesistenti 202-205.
+
+## Lotto 291 -- La rotellina che teneva la stick a ridisegnare a vuoto
+
+### Come e' saltata fuori
+
+Misura del lotto 290 (referto `home-badge-annidati-20260913-2205`): Home FERMA, nessun tasto nel log, nessuna
+ricostruzione di widget, e la stick disegnava **56 fotogrammi al secondo con la GUI al 90% di un core** (877 ms/s
+contro i 139 della misura precedente). Anche a tasto tenuto era peggiorata: 22,2 fps contro 28,6.
+L'utente aveva appena riprodotto un film e segnato un episodio come visto, per far comparire i badge: i widget si
+erano ricostruiti e **la rotellina di aggiornamento delle righe era comparsa**.
+
+### Il meccanismo (Kodi 21.1)
+
+- `CGUIControl::DoProcess` chiama `Animate()` PRIMA di guardare la visibilita': le animazioni avanzano anche sui
+  controlli nascosti, purche' il controllo sia stato processato almeno una volta (`HasProcessed`).
+- `CGUIControl::Animate` torna "cambiato" finche' una animazione non e' a `ANIM_PROCESS_NONE`, e chi lo riceve
+  chiama `MarkDirtyRegion`.
+- Un'animazione normale FINISCE: arrivata in fondo passa ad `ANIM_STATE_APPLIED` e `CAnimation::RenderAnimation`
+  la riporta a `ANIM_PROCESS_NONE` (VisibleEffect.cpp). Una con `loop="true"` e condizione vera invece riparte da
+  capo per sempre (ramo `ANIM_REPEAT_LOOP` in `CAnimation::Animate`).
+- Con `algorithmdirtyregions` 3 una sola zona sporca fa ridisegnare tutto lo schermo.
+
+Quindi bastava che la rotellina fosse comparsa UNA volta perche' la stick restasse a ridisegnare a vuoto fino alla
+chiusura di Kodi. `View_Line_Spinner` (Includes_Views.xml) aveva `condition="true"` sulla rotazione in ciclo, ed e'
+inclusa nell'etichetta di OGNI riga di widget: nella Home quattro copie.
+
+### La correzione
+
+La rotazione ora ha `condition="$PARAM[visible]"`, cioe' la stessa condizione che mostra la rotellina: quando
+sparisce, `CAnimation::UpdateCondition` manda l'animazione in reverse e poi la spegne. A schermo non cambia niente.
+Espandendo Home, MyVideoNav e MyPrograms con `mappa_skin.py` non resta nessuna animazione in ciclo sempre accesa.
+
+Restano dello stesso tipo, ma solo dentro dialoghi (processati solo mentre sono aperti): `Defs_BusySpinner_Image`
+e le rotelline di `Furniture_Busy`/`Object_BusySpinner_Image`, che ricevono `spinspinner` a true, e
+`Includes_DialogInfo.xml:200`. Da sistemare allo stesso modo quando si toccheranno quei blocchi.
+
+`tests/test_291.py` espande le finestre in uso e verifica che non ci sia nessuna animazione in ciclo con condizione
+costante. Provata ROSSA sul file di prima: Home 1, MyVideoNav 2, MyPrograms 2.
+
+### Perche' non succedeva SEMPRE -- l'innesco
+
+Obiezione dell'utente, giusta: la rotellina compare a ogni caricamento di widget, perche' `run_spinner` e'
+`Container(N).IsUpdating` (Includes_Widgets.xml:25,34 -- Includes_Hubs.xml:566 -- Includes_Views.xml:186,195).
+Quindi compare anche all'avvio e a ogni pagina nuova della paginazione dinamica, non solo quando si rimarca
+qualcosa come visto. Perche' allora due sessioni su cinque erano sane?
+
+Perche' la zona sporca che viene spinta e' `m_renderRegion`, e quella si scrive SOLO dentro `Process`
+(GUIControl.cpp:170-174), che gira solo quando il controllo e' visibile (riga 140). Non viene mai azzerata
+quando il controllo torna nascosto. E `CDirtyRegionTracker::MarkDirtyRegion` scarta le zone vuote
+(DirtyRegionTracker.cpp:58-62).
+
+Quindi: finche' la rotellina non e' stata DISEGNATA almeno una volta in quella sessione, la sua zona e' vuota e
+la zona sporca viene buttata via -- l'animazione gira a vuoto ma non costa niente. Appena viene disegnata una
+volta, il rettangolo resta scritto per sempre e da quel momento ogni giro sporca lo schermo davvero. E' un
+interruttore a senso unico: si arma, non si disarma.
+
+Misure a riposo, tratti senza nessun tasto (stesse finestre, stessa Home):
+
+| sessione | fps a riposo | cpu del ciclo GUI |
+|---|---|---|
+| 20:29 | 50.5 | 892 ms/s (89% di un core) -- ARMATA |
+| 20:49 | 3.1 | 179 ms/s -- sana |
+| 21:40 | 2.2 | 139 ms/s -- sana |
+| 22:05 (lotto 290) | 55.5 | 881 ms/s -- ARMATA |
+| 22:24 (con la correzione) | 2.5 | 223 ms/s |
+
+### La prova della correzione
+
+Campagna `af-home-291-20260913-2224`, 6 m 21 s, con una prova costruita apposta: fermo, poi un aggiornamento
+dei widget voluto, poi di nuovo fermo. Linea del tempo a intervalli di 5 s (fotogrammi presentati al secondo):
+
+- +10s .. +90s   fermo dopo l'avvio: **0.0 fps**, 16-18% di un core
+- +95s .. +140s  l'utente fa ricomparire la rotellina (episodio segnato visto, widget ricostruiti): 15-32 fps
+- +145s .. +165s fermo subito dopo: **0.0 fps** -- la rotellina si e' spenta da sola
+- +170s .. +270s navigazione
+- +275s .. +380s fermo, 105 s di fila: **0.0 fps**, 19-20% di un core
+
+Prima bastava arrivare al minuto 95 per restare a 55 fps fino alla chiusura di Kodi. Adesso lo schermo torna
+fermo ogni volta. Il difetto e' chiuso.
+
+### Ricaduta sul LOTTO 290 -- la riscrittura annidata degli indicatori NON ha reso
+
+Con la misura ripulita si puo' finalmente leggere il lotto 290. Tratti continui a raffica (piu' di 15 tasti/s),
+stessa Home, stessa riga:
+
+| configurazione | tasti/s | fps | cpu per fotogramma |
+|---|---|---|---|
+| Home dopo il lotto 287 (20:49) | 19.4 | 26.9 | 30.9 ms |
+| Home con gli indicatori TOLTI (prova 1, lotto 289 -- 21:40) | 19.2 | 38.2 | 23.3 ms |
+| Home lotto 290, misura sporca (22:05) | 18.4 | 25.9 | 34.8 ms |
+| Home lotto 290 + correzione 291, misura pulita (22:24) | 19.0 | 25.4 | 33.2 ms |
+
+La riscrittura a catena annidata non ha recuperato niente: 33.2 ms contro i 30.9 di partenza, mentre TOGLIERE
+gli indicatori vale 23.3 ms. Conferma quanto gia' scritto leggendo `InfoExpression.cpp`: le condizioni si
+cortocircuitano e si riordinano da sole, quindi annidarle non toglie lavoro. Il costo degli indicatori non sta
+nel valutare le condizioni ma nell'ESISTERE: ogni indicatore e' un controllo in piu' dentro il layout di ogni
+elemento, e `CGUIListItemLayout::Process` ci passa sopra per ogni elemento visibile a ogni fotogramma.
+
+Cautela sui numeri: il tratto del 21:40 e' lungo 11 s contro i 44 s del 22:24, quindi la distanza 33.2 vs 23.3
+e' solida ma il confronto 33.2 vs 30.9 sta dentro il rumore. Quello che si puo' dire senza riserve e' che il
+lotto 290 non ha prodotto il guadagno che cercava. La riscrittura resta (0 differenze su 128 combinazioni
+provate, quindi non fa danno), ma la strada per gli indicatori e' ridurne il NUMERO, non riordinarne le
+condizioni.
+
+## LOTTO 292 -- l'indicatore: non nasconderlo, non emetterlo
+
+Il lotto 290 aveva riscritto la catena degli indicatori annidandola, e la misura pulita (in fondo al lotto
+291) dice che non ha reso niente. Espandendo la skin come la carica la stick si vede perche': **annidare
+AGGIUNGE controlli**, perche' ogni livello della catena e' un gruppo. Per un elemento non selezionato della
+Home:
+
+| versione | controlli caricati | condizioni `<visible>` |
+|---|---|---|
+| Arctic Fuse originale | 29 | 15 |
+| dopo il lotto 290 (annidata) | 41 | 16 |
+| lotto 292, punto 1 | 39 | 13 |
+| lotto 292, punto 2 (compatta) | **19** | **5** |
+
+La differenza fra nascondere e non emettere sta in due meccanismi diversi di Kodi:
+
+- `<visible>` e' una domanda A OGNI GIRO. Il controllo resta nell'albero e `CGUIListItemLayout::Process` lo
+  attraversa per ogni elemento visibile a ogni fotogramma, qualunque sia la risposta.
+- la `condition` di un `<include>` e' una domanda UNA VOLTA SOLA, al caricamento: se e' falsa quel pezzo di
+  XML non viene proprio inserito (GUIIncludes.cpp:414-423). Il controllo non esiste e non costa niente.
+
+### Punto 1 -- il ramo dei timer non viene piu' emesso
+
+Nel lotto 290 avevo usato l'informazione giusta (`System.HasPVRAddon`) nel posto sbagliato: era finita
+DENTRO la condizione, come `<visible>[false]</visible>`. Il gruppo restava, con la sua immagine dell'anello:
+due controlli per elemento attraversati a ogni fotogramma per sentirsi dire di no, piu' il termine morto
+`![false]` appiccicato a tutti i rami fratelli. Ora il ramo e' un include suo (`Object_Indicator_Ramo_Timers`)
+con `condition="System.HasPVRAddon"`, e il cancello `No_Timers` sul ramo gemello ha la stessa condizione:
+senza componenti TV nessuno dei due viene emesso. 27 controlli -> 25.
+
+### Punto 2 -- la catena diventa tre controlli
+
+La catena esisteva per accendere UNA cosa per volta con una priorita' (in riproduzione, episodi, timer,
+avanzamento, visto, libreria, collezione). Ma una priorita' e' esattamente cio' che una variabile di skin fa
+per costruzione: i `<value>` si valutano in ordine e il primo vero vince. Il resto della catena -- i gruppi,
+le negazioni, i cancelli -- serviva solo a simulare quel comportamento con dei controlli.
+
+`Object_Indicator_Compatto` ha tre controlli fissi: l'anello dietro, l'icona davanti, la label del conteggio
+episodi. Le texture le scelgono `Object_Indicator_Anello`, `Object_Indicator_Icona` e
+`Object_Indicator_Icona_Colore` (Includes_Images.xml); i sei termini sono espressioni in
+Includes_Expressions.xml, copiate una per una dai parametri di `Object_Indicator_Visible`. Gli attributi
+degli altri controlli erano gia' identici in tutti i rami (stesso diffuse, stesso aspectratio, bordersize 20
+su ogni icona), ed e' cio' che rende possibile il collasso senza cambiare un pixel.
+
+Il vincolo, scritto anche nel file: la versione compatta legge `ListItem`, non `$PARAM[listitem]`, perche' le
+variabili e le espressioni non prendono parametri. Vale per ogni chiamata della skin tranne le finestre PVR,
+che passano un contenitore e un affix: per quelle la catena resta, scelta al caricamento con
+`System.HasPVRAddon`. Sulla stick ne esiste una sola delle due.
+
+### La prova
+
+`tests/test_292.py` non guarda la struttura: mette le due versioni una accanto all'altra e, per ognuna delle
+128 combinazioni dei sei termini e dei due stati della percentuale, confronta cio' che finisce a schermo --
+texture, colore e bordersize, nell'ordine di disegno. Zero differenze su 128.
+
+Non basta che passi, quindi e' stata messa alla prova rompendo apposta la versione compatta in quattro modi:
+
+| guasto introdotto | combinazioni sbagliate |
+|---|---|
+| priorita' invertita fra "visto" e "in libreria" | 4 |
+| l'anello non viene piu' spento nel ramo "in riproduzione" | 8 |
+| la label degli episodi perde il vincolo sulla riproduzione | 32 |
+| il segno di spunta perde il colore | 8 |
+
+L'unica equivalenza che la prova si concede e' fra un'immagine senza `colordiffuse` e una con `ffffffff`: in
+Kodi il valore predefinito e' il bianco pieno, quindi sono la stessa cosa.
+
+`tests/test_290.py` contava i rami in un tratto di file da cui il ramo dei timer e' uscito: ora li conta su
+tutto il file, dove ogni marcatore compare comunque una volta sola.
+
+Come contorno, `mappa_skin.py` ha imparato `--falso <atomo>` / `--vero <atomo>`: `System.HasPVRAddon` non si
+deduce dalle impostazioni della skin, e lasciandolo indeciso la mappa mostrava un albero piu' grande di
+quello che la stick carica davvero (30 controlli invece di 27).
+
+Finestre intere, come le carica la stick: Home da 941 a 801 controlli, MyVideoNav da 831 a 749. Nei layout
+degli elementi -- quelli che si pagano per ogni elemento a ogni fotogramma -- Home da 480 a 330, MyVideoNav
+da 585 a 501.
+
+DA MISURARE: la resa vera. La prova dice che il disegno e' identico, non che e' piu' veloce.
+
+### La misura del lotto 292
+
+Campagna `af-home-292-20260913-2304`. Badge verificati a occhio dall'utente, anche segnando e togliendo il
+visto (che e' il caso in cui la priorita' cambia ramo): identici.
+
+Tratti continui a ~19,5 tasti/s sulla stessa riga della Home:
+
+| configurazione | fps | cpu per fotogramma |
+|---|---|---|
+| catena originale di Arctic Fuse (lotto 287) | 26.9 | 30.9 ms |
+| catena annidata (lotto 290, quella che era sulla stick) | 25.4 | 33.2 ms |
+| **compatta (lotto 292)** | **31.0** | **29.3 ms** |
+| senza nessun indicatore (prova 1, lotto 289) | 38.2 | 23.3 ms |
+
+A riposo: 219 ms/s contro i 223 di prima, e zero fotogrammi nei tratti fermi (la correzione del lotto 291
+tiene: 0.0 fps per tutto il minuto di fermo e per i due minuti finali).
+
+Guadagno reale ma PARZIALE, e vale la pena dire perche', perche' cambia dove si cerca la prossima volta.
+Togliendo 22 controlli e 11 condizioni per elemento si sono guadagnati 3,9 ms per fotogramma; togliendo
+l'indicatore INTERO se ne guadagnavano 7,6. La differenza non e' struttura. `CGUIListItemLayout::Process`
+(GUIListItemLayout.cpp:63-92) chiama `UpdateInfo` -- cioe' risolve le variabili e le texture -- solo quando
+l'elemento e' invalidato o e' scaduto `m_infoUpdateMillis`; a ogni fotogramma chiama invece `UpdateVisibility`
+e `DoProcess`. Quindi le tre variabili nuove non si pagano a ogni giro, e cio' che resta del costo e' il
+DISEGNO vero: l'anello e l'icona sono due immagini in piu' per ogni elemento, e quelle non si possono
+togliere senza cambiare la resa, che era il vincolo.
+
+Detto altrimenti: la parte di costo che era struttura e' stata tolta, quella che resta e' inchiostro.
+
+A riposo il consumo non e' cambiato (223 -> 219 ms/s) pur avendo tolto 11 condizioni per elemento: anche
+questo dice che le condizioni per elemento non sono la voce grossa, e che il 17-20% di un core che la stick
+spende a schermo fermo viene da un'altra parte, ancora da trovare.
+
+### Uno strumento che non stavamo usando: il profilatore dei controlli di Kodi
+
+Kodi 21 ha dentro `CGUIControlProfiler`, e non e' compilato via nelle build di rilascio: l'azione 204
+(`ACTION_GUIPROFILE_BEGIN`, Application.cpp:1430-1435) lo avvia, misura 200 fotogrammi
+(GUIControlProfiler.h:80) e scrive `special://home/guiprofiler.xml` con il tempo speso per OGNI controllo,
+diviso fra valutazione della visibilita' e disegno. E' esattamente la domanda a cui stiamo rispondendo per
+sottrazione da settimane. Si puo' legare a un tasto del telecomando con una keymap, farlo premere all'utente
+durante uno scorrimento e tirare giu' il file. Da provare al prossimo giro.
+
+## LOTTO 293 -- il profilatore di Kodi: chi costa davvero, misurato invece che dedotto
+
+Finora il costo dei singoli pezzi lo ricavavamo per SOTTRAZIONE: togli, rimisura, deduci. Funziona ma costa
+un giro di prova per ipotesi, e sul lotto 290 ha dato una risposta ambigua. La nostra sonda misura da fuori
+il processo -- e' una scelta, non una mancanza: una sonda dentro Kodi contende il GIL e il lock della GUI --
+quindi legge /proc una volta al secondo e dentro un fotogramma da 30 ms non puo' guardare.
+
+Kodi pero' ha gia' dentro `CGUIControlProfiler`, e non e' escluso dalle build di rilascio. L'azione
+`guiprofile` (ACTION_GUIPROFILE_BEGIN, Application.cpp:1430-1435) lo avvia, misura 200 fotogrammi
+(GUIControlProfiler.h:80) e scrive `special://home/guiprofiler.xml` con due tempi per ogni controllo: il
+disegno e la valutazione delle condizioni di visibilita'.
+
+Come si accende su questa stick: il telecomando manda a Kodi sei soli codici (indietro, su, giu', sinistra,
+destra, ok) e sono tutti gia' usati, quindi si usa la pressione LUNGA, che Kodi tratta come azione separata
+e che sopprime quella breve. `strumenti/diagnostica/keymap_guiprofiler.xml` va in `userdata/keymaps/` e si
+toglie a lavoro finito. La pressione lunga su "indietro" NON funziona (apre comunque le impostazioni: qualcun
+altro serve quella pressione prima di noi); quella su "ok" si', e finche' il file e' installato prende il
+posto del menu' contestuale.
+
+`strumenti/diagnostica/profilo.py` legge il referto. Attenzione a due trappole, tutte e due verificate nel
+sorgente prima di fidarsi dei numeri:
+- la radice `<guicontrolprofiler>` e' solo l'involucro, l'albero vero comincia dal primo `<control>`;
+- i tempi di un contenitore comprendono i figli dove il disegno ricorre davvero, ma i controlli del layout
+  degli elementi si accumulano per OGNI elemento disegnato e per ogni fotogramma, quindi un nodo dentro una
+  lista puo' valere piu' della radice. Sottrarre i figli ha senso dentro un ramo, non fra rami.
+- i tempi sono GONFIATI: il profilatore cronometra ogni controllo, quindi rallenta cio' che misura. Vale la
+  classifica, non il valore assoluto. Il giudice resta la campagna della sonda.
+
+### Cosa dice, sulla Home durante uno scorrimento a freccia tenuta premuta
+
+DISEGNO, 57.301 ms su 200 fotogrammi:
+
+| ramo | ms | quota |
+|---|---|---|
+| `fixedlist 503` -- la riga che si sta scorrendo | 44.780 | **78%** |
+| la finestra Home a parte le righe (`group 10000`) | 8.655 | 15% |
+| `fixedlist 502` -- un'altra riga | 511 | 1% |
+| `fixedlist 501` -- un'altra riga | 258 | 0,5% |
+| tutto il resto (pannello info, sfondi, etichette) | ~1.100 | 2% |
+
+Il sospetto del lotto 289 -- "conta solo la riga col fuoco" -- non e' piu' un sospetto: e' misurato. Ottimizzare
+qualunque cosa fuori dalla riga attiva non puo' rendere piu' del 2%.
+
+Dentro la riga, il tempo NON sta in una singola immagine: sta nei gruppi del layout dell'elemento (41.844 ms
+su 42.116, distribuiti su 249 copie), cioe' nel disegnare l'elemento nel suo insieme. Le immagini nominate --
+poster, box, cerchi degli indicatori -- valgono decine di ms, cioe' frazioni di millisecondo per fotogramma.
+
+VISIBILITA', 712 ms su 200 fotogrammi = 3,56 ms per fotogramma:
+
+| controllo | ms | quota |
+|---|---|---|
+| **il textbox della trama** | 239 | **34%** |
+| `fixedlist 503` (la riga scorsa) | 182 | 26% |
+| le quattro `circle.png` del pannello info | 70 | 10% |
+| `fixedlist 502` | 49 | 7% |
+| le etichette del pannello info (data, regista, genere, durata) | ~85 | 12% |
+
+La trama da sola e' un terzo di tutte le condizioni valutate nella finestra. Conferma che il lotto 287
+(congelare la trama durante lo scorrimento veloce) puntava al bersaglio giusto, e dice che vale la pena
+estenderlo invece di lasciarlo com'e'.
+
+Referto grezzo conservato in `strumenti/diagnostica/referti/profilo-home-20260913-2322/`.
+
+## LOTTO 294 -- il rastrello: i controlli caricati che non potranno mai comparire
+
+Dopo il lotto 293 l'utente ha rifiutato di chiudere la meta' GUI, e aveva ragione. Avevo letto il profilatore
+come un bilancio completo: misura il disegno e le condizioni di visibilita', ma NON l'aggiornamento delle
+informazioni (risolvere variabili, reimpaginare testi) -- cioe' proprio la voce che nel lotto 287 aveva dato il
+guadagno piu' grande. "Nessun colpevole singolo nel disegno" non voleva dire "niente piu' da fare a grafica
+invariata".
+
+### Lo strumento
+
+`strumenti/diagnostica/rastrello.py` espande ogni finestra come la carica la stick e segnala i controlli con un
+`<visible>` falso con CERTEZZA. Due regole imparate strada facendo, e scritte nello strumento:
+
+- `<visible allowhiddenfocus="true">` NON e' un controllo morto. Il primo giro segnalava
+  `List_Widget_Row_HiddenButton` in ogni riga: e' nascosto ma puo' prendere il fuoco, ed e' l'unico che col suo
+  onfocus pubblica `base_label` e `base_poster` per il menu' contestuale. Toglierlo avrebbe rotto il menu'.
+- Solo le condizioni COSTANTI (`false`, `![true]`) si possono spostare su un include. Una condizione falsa
+  perche' dipende da un'impostazione della skin -- la modalita' di vista, un interruttore -- e' falsa oggi: le
+  impostazioni cambiano a Kodi acceso e gli include si risolvono al caricamento, quindi spostarla la
+  congelerebbe fino al ricaricamento della skin. Lo strumento le separa: "DA TOGLIERE" e "solo segnalato".
+
+### Cosa ha trovato nelle finestre in uso
+
+| finestra | controlli mai visibili | dentro i layout degli elementi |
+|---|---|---|
+| Home | 15 | 15 -- `common/poster_fade.png` |
+| MyVideoNav | 13 | 13 -- 9 `poster_fade.png`, 4 evidenziazione `menu.png` |
+| MyPrograms | 13 | 13 -- idem |
+| Ricerca | 3 | 3 -- un gruppo `![true]` e `scrollh.png` (lasciati: 3 controlli) |
+
+Sul resto della skin ce ne sono molti di piu' (dialoghi scorciatoie, opzioni, OSD), ma un dialogo si processa
+solo mentre e' aperto: non valgono il rischio adesso.
+
+### Le due correzioni
+
+- `Layout_Labels`: la sfumatura del poster aveva `<visible>$PARAM[fade]</visible>`. `fade` nella skin vale solo
+  `true` o `false` scritti a mano, in due soli punti. Ora e' un include con `condition="$PARAM[fade]"`.
+- `Layout_MediaList_Detailed`: l'evidenziazione `Texture_Menu_Highlight_H` aveva `<visible>$PARAM[selected]</visible>`.
+  Qui serviva piu' cautela: `selected` in altre parti della skin riceve condizioni di runtime
+  (`ListItem.IsSelected` in Dialog_Parts e Includes_Objects, il profilo attivo in SettingsProfile), che al
+  caricamento varrebbero falso e cancellerebbero il controllo. Ma nessuna di quelle catene arriva a questo
+  layout: ci arrivano MyPlaylist, Includes_Views_Combined e Includes_Views_List, tutti dai layout di List_Core
+  con `true`/`false` scritti a mano.
+
+Effetto sull'elemento non selezionato della Home: da 19 a 18 controlli, da 5 a 4 condizioni. Elemento
+selezionato da 47 a 45. Home intera da 801 a 786 controlli. Guadagno atteso PICCOLO: e' un controllo per
+elemento. Il valore del lotto e' soprattutto lo strumento, che adesso trova la classe intera invece di un pezzo
+per volta.
+
+### Un difetto trovato nello strumento di mappa
+
+`mappa_skin.espandi_include(skin, nome, params)` creava una chiamata a testo (`<include>Nome</include>`), che non
+accetta parametri, e passava `params` come contesto esterno: dentro la definizione `$PARAM[x]` si risolve con i
+`<param>` dichiarati dall'include, quindi valeva sempre il default. Chi chiedeva `fade=true` riceveva il `false`
+scritto nella dichiarazione. Ora la chiamata e' `<include content="Nome">` con i `<param>` veri.
+La prova del lotto 292 non ne era toccata per caso: chiedeva `listitem=ListItem` e `affix=''`, che sono
+esattamente i default di `Object_Indicator_Catena`. Passa uguale col lettore corretto.
+
+### La prova
+
+`tests/test_294.py`: nessun controllo sempre falso dentro i layout degli elementi di Home, MyVideoNav e
+MyPrograms; e i due controlli spostati compaiono ancora quando la condizione e' vera, spariscono quando e'
+falsa.
+
+Anche la prova ha avuto il suo difetto, visto solo facendola diventare rossa: con impostazioni della skin
+vuote la Home non carica nemmeno i blocchi dove stavano i controlli morti, e sul file vecchio la Home
+PASSAVA. Ora legge `tests/dati/skin_settings_stick.xml`, copia delle 239 impostazioni del dispositivo. Rossa sul
+file di prima: Home 15, MyVideoNav 9, MyPrograms 9, e il controllo con `fade=false` ancora creato.
+
+DA MISURARE sulla stick.
+
+## LOTTO 295 -- il pannello informazioni della Home: misura per differenza
+
+### Una correzione sul profilatore (lotto 293)
+
+Il cronometro della VISIBILITA' di `CGUIControlProfiler` sta in un solo punto: `CGUIControlGroupList::Process`,
+attorno a `UpdateVisibility` dei figli diretti di una grouplist. Non c'e' in `CGUIControlGroup::Process` ne' in
+`CGUIListItemLayout::Process`. Quindi i "3,56 ms di visibilita'" del lotto 293 NON erano il costo delle
+condizioni della finestra: erano il costo dei soli figli di grouplist -- la trama e le righe del pannello. Il
+34% della trama era il 34% di quella fetta. Le condizioni degli elementi delle righe il profilatore non le
+vede. Il disegno invece e' cronometrato su tutti i controlli (GUIControl.cpp:197), quindi quella classifica
+regge. (E dentro `UpdateVisibility`, per i controlli di finestra, c'e' anche `UpdateInfo`: GUIControl.cpp:644-645.)
+
+### Cosa dice il sorgente del textbox
+
+`CGUITextBox::UpdateInfo` (GUITextBox.cpp:90-111) chiama `CGUITextLayout::Update`, che confronta il testo col
+precedente e se e' uguale esce subito. Durante lo scorrimento veloce la variabile congelata del lotto 287 vale
+vuoto, quindi il confronto non costa quasi niente. L'autoscroll (`Process`, righe 126-160) lavora solo se il
+testo eccede la pagina e dopo `delay` 6 s. Il costo vero della trama e' la reimpaginazione quando ci si ferma,
+ed e' voluto. Il pannello dei DETTAGLI invece non e' congelato: data, regista, durata e genere cambiano a ogni
+spostamento, dentro una grouplist che ricalcola le posizioni dei figli quando cambiano larghezza.
+
+### La prova
+
+Copia diagnostica di `Includes_Hubs.xml` e `Includes_Info.xml` in scratchpad (`diag295/`, md5 `cb855688...` e
+`26d48b55...`), mai nel repo. Tre interruttori, tutti come condizione di include (quindi spento = il blocco non
+esiste), letti dalle impostazioni della skin a Kodi fermo:
+- `diag_off_info`: i due `Info_Panel` di `Hub_Combined_Info` -- 786 -> 661 controlli nella Home;
+- `diag_off_line`: `Info_Line` e `Info_Panel_Genre` -- 786 -> 721;
+- `diag_off_plot`: `Info_Panel_Plot_Direct` -- 786 -> 781 (non usato: non serviva alla decisione).
+Verificati con la mappa prima del deploy. Impostazioni originali salvate in `.kodi/temp/diag295/` e in scratchpad.
+
+Tratti continui a ~19 tasti/s, Home, riga Top 250:
+
+| configurazione | fps | cpu per fotogramma | a riposo |
+|---|---|---|---|
+| Home com'e' (lotto 292, riferimento) | 31.0 | 29.3 ms | 219 ms/s |
+| senza dettagli e genere | 32.4 | 25.6 ms | 193 ms/s |
+| senza pannello | 37.6 | 21.6 ms | 183 ms/s |
+
+Il pannello costa **7,7 ms per fotogramma** durante lo scorrimento veloce, con la trama gia' congelata: piu' di
+un quarto del fotogramma. Circa meta' (3,7 ms) sono dettagli e genere; l'altra meta' e' titolo, trama e la
+struttura del pannello.
+
+`JobWorker` (caricamento immagini) lavora al 57-78% di un core durante lo scorrimento in tutte e tre le
+varianti, anche senza pannello: il carico delle immagini e' quello dei poster della riga, non del clearlogo.
+
+### Cosa se ne ricava
+
+A grafica INVARIATA nel pannello c'e' poco da togliere: il costo e' il contenuto che cambia a ogni spostamento
+(testi che si reimpaginano, una grouplist che si ridispone, il logo che cambia), e quel cambio e' cio' che si
+vede. L'unica leva grossa e' NON aggiornare il pannello durante lo scorrimento veloce, come si fa gia' con la
+trama. Ma cambia cio' che si vede mentre si scorre veloce, quindi e' una scelta dell'utente, non un'ottimizzazione
+da applicare. Detto all'utente con questi numeri.
+
+STATO DEL DISPOSITIVO: ancora la copia diagnostica, con `diag_off_line` acceso. Da ripristinare.
+
+## LOTTO 296 -- navigazione veloce: spariscono trama e dettagli, restano clearlogo e landscape
+
+Scelta dell'utente, fatta vedendo la prova diagnostica del lotto 295: "preferisco che a navigazione veloce
+scompaiano sia la trama che i dettagli (regista, durata, valutazione ecc.) ma non clearlogo e landscape --
+graficamente diventa gradevole e prendiamo anche degli fps". E' una modifica di RESA durante lo scorrimento
+veloce, voluta; da fermo non cambia niente.
+
+- `Hub_Combined_Info` (Includes_Hubs.xml): il pannello dei dettagli della riga passa
+  `visible_line = !Control.IsVisible(972$PARAM[id])`, il rilevatore di quella riga (lotto 287).
+- `View_Row_Info` (Includes_Views.xml): `visible_line = $EXP[View_Row_Info_Details_Expression] + !Control.IsVisible(9712)`.
+
+`visible_line` arriva a `Info_Line` (sul gruppo esterno: nascosto, i figli non vengono elaborati,
+GUIControl::DoProcess) e a `Info_Panel_Genre`, e in tutti e due i posti finisce SOLO in un `<visible>`,
+verificato: una condizione di runtime li' e' lecita, in una condizione di include no. La trama era gia'
+congelata. Il pannello del titolo (clearlogo) non riceve niente e resta.
+
+Kodi 22: il rilevatore si carica solo su Kodi 21. Dove il controllo non esiste, `CONTROL_IS_VISIBLE`
+(GUIControlsGUIInfo.cpp:633-647) non assegna il valore e la condizione resta falsa, quindi `!...` e' vero e i
+dettagli restano sempre visibili, come prima.
+
+Fuori di proposito: le viste COMBINATE della cartella (View_Combined_Info, contenitori 530-538), trovate dalla
+prova. Hanno un contenitore interno e nessun rilevatore; l'utente usa la riga di poster.
+
+`tests/test_296.py`: ogni etichetta dei dettagli (regista, genere, durata) dei pannelli con rilevatore ha sopra
+di se' `!Control.IsVisible(<id>)`, quell'id esiste davvero come controllo nella finestra (un id sbagliato non da'
+errori: i dettagli non sparirebbero mai), e nessun clearlogo ha quella condizione. Rossa sul file di prima: Home
+20 etichette, cartella 4.
+
+Atteso sulla stick: circa la variante "senza dettagli" del lotto 295, cioe' ~25,6 ms per fotogramma e ~32 fps
+contro 29,3 ms e 31. I restanti ~4 ms del pannello sono il titolo e la struttura, che l'utente tiene.
+DA MISURARE.
+
+Dispositivo ripristinato il 14/09 prima della misura del 296: `Includes_Info.xml` di nuovo quello del repo
+(`2bbcf9ca...`), impostazioni della skin identiche all'originale salvato (`e67a86b3...`, Kodi non le aveva
+riscritte durante i giri diagnostici), keymap `guiprofiler.xml` cancellato (OK torna al menu' contestuale).
+Tutti i sette file della skin toccati in questi lotti coincidono col repo.
+
+### La misura del lotto 296
+
+Campagna `af-home-296-20260914-0032`. Comportamento confermato dall'utente ("si comporta tutto come vogliamo...
+non mi dispiace nemmeno, e' figo"), e OK tenuto premuto riapre il menu' contestuale.
+
+| configurazione | fps | cpu per fotogramma | a riposo |
+|---|---|---|---|
+| lotto 292 | 31.0 | 29.3 ms | 219 ms/s |
+| diagnostica "senza dettagli" (295) | 32.4 | 25.6 ms | 193 ms/s |
+| **lotto 296** | **33.2** | **25.6 ms** | 201 ms/s |
+| diagnostica "senza pannello" (295) | 37.6 | 21.6 ms | 183 ms/s |
+
+Esattamente la previsione: 25,6 ms, come la variante diagnostica che toglieva gli stessi pezzi al caricamento.
+Nasconderli a runtime con il rilevatore costa quanto non caricarli.
+
+## LOTTO 297 -- il clearlogo scende quando il blocco sotto sparisce, anche nella navigazione veloce
+
+Proposta dell'utente vedendo il 296: riusare il gesto che la skin fa quando il fuoco passa dal widget
+all'intestazione dell'hub (il blocco dettagli + trama sparisce e il logo scende a meta' dello spazio vuoto),
+"cosi' sembra una scelta di design e non un fix". Voluta anche piu' veloce, e piu' veloce anche
+sull'intestazione.
+
+### Due problemi dell'animazione esistente, verificati nel sorgente
+
+1. **Il salto.** `Home_Slide_Animation` erano due mezze animazioni con `reversible="false"`. In
+   `CAnimation::UpdateCondition` (VisibleEffect.cpp:625-640) una condizione che diventa falsa senza
+   reversibilita' chiama `ResetAnimation`: la trasformazione sparisce di colpo e parte l'altra dal suo inizio.
+   Sull'intestazione il fuoco cambia una volta e non si vedeva; il rilevatore della navigazione veloce invece
+   cambia stato anche con pressioni singole ravvicinate, e il logo a meta' corsa salterebbe. Con
+   `reversible="true"` la retromarcia riparte dalla posizione corrente (`m_start = time - (m_length - m_amount)`,
+   riga 477). All'apertura della finestra `SetInitialCondition` (642-649) applica lo stato senza animarlo.
+2. **Lo scatto.** Quando il blocco torna visibile, Kodi reimpagina la trama nel primo fotogramma in cui il
+   gruppo e' elaborato. Se quel fotogramma e' anche il primo della risalita del logo, l'animazione parte in
+   ritardo. Accorciare i tempi non lo toglie.
+
+### La soluzione
+
+- `Home_Slide_Animation` (Includes_Home.xml): una sola slide condizionale reversibile, 200 ms, senza attesa,
+  con parametro `condition`. Il gruppo del titolo in `Hub_Combined_Info` passa da `top 200` + slide a -200 a
+  `top 0` + slide a +200: stessa geometria (0 normale, 200 col blocco nascosto). Condizione:
+  `$EXP[Exp_Hubs_SlideInfo] | Control.IsVisible(972<id>)` -- il rilevatore IMMEDIATO, il logo parte subito.
+- `Fast_Nav_Settle` (Includes_Views.xml), rilevatore di ASSESTAMENTO `973<id>`, solo Kodi 21: visibile con
+  `Control.IsVisible(972<id>) | $EXP[Exp_Hubs_SlideInfo]`, e un'animazione Hidden di 200 ms lo tiene acceso
+  per altri 200 ms (stesso trucco di Fast_Nav_Detector). Dura quanto la risalita del logo.
+- Il gruppo dettagli + trama si nasconde con `![$EXP[Exp_Hubs_SlideInfo] | Control.IsVisible(973<id>)]`:
+  sparisce subito, ricompare quando il logo e' fermo. Anche sull'intestazione, su Kodi 21.
+- `Home_Info_Animation`: dissolvenza in entrata 150 ms senza attesa (era 200 di attesa + 400). La usano anche
+  `Hub_Wall_Info` e `Hub_Spotlight`, che l'utente non usa: accelerate per coerenza.
+- Tolta la `visible_line = !Control.IsVisible(972<id>)` del 296 negli hub: nascondendo l'intero blocco era
+  superflua, e costava una condizione a fotogramma. Nella cartella (`View_Row_Info`) resta com'era, li' non
+  c'e' il logo che scende.
+
+Kodi 22: rilevatori non caricati, `Control.IsVisible` di un controllo inesistente e' falso, quindi resta il
+comportamento dell'intestazione con i nuovi tempi. Unica differenza: senza assestamento, sull'intestazione i
+dettagli ricompaiono mentre il logo risale invece che dopo. Da rivedere quando si passera' a Kodi 22.
+
+### Prove
+
+- `tests/test_297.py`: una sola animazione del logo, reversibile, condizionale, <= 250 ms, senza attesa, con
+  intestazione e rilevatore immediato; geometria 0/200 identica; 973<id> presente, segue rilevatore e
+  intestazione, Hidden lunga quanto la slide; il blocco usa 973 e non 972; dissolvenza <= 200 ms senza attesa;
+  simulando Kodi 22 niente rilevatori, il logo scende ancora con l'intestazione e il blocco sparisce con
+  l'intestazione e resta senza. Rossa sui file di prima (presi dalla stick): 11 controlli falliti.
+- `tests/test_296.py` riscritta per valutare il COMPORTAMENTO (rilevatori accesi: dettagli nascosti; spenti:
+  visibili; clearlogo mai nascosto) invece di cercare la forma `!Control.IsVisible(972...)`, che dal 297 non
+  c'e' piu'.
+- Suite 63 su 67 (i soliti 202-205). Rastrello: nessun controllo morto nuovo in Home e MyVideoNav.
+
+DA VERIFICARE a occhio (pressioni singole rapide: il logo non deve saltare; fermandosi: niente scatto) e da
+misurare.
+
+### La misura del lotto 297 (af-home-297-20260914-0058)
+
+Home, riga Top 250, raffiche di freccia destra, stesso protocollo del 296.
+
+| | fps in raffica | cpu per fotogramma | fotogrammi > 58 ms | p99 intervallo |
+|---|---|---|---|---|
+| 296 | 33.2 | 25.6 ms | 3% | 133 ms |
+| 297 | 36.1 | 24.6 ms | 1% | 67 ms |
+
+A riposo 0 fps, 200 ms/s di cpu come prima. Mediana dell'intervallo 17 ms in entrambi (quadro a 60 Hz).
+
+A occhio (utente): animazione veloce il giusto. Due rilievi:
+1. Sull'intestazione il logo si ferma al centro dello spazio vuoto, nella navigazione veloce scende fino in
+   fondo. Stessa slide di +200 nei due casi: la differenza e' in cio' che sta intorno, da misurare sullo
+   schermo.
+2. Resta una leggera scattosita', "identica a prima". Nei dati: fotogrammi singoli da 150-650 ms, 32 nel 297
+   e 30 nel 296, quindi non introdotti da questo lotto. Nei secondi che li contengono il thread GUI usa MENO
+   cpu (60% contro 81% dei secondi lisci) e non e' in coda: aspetta qualcosa, non calcola. La sonda campiona
+   a 1 s e l'ancora dell'orologio e' in secondi interi, quindi non si puo' attribuire il buco a un evento del
+   log: serve prima un'ancora al millisecondo.
+
+## LOTTO 297b -- il logo si ferma al centro dello spazio vuoto anche nella navigazione veloce
+
+Rilievo dell'utente: con l'intestazione il logo si centra, nella navigazione veloce scende fino in fondo.
+Misurato su due screenshot della stick (adb screencap, 1920x1080):
+- intestazione: logo 285-418, icone dell'intestazione fino a ~215, titolo della riga da 512. Centrato.
+- navigazione veloce: logo nello stesso punto (+200), ma sopra l'intestazione non c'e': lo spazio vuoto va dal
+  margine alto della skin (80) a 512. Riquadro del logo di 140 centrato -> discesa 146.
+
+`Home_Slide_Animation` ora ha due animazioni reversibili di 200 ms, stessa curva, che Kodi compone: +100 con
+`condition | condition_fast`, +100 con `condition`. Veloce: 100. Intestazione (o entrambe): 200 come prima.
+Il calcolo dal margine alto dava 146 (deployato come 140); l'utente, a occhio su Kodi per Mac, ha scelto 100,
+cioe' il centro fra il bordo dello schermo e il titolo della riga.
+Partono e arrivano insieme, e passando da veloce a intestazione si fa solo il tratto che manca. Nell'hub
+`condition` = intestazione, `condition_fast` = `Control.IsVisible(972<id>)`. Assestamento invariato (200 ms).
+
+Prova: `tests/test_297.py` calcola la discesa SOMMANDO le animazioni accese in ogni stato (riposo 0,
+intestazione 200, entrambe 200, veloce 100, Kodi 22 intestazione 200). Rossa sul 297: veloce 200.
+
+## LOTTO 298 -- la sonda al millisecondo, per i fotogrammi lunghi
+
+Solo strumenti (strumenti/diagnostica), niente skin ne' plugin.
+
+### Perche'
+
+Dopo il 297 la navigazione e' fluida ma restano fotogrammi singoli da 150-650 ms (~30 a prova, 30 anche nel
+296). Nei secondi che li contengono il thread GUI usa MENO cpu e non e' in coda: aspetta qualcosa. Per dire
+cosa mancavano due cose:
+- l'ancora fra gli orologi era `date +%s`, un secondo intero: un buco da 200 ms non si collocava fra le righe
+  del log, e le due campagne 296/297 davano correlazioni opposte;
+- la sonda campiona a 1 s: dentro il buco non si vede se il thread GUI lavora, aspetta un core o e' fermo.
+
+### Cosa cambia (traccia V7)
+
+- **Ancora** (righe `A`): monotono da /proc/timer_list (builtin), `date +%s%N` (toybox 0.7.6 lo ha), di nuovo il
+  monotono; cinque volte all'inizio e cinque alla fine. traccia.py tiene la forchetta piu' stretta e interpola lo
+  scarto fra inizio e fine. Sulla stick: forchetta +-12 ms, le dieci letture concordano entro 0,3 ms, deriva
+  0,1 ms in 15 s.
+- **Campionamento fitto** del thread GUI (righe `Q <monotono_ns> <cpu_ns> <coda_ns> <fette>`), acceso con
+  `FITTO_MS=50 ./campagna.sh ...`, spento di default per restare confrontabili. Stesso orologio dei
+  fotogrammi. Senza fork: la pausa e' `read -t 0.05` sullo stdin di un unico `sleep` in pipe (`mkfifo` e'
+  negato da SELinux). Costo ~26 ms di cpu al secondo. Leggere anche /proc/<tid>/stat costava cinque volte tanto
+  (parsing in mksh), quindi solo schedstat. Resta un vuoto di ~190 ms al secondo durante il campione completo.
+- **Thread GUI**: dalla prima riga di kodi.log (builtin), accettato solo se esiste nel processo attuale.
+- `traccia.epoch_da_mono`: il vecchio `anagrafe._epoch_da_ns` passava per /proc/uptime, che conta la
+  sospensione (7 ore di scarto sulla stick il 13/09). Non era usato dal referto, che data i quadri per
+  campione: il referto del 297 esce identico.
+- **buchi.py**: per ogni fotogramma lungo in navigazione dice quando, quanto, se in raffica o allo stop, cosa
+  faceva il thread GUI (LAVORO / CODA / FERMO / MISTO), i thread di Kodi piu' attivi in quel secondo e le righe
+  di log dentro il buco. Verifica l'ancora sul ritardo tasto -> primo fotogramma dopo una pausa.
+- Provato sulla stick contro system_server (12 s, GUI_TID impostato): 220 righe Q, 10 ancore, lettura corretta.
+- wchan (dove dorme un thread) non e' disponibile: /proc/<pid>/wchan restituisce 0 alla shell.
+
+Prova: `tests/test_298.py`, rossa sugli strumenti di prima (15 controlli), verde ora. Suite 64 su 68.
+
+### La prima campagna V7 (af-home-298-20260914-0147, FITTO_MS=50)
+
+Sonda: 110 ms di cpu a campione (9,6% di un core) col campionamento fitto, dichiarato nel referto. In raffica
+38,0 fps / 23,3 ms (297: 36,1 / 24,6), non confrontabile alla lettera per il peso della sonda.
+
+**L'ancora e' giusta, ma la prima verifica di buchi.py era sbagliata.** Confrontava il tasto col primo
+fotogramma dopo una pausa e dava 210 ms "non coerente". Controllo indipendente: HandleKey (log del thread GUI)
+contro la ripartenza della sua cpu (campioni fitti) -> -1 e -14 ms, dentro i +-13 dichiarati. I 210 ms sono
+Kodi: dopo una pausa passano 40-180 ms fra `CAndroidKey: key down` e `HandleKey`, e ~125 ms fra HandleKey e
+il primo fotogramma. buchi.py ora verifica con HandleKey e conta i tasti da HandleKey (test_298 aggiornata).
+
+**I fotogrammi lunghi (>= 150 ms) in navigazione: 35**, piu' 16 fra 100 e 150.
+- In media, attorno ai fotogrammi normali il thread GUI e' cpu 86%, coda 7%, fermo 7%.
+- I buchi grandi (500-1200 ms) sono quasi tutti **FERMO**: ne' cpu ne' coda. Non e' contesa di core.
+- **Non e' il watcher Python della paginazione.** Le sue righe cadono all'80-98% di quasi ogni buco fermo, ma
+  durante i buchi TUTTI i thread scrivono meno (lift 0,1-0,5 per ogni categoria di riga): e' una vittima che
+  riparte quando la GUI si sblocca, non chi la blocca.
+- **Quando cadono** (dall'ultimo HandleKey): pressioni singole -> ~500-540 ms (quasi tutti FERMO); raffiche
+  brevi di 2-7 tasti -> ~850-890 ms (MISTO/FERMO); raffiche lunghe -> 600-1100 ms. Cioe' all'ASSESTAMENTO,
+  quando si spengono i rilevatori (972: Hidden 350 ms, poi 973: Hidden 200 ms) e tornano logo, trama e dettagli.
+  I buchi LAVORO da 150-220 ms stanno invece a 26-59 ms dal tasto: il costo del primo fotogramma di uno scatto.
+
+Ipotesi da provare con un esperimento causale, non da dedurre: il blocco dettagli + trama che ricompare (973)
+fa aspettare il thread GUI (caricamento sincrono di texture non `background`, o attesa della GPU). Prova:
+copia diagnostica con assestamento 200 -> 800 ms. Se il gruppo dei ~500 ms si sposta a ~1100, e' il blocco.
+
+### L'esperimento causale (af-home-298diag800-20260914-0209): ipotesi SMENTITA, e un errore di metodo
+
+Copia diagnostica di Includes_Hubs.xml con assestamento 973 a 800 ms invece di 200 (unica differenza,
+verificata con test_297), stesso protocollo, molte pressioni singole con pausa di 1,5 s.
+
+Risultato: i "buchi FERMO" dopo le pause NON si sono spostati a ~1100 ms, sono rimasti a ~500 ms dal tasto e
+sono diventati PIU' LUNGHI (mediana 267 -> 701 ms), con la cpu del thread GUI scesa al 33% (a riposo 18%).
+Non erano scatti: erano SILENZI. Con il ridisegno a regioni, quando niente cambia Kodi non presenta
+fotogrammi; fra la fine della risalita del logo e la ricomparsa dei dettagli lo schermo e' fermo, e quel
+silenzio dura quanto il timer dell'assestamento. buchi.py li contava come fotogrammi lunghi.
+Quindi anche il "30 fotogrammi da 150-650 ms" del 296/297 era in buona parte silenzi.
+
+Correzioni a buchi.py (test_298 aggiornata, rossa sulla versione precedente):
+- uno scatto e' un intervallo lungo che comincia entro 450 ms da un HandleKey (la riga scorre per 400 ms,
+  scrolltime di List_Core); il resto e' riportato a parte come "silenzi";
+- la verifica dell'ancora cerca la ripartenza della cpu vicino al tasto e dopo un tratto a cpu bassa: sulla
+  diag800 la ricerca da -1 s prendeva la dissolvenza del tasto precedente (-812 ms). Ora -6 ms su 29 casi.
+
+**Gli scatti veri** (>= 100 ms mentre la riga scorre): 24 nella campagna 298, 13 nella diag800 (meno raffiche).
+Quasi tutti **LAVORO**, da 100 a 220 ms, a 26-80 ms dal tasto: il PRIMO fotogramma di uno spostamento costa
+6-13 fotogrammi di bilancio. Pochi FERMO veri (684 e 1218 ms nella 298, 634 e 651 nella diag800), dopo
+raffiche lunghe.
+
+Latenza d'ingresso, per memoria: `CAndroidKey: key down` -> `HandleKey` mediana 62-68 ms a tasto isolato
+(p90 85), 21-22 ms in raffica. Da Kodi fermo il ciclo impiega qualche giro a raccogliere l'evento.
+
+Prossimo bersaglio: cosa fa il primo fotogramma dopo un tasto (cambio di elemento a fuoco: UpdateInfo di
+tutte le etichette del pannello, rilevatori, sfondo, variabili).
+
+### Latenza dei tasti e strappo alla partenza: ridisegno sempre (af-home-298dirty0-20260914-0235)
+
+Domanda dell'utente: Kodi e' lento a reagire ai tasti da fermo, piu' veloce in navigazione. E la riga "parte con
+un piccolo strappo".
+
+**Il percorso di un tasto, Kodi 21.1** (sorgente in scratchpad/kodi-src):
+- il thread di input lo mette in coda subito (AndroidKey.cpp:319, `CAndroidKey: key down` nel log);
+- la coda si svuota una volta per giro, alla fine di FrameMove (WinSystem.cpp:285 DriveRenderLoop ->
+  MessagePump), e li' nasce `HandleKey`;
+- a schermo fermo il giro finisce in PresentRender: attesa del vsync (WinSystemAndroidGLESContext.cpp:144) e poi
+  **Sleep(40ms)** fisso (RenderSystemGLES.cpp:236-237). Scritto nel binario, non si tocca da skin o addon;
+- escluse: l'attesa della pressione lunga (InputManager.cpp:509-525): HandleKey arriva 90-110 ms PRIMA del
+  rilascio; la porta per le chiamate Python (Application.cpp:1836-1850, fino a 80 ms): scatta solo con GuiLock
+  (getCondVisibility, Control, WindowXML), e nei servizi a riposo non ce ne sono in ciclo (lotto 286).
+
+**Esperimento**: advancedsettings.xml con `<gui><algorithmdirtyregions>0</algorithmdirtyregions></gui>` (ridisegno
+sempre) solo per la misura, poi ripristinato (originale md5 e41d219f).
+
+| | tasto isolato -> HandleKey | in raffica | cpu GUI a riposo | fps raffica |
+|---|---|---|---|---|
+| normale (diag800, 57 casi) | mediana 64 ms, p90 84 | 21 ms | 18% | - |
+| ridisegno sempre (58 casi) | **mediana 20 ms, p90 28** | 22 ms | 89% | 28,7 |
+
+La latenza da fermo e' TUTTA il sonno del ciclo a schermo fermo. Toglierla cosi' non si puo': 89% di un core a
+riposo e 28,7 fps invece di 38 in raffica.
+
+**Lo strappo**, misurato senza silenzi (con il ridisegno continuo ogni intervallo lungo e' un fotogramma vero):
+OGNI pressione singola produce UN fotogramma da 83-133 ms, 20-60 ms dopo HandleKey, classe LAVORO (cpu). Prima e
+dopo i fotogrammi sono a 17 ms. Profilo medio per fascia dal tasto: -200..0 ms 19-20 ms; 0..+50 ms 47,7; +50..+100
+ms 72,7; da +100 ms di nuovo 20. Non e' il risveglio da fermo: e' il lavoro del fotogramma in cui la riga cambia
+elemento. Da attribuire (candidati: creazione dei layout degli elementi che entrano, aggiornamento di tutte le
+etichette e variabili legate a ListItem, rilevatori e animazioni che partono). Il clearlogo del pannello e' gia'
+`background="true"`.
+
+### Lo strappo con la configurazione normale, e il primo A/B (af-home-298ab-pannello-20260914-0259)
+
+Con il ridisegno normale il lavoro dello strappo cade PRIMA del primo fotogramma: da fermo HandleKey -> primo
+fotogramma 125 ms di mediana (diag800), contro 9 ms col ridisegno continuo. L'animazione di scorrimento (400 ms)
+e' gia' partita, quindi il primo fotogramma la mostra avanti di circa un quarto: la riga salta invece di partire.
+Dal tasto premuto allo schermo che si muove: ~65 + ~125 = ~190 ms.
+
+Il profiler di Kodi NON serve qui: cronometra solo il disegno (GUIControl.cpp:197-208) e la visibilita' dei figli
+dei grouplist (GUIControlGroupList.cpp:51-53), non Process, dove si costruiscono i layout e si aggiornano le
+etichette.
+
+A/B nella stessa sessione, righe di poster uguali 502 "Ultime uscite" (normale) e 503 "Top 250" (pannello
+informazioni spento con `<include>Diag_Pannello_$PARAM[id]</include>` -> `<visible>false</visible>` solo per 503;
+`String.IsEqual(503,$PARAM[id])` NON va: il primo argomento e' un'infolabel). Pressioni singole con 1,5 s di pausa.
+
+| riga | pressioni | HandleKey -> primo fotogramma | cpu GUI nell'intervallo |
+|---|---|---|---|
+| 502 normale | 59 | mediana 131 ms (p25 110, p75 144) | 76% |
+| 503 senza pannello | 60 | **mediana 60 ms** (p25 56, p75 63) | 61% |
+
+Il pannello informazioni vale ~70 ms dello strappo. A occhio l'utente ha visto la Top 250 piu' fluida. I ~60 ms
+restanti sono riga e finestra. Script: scratchpad/ab_righe.py (riga attribuita dalle righe `watcher id=`).
+Prossimo: 502 senza logo, 503 senza dettagli + trama, rilevatori accesi su entrambe.
+
+### Secondo A/B: logo contro dettagli + trama (af-home-298ab-titolo-dettagli-20260914-0312)
+
+Rilevatori accesi su entrambe le righe. Pressioni singole con 1,5 s di pausa.
+
+| configurazione | pressioni | HandleKey -> primo fotogramma |
+|---|---|---|
+| 502 normale (campagne precedenti) | 59 / 45 | 131 / 125 ms |
+| 502 senza logo | 74 | 124 ms |
+| 503 senza dettagli + trama (logo e rilevatori accesi) | 67 | **71 ms** |
+| 503 senza pannello (A/B 1) | 60 | 60 ms |
+
+Costo nel fotogramma dello strappo: **dettagli + trama ~55 ms**, logo + rilevatori + animazione ~11 ms, logo da
+solo ~0-7 ms. A occhio l'utente vede di nuovo piu' fluida la Top 250.
+
+Perche': e' l'a-capo quadratico di Kodi 21 (lotti 281 e 283). Con una pressione singola i rilevatori non
+scattano (972 vuole due spostamenti entro 250 ms), quindi il blocco resta visibile e, al cambio di elemento,
+`CGUITextBox::UpdateInfo` -> `CGUITextLayout::Update` -> `WrapText` impagina la trama nuova aggiungendo una lettera
+alla volta e risagomando con HarfBuzz tutta la riga a ogni lettera (~N^2/2 caratteri sagomati per riga), sincrono
+sul thread GUI, nel fotogramma in cui la riga parte. Il textbox impagina tutto il testo, non solo le righe
+visibili. Corretto in Kodi 22 (PR #27403), identico in 21.3.
+
+## LOTTO 299 -- ridisegno parziale: provato, PEGGIORA, scartato
+
+advancedsettings.xml con `<gui><algorithmdirtyregions>1</algorithmdirtyregions></gui>` (unione delle regioni sporche,
+IDirtyRegionSolver.h:14). Letto da Kodi: log delle 03:30:05, "Loaded settings file from
+special://profile/advancedsettings.xml" e il valore nel contenuto stampato. Campagna af-home-299-parziale-20260914-0329,
+senza campionamento fitto, stesso gesto del 297.
+
+| | fps raffica | cpu/fotogramma | fotogrammi > 58 ms | fermo fps / cpu |
+|---|---|---|---|---|
+| 297, ridisegno intero (3) | 36,1 | 24,6 ms | 0,9% | 1,3 / 200 ms/s |
+| 299, ridisegno parziale (1) | 33,4 | 26,6 ms | 3,9% | 3,6 / 247 ms/s (sessione diversa, indicativo) |
+
+Nessun residuo visivo, e a occhio "tutto invariato" per l'utente. Perche' non guadagna: CUnionDirtyRegionSolver
+(DirtyRegionSolvers.cpp:15-19) fa UN rettangolo che contiene tutte le regioni; scorrendo cambiano insieme riga in
+basso, pannello e sfondo in alto, quindi il rettangolo e' quasi lo schermo intero, piu' il costo di calcolarlo e
+ritagliare. Il valore 2 (rettangoli separati) non si prova: le zone che cambiano coprono comunque quasi tutto, e su
+una GPU Mali a tile conservare il fotogramma precedente per aggiornarne dei pezzi tende a costare di piu'.
+Ripristinato l'originale (md5 e41d219f). Il default 3 resta.
+
+## LOTTO 300 -- il costo a riposo, finestra per finestra (af-riposo-finestre-20260914-0345)
+
+A schermo fermo il ciclo di Kodi fa ~17 giri al secondo: Process di tutta la finestra visibile (visibilita',
+condizioni, animazioni), niente da disegnare, vsync + Sleep(40ms). Il profiler non misura Process, quindi confronto
+naturale: soste di 40 s senza tasti in finestre diverse, finestra riconosciuta dalle righe `Window Init`.
+
+| sosta | thread GUI | processo Kodi | fps |
+|---|---|---|---|
+| impostazioni di Kodi (10004), il minimo | 90 ms/s | 202 ms/s | 0 |
+| Home, riga Top 250 | 163 | 265 | 0 |
+| Home, intestazione | 165 | 265 | 0,1 |
+| hub Film (11101) | 227 | 327 | 0 |
+| dialogo informazioni (12003) | 232 | 323 | 0 |
+| **ricerca a casella vuota (11105)** | **384** | **506** | **62,7** |
+
+Sempre presenti a riposo, fuori dal thread GUI: HeapTaskDaemon (GC Java) ~27 ms/s, thread Java org.xbmc.kodi ~24,
+AESink ~18, FL:paginator ~12.
+
+**Ricerca a 60 fps da ferma: difetto di Kodi 21.** All'apertura il fuoco va sulla casella (onload SetFocus(3001),
+onfocus SetFocus(3000)). CGUIEditControl::ProcessText, con il fuoco, chiama SetStyledText (GUIEditControl.cpp:529)
+per il cursore lampeggiante; CGUILabel::SetStyledText (GUILabel.cpp:181-186) rifa' il layout e restituisce SEMPRE
+true, quindi `changed` e' vero a ogni giro e MarkDirtyRegion ridisegna tutto lo schermo finche' la casella ha il
+fuoco. Leva possibile (scelta grafica dell'utente): fuoco iniziale su un pulsante identico alla casella, OK apre la
+tastiera come ora; il cursore non lampeggia finche' non si scrive.
+
+**AESink sempre attivo**: guisettings `audiooutput.streamsilence` = 153722867 ("Sempre"), `streamnoise` true. Kodi
+manda silenzio all'uscita all'infinito. "1 minuto" lo spegne a riposo; prezzo possibile con passthrough verso un
+amplificatore: aggancio ritardato alla ripresa dell'audio. Scelta dell'utente.
+
+Da indagare: l'hub (+60 ms/s sulla Home) e il dialogo informazioni (la finestra sotto resta elaborata, lotto 251).
+
+## LOTTO 301 -- liste MDBList senza rank: 'nessun risultato' con la lista piena
+
+Segnalato dall'utente: 'A24' (vancityguy, id 97710) e 'Psychological Thrillers' (w2dwave, id 121077) risultavano
+sempre vuote, mentre sul sito sono piene. L'API risponde 200 con 181 e 199 elementi, ma ogni elemento ha
+`"rank": null`: sono liste statiche non classificate.
+
+`mdblist_get_list_contents` usava `item.get('rank', 0)` come ordine. `get` rende il default solo se la chiave MANCA:
+qui c'e' e vale None. La build ordina gli elementi per quel valore, `None < None` e' un TypeError in Python 3, e
+l'except nudo di `build_mdblist_list` consegnava una cartella vuota. Log della stick, 14:04:54:
+`result=181`, poi `BUILD ... shown=30`, poi `PERF INVOCAZIONE ... nessuna cartella costruita`.
+
+Correzione (apis/mdblist_api.py): se anche un solo elemento non ha ordine, vale la posizione data dall'API per
+tutti. Si applica DOPO la cache e non dentro `_process`, perche' le voci gia' scritte dal codice vecchio restano
+valide 24 ore. Le liste classificate (Top 250) restano ordinate per rank; fallimento e lista vuota restano distinti
+(lotto 120). Prova: tests/test_301.py, rossa sul codice vecchio (4 rotte), verde dopo.
+
+Nella stessa indagine, un caso che NON e' nostro: 'Latest TV Shows' (garycrawfordgc, id 2194). Sul sito la pagina
+usa l'id 2194, ma l'API risponde 404 "List Not found" per id, e per utente/nome risponde 200 con `total: 300` e
+`movies: []`, `shows: []`; la lista non compare nemmeno fra quelle dell'utente. In seguito e' tornata a funzionare
+da sola: guasto temporaneo dell'API di MDBList.
+
+## LOTTO 302 -- righe widget congelate negli hub dell'utente
+
+### Il problema
+
+`CGUIControlGroupList::Process` chiama DoProcess su TUTTI i figli, anche fuori schermo (GUIControlGroupList.cpp:70-81).
+Ogni riga widget di un hub costa quindi sempre, anche quando non si vede, e il costo cresce con il numero di righe.
+L'obiettivo dell'utente: poter mettere quante righe vuole senza perdere fluidita', dato che a schermo ne restano
+sempre poche.
+
+Misura con la skin normale, stesso hub a 18 righe (af-hub-301-A-normale18-20260914-1531):
+
+| | skin normale, 18 righe |
+|---|---|
+| a riposo, thread interfaccia | 432-447 ms/s (lotto 300, 5 righe: 227) |
+| a riposo, processo Kodi | 517-528 ms/s |
+| scorrimento orizzontale tenuto | 12,7 fps, 84% dei fotogrammi oltre 58 ms |
+| pressioni singole su/giu': tasto -> primo fotogramma | 94 ms, 7,4% dei fotogrammi oltre 58 ms |
+
+Quasi mezzo core occupato a hub fermo. Risponde anche al "da indagare" del lotto 300: l'hub costa piu' della Home
+perche' ha piu' righe, circa 30 ms/s ciascuna.
+
+### Il meccanismo
+
+Un controllo nascosto non viene elaborato (GUIControl.cpp:140-146). Una riga lontana dal fuoco si nasconde, e un
+segnaposto della stessa misura le tiene il posto nel grouplist, cosi' le posizioni non cambiano. Gli elementi
+restano in memoria (il contenitore si svuota solo con FreeResources): riaccendere una riga e' solo tornare a
+disegnarla, non ricaricarla.
+
+### Otto prove, e cosa ha insegnato ciascuna (diagnostica solo nell'hub 1101, fuori dal repo)
+
+1. **Segnaposto senza id** (af-hub-299b-congela-20260914-0427): dalla prima riga non si scendeva. Il grouplist
+   collega su/giu' i figli per id (AddControl, GUIControlGroupList.cpp:257-297) e un controllo con id 0 spezza la
+   catena. Il segnaposto ha l'id 79<id riga>.
+2. **Raggio +-1** (af-hub-299b-congela3-20260914-0440): righe sullo schermo vuote. In questo layout le righe si
+   sovrappongono e sotto quella col fuoco se ne vede piu' di una. A riposo il thread dell'interfaccia e' sceso da
+   227 a 145-157 ms/s.
+3. **Raggio -1/+2** (af-hub-299b-congela-m1p2-20260914-0455): con i tasti tenuti il fuoco saltava le righe congelate
+   fino all'intestazione o al bumper. Kodi non da' il fuoco a un controllo nascosto, e la proprieta' della riga col
+   fuoco, scritta da onfocus, arriva un giro dopo.
+4. **allowhiddenfocus="$EXP[...]"** (af-hub-299b-congela-fuoco-20260914-0502): risalendo da D a C il fuoco andava su
+   C ma la vista tornava in cima e mostrava A, congelata e vuota ("un problema di telecamera", parole dell'utente).
+   Due cause insieme. La prima: quando il fuoco arriva su una riga, il grouplist scorre a 0 se quella riga e' la
+   PRIMA focalizzabile (GUIControlGroupList.cpp:181); con le righe sopra congelate e non focalizzabili, C sembrava la
+   prima. Scendendo non succedeva perche' il raggio arrivava a +2. La seconda: l'allowhiddenfocus che avrebbe
+   dovuto evitarlo non ha mai funzionato. Kodi risolve `$EXP` solo nel testo di visible/enable e nell'attributo
+   `condition` (GUIIncludes.cpp:79-84, 377-398): l'attributo restava letterale, cioe' falso.
+5. **Raggio calcolato da Control.HasFocus invece che dalla proprieta'**: preparata ma mai caricata, superata dalla 6
+   appena trovate le due cause della prova 4.
+6. **Raggio simmetrico +-2 e regola per l'intestazione** (af-hub-299b-congela6-20260914-1356): corretto con 5 righe.
+   Con il fuoco sull'intestazione la vista e' quella della prima riga (indietro dal primo elemento di qualunque riga
+   porta li'), quindi valgono le prime tre righe. Aggiungendo righe si e' rotto di nuovo: le regole erano scritte a
+   mano fino a 505 (log: `Skin has invalid include: Diag_Congela_Vis_506`).
+7. **Regole fino a 530** (af-hub-299b-congela7-20260914-1412 con 7 righe; af-hub-301-B-congela18-20260914-1556 con 18).
+   Guadagno pieno, ma nello scorrimento verticale veloce le righe passavano vuote. Tenendo premuto il fuoco avanza
+   di una riga ogni ~50 ms, la vista lo insegue con un'animazione e mostra righe gia' oltre il raggio. Allargare il
+   raggio sposta solo il problema.
+8. **Niente congelamento durante la navigazione verticale** (af-hub-301-C-muovendo18-20260914-1621). Ogni riga che
+   prende il fuoco accende una proprieta' e riarma una sveglia da 1 s che la spegne; `AlarmClock` con lo stesso nome
+   ferma e riparte (GUIBuiltins.cpp:211-216). Finche' ci si sposta fra le righe sono tutte attive, come nella skin
+   normale; un secondo dopo l'ultimo spostamento si torna a congelare. Lo scorrimento orizzontale non cambia riga,
+   quindi resta alleggerito. Per l'utente, visivamente identico alla skin normale, senza scatti.
+
+La campagna af-hub-299b-normale7-20260914-1436 non e' valida: Kodi non e' partito entro i 5 minuti di attesa della
+sonda.
+
+### A/B/C sullo stesso hub a 18 righe
+
+| | A: normale | B: congela sempre | C: congela da fermo |
+|---|---|---|---|
+| riposo, thread interfaccia | 432-447 ms/s | 217-225 ms/s | 219-228 ms/s |
+| riposo, processo Kodi | 517-528 ms/s | 317-326 ms/s | 320-329 ms/s |
+| orizzontale tenuto | 12,7 fps, 84% lenti | 22,2 fps, 16,6% lenti | 23,5 fps, 12,0% lenti |
+| pressioni singole: tasto -> fotogramma | 94 ms | 83 ms | 75 ms |
+| pressioni singole: fotogrammi oltre 58 ms | 7,4% | 3,1% | 7,3% |
+| raffiche verticali: fotogramma mediano | 50 ms | 33 ms (righe vuote) | 50 ms |
+| primo tasto dopo >=3 s fermo: tasto -> fotogramma | 97 ms | 88 ms | 75 ms |
+
+C tiene i guadagni di B a riposo e nello scorrimento orizzontale. Nella navigazione verticale costa come la skin
+normale, per costruzione. Riaccendere tutte le righe al primo tasto dopo una pausa non produce uno scatto misurabile.
+
+Il "caricamento lento dei loghi" nello scorrimento veloce non c'entra: si vede uguale in A.
+
+### La versione definitiva
+
+Nella skin normale e per tutti gli hub dell'utente, Home compresa. Ricerca e finestra informazioni restano
+escluse: la ricerca ha una riga alla volta, le informazioni al massimo 5 righe.
+
+- **Logica, una volta sola**: `Widget_Row` in Includes_Widgets.xml compone la condizione `congelata`;
+  `Widget_Congela_Contenitore` la applica al contenitore, `Widget_Congela_Segnaposto` aggiunge il segnaposto.
+  L'interruttore `congela` e' spento di default. La ricerca usa `Widget_Row` da un altro modello e non lo accende;
+  un file generato vecchio che non passa i vicini si comporta come prima.
+- **Vicini dal generatore**: la skin non sa fare somme sugli id, quindi `setup/widgets_row.xml` calcola id-2, id-1,
+  id+1, id+2 con `$MATH` (0 prima della prima riga, perche' 499 e 500 esistono nella skin) e "fra le prime tre".
+  `parts/widgets_row.xmltemplate` li passa e accende `congela`. `buildv` alzato a `0.2.4-righe-congelate`: i
+  .xmltemplate non entrano nell'impronta del generatore. Sulla stick il file si e' rigenerato 10 s dopo l'ingresso
+  in Home, in 4,1 s, con una ricarica della skin.
+- **Una riga e' congelata** quando valgono insieme tre condizioni:
+  1. nessuno si sta spostando fra le righe;
+  2. e' caricata e non sta caricando (una riga mai caricata sparirebbe per sempre);
+  3. e' fuori dal raggio:
+     - fuoco nel grouplist: il fuoco non e' fra id-2 e id+2;
+     - fuoco sull'intestazione (300/301/302): la riga non e' fra le prime tre;
+     - fuoco altrove (dialoghi sopra l'hub): la riga e' lontana dall'ultima col fuoco (`fenlight.congela.riga`,
+       proprieta' della finestra). Se nessuna riga ha ancora avuto il fuoco, niente e' congelato.
+- **allowhiddenfocus = congelata, scritto per esteso via $PARAM** (`$PARAM` si risolve in ogni attributo,
+  GUIIncludes.cpp:581-604). Le righe congelate restano focalizzabili, quindi il grouplist calcola sempre la prima e
+  l'ultima riga vere, anche quando una riga in mezzo e' vuota e Kodi la salta. Solo col raggio, una riga vuota fra
+  il fuoco e la riga di arrivo riportava la vista in cima. Effetto collaterale: una riga congelata aggiorna il
+  contenuto anche nascosta (GUIBaseContainer.cpp:1027), come la skin normale. Provato dall'utente: film segnato come
+  visto, riga lontana aggiornata.
+- **Registro eventi**: ogni `AlarmClock` crea un evento (AlarmClock.cpp:61-73). Kodi lo salva solo con "notifiche
+  nel registro eventi" attivo (EventLog.cpp:95-98): sulla stick e' spento, ed e' anche il valore predefinito.
+
+Limite noto, fissato nel test: con due righe vuote consecutive (possibile solo con "nascondi widget vuoti") un tasto
+porta il fuoco su una riga ancora congelata, e la vista si allinea al tasto dopo.
+
+Prova: tests/test_302.py, rossa sulla skin precedente (31 rotte), verde dopo. Rifa' in piccolo il comportamento:
+- calcola i vicini con le regole del generatore;
+- valuta la condizione della skin con le precedenze di Kodi;
+- sceglie lo scorrimento come il grouplist.
+
+Su 18 righe, con righe vuote in cima, in fondo, in mezzo o non consecutive, ogni tasto da fermo porta la vista dove
+la porterebbe la skin normale.
+
+### La misura della versione definitiva (af-hub-302-definitiva-20260914-1720)
+
+| | A: normale | 302 |
+|---|---|---|
+| riposo nell'hub, thread interfaccia | 432-447 ms/s | 245-252 ms/s |
+| orizzontale tenuto | 12,7 fps | 22,2 fps, 15,4% lenti |
+| pressioni singole: tasto -> fotogramma | 94 ms | 76 ms |
+| pressioni singole: fotogrammi oltre 58 ms | 7,4% | 8,4% |
+
+A riposo e' ~25 ms/s sopra la prova 8, con 19 righe invece di 18. Due spiegazioni probabili, non misurate
+separatamente: la riga in piu', e il controllo dell'indirizzo che allowhiddenfocus fa fare alle righe congelate.
+Verifica a occhio dell'utente: scorrimento verticale identico alla skin normale, ritorno da un dialogo e Home a
+posto.
+
+### Difetto dello strumento, trovato qui
+
+sonda.sh prende l'id del thread dell'interfaccia dalla prima riga di kodi.log. Se la sonda parte a Kodi spento,
+quel file e' ancora il log della sessione precedente: il resoconto a riposo segna 0 ms/s per il thread GUI. Le
+cifre sopra sono ricalcolate con l'id delle righe `HandleKey` del log della sessione misurata. Da correggere.

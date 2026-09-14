@@ -48,7 +48,27 @@ COLONNE = ('quando', 'cdn', 'dimensione', 'durata', 'bitrate', 'salti', 'portata
 		   # Lotto 222: la sonda della linea presa PRIMA di questa riproduzione. Vedi base_cache per
 		   # il senso di ciascuna, e bersaglio() qui sotto per 'link'.
 		   'sonda_mbps', 'sonda_lorda', 'sonda_secondi', 'sonda_ttfb', 'sonda_byte',
-		   'sonda_offset', 'sonda_quota', 'sonda_cpu', 'sonda_eta', 'sonda_cdn', 'link')
+		   'sonda_offset', 'sonda_quota', 'sonda_cpu', 'sonda_eta', 'sonda_cdn',
+		   # Lotto 240: la forma della curva. `sonda_mbps` resta il numero che ha DECISO; questi
+		   # dicono come e' stato ottenuto, e sono cio' che mancava per verificare una taratura.
+		   # Lotto 245: `sonda_buco` -> `sonda_avvallamento`, ed e' un'altra grandezza -- vedi
+		   # sonda_linea._avvallamento e il rifacimento in base_cache.
+		   'sonda_media', 'sonda_coda', 'sonda_centro', 'sonda_salita', 'sonda_avvallamento',
+		   'sonda_campioni', 'sonda_fonte',
+		   # Lotto 244: lo stato del link wi-fi al momento della riproduzione. Non viene dalla
+		   # sonda e si scrive anche quando la sonda non c'e' stata -- vedi player._campi_sonda.
+		   'rete_qualita', 'rete_segnale', 'link',
+		   # Lotto 255: il segnale DURANTE la finestra di regime, campionato al passo della curva.
+		   # Va letto insieme a `sonda_salita`: sono due prima/dopo sullo stesso intervallo, ed e'
+		   # la coincidenza fra i due che questa raccolta deve accertare. Vedi base_cache.
+		   'sonda_rssi_inizio', 'sonda_rssi_fine', 'sonda_rssi_min',
+		   # Lotto 258: gli indizi sulla CREDIBILITA' della misura, non sul suo valore. Nessuno di
+		   # questi decide niente: sono la raccolta che deve dire se il caso del 12/09 -- una sonda
+		   # a 17,32 Mbit/s su una linea che dava 55 e 62, con ttfb tripla, ripiego del lettore e
+		   # dimensione dichiarata sbagliata di 13 volte, tutti e tre insieme -- e' un caso isolato
+		   # o una firma. Vedi base_cache per il perche' di ciascuna.
+		   'sonda_lettore', 'sonda_ripiego', 'sonda_stato', 'sonda_dim_attesa', 'sonda_dim_vera',
+		   'sonda_letti_secondi')
 
 
 def registra(**campi):
@@ -174,6 +194,93 @@ def riabilita(ch=None):
 # `portata_secchi_prima`/`_dopo` restano come INVARIANTE, non come dato da interpretare: e' il numero di campioni a
 # zero rimasti dentro il tratto vincente e **deve valere zero**. Se un giorno non lo fosse, la
 # guardia sul pavimento si e' rotta e le portate di quel periodo non sono misure.
+
+
+# LOTTO 242 -- LA CAPACITA' CHE QUESTA LINEA HA MOSTRATO DI RECENTE, per quando non c'e' una
+# misura di adesso.
+#
+# PERCHE' SERVE, e il numero e' 94. L'11/09 alle 04:30 la sonda e' stata scartata (uno stallo di
+# 2,5 s all'inizio aveva lasciato solo 2,9 s di regime, sotto SECONDI_MINIMI) e il filtro ha
+# ripiegato sui **50 Mbit/s** dell'impostazione, su una linea che ne faceva 12-20. Ha fatto passare
+# un file da 12,7 Mbit/s e la riproduzione ha fatto **94 secondi a secco**.
+#
+# In archivio, in quel momento, c'erano quattro portate misurate da venti minuti prima: 13,8 / 7,6 /
+# 6,0 / 8,8. La loro mediana e' 8,2, cioe' `line_speed` 6,6 -- e quel file sarebbe stato rifiutato.
+# Il dato per non sbagliare c'era gia', scritto da noi, e nessuno lo leggeva.
+#
+# E DEMOLISCE UNA PREMESSA scritta dentro le guardie della sonda: "scartare costa un ripiego
+# sull'impostazione dell'utente -- un numero conservativo e noto". Su questo dispositivo
+# l'impostazione non e' conservativa, e' quattro volte la linea. Tutta l'asimmetria con cui
+# QUOTA_MINIMA e SECONDI_MINIMI sono state tarate ("si scarta con generosita'") poggiava su
+# quell'assunto. Con questo ripiego l'assunto torna vero, e quelle guardie tornano difendibili.
+#
+# LA MEDIANA, non un percentile basso: `line_speed = capacita / MARGINE` il suo margine ce l'ha
+# gia'. Applicarne un secondo qui lo conterebbe due volte -- e' l'errore che il lotto 208 ha tolto
+# dal filtro della dimensione.
+#
+# LOTTO 244 -- LE SONDE, NON LE PORTATE, e la correzione arriva da una misura che prima non c'era.
+#
+# Il 242 usava `misure_di_capacita`, cioe' le portate, perche' era gia' l'unica definizione di
+# "misura utilizzabile" e di `sonda_mbps` non c'erano ancora abbastanza righe. Adesso ce ne sono, e
+# dicono che le due cose non sono paragonabili. Nella sessione dell'11/09 alle 15:xx, stessa linea,
+# stessi minuti:
+#
+#     tre sonde su TRE NODI DIVERSI   46,31  46,37  46,47    -> escursione 0,3%
+#     le portate della stessa sessione 24,5 ... 46,3         -> escursione 89%
+#
+# PERCHE' LA PORTATA NON E' UNA CAPACITA'. Si misura come `bitrate + crescita del buffer`, e Kodi
+# riempie a tutta velocita' solo finche' ha fame. Con `cache_media` al 96-99% su TUTTE le righe, su
+# un film leggero non chiede mai tutta la linea: misura il FILM, non la connessione. Il confronto
+# con la sonda, presa nello stesso minuto, lo mostra senza ambiguita':
+#
+#     b/s 0,31 -> portata/sonda 1,06     b/s 0,22 -> 0,91
+#     b/s 0,26 -> 1,00                   b/s 0,12 -> 0,57
+#                                        b/s 0,11 -> 0,53
+#
+# Sui dati di quella finestra la mediana delle portate dava 42,6 su una linea da 46,4 (-8%), quella
+# delle sonde 46,31 (-0%). E l'errore peggiora con una serata di film leggeri, perche' ogni film
+# leggero aggiunge un pavimento travestito da misura.
+#
+# Le portate RESTANO in archivio e `misure_di_capacita` resta dov'e': servono a tarare MARGINE, che
+# e' una domanda diversa -- li' interessa proprio cio' che il player ha ottenuto, non cio' che la
+# linea poteva dare.
+FINESTRA_RIPIEGO = 6 * 3600
+
+
+def capacita_recente(finestra=FINESTRA_RIPIEGO, adesso=None):
+	"""Mbit/s: la mediana delle SONDE dell'ultima `finestra`. None se non ce ne sono.
+
+	Si escludono le righe con `esito`, come fa `misure_di_capacita`: una riproduzione che non e'
+	avvenuta non descrive una linea. La sonda pero' e' presa PRIMA della riproduzione, quindi resta
+	valida anche quando il film e' poi fallito per altro -- ma su questo preferisco la prudenza
+	all'astuzia, e la regola uguale per tutti.
+
+	La finestra e' un GIUDIZIO e non una misura: il 10/09 la linea stava a 44 Mbit/s alle 23:51 e a
+	10 alle 03:20, tre ore e mezza dopo, quindi sei ore e' gia' larga -- ma stringerla vuol dire
+	ricadere sull'impostazione, che e' il caso che questo codice esiste per evitare.
+
+	LOTTO 249 -- UNA SONDA, UN VOTO. Il difetto era segnalato da due lotti e non corretto.
+	Una misura presa una volta sola puo' finire su PIU' righe: la bacheca la riusa entro
+	ETA_BACHECA, e ogni riproduzione che ne nasce se la porta in archivio. Nell'archivio dell'11/09
+	diciassette righe con sonda portavano TREDICI sonde distinte -- una contata tre volte, due
+	contate due volte. La mediana pesava quella sonda per tre, cioe' dava piu' voce a chi aveva
+	fatto piu' tentativi a ridosso della stessa misura, che e' l'esatto contrario di quello che
+	una mediana serve a fare.
+
+	L'identita' e' il valore stesso: `sonda_mbps` nasce da un conteggio di byte diviso per un
+	perf_counter: due misure indipendenti non producono lo stesso float a quindici cifre. Non
+	serve una chiave nuova in tabella, e soprattutto non serve riscrivere lo schema.
+	"""
+	try:
+		from time import time as _ora
+		_adesso = adesso if adesso is not None else _ora()
+		_v = sorted({_r['sonda_mbps'] for _r in recenti()
+					 if (_r.get('quando') or 0) >= _adesso - finestra
+					 and not _r.get('esito') and _r.get('sonda_mbps')})
+		if not _v: return None
+		_n = len(_v)
+		return _v[_n // 2] if _n % 2 else (_v[_n // 2 - 1] + _v[_n // 2]) / 2.0
+	except: return None
 
 
 def portata_contaminata(riga):
@@ -302,3 +409,62 @@ def rapporto_sonda(riga):
 	"""
 	_b, _s = riga.get('bitrate'), riga.get('sonda_mbps')
 	return (_b / _s) if (_b and _s) else None
+
+# LOTTO 259 -- IL MARGINE SI MISURA, NON SI SCEGLIE.
+#
+# `rapporto_sonda` qui sopra dice da tre lotti che il confine da cercare e' 1/MARGINE. Adesso
+# l'archivio ha abbastanza righe per cercarlo davvero, e la domanda giusta non e' "di quanto ha
+# sbagliato la sonda" ma "a quale frazione della soglia i film cominciano a restare a secco":
+# quella si legge su OGNI riga, anche su quelle senza `portata_prima` -- che al 13/09 sono 7 su 26,
+# e comprendono le due riproduzioni peggiori mai registrate, il cui buffer non e' mai salito
+# abbastanza da poter misurare una capacita'.
+#
+# Il margine che sarebbe servito a RIFIUTARE una riga e' `sonda_mbps / bitrate`: la soglia vale
+# `sonda / margine`, quindi la riga viene esclusa quando `margine > sonda / bitrate`.
+SECONDI_STALLO = 5.0
+
+
+def ha_stallato(riga):
+	"""Se quella riproduzione e' rimasta a secco davvero, non solo durante il riempimento iniziale.
+
+	Cinque secondi separano le due popolazioni senza ambiguita' sui dati veri: l'avvio normale
+	segna 0 o 1 s -- e' il buffer che si riempie prima del primo fotogramma -- mentre gli stalli
+	misurati stanno a 6, 10, 27, 29, 31, 44, 44 e 175 s. Fra 1 e 6 non c'e' nessuna riga.
+	"""
+	try: return (riga.get('secondi_a_secco') or 0) > SECONDI_STALLO
+	except: return False
+
+
+def margini_necessari(righe):
+	"""I margini che sarebbero serviti a rifiutare le riproduzioni finite a secco. Lista ordinata.
+
+	L'unita' e' la RIPRODUZIONE e non la sonda, al contrario di `coppie_indipendenti`: li' si
+	misurava una linea e la stessa misura contata due volte falsava la mediana, qui si conta un
+	esito e due film diversi sono due prove diverse anche se la sonda era la stessa. Resta vero che
+	due esiti nati dalla stessa misura ne condividono l'errore: e' il motivo per cui la soglia
+	minima di righe piu' avanti non e' uno.
+
+	Si escludono le righe con `esito`, come ovunque in questo file: una riproduzione che non e'
+	avvenuta non ha un buffer da giudicare.
+	"""
+	_fuori = []
+	for _r in righe or ():
+		try:
+			if _r.get('esito'): continue
+			if not ha_stallato(_r): continue
+			_b, _s = _r.get('bitrate'), _r.get('sonda_mbps')
+			if not _b or not _s: continue
+			_fuori.append(_s / _b)
+		except: continue
+	return sorted(_fuori)
+
+
+def righe_giudicabili(righe):
+	"""Quante righe possono dire qualcosa sul margine: hanno sonda, bitrate e non sono guasti."""
+	_n = 0
+	for _r in righe or ():
+		try:
+			if not _r.get('esito') and _r.get('bitrate') and _r.get('sonda_mbps'): _n += 1
+		except: continue
+	return _n
+

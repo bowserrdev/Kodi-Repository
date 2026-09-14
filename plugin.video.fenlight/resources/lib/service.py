@@ -589,7 +589,7 @@ class WidgetPaginator:
 		from caches.settings_cache import get_setting
 		from modules.settings import page_limit
 		from modules import paginator, cw_head
-		from modules.kodi_utils import modal_dialog_open, search_running
+		from modules.kodi_utils import modal_dialog_present, search_running
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		window = xbmcgui.Window(10000)
@@ -644,7 +644,9 @@ class WidgetPaginator:
 				# only widget-refresh primitive available is the GLOBAL UpdateLibrary hack -- it would rebuild
 				# every DirectoryProvider in the dialog at once and flicker the whole card. Home/hubs/search,
 				# the intended browsing contexts, all live in non-modal windows, so this never gates them.
-				if modal_dialog_open():
+				# LOTTO 286 -- modal_dialog_present e non modal_dialog_open: questo giro e' periodico, e
+				# getCondVisibility farebbe dormire il ciclo della GUI a ogni passaggio. Vedi kodi_utils.
+				if modal_dialog_present():
 					log_change('idle (modal dialog open)')
 					wait_for_abort(0.5); continue
 				# Identify the focused Fen Light widget by container id (skin sets fenlight.active_widget on focus
@@ -709,7 +711,7 @@ class WidgetPaginator:
 					for ckey in cw_head.pending():
 						cscope, _, ccid = ckey.rpartition('.')
 						qui = cscope == scope and ccid.isdigit()
-						fuoco = qui and xbmc.getCondVisibility('Control.HasFocus(%s)' % ccid)
+						fuoco = qui and ccid == cur_ctrl  # lotto 286: vedi il cancello del fuoco piu' sotto
 						prima = cw_focus.get(ckey)
 						cw_focus[ckey] = fuoco
 						if not qui: continue          # altra finestra: il debito resta e si salda al ritorno
@@ -781,12 +783,20 @@ class WidgetPaginator:
 							paginator.log('watcher testa nuova key=%s: mollo dopo %s s (fermo a %s/%s)'
 											% (paginator.short(rkey), paginator.REHEAD_TIMEOUT, rcur, rnum))
 						paginator.rehead_done(rkey); rehead_moved.pop(rkey, None)
+				# LOTTO 286 -- il fuoco si confronta con System.CurrentControlID, letto in testa al giro,
+				# invece di chiederlo con Control.HasFocus: quella passava da getCondVisibility, cioe' dalla
+				# porta del FrameMove, una o due volte ogni 0,3 s. Equivalenza, Kodi 21.1: senza modali
+				# (escluse sopra) entrambe guardano la finestra attiva (ModuleXbmc.cpp:365-367 contro
+				# GetActiveWindowOrDialog, GUIWindowManager.cpp:1620-1629); Control.HasFocus confronta
+				# GetFocusedControlID(), CurrentControlID l'id di GetFocusedControl() (GUIControlsGUIInfo.cpp
+				# 323-332 e 663-670). Divergono solo se l'ultimo id registrato dalla finestra non ha piu' il
+				# fuoco, e li' CurrentControlID e' quella giusta (GUIControlGroup.cpp GetFocusedControlID).
+				# Il secondo ramo chiedeva Control.HasFocus(cur_ctrl): vero per definizione.
 				prop_id = window.getProperty('fenlight.active_widget')
 				widget_id = None
-				if prop_id and xbmc.getCondVisibility('Control.HasFocus(%s)' % prop_id):
+				if prop_id and prop_id == cur_ctrl:
 					widget_id = prop_id
-				elif cur_ctrl and xbmc.getCondVisibility('Control.HasFocus(%s)' % cur_ctrl) \
-						and 'plugin.video.fenlight' in get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % cur_ctrl):
+				elif cur_ctrl and 'plugin.video.fenlight' in get_infolabel('Container(%s).ListItemAbsolute(0).FolderPath' % cur_ctrl):
 					widget_id = cur_ctrl
 				if widget_id is None:
 					log_change('idle cur_ctrl=%s prop=%s' % (cur_ctrl, prop_id))
@@ -964,7 +974,7 @@ class DubResolver:
 		from time import time
 		from modules.settings import dub_filter_enabled, dub_filter_country, tmdb_api_key
 		from modules import dub_queue, paginator
-		from modules.kodi_utils import modal_dialog_open, search_running
+		from modules.kodi_utils import modal_dialog_present, search_running
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		window = xbmcgui.Window(10000)
@@ -996,11 +1006,15 @@ class DubResolver:
 				# 'contenitori ricaricati 0', e 5 titoli gia' risolti buttati via.
 				# Si ferma la sola RICARICA: interrogare la rete dentro un dialogo non da' fastidio a
 				# nessuno, non si vede.
-				modale = modal_dialog_open()
-				if to_show and not modale and now >= prossimo_tentativo \
+				# LOTTO 286 -- la domanda si fa per ULTIMA, solo quando c'e' davvero una ricarica da fare:
+				# prima si valutava a ogni giro da 2 s anche con to_show vuoto. E senza porta del FrameMove:
+				# vedi kodi_utils.modal_dialog_present, che conta anche il modale in chiusura -- cioe'
+				# esattamente la finestra contro cui Container(N) si risolverebbe.
+				if to_show and now >= prossimo_tentativo \
 						and (dub_queue.pending_count() == 0 or now - held_since > self.MAX_REFRESH_HOLD) \
 						and (xbmc.getGlobalIdleTime() >= self.IDLE_BEFORE_REFRESH
-								or now - held_since > self.MAX_REFRESH_HOLD):
+								or now - held_since > self.MAX_REFRESH_HOLD) \
+						and not modal_dialog_present():
 					hit = paginator.refresh_containers_for_ids(to_show)
 					raggiunti = hit + paginator.LAST_OTHER_HITS[0]
 					logger('Fen Light', 'DubResolver: %s titoli tornati disponibili, contenitori ricaricati %s '
@@ -1110,6 +1124,36 @@ class PerfSampler:
 	HEARTBEAT = 30
 	# Soglia oltre la quale il ritardo del ciclo e' un segnale e non rumore di scheduling.
 	LAG_ALERT = 1.5
+	# LOTTO 246 -- IL CENSIMENTO DELLA CPU PER THREAD.
+	#
+	# Ogni CENSIMENTO_OGNI secondi si confrontano due letture di /proc/self/task e si stampa CHI ha
+	# consumato. Non a ogni giro da 2 s: il censimento costa una lettura per thread (sessanta e piu'
+	# su Kodi) e a 2 s sarebbe esso stesso un carico -- l'errore gia' fatto con DIAG in paginator.
+	#
+	# Si stampa su SOGLIA o a BATTITO, come la memoria qui sopra: a macchina quieta una riga al
+	# minuto basta a dire che era quieta, quando lavora si vuole vedere tutto. E si stampa SEMPRE
+	# quando il ciclo e' in ritardo, che e' il momento per cui questo strumento esiste: fino a oggi
+	# la riga PERF CARICO diceva che la macchina non ce la faceva e non poteva dire per colpa di chi.
+	CENSIMENTO_OGNI = 15
+	CENSIMENTO_SOGLIA = 0.40      # frazione di UN core sotto la quale non vale una riga
+	CENSIMENTO_BATTITO = 60
+	# LOTTO 248 -- IL CAMPIONAMENTO A OGNI GIRO E' STATO TOLTO, ed era un mio errore.
+	#
+	# Il 247 lo aveva introdotto sulla base di "1 ms di mediana", che era il numero sbagliato: il
+	# cronometro del 246 partiva DOPO la lettura e misurava la formattazione. Il costo vero,
+	# misurato l'11/09 su 64 finestre, e' 53 ms di mediana e fino a 1875 ms per censimento.
+	#
+	# E il conto e' arrivato puntuale. Il ciclo di questo campionatore non era MAI andato in
+	# ritardo: zero eventi PERF CARICO in log244, log245 e log246 (22+22+27 minuti, campionatore
+	# attivo e funzionante in tutti e tre). Col censimento ogni 15 s: tredici. Col censimento piu'
+	# i pronti a ogni giro: altri tredici, e la corrispondenza e' al millisecondo --
+	#
+	#     18:56:58  strumento 1792 + 1875 ms  ->  18:57:02 ritardo 3,7 s
+	#     18:57:04  strumento 1712 + 1702 ms  ->  18:57:06 ritardo 3,5 s
+	#
+	# Lo strumento stava misurando se stesso e accusando la macchina. I pronti restano -- servono, e
+	# hanno gia' risposto: 2-3, massimo 6, su quattro core, cioe' ne' satura ne' contesa -- ma si
+	# prendono UNA volta per censimento, dove costano quanto il censimento stesso e non di piu'.
 
 	def run(self):
 		from modules.perf import enabled, free_memory_mb
@@ -1133,18 +1177,92 @@ class PerfSampler:
 		# e' l'unico che possiamo leggere, e il crash del 25/08 e' avvenuto nel momento di carico
 		# massimo della sessione.
 		worst_lag, tick_at = 0.0, time()
+		# LOTTO 246. Se /proc non e' leggibile `censimento_cpu` torna None e tutto il resto si
+		# spegne da se': uno strumento rotto non deve poter fermare il campionatore.
+		from modules.perf import censimento_cpu, divario_cpu
+		from modules.perf import fps
+		# thread_time e' la cpu di QUESTO thread: confrontata con la parete dice se il censimento
+		# sta lavorando o aspettando. Se manca (build di Python senza) si ripiega su una costante,
+		# e la riga stampera' 0 ms di cpu invece di far cadere il campionatore.
+		try:
+			from time import thread_time as _cpu_ora
+		except Exception:
+			_cpu_ora = lambda: 0.0
+		censo, censo_at, censo_beat = censimento_cpu(), time(), time()
+		# LOTTO 248 -- il costo dello strumento si SOTTRAE dal ritardo del ciclo. Senza, il
+		# campionatore accusa la macchina del tempo che si e' preso da solo, ed e' esattamente cio'
+		# che e' successo l'11/09.
+		costo_strumento = 0.0
+		if censo is None:
+			logger('FenLight PERF CPU', 'censimento per thread NON disponibile (/proc/self/task non leggibile)')
+		else:
+			logger('FenLight PERF CPU', 'censimento per thread attivo | %d thread | ogni %s s'
+					% (censo[2], self.CENSIMENTO_OGNI))
 		logger('FenLight PERF MEM', 'inizio campionamento | memoria libera %s MB' % last_mem)
 		while not wait_for_abort(self.INTERVAL):
 			try:
 				now = time()
 				# Il ritardo si misura SEMPRE, anche a servizi in pausa: e' il campione piu' prezioso
 				# proprio quando la macchina e' occupata a fare altro.
-				lag = (now - tick_at) - self.INTERVAL
-				tick_at = now
-				if lag > self.LAG_ALERT:
+				# Al NETTO di quanto lo strumento ha speso nel giro precedente: quel tempo e'
+				# nostro, non della macchina, e attribuirglielo e' come misurare la febbre col
+				# termometro in bocca al medico.
+				lag = (now - tick_at) - self.INTERVAL - costo_strumento
+				tick_at, costo_strumento = now, 0.0
+				in_ritardo = lag > self.LAG_ALERT
+				if in_ritardo:
 					if lag > worst_lag: worst_lag = lag
-					logger('FenLight PERF CARICO', 'ciclo in ritardo di %.1f s (chiesti %s s) | finestra %s | memoria libera %s MB | ritardo peggiore finora %.1f s'
-							% (lag, self.INTERVAL, get_current_window(), free_memory_mb(), worst_lag))
+					logger('FenLight PERF CARICO', 'ciclo in ritardo di %.1f s (chiesti %s s) | finestra %s | memoria libera %s MB | ritardo peggiore finora %.1f s%s'
+							% (lag, self.INTERVAL, get_current_window(), free_memory_mb(), worst_lag,
+							   ' | al netto dello strumento'))
+				# LOTTO 246 -- il censimento. Sta PRIMA della guardia sui servizi in pausa: durante
+				# una riproduzione i servizi si fermano ma la cpu no, ed e' proprio allora che
+				# serve sapere chi la sta usando.
+				if censo is not None and (in_ritardo or now - censo_at >= self.CENSIMENTO_OGNI):
+					# LOTTO 247 -- IL CRONOMETRO PARTE PRIMA DELLA LETTURA. Nel 246 stava dopo, e
+					# quindi "costo del censimento" misurava la formattazione invece delle
+					# cinquanta aperture di file che sono il costo vero: l'11/09 ha riportato 1 ms
+					# di mediana, che era il numero sbagliato. Su quel numero avevo poi deciso di
+					# campionare i pronti a ogni giro, quindi andava corretto prima di fidarsene.
+					# LOTTO 248 -- CPU E PARETE INSIEME. 53 ms di mediana per leggere cinquanta
+					# file possono essere lavoro vero (Python, un ARM a 32 bit a 1,4 GHz, SELinux
+					# a ogni apertura) oppure attesa. Le due misure insieme lo dicono, e i due
+					# casi hanno rimedi opposti: rendere lo strumento piu' magro, o diradarlo.
+					_t0, _c0 = time(), _cpu_ora()
+					_nuovo = censimento_cpu()
+					_parete = now - censo_at
+					if _nuovo is not None:
+						_pronti = ('pronti %d su %d thread' % (_nuovo[3], _nuovo[2])) \
+								  if len(_nuovo) > 3 else ''
+						_f = fps()
+						_capo, _chi = divario_cpu(censo, _nuovo, _parete, pronti=_pronti, fps=_f)
+						_quanto = (_nuovo[0] - censo[0]) / _parete if _parete > 0 else 0
+						if _capo and (in_ritardo or _quanto >= self.CENSIMENTO_SOGLIA
+									  or now - censo_beat >= self.CENSIMENTO_BATTITO):
+							_sp, _sc = (time() - _t0) * 1000, (_cpu_ora() - _c0) * 1000
+							# LOTTO 253 -- ANCHE IL DIALOGO SOPRA, e serviva da tre lotti.
+							# `getCurrentWindowId` torna la finestra SOTTO: con la finestra sorgenti
+							# aperta il censimento scriveva `finestra 10000`, cioe' la Home, e i
+							# censimenti fatti durante una ricerca erano indistinguibili da una Home
+							# a riposo. Non cambia finestra e nessuno preme tasti, quindi passavano
+							# anche il filtro dei "censimenti puliti": il 12/09 mi hanno fatto
+							# leggere una Home a riposo scesa dall'85% al 60% che non esisteva.
+							# La funzione c'era gia' in questo stesso ciclo, per le righe PERF NAV.
+							# 9999 e' WINDOW_INVALID: `getCurrentWindowDialogId` lo torna quando NON c'e'
+							# nessun dialogo. Con il solo `if _dlg` e' vero, e il lotto 253 ha passato
+							# una sessione intera a scrivere `coperta dal dialogo 9999` su finestre
+							# scoperte -- cioe' l'esatto contrario di cio' che la riga serve a dire.
+							_dlg = get_current_dialog()
+							if _dlg in (9999, 0): _dlg = None
+							logger('FenLight PERF CPU', '%s%s | finestra %s%s%s | censimento %.0f ms parete / %.0f ms cpu'
+									% (_capo, ' | fps %.0f' % _f if _f is not None else '',
+									   get_current_window(),
+									   (' coperta dal dialogo %s' % _dlg) if _dlg else '',
+									   ' | CICLO IN RITARDO' if in_ritardo else '', _sp, _sc))
+							logger('FenLight PERF CPU', '  %s' % _chi)
+							censo_beat = now
+						censo, censo_at = _nuovo, now
+						costo_strumento = time() - _t0
 				if window.getProperty(pause_services_prop) == 'true': continue
 				mem = free_memory_mb()
 				win, dialog = get_current_window(), get_current_dialog()
@@ -1185,10 +1303,56 @@ class FenLightMonitor(xbmc.Monitor):
 		xbmc.Monitor.__init__(self)
 		self.startServices()
 
+	def _avvia_diagnostica(self):
+		"""LOTTO 261. Rileva il livello di log, lo rispecchia in una proprieta' e lo DICHIARA.
+
+		E' tutto quello che la suite fa dentro Kodi: il censimento per thread vive fuori, in
+		strumenti/diagnostica/sonda.sh, per non ripetere l'errore del lotto 248 (lo strumento che
+		accusava la macchina del proprio peso). Qui si paga una getCondVisibility e, una volta sola,
+		la lettura di advancedsettings.xml.
+
+		La riga di log serve a chi leggera' il referto fra un mese: senza, non c'e' modo di sapere
+		se una misura e' stata presa con l'overlay di debug acceso -- e l'overlay ridisegna tutto lo
+		schermo a ogni fotogramma, quindi cambia proprio il numero che si stava misurando.
+		"""
+		try:
+			from modules.diagnostica import rileva, pubblica, battezza, DEBUG, DEBUG_OVERLAY
+			livello, overlay, fonte = rileva()
+			pubblica(livello, overlay)
+			battezza('FL:servizio')
+			if livello >= DEBUG:
+				logger('FenLight DIAG', 'diagnostica ATTIVA | livello %d da %s' % (livello, fonte))
+				if overlay:
+					logger('FenLight DIAG', "ATTENZIONE: l'overlay di debug e' acceso (livello %d). "
+						   'Riscrive MEM e FPS quasi a ogni fotogramma, quindi sporca una regione, e '
+						   'con algorithmdirtyregions=3 una regione sporca fa ridisegnare TUTTO lo '
+						   'schermo. I numeri di questa sessione NON sono quelli a riposo: per '
+						   'misurare usa <loglevel>1</loglevel> in advancedsettings.xml.' % livello)
+			else:
+				logger('FenLight DIAG', 'diagnostica spenta (log a livello normale): la sonda esterna '
+					   'misurera\' tutto ma non potra\' dare un nome ai thread di Kodi')
+		except Exception: pass
+
+	def _filo(self, nome, funzione):
+		"""Un thread che si presenta con un nome in /proc. Vedi modules/diagnostica.battezza:
+		su Android Kodi non nomina i propri thread e su Linux il nome si EREDITA dal creatore,
+		quindi senza questa riga tutti i nostri servizi compaiono nella traccia esterna col nome del
+		thread Java dell'applicazione -- indistinguibili fra loro e da quelli di Kodi."""
+		def _corpo():
+			try:
+				from modules.diagnostica import battezza
+				battezza(nome)
+			except Exception: pass
+			funzione()
+		return Thread(target=_corpo)
+
 	def startServices(self):
 		# Prima di far partire TraktMonitor: la costruzione iniziale dei widget che Kodi sta facendo
 		# adesso vale come ricostruzione globale, e va registrata o la prima sincronizzazione Trakt ne
 		# ordinera' una seconda a vuoto. Vedi kodi_utils.stamp_startup_rebuild.
+		# Per primo: cosi' la proprieta' col livello esiste prima che qualunque invocazione del
+		# plugin provi a leggerla.
+		self._avvia_diagnostica()
 		from modules.kodi_utils import stamp_startup_rebuild
 		stamp_startup_rebuild()
 		# SetAddonConstants resta SEMPRE qui e sempre in sincrono: sono 5 ms misurati, e la skin legge
@@ -1209,29 +1373,29 @@ class FenLightMonitor(xbmc.Monitor):
 		#
 		# L'ordine interno NON cambia: _start_remaining_services e' la vecchia coda di questo metodo,
 		# riga per riga. L'unica differenza e' QUANDO parte.
-		if self._boot_work_can_wait(): Thread(target=self._deferred_services).start()
+		if self._boot_work_can_wait(): self._filo('FL:avvio', self._deferred_services).start()
 		else: self._start_remaining_services()
 
 	def _start_remaining_services(self):
 		DatabaseMaintenance().run()
 		SyncSettings().run()
-		Thread(target=CustomFonts().run).start()
+		self._filo('FL:fonts', CustomFonts().run).start()
 		# BLUR SPENTO (23/08, richiesta dell'utente). Non differito: proprio non parte. Lo sfondo
 		# sfocato ricade sull'artwork nitido, che e' una perdita puramente estetica; in cambio
 		# spariscono l'import di Pillow, il ciclo di polling a 0.3s e ogni generazione di immagine.
 		# Per riaccenderlo basta ripristinare la riga sotto: e' l'unico punto che lo avvia.
 		# Thread(target=self._delayed_blur_start).start()
-		Thread(target=TraktMonitor().run).start()
-		Thread(target=WidgetRefresher().run).start()
-		Thread(target=WidgetPaginator().run).start()
-		Thread(target=DubResolver().run).start()
-		Thread(target=PerfSampler().run).start()
+		self._filo('FL:trakt', TraktMonitor().run).start()
+		self._filo('FL:widgetref', WidgetRefresher().run).start()
+		self._filo('FL:paginator', WidgetPaginator().run).start()
+		self._filo('FL:dub', DubResolver().run).start()
+		self._filo('FL:perf', PerfSampler().run).start()
 		# Aggiornamento della skin senza ReloadSkin. Vive in modules/skin_updater.py e non qui perche'
 		# quel modulo ha il suo .pyc, mentre questo file Kodi lo esegue come __main__ e lo ricompila a
 		# ogni avvio (vedi il referto in testa): sono ~250 righe che non hanno motivo di ricompilarsi.
 		# L'import e' pigro per la stessa ragione, e il servizio aspetta comunque 90 s prima di
 		# toccare la rete. Vedi il modulo per il log del 09/09 che l'ha reso necessario.
-		Thread(target=self._start_skin_updater).start()
+		self._filo('FL:skinupd', self._start_skin_updater).start()
 		AutoStart().run()
 		self._mark_boot_ready()
 

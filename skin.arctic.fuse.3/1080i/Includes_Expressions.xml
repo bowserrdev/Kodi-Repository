@@ -176,4 +176,24 @@
 
     <expression name="Exp_Halloween_Theme">[System.Date(10-30,11-01) + Skin.HasSetting(EnableHolidayTheme) + [[!Window.IsVisible(visualisation) + !VideoPlayer.IsFullscreen] | Window.IsActive(fullscreeninfo)]]</expression>
 
+    <!-- ============================================================================================ -->
+    <!-- LOTTO 292: i sette termini dell'indicatore, uno per riga.                                     -->
+    <!-- Sono le STESSE condizioni che Object_Indicator_Visible passa come parametri, con ListItem al  -->
+    <!-- posto di $PARAM[listitem]: le espressioni non prendono parametri, ed e' il motivo per cui la  -->
+    <!-- versione compatta vale solo dove l'elemento e' ListItem (cioe' ovunque tranne le finestre     -->
+    <!-- PVR). Il termine dei timer non c'e': senza componente TV non puo' essere vero.                -->
+    <!-- ============================================================================================ -->
+
+    <expression name="Exp_Ind_Playing">[ListItem.IsPlaying]</expression>
+
+    <expression name="Exp_Ind_Episodes">[!Skin.HasSetting(Indicator.DisableEpisodes) + !Integer.IsEqual(ListItem.Property(UnWatchedEpisodes),0) + [!Integer.IsEqual(ListItem.Property(WatchedEpisodes),0) | Skin.HasSetting(Indicator.EnableUnwatchedCount)] + [String.IsEqual(ListItem.DBType,tvshow) | String.IsEqual(ListItem.DBType,season) | String.IsEqual(ListItem.DBType,episode)]]</expression>
+
+    <expression name="Exp_Ind_Progress">[!Skin.HasSetting(Indicator.DisableProgress) + !ListItem.IsCollection + [ListItem.IsResumable | [!String.IsEmpty(ListItem.Property(WatchedProgress)) + !Integer.IsEqual(ListItem.Property(WatchedProgress),0) + !Integer.IsEqual(ListItem.Property(WatchedProgress),100)]]]</expression>
+
+    <expression name="Exp_Ind_Watched">[!Skin.HasSetting(Indicator.DisableWatched) + [String.IsEqual(ListItem.Overlay,OverlayWatched.png) | [!Integer.IsEqual(ListItem.PlayCount,0) + [String.IsEqual(ListItem.DBType,movie) | String.IsEqual(ListItem.DBType,tvshow) | String.IsEqual(ListItem.DBType,season) | String.IsEqual(ListItem.DBType,set) | String.IsEqual(ListItem.DBType,video) | String.IsEqual(ListItem.DBType,episode)]]]]</expression>
+
+    <expression name="Exp_Ind_Library">[!Skin.HasSetting(Indicator.DisableLibrary) + !String.IsEmpty(ListItem.DBID) + !String.IsEmpty(ListItem.Property(Item.Info))]</expression>
+
+    <expression name="Exp_Ind_Collection">[!Skin.HasSetting(Indicator.DisableCollection) + [ListItem.IsCollection]]</expression>
+
 </includes>

@@ -137,7 +137,14 @@
                 <centertop>42</centertop>
                 <bordersize>-16</bordersize>
                 <texture colordiffuse="$PARAM[textcolor]">resource://resource.images.arcticfuse/icons/update.png</texture>
-                <animation effect="rotate" start="0" end="-180" time="1200" delay="1200" loop="true" center="auto" tween="back" condition="true">Conditional</animation>
+                <!-- LOTTO 291: la condizione era "true", quindi l'animazione in CICLO non finiva mai. Kodi la fa avanzare
+                     anche quando il controllo e' NASCOSTO (CGUIControl::DoProcess chiama Animate prima di guardare la
+                     visibilita') e a ogni giro segna lo schermo sporco, perche' un'animazione in corso non arriva mai
+                     allo stato APPLIED che la spegnerebbe (VisibleEffect.cpp, CAnimation::Animate e RenderAnimation).
+                     Con algorithmdirtyregions=3 una zona sporca fa ridisegnare TUTTO: bastava che la rotellina fosse
+                     comparsa una volta (un widget ricostruito) e la stick restava a ridisegnare a vuoto per sempre.
+                     Ora la rotazione e' legata alla stessa condizione che mostra la rotellina. -->
+                <animation effect="rotate" start="0" end="-180" time="1200" delay="1200" loop="true" center="auto" tween="back" condition="$PARAM[visible]">Conditional</animation>
                 <animation effect="fade" start="0" end="100" delay="1600" time="1" reversible="true">Visible</animation>
                 <animation effect="fade" start="100" end="0" delay="400" time="1" reversible="true">Hidden</animation>
                 <visible>$PARAM[visible]</visible>
@@ -206,9 +213,12 @@
             <include>Info_Panel_Dimensions</include>
             <include content="Info_Panel">
                 <param name="visible">String.IsEmpty(Window.Property(TMDBHelper.WidgetContainer))</param>
-                <param name="visible_line">$EXP[View_Row_Info_Details_Expression]</param>
+                <!-- LOTTO 296: come negli hub, dettagli e genere spariscono durante la navigazione veloce.
+                     9712 e' il rilevatore della vista (View_Main_Fast_Nav), solo Kodi 21. -->
+                <param name="visible_line">$EXP[View_Row_Info_Details_Expression] + !Control.IsVisible(9712)</param>
                 <param name="visible_plot">$EXP[View_Row_Info_Details_Expression]</param>
                 <param name="visible_meta">$EXP[View_Row_Info_Details_Expression]</param>
+                <param name="freeze_plot">true</param>
             </include>
             <include>View_Combined_Info_Panel</include>
         </control>
@@ -447,8 +457,57 @@
         </control>
     </include>
 
+    <!-- Lotto 285: navigazione veloce riconosciuta dalla distanza tra gli spostamenti.
+         Ogni spostamento accende Container.OnNext/OnPrevious per un fotogramma; un'animazione Hidden tiene
+         Control.IsVisible vero per la sua durata e, con reversible="false", riparte da zero a ogni accensione.
+         9711: acceso per 250 ms dopo ogni spostamento.
+         9712: valutato PRIMA di 9711, quindi ne legge lo stato precedente; si accende se uno spostamento arriva
+         entro 250 ms dal precedente, si autosostiene, si spegne 350 ms dopo l'ultimo spostamento.
+         In saturazione il tasto tenuto sposta ogni 2 fotogrammi (GUIBaseContainer.cpp:380-389): soglie piu'
+         basse non lo riconoscerebbero.
+         Lotto 287: una definizione sola, Fast_Nav_Detector; le righe degli hub la includono per Container(id)
+         con id 971xxx/972xxx (Hub_Combined_Info). -->
+    <include name="Fast_Nav_Detector">
+        <definition>
+            <control type="group" id="$PARAM[id_fast]">
+                <visible>[$PARAM[container].OnNext | $PARAM[container].OnPrevious] + [Control.IsVisible($PARAM[id_recent]) | Control.IsVisible($PARAM[id_fast])]</visible>
+                <animation effect="fade" start="100" end="100" time="350" reversible="false">Hidden</animation>
+            </control>
+            <control type="group" id="$PARAM[id_recent]">
+                <visible>$PARAM[container].OnNext | $PARAM[container].OnPrevious</visible>
+                <animation effect="fade" start="100" end="100" time="250" reversible="false">Hidden</animation>
+            </control>
+        </definition>
+    </include>
+    <!-- La vista della finestra media: Container senza id e' il contenitore della vista (GUIControlsGUIInfo.cpp:602-607). -->
+    <!-- LOTTO 297: rilevatore di ASSESTAMENTO. Resta acceso $PARAM[time] ms dopo che la sua condizione e'
+         diventata falsa, con lo stesso trucco di Fast_Nav_Detector: un'animazione Hidden tiene m_visible a
+         VISIBLE finche' non e' finita (GUIControl.cpp:812-823), e Control.IsVisible legge proprio quello.
+         Serve a far ricomparire il blocco dettagli + trama SOLO quando il logo ha finito di risalire: quando
+         il blocco torna visibile Kodi reimpagina la trama in quel fotogramma, e se il fotogramma e' anche il
+         primo dell'animazione del logo, l'animazione parte in ritardo e si vede lo scatto. -->
+    <include name="Fast_Nav_Settle">
+        <param name="time">200</param>
+        <definition>
+            <control type="group" id="$PARAM[id_settle]">
+                <visible>$PARAM[condition]</visible>
+                <animation effect="fade" start="100" end="100" time="$PARAM[time]" reversible="false">Hidden</animation>
+            </control>
+        </definition>
+    </include>
+
+    <include name="View_Main_Fast_Nav">
+        <include content="Fast_Nav_Detector">
+            <param name="container">Container</param>
+            <param name="id_recent">9711</param>
+            <param name="id_fast">9712</param>
+        </include>
+    </include>
+
     <include name="View_Main">
         <definition>
+
+            <include condition="String.StartsWith(System.BuildVersion,21)">View_Main_Fast_Nav</include>
 
             <include content="Object_Hidden_Button">
                 <param name="id">612</param>

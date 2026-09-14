@@ -75,4 +75,14 @@ def mdblist_get_list_contents(list_id):
 		return results
 	# 'or []': i chiamanti fanno len() su questo valore e non devono conoscere la distinzione fra
 	# fallimento e lista vuota -- a loro serve solo una lista. La distinzione e' servita alla cache.
-	return lists_cache_object(_process, 'mdblist_list_contents_%s' % list_id, list_id, False, 24) or []
+	results = lists_cache_object(_process, 'mdblist_list_contents_%s' % list_id, list_id, False, 24) or []
+	# LISTE SENZA RANK (lotto 301). Le liste statiche non classificate ('A24', 'Psychological
+	# Thrillers') hanno "rank": null su ogni elemento: get('rank', 0) rende il default solo se la chiave
+	# manca, quindi l'ordine era None. La build ordina per quel valore, None < None e' un TypeError, e
+	# l'except di build_mdblist_list consegnava una cartella vuota: 'nessun risultato' su una lista da
+	# 181 elementi. Basta un None per rompere l'ordinamento, quindi in quel caso vale la posizione data
+	# dall'API per tutti. Si corregge DOPO la cache e non dentro _process: le voci scritte dal codice
+	# vecchio restano valide 24 ore, e il widget non deve aspettare che scadano.
+	if any(i.get('order') is None for i in results):
+		for idx, i in enumerate(results): i['order'] = idx
+	return results

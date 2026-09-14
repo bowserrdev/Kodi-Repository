@@ -349,6 +349,8 @@
                 <param name="visible_line">false</param>
                 <param name="visible_plot">false</param>
                 <param name="visible_meta">false</param>
+                <!-- Lotto 287: dettagli e trama qui sono SEMPRE nascosti; caricati, si reimpaginavano a ogni elemento. -->
+                <param name="include_details">false</param>
                 <param name="container">Container($PARAM[id]).</param>
             </include>
         </control>
@@ -370,13 +372,32 @@
          il row Discover (505) e' visibile solo a casella vuota, quindi non entra mai da questa porta. -->
     <include name="Hub_Combined_Info">
         <control type="group">
+            <!-- Lotto 287: rilevatore della navigazione veloce di questa riga (vedi Fast_Nav_Detector), solo Kodi 21 -->
+            <include content="Fast_Nav_Detector" condition="String.StartsWith(System.BuildVersion,21)">
+                <param name="container">Container($PARAM[id])</param>
+                <param name="id_recent">971$PARAM[id]</param>
+                <param name="id_fast">972$PARAM[id]</param>
+            </include>
+            <!-- LOTTO 297: assestamento di questa riga, acceso finche' c'e' navigazione veloce o intestazione con
+                 il fuoco, e per 200 ms dopo (quanto dura la risalita del logo). Solo Kodi 21, come il rilevatore. -->
+            <include content="Fast_Nav_Settle" condition="String.StartsWith(System.BuildVersion,21)">
+                <param name="id_settle">973$PARAM[id]</param>
+                <param name="condition">Control.IsVisible(972$PARAM[id]) | $EXP[Exp_Hubs_SlideInfo]</param>
+            </include>
             <animation effect="fade" start="0" end="100" delay="399" time="1" condition="!$EXP[Hub_Spotlight_Visible_Expression]">Conditional</animation>
             <animation effect="fade" start="100" end="0" condition="$EXP[Hub_Spotlight_Visible_Expression]">Conditional</animation>
             <control type="group">
-                <include>Home_Slide_Animation</include>
+                <!-- LOTTO 297: il logo scende sia col fuoco sull'intestazione sia durante la navigazione veloce.
+                     La navigazione veloce e' il rilevatore IMMEDIATO (972): il logo parte subito. Il blocco
+                     dettagli qui sotto usa invece l'assestamento (973), che arriva 200 ms dopo.
+                     LOTTO 297b: le due condizioni sono separate perche' la discesa e' diversa (vedi Home_Slide_Animation). -->
+                <include content="Home_Slide_Animation">
+                    <param name="condition">$EXP[Exp_Hubs_SlideInfo]</param>
+                    <param name="condition_fast">Control.IsVisible(972$PARAM[id])</param>
+                </include>
                 <include>Info_Panel_Dimensions</include>
                 <control type="group">
-                    <top>200</top>
+                    <!-- LOTTO 297: era top 200 con l'animazione a -200; ora top 0 e animazione a +200. -->
                     <include content="Info_Panel">
                         <param name="visible">[!$EXP[Exp_InfoDialogs] + [Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id]) | [$EXP[Exp_Search_Window_Text] + Control.IsVisible($PARAM[id])]]]</param>
                         <param name="visible_line">false</param>
@@ -388,16 +409,24 @@
                 </control>
             </control>
             <control type="group">
-                <visible>!$EXP[Exp_Hubs_SlideInfo]</visible>
+                <!-- LOTTO 297: il blocco dettagli + trama sparisce con l'intestazione (come prima) e con
+                     l'ASSESTAMENTO della navigazione veloce: si nasconde subito, ricompare quando il logo si e'
+                     fermato. Su Kodi 22 973 non esiste, Control.IsVisible e' falso e resta la sola intestazione. -->
+                <visible>![$EXP[Exp_Hubs_SlideInfo] | Control.IsVisible(973$PARAM[id])]</visible>
                 <include>Info_Panel_Dimensions</include>
                 <include>Home_Info_Animation</include>
                 <include content="Info_Panel">
                     <param name="visible">[!$EXP[Exp_InfoDialogs] + [Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id]) | [$EXP[Exp_Search_Window_Text] + Control.IsVisible($PARAM[id])]]]</param>
+                    <!-- LOTTO 296 -> 297: qui c'era visible_line = !Control.IsVisible(972$PARAM[id]). Ora sparisce
+                         l'intero blocco (gruppo qui sopra), quindi la condizione sulla sola riga e' superflua e si
+                         toglie per non valutarla a ogni fotogramma. -->
                     <param name="visible_line">true</param>
                     <param name="visible_plot">true</param>
                     <param name="visible_meta">true</param>
                     <param name="include_title">false</param>
                     <param name="container">Container($PARAM[id]).</param>
+                    <param name="freeze_plot">true</param>
+                    <param name="freeze_var">Info_Panel_Plot_Frozen_$PARAM[id]</param>
                 </include>
             </control>
         </control>
@@ -849,6 +878,34 @@
             </include>
 
             <control type="group">
+                <!-- LOTTO 251. NON DISEGNARE CIO' CHE E' COPERTO.
+                     Kodi tratta i dialoghi come sovrapposizioni che potrebbero essere semitrasparenti,
+                     quindi continua a processare e disegnare la finestra SOTTO. Misura sulla stick,
+                     log delle 20:32: per i 39 secondi in cui la finestra sorgenti di Fen Light copriva
+                     tutto lo schermo, il thread applicativo di Kodi e' rimasto all'81/85% di un core a
+                     ridisegnare un hub che nessuno poteva vedere.
+                     La prova che e' l'hub sotto e non il dialogo sopra: in quei censimenti la ricerca
+                     era ancora in corso, quindi il dialogo era vuoto, e il costo era identico a quello
+                     dell'hub popolato a riposo (86%). E il contrasto che chiude il ragionamento:
+                     quando parte il video Kodi SOSTITUISCE la finestra e il costo crolla al 20%;
+                     quando un dialogo la COPRE resta 85%.
+                     Un gruppo invisibile non viene ne' processato ne' disegnato, figli compresi.
+
+                     LA CONDIZIONE E' UNA CONGIUNZIONE, ed e' voluto. `fenlight.ricerca.attiva` dice
+                     "e' una nostra finestra a schermo intero"; `System.HasActiveModalDialog` e' la
+                     verita' di Kodi e dice "un modale c'e' davvero". Serve la seconda perche' la prima
+                     e' una proprieta' che qualcuno deve spegnere: se restasse accesa per un errore, da
+                     sola nasconderebbe l'hub fino al riavvio di Kodi. Cosi' invece l'hub torna da solo
+                     appena il dialogo si chiude, qualunque cosa sia successo alla proprieta'.
+                     La proprieta' ha gia' una scadenza di 300 s lato Fen Light (mark_search_phase), ma
+                     la skin non sa confrontare un tempo: puo' solo vedere se e' vuota, quindi quella
+                     scadenza da sola non basterebbe.
+
+                     COPRE ANCHE LA SONDA: `_sonda_la_prima` gira dentro `process_results`, cioe'
+                     dentro la fase in cui questa bandiera e' alzata. E' li' che l'hub le rubava il
+                     core: durante la misura il primo consumatore stava al 74%.
+                -->
+                <visible>![System.HasActiveModalDialog + !String.IsEmpty(Window(10000).Property(fenlight.ricerca.attiva))]</visible>
                 <include>Animation_Group_Bumper</include>
 
                 <control type="group">

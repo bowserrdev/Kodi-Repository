@@ -581,7 +581,10 @@ class FenLightPlayer(xbmc_player):
 		positivamente misurato.
 		"""
 		try:
-			if int(get_setting('fenlight.results.filter_size_method', '0')) != 1:
+			# LOTTO 250 -- vale per il modo 1 (numero fisso) E per il 3 (Auto, numero misurato).
+			# In entrambi l'utente ha chiesto di filtrare sulla BANDA, e questo cancello e' la
+			# seconda meta' di quel filtro; con 0 e 2 non lo ha chiesto.
+			if int(get_setting('fenlight.results.filter_size_method', '0')) not in (1, 3):
 				return True, 'cancello banda non attivo'
 			_byte, _sec = _h.get('dimensione'), _h.get('durata')
 			if not _byte or not _sec: return True, 'bitrate non misurabile'
@@ -604,17 +607,18 @@ class FenLightPlayer(xbmc_player):
 
 	@staticmethod
 	def _linea_utile():
-		"""(Mbit/s, da dove viene). La misura della sonda se c'e', l'impostazione altrimenti.
+		"""(Mbit/s, da dove viene). La scala del lotto 242: sonda, bacheca, archivio, impostazione.
 
 		La provenienza si restituisce e si scrive nel log: senza, una riga di scarto non dice se il
 		numero contro cui la sorgente e' stata giudicata era misurato o scritto a mano, e non si
 		puo' piu' verificare a posteriori se il cancello ha tolto roba buona.
 		"""
 		try:
+			# LOTTO 242 -- la stessa funzione che usa il filtro delle dimensioni in sources.py.
+			# Prima qui si leggeva la bacheca SENZA limite d'eta' e si ripiegava sull'impostazione,
+			# mentre sources guardava solo la ricerca corrente: due cancelli, due numeri.
 			from modules import sonda_linea
-			_m = sonda_linea.letta()
-			_v = sonda_linea.line_speed_da((_m or {}).get('regime'))
-			if _v: return _v, 'dalla sonda (%.1f Mbit/s misurati / %.2f)' % (_m['regime'], sonda_linea.MARGINE)
+			return sonda_linea.soglia()
 		except: pass
 		try: return float(get_setting('results.line_speed', '25') or 25), 'impostati'
 		except: return 0.0, 'impostati'
@@ -684,7 +688,19 @@ class FenLightPlayer(xbmc_player):
 		"""
 		_fuori = {'link': getattr(self, 'url', None) or None}
 		try:
+			# LOTTO 244 -- lo stato del link si legge QUI e non dalla bacheca, quindi si scrive
+			# SEMPRE: anche quando la sonda non e' partita, o non ha prodotto un numero. E' proprio
+			# quello il caso in cui serve di piu' -- una riga senza misura e senza segnale non dice
+			# niente a nessuno, una riga senza misura ma con -72 dBm si spiega da sola.
 			from modules import sonda_linea
+			# Il try e' SUO, non condiviso col resto: la strumentazione nuova non deve poter
+			# portarsi via i dati vecchi. Senza, un errore qui (il file che non c'e', un formato
+			# diverso) farebbe uscire tutta `_campi_sonda` e la riga perderebbe anche la sonda --
+			# l'ha scoperto test_222, che passa un finto sonda_linea senza `stato_rete`.
+			try:
+				_q, _s = sonda_linea.stato_rete()
+				_fuori.update({'rete_qualita': _q, 'rete_segnale': _s})
+			except: pass
 			_e = sonda_linea.letta()
 			if not _e: return _fuori
 			_t0 = getattr(self, '_sonda_t0', None)
@@ -696,7 +712,36 @@ class FenLightPlayer(xbmc_player):
 				'sonda_cpu': int(_e['cpu'] * 1000) if _e.get('cpu') else None,
 				'sonda_ttfb': int(_e['ttfb']) if _e.get('ttfb') else None,
 				'sonda_cdn': _e.get('cdn') or None,
-				'sonda_eta': int(_t0 - _e['quando']) if (_t0 and _e.get('quando')) else None})
+				'sonda_eta': int(_t0 - _e['quando']) if (_t0 and _e.get('quando')) else None,
+				# LOTTO 240 -- la FORMA della curva accanto alla sua media. `sonda_media` e' cio'
+				# che il codice del lotto 230 avrebbe dichiarato: tenerla permette di misurare a
+				# posteriori quanto la correzione della rampa ha cambiato, invece di doverci
+				# credere. LOTTO 245: `sonda_avvallamento` (era `sonda_buco`) non decide ancora
+				# niente -- misura quanto a lungo la linea e' stata sotto il proprio ritmo medio.
+				'sonda_media': _e.get('regime_media'), 'sonda_coda': _e.get('coda'),
+				'sonda_centro': _e.get('centro'), 'sonda_salita': _e.get('salita'),
+				'sonda_avvallamento': _e.get('avvallamento'),
+				'sonda_campioni': _e.get('campioni'),
+				# Senza questa, `sonda_secondi` in archivio e' ambigua: vedi base_cache.
+				'sonda_fonte': _e.get('regime_fonte') or None,
+				# LOTTO 255 -- il segnale durante la misura. Diverso da `rete_qualita`/`rete_segnale`
+				# qui sopra, che si leggono adesso e descrivono ORA: questi descrivono i sei secondi
+				# della sonda, e sono gli unici confrontabili con `sonda_salita`.
+				'sonda_rssi_inizio': _e.get('rssi_inizio'),
+				'sonda_rssi_fine': _e.get('rssi_fine'),
+				'sonda_rssi_min': _e.get('rssi_min'),
+				# LOTTO 258 -- SE QUELLA MISURA ERA CREDIBILE. Nessuna di queste decide niente
+				# adesso: servono a poter chiedere all'archivio, fra qualche decina di righe, se
+				# gli indizi che il 12/09 puntavano tutti sulla stessa sonda sbagliata lo fanno
+				# anche in generale. `sonda_letti_secondi` sta accanto a `sonda_secondi`, che e'
+				# solo il tratto dichiarato: la differenza fra le due dice quanto la linea ci ha
+				# messo ad assestarsi, ed e' il numero che distingue una rampa da una linea ferma.
+				'sonda_lettore': _e.get('lettore') or None,
+				'sonda_ripiego': _e.get('ripiegato'),
+				'sonda_stato': _e.get('stato'),
+				'sonda_dim_attesa': _e.get('dimensione_attesa'),
+				'sonda_dim_vera': _e.get('dimensione_vera'),
+				'sonda_letti_secondi': _e.get('secondi')})
 		except: pass
 		return _fuori
 

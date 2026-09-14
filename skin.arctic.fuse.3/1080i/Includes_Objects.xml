@@ -512,59 +512,74 @@
         <param name="include_discart">false</param>
         <param name="selected">false</param>
         <definition>
+            <!-- LOTTO 290: genere, studio e paese si escludono a vicenda, ma ogni ramo ripeteva le negazioni degli
+                 altri: sei condizioni per elemento e per giro. Annidati se ne valuta una per livello e il ramo
+                 scartato non viene processato. A schermo non cambia niente. -->
+            <control type="group">
+                <visible>[String.IsEqual($PARAM[listitem].DBType,genre) | String.IsEqual($PARAM[listitem].Property(DBType),genre)]</visible>
+                <control type="image">
+                    <include content="Object_ColorDiffuse" condition="$PARAM[selected]">
+                        <param name="colordiffuse">$VAR[ColorSelected]</param>
+                    </include>
+                    <colordiffuse>main_fg_100</colordiffuse>
+                    <texture background="true" diffuse="$PARAM[icon_diffuse]" fallback="DefaultGenres.png">$VAR[Image_Icon]</texture>
+                    <aspectratio scalediffuse="false">keep</aspectratio>
+                    <bordersize>$PARAM[genre_bordersize]</bordersize>
+                </control>
+            </control>
             <control type="group">
                 <visible>![String.IsEqual($PARAM[listitem].DBType,genre) | String.IsEqual($PARAM[listitem].Property(DBType),genre)]</visible>
-                <visible>![String.IsEqual($PARAM[listitem].DBType,studio) | String.IsEqual($PARAM[listitem].Property(DBType),studio)]</visible>
-                <visible>![String.IsEqual($PARAM[listitem].DBType,country) | String.IsEqual($PARAM[listitem].Property(DBType),country)]</visible>
+                <control type="group">
+                    <visible>[String.IsEqual($PARAM[listitem].DBType,studio) | String.IsEqual($PARAM[listitem].Property(DBType),studio)]</visible>
+                    <control type="image">
+                        <include content="Object_ColorDiffuse" condition="$PARAM[selected]">
+                            <param name="colordiffuse">$VAR[ColorSelected]</param>
+                        </include>
+                        <colordiffuse>main_fg_100</colordiffuse>
+                        <texture background="true" diffuse="$PARAM[icon_diffuse]" fallback="DefaultStudios.png">$VAR[Image_Icon]</texture>
+                        <aspectratio scalediffuse="false">keep</aspectratio>
+                        <bordersize>$PARAM[other_bordersize]</bordersize>
+                    </control>
+                </control>
+                <control type="group">
+                    <visible>![String.IsEqual($PARAM[listitem].DBType,studio) | String.IsEqual($PARAM[listitem].Property(DBType),studio)]</visible>
+                    <control type="group">
+                        <visible>[String.IsEqual($PARAM[listitem].DBType,country) | String.IsEqual($PARAM[listitem].Property(DBType),country)]</visible>
+                        <control type="image">
+                            <include content="Object_ColorDiffuse" condition="$PARAM[selected]">
+                                <param name="colordiffuse">$VAR[ColorSelected]</param>
+                            </include>
+                            <colordiffuse>main_fg_100</colordiffuse>
+                            <texture background="true" diffuse="$PARAM[icon_diffuse]" fallback="DefaultCountry.png">$VAR[Image_Icon]</texture>
+                            <aspectratio scalediffuse="false">keep</aspectratio>
+                            <bordersize>$PARAM[other_bordersize]</bordersize>
+                        </control>
+                    </control>
+                    <control type="group">
+                        <visible>![String.IsEqual($PARAM[listitem].DBType,country) | String.IsEqual($PARAM[listitem].Property(DBType),country)]</visible>
+                        <control type="group">
 
-                <include content="Object_Layout_Image_Circle" condition="$PARAM[include_discart]">
-                    <param name="light">$PARAM[light]</param>
-                    <param name="diffuse">$PARAM[diffuse]</param>
-                    <param name="icon">$PARAM[icon]</param>
-                    <param name="listitem">$PARAM[listitem]</param>
-                    <param name="aspectratio">$PARAM[aspectratio]</param>
-                    <param name="selected">$PARAM[selected]</param>
-                </include>
+                            <include content="Object_Layout_Image_Circle" condition="$PARAM[include_discart]">
+                                <param name="light">$PARAM[light]</param>
+                                <param name="diffuse">$PARAM[diffuse]</param>
+                                <param name="icon">$PARAM[icon]</param>
+                                <param name="listitem">$PARAM[listitem]</param>
+                                <param name="aspectratio">$PARAM[aspectratio]</param>
+                                <param name="selected">$PARAM[selected]</param>
+                            </include>
 
-                <include content="Object_Layout_Image_Rectangle" condition="![$PARAM[include_discart]]">
-                    <param name="light">$PARAM[light]</param>
-                    <param name="diffuse">$PARAM[diffuse]</param>
-                    <param name="icon">$PARAM[icon]</param>
-                    <param name="listitem">$PARAM[listitem]</param>
-                    <param name="aspectratio">$PARAM[aspectratio]</param>
-                    <param name="selected">$PARAM[selected]</param>
-                </include>
+                            <include content="Object_Layout_Image_Rectangle" condition="![$PARAM[include_discart]]">
+                                <param name="light">$PARAM[light]</param>
+                                <param name="diffuse">$PARAM[diffuse]</param>
+                                <param name="icon">$PARAM[icon]</param>
+                                <param name="listitem">$PARAM[listitem]</param>
+                                <param name="aspectratio">$PARAM[aspectratio]</param>
+                                <param name="selected">$PARAM[selected]</param>
+                            </include>
 
-            </control>
-            <control type="image">
-                <include content="Object_ColorDiffuse" condition="$PARAM[selected]">
-                    <param name="colordiffuse">$VAR[ColorSelected]</param>
-                </include>
-                <colordiffuse>main_fg_100</colordiffuse>
-                <texture background="true" diffuse="$PARAM[icon_diffuse]" fallback="DefaultGenres.png">$VAR[Image_Icon]</texture>
-                <aspectratio scalediffuse="false">keep</aspectratio>
-                <bordersize>$PARAM[genre_bordersize]</bordersize>
-                <visible>[String.IsEqual($PARAM[listitem].DBType,genre) | String.IsEqual($PARAM[listitem].Property(DBType),genre)]</visible>
-            </control>
-            <control type="image">
-                <include content="Object_ColorDiffuse" condition="$PARAM[selected]">
-                    <param name="colordiffuse">$VAR[ColorSelected]</param>
-                </include>
-                <colordiffuse>main_fg_100</colordiffuse>
-                <texture background="true" diffuse="$PARAM[icon_diffuse]" fallback="DefaultStudios.png">$VAR[Image_Icon]</texture>
-                <aspectratio scalediffuse="false">keep</aspectratio>
-                <bordersize>$PARAM[other_bordersize]</bordersize>
-                <visible>[String.IsEqual($PARAM[listitem].DBType,studio) | String.IsEqual($PARAM[listitem].Property(DBType),studio)]</visible>
-            </control>
-            <control type="image">
-                <include content="Object_ColorDiffuse" condition="$PARAM[selected]">
-                    <param name="colordiffuse">$VAR[ColorSelected]</param>
-                </include>
-                <colordiffuse>main_fg_100</colordiffuse>
-                <texture background="true" diffuse="$PARAM[icon_diffuse]" fallback="DefaultCountry.png">$VAR[Image_Icon]</texture>
-                <aspectratio scalediffuse="false">keep</aspectratio>
-                <bordersize>$PARAM[other_bordersize]</bordersize>
-                <visible>[String.IsEqual($PARAM[listitem].DBType,country) | String.IsEqual($PARAM[listitem].Property(DBType),country)]</visible>
+                        </control>
+                    </control>
+                </control>
             </control>
         </definition>
     </include>
@@ -1026,14 +1041,89 @@
         <visible>[$PARAM[episodes]] | [$PARAM[progress]]</visible>
     </include>
 
+    <!-- LOTTO 290: il singolo termine, positivo o negato, per la catena a priorita' di Object_Indicator.
+         Le varianti qui sopra (Playing, Episodes, ...) ripetono le negazioni di tutte le precedenti: per un
+         elemento CHE HA un indicatore i sette controlli fratelli costavano 28 espressioni composte per giro.
+         Annidando, ogni termine si valuta una volta sola e il ramo scartato non viene nemmeno processato
+         (GUIControl::DoProcess non chiama Process su un gruppo nascosto). Le vecchie varianti restano: le
+         usano gli altri indicatori della skin. -->
+
+    <include name="Object_Indicator_Visible_Solo_Playing">
+        <visible>[$PARAM[playing]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_No_Playing">
+        <visible>![$PARAM[playing]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_Solo_Episodes">
+        <visible>[$PARAM[episodes]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_No_Episodes">
+        <visible>![$PARAM[episodes]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_Solo_Timers">
+        <visible>[$PARAM[timers]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_No_Timers">
+        <visible>![$PARAM[timers]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_Solo_Progress">
+        <visible>[$PARAM[progress]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_No_Progress">
+        <visible>![$PARAM[progress]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_Solo_Watched">
+        <visible>[$PARAM[watched]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_No_Watched">
+        <visible>![$PARAM[watched]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_Solo_Library">
+        <visible>[$PARAM[library]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_No_Library">
+        <visible>![$PARAM[library]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_Solo_Collection">
+        <visible>[$PARAM[collection]]</visible>
+    </include>
+
+    <include name="Object_Indicator_Visible_No_Collection">
+        <visible>![$PARAM[collection]]</visible>
+    </include>
+
     <include name="Object_Indicator_Visible_All">
         <visible>[$PARAM[playing]] | [$PARAM[episodes]] | [$PARAM[timers]] | [$PARAM[progress]] | [$PARAM[watched]] | [$PARAM[library]] | [$PARAM[collection]]</visible>
     </include>
 
     <include name="Object_Indicator_Visible">
         <param name="include_type">All</param>
+        <!-- LOTTO 290: senza nessun componente TV installato i termini di registrazione e timer non possono
+             essere veri, e si spengono AL CARICAMENTO invece di essere valutati per ogni elemento a ogni giro.
+             Se un domani si installa un componente PVR tornano da soli. -->
         <definition>
-            <include content="Object_Indicator_Visible_$PARAM[include_type]">
+            <include content="Object_Indicator_Visible_$PARAM[include_type]" condition="!System.HasPVRAddon">
+                <param name="playing">$PARAM[listitem].IsPlaying</param>
+                <param name="episodes">!Skin.HasSetting(Indicator.DisableEpisodes) + !Integer.IsEqual($PARAM[listitem].Property(UnWatchedEpisodes),0) + [!Integer.IsEqual($PARAM[listitem].Property(WatchedEpisodes),0) | Skin.HasSetting(Indicator.EnableUnwatchedCount)] + [String.IsEqual($PARAM[listitem].DBType,tvshow) | String.IsEqual($PARAM[listitem].DBType,season) | String.IsEqual($PARAM[listitem].DBType,episode)]</param>
+                <param name="timers">false</param>
+                <param name="progress">!Skin.HasSetting(Indicator.DisableProgress) + !$PARAM[listitem].IsCollection + [$PARAM[listitem].IsResumable | [!String.IsEmpty($PARAM[listitem].Property(WatchedProgress)) + !Integer.IsEqual($PARAM[listitem].Property(WatchedProgress),0) + !Integer.IsEqual($PARAM[listitem].Property(WatchedProgress),100)]]</param>
+                <param name="watched">!Skin.HasSetting(Indicator.DisableWatched) + [String.IsEqual($PARAM[listitem].Overlay,OverlayWatched.png) | [!Integer.IsEqual($PARAM[listitem].PlayCount,0) + [String.IsEqual($PARAM[listitem].DBType,movie) | String.IsEqual($PARAM[listitem].DBType,tvshow) | String.IsEqual($PARAM[listitem].DBType,season) | String.IsEqual($PARAM[listitem].DBType,set) | String.IsEqual($PARAM[listitem].DBType,video) | String.IsEqual($PARAM[listitem].DBType,episode)]]]</param>
+                <param name="library">!Skin.HasSetting(Indicator.DisableLibrary) + !String.IsEmpty($PARAM[listitem].DBID) + !String.IsEmpty($PARAM[listitem].Property(Item.Info))</param>
+                <param name="collection">!Skin.HasSetting(Indicator.DisableCollection) + [$PARAM[listitem].IsCollection]</param>
+            </include>
+            <include content="Object_Indicator_Visible_$PARAM[include_type]" condition="System.HasPVRAddon">
                 <param name="playing">$PARAM[listitem].IsPlaying</param>
                 <param name="episodes">!Skin.HasSetting(Indicator.DisableEpisodes) + !Integer.IsEqual($PARAM[listitem].Property(UnWatchedEpisodes),0) + [!Integer.IsEqual($PARAM[listitem].Property(WatchedEpisodes),0) | Skin.HasSetting(Indicator.EnableUnwatchedCount)] + [String.IsEqual($PARAM[listitem].DBType,tvshow) | String.IsEqual($PARAM[listitem].DBType,season) | String.IsEqual($PARAM[listitem].DBType,episode)]</param>
                 <param name="timers">$PARAM[listitem].IsRecording | $PARAM[listitem].HasTimer</param>
@@ -1042,6 +1132,43 @@
                 <param name="library">!Skin.HasSetting(Indicator.DisableLibrary) + !String.IsEmpty($PARAM[listitem].DBID) + !String.IsEmpty($PARAM[listitem].Property(Item.Info))</param>
                 <param name="collection">!Skin.HasSetting(Indicator.DisableCollection) + [$PARAM[listitem].IsCollection]</param>
             </include>
+        </definition>
+    </include>
+
+    <!-- LOTTO 292: il ramo dei timer di Object_Indicator, staccato in un include proprio perche' possa
+         NON ESISTERE quando non c'e' nessun componente TV. Il contenuto e' identico a prima. -->
+    <include name="Object_Indicator_Ramo_Timers">
+        <param name="affix" />
+        <param name="listitem">ListItem</param>
+        <definition>
+            <control type="group">
+                <include content="Object_Indicator_Visible">
+                    <param name="include_type">Solo_Timers</param>
+                    <param name="listitem">$PARAM[listitem]</param>
+                </include>
+                <!-- LOTTO 290: come nel ramo "in riproduzione", l'anello della percentuale si vedeva
+                     anche dietro l'icona del timer. Si valuta solo dentro questo ramo. -->
+                <include content="Object_Control">
+                    <param name="control">image</param>
+                    <texture colordiffuse="$VAR[ColorWatchedProgress]" diffuse="indicator/circle-diffuse.png" background="true" flipx="true" flipy="true">$VAR[Defs_PercentPlayed$PARAM[affix],progress/circle/p,.png]</texture>
+                    <aspectratio align="center" aligny="center">keep</aspectratio>
+                    <include content="Object_Indicator_Visible">
+                        <param name="include_type">Percentage</param>
+                        <param name="listitem">$PARAM[listitem]</param>
+                    </include>
+                </include>
+                <control type="image">
+                    <bordersize>20</bordersize>
+                    <texture>indicator/record.png</texture>
+                    <visible>$PARAM[listitem].IsRecording</visible>
+                </control>
+                <control type="image">
+                    <bordersize>20</bordersize>
+                    <texture>indicator/timer.png</texture>
+                    <visible>!$PARAM[listitem].IsRecording</visible>
+                    <visible>$PARAM[listitem].HasTimer</visible>
+                </control>
+            </control>
         </definition>
     </include>
 
@@ -1096,18 +1223,102 @@
                     <texture colordiffuse="ff333333">indicator/circle-colordiffuse.png</texture>
                 </include>
 
-                <!-- Percentage -->
+                <!-- LOTTO 292: due modi di disegnare lo STESSO indicatore.
+                     - senza componenti TV (il caso normale) la versione COMPATTA: tre controlli, e la
+                       priorita' la decide una variabile, che si ferma al primo valore vero come faceva la
+                       catena di gruppi. Sono 25 controlli in meno per ogni elemento visibile, a ogni giro.
+                     - con un componente TV la catena di prima, che sa leggere un $PARAM[listitem] diverso da
+                       ListItem (le finestre PVR passano Container(...).ListItem e un affix).
+                     La scelta si fa AL CARICAMENTO: sul dispositivo esiste una sola delle due. -->
+                <include content="Object_Indicator_Compatto" condition="!System.HasPVRAddon" />
+                <include content="Object_Indicator_Catena" condition="System.HasPVRAddon">
+                    <param name="affix">$PARAM[affix]</param>
+                    <param name="listitem">$PARAM[listitem]</param>
+                </include>
+            </control>
+        </definition>
+    </include>
+
+    <!-- LOTTO 292: l'indicatore in tre controlli invece di venticinque.
+         L'anello e l'icona sono sempre gli stessi due controlli: cambia solo la texture, che la sceglie una
+         variabile. Gli attributi sono copiati uno per uno da com'erano nei rami, perche' a schermo non deve
+         cambiare niente: l'anello ha lo stesso diffuse, lo stesso colordiffuse e lo stesso aspectratio in
+         tutti i rami, e tutte le icone avevano bordersize 20.
+         Vincolo da ricordare: qui si legge ListItem, non $PARAM[listitem]. Vale per ogni chiamata della skin
+         tranne le finestre PVR, ed e' per questo che l'altra versione resta. -->
+    <include name="Object_Indicator_Compatto">
+        <definition>
+            <control type="image">
+                <texture colordiffuse="$VAR[ColorWatchedProgress]" diffuse="indicator/circle-diffuse.png" background="true" flipx="true" flipy="true">$VAR[Object_Indicator_Anello]</texture>
+                <aspectratio align="center" aligny="center">keep</aspectratio>
+            </control>
+            <control type="image">
+                <bordersize>20</bordersize>
+                <texture colordiffuse="$VAR[Object_Indicator_Icona_Colore]">$VAR[Object_Indicator_Icona]</texture>
+            </control>
+            <control type="label">
+                <font>font_hint_bold</font>
+                <align>center</align>
+                <aligny>center</aligny>
+                <textcolor>panel_fg_100</textcolor>
+                <label>$INFO[ListItem.Property(UnWatchedEpisodes)]</label>
+                <visible>![$EXP[Exp_Ind_Playing]] + $EXP[Exp_Ind_Episodes]</visible>
+            </control>
+        </definition>
+    </include>
+
+    <!-- LOTTO 292: la catena a priorita' del lotto 290, spostata qui dentro perche' ora e' la versione di
+         RISERVA: la usa solo chi ha un componente TV installato, dove i termini di registrazione e timer
+         sono veri e la versione compatta (che legge ListItem tramite variabili) non basta. Contenuto
+         identico: non e' stata toccata una riga. -->
+    <include name="Object_Indicator_Catena">
+        <param name="affix" />
+        <param name="listitem">ListItem</param>
+        <definition>
+        <!-- LOTTO 290: la stessa priorita' di prima (in riproduzione, episodi, timer, avanzamento,
+             visto, libreria, collezione) scritta ANNIDANDO invece di ripetere le negazioni. A schermo
+             non cambia niente: i rami restano esclusivi e l'ordine di disegno e' quello di prima.
+             I gruppi dei rami restano anche quando il loro contenuto e' spento da un'impostazione:
+             e' cio' che tiene la priorita' identica a prima. Nel ramo dei timer la seconda immagine
+             non ripete HasTimer: dentro il ramo, !IsRecording implica gia' HasTimer. -->
+        <control type="group">
+            <include content="Object_Indicator_Visible">
+                <param name="include_type">Solo_Playing</param>
+                <param name="listitem">$PARAM[listitem]</param>
+            </include>
+            <!-- LOTTO 290: l'anello della percentuale sta anche qui perche' prima era un fratello di
+                 tutti i rami con condizione [episodi | avanzamento]: su un elemento IN RIPRODUZIONE che
+                 ha anche un avanzamento si vedeva l'anello dietro l'icona play, e deve restare cosi'.
+                 La condizione si valuta solo dentro questo ramo, cioe' quasi mai. -->
+            <include content="Object_Control">
+                <param name="control">image</param>
+                <texture colordiffuse="$VAR[ColorWatchedProgress]" diffuse="indicator/circle-diffuse.png" background="true" flipx="true" flipy="true">$VAR[Defs_PercentPlayed$PARAM[affix],progress/circle/p,.png]</texture>
+                <aspectratio align="center" aligny="center">keep</aspectratio>
+                <include content="Object_Indicator_Visible">
+                    <param name="include_type">Percentage</param>
+                    <param name="listitem">$PARAM[listitem]</param>
+                </include>
+            </include>
+            <control type="image">
+                <bordersize>20</bordersize>
+                <texture>indicator/play.png</texture>
+            </control>
+        </control>
+        <control type="group">
+            <include content="Object_Indicator_Visible">
+                <param name="include_type">No_Playing</param>
+                <param name="listitem">$PARAM[listitem]</param>
+            </include>
+            <control type="group">
+                <include content="Object_Indicator_Visible">
+                    <param name="include_type">Solo_Episodes</param>
+                    <param name="listitem">$PARAM[listitem]</param>
+                </include>
                 <include content="Object_Control">
                     <param name="control">image</param>
                     <texture colordiffuse="$VAR[ColorWatchedProgress]" diffuse="indicator/circle-diffuse.png" background="true" flipx="true" flipy="true">$VAR[Defs_PercentPlayed$PARAM[affix],progress/circle/p,.png]</texture>
                     <aspectratio align="center" aligny="center">keep</aspectratio>
-                    <include content="Object_Indicator_Visible">
-                        <param name="include_type">Percentage</param>
-                        <param name="listitem">$PARAM[listitem]</param>
-                    </include>
                 </include>
-
-                <!-- Episodes Count -->
                 <include content="Object_Control" condition="!Skin.HasSetting(Indicator.DisableEpisodes)">
                     <param name="control">label</param>
                     <font>font_hint_bold</font>
@@ -1115,95 +1326,105 @@
                     <aligny>center</aligny>
                     <textcolor>panel_fg_100</textcolor>
                     <label>$INFO[$PARAM[listitem].Property(UnWatchedEpisodes)]</label>
-                    <include content="Object_Indicator_Visible">
-                        <param name="include_type">Episodes</param>
-                        <param name="listitem">$PARAM[listitem]</param>
-                    </include>
                 </include>
-
-                <!-- Timers -->
+            </control>
+            <control type="group">
+                <include content="Object_Indicator_Visible">
+                    <param name="include_type">No_Episodes</param>
+                    <param name="listitem">$PARAM[listitem]</param>
+                </include>
+                <!-- LOTTO 292: il ramo dei timer e' un INCLUDE con condizione, quindi senza un
+                     componente TV installato non viene EMESSO. Prima c'era comunque, con
+                     <visible>[false]</visible>: due controlli per ogni elemento che Kodi attraversava a
+                     ogni fotogramma solo per sentirsi rispondere di no. Un <visible> falso non toglie il
+                     controllo dall'albero, una condizione di include si' (GUIIncludes.cpp:414-423). -->
+                <include content="Object_Indicator_Ramo_Timers" condition="System.HasPVRAddon">
+                    <param name="affix">$PARAM[affix]</param>
+                    <param name="listitem">$PARAM[listitem]</param>
+                </include>
                 <control type="group">
-                    <include content="Object_Indicator_Visible">
-                        <param name="include_type">Timers</param>
+                    <!-- LOTTO 292: il cancello "non e' un timer" serve solo se il ramo dei timer esiste.
+                         Senza PVR non c'e' niente da cui difendersi e il gruppo resta senza condizione. -->
+                    <include content="Object_Indicator_Visible" condition="System.HasPVRAddon">
+                        <param name="include_type">No_Timers</param>
                         <param name="listitem">$PARAM[listitem]</param>
                     </include>
-                    <control type="image">
-                        <bordersize>20</bordersize>
-                        <texture>indicator/record.png</texture>
-                        <visible>$PARAM[listitem].IsRecording</visible>
+                    <control type="group">
+                        <include content="Object_Indicator_Visible">
+                            <param name="include_type">Solo_Progress</param>
+                            <param name="listitem">$PARAM[listitem]</param>
+                        </include>
+                        <include content="Object_Control">
+                            <param name="control">image</param>
+                            <texture colordiffuse="$VAR[ColorWatchedProgress]" diffuse="indicator/circle-diffuse.png" background="true" flipx="true" flipy="true">$VAR[Defs_PercentPlayed$PARAM[affix],progress/circle/p,.png]</texture>
+                            <aspectratio align="center" aligny="center">keep</aspectratio>
+                        </include>
+                        <include content="Object_Control" condition="!Skin.HasSetting(Indicator.DisableProgress)">
+                            <param name="control">image</param>
+                            <bordersize>20</bordersize>
+                            <texture>indicator/timer.png</texture>
+                        </include>
                     </control>
-                    <control type="image">
-                        <bordersize>20</bordersize>
-                        <texture>indicator/timer.png</texture>
-                        <visible>!$PARAM[listitem].IsRecording</visible>
-                        <visible>$PARAM[listitem].HasTimer</visible>
+                    <control type="group">
+                        <include content="Object_Indicator_Visible">
+                            <param name="include_type">No_Progress</param>
+                            <param name="listitem">$PARAM[listitem]</param>
+                        </include>
+                        <control type="group">
+                            <include content="Object_Indicator_Visible">
+                                <param name="include_type">Solo_Watched</param>
+                                <param name="listitem">$PARAM[listitem]</param>
+                            </include>
+                            <include content="Object_Control" condition="!Skin.HasSetting(Indicator.DisableWatched)">
+                                <param name="control">group</param>
+                                <control type="image">
+                                    <texture colordiffuse="$VAR[ColorWatchedProgress]" diffuse="indicator/circle-diffuse.png" background="true" flipx="true" flipy="true">progress/circle/p100.png</texture>
+                                    <aspectratio align="center" aligny="center">keep</aspectratio>
+                                </control>
+                                <control type="image">
+                                    <bordersize>20</bordersize>
+                                    <texture colordiffuse="$VAR[ColorWatchedProgress]">indicator/checkmark.png</texture>
+                                </control>
+                            </include>
+                        </control>
+                        <control type="group">
+                            <include content="Object_Indicator_Visible">
+                                <param name="include_type">No_Watched</param>
+                                <param name="listitem">$PARAM[listitem]</param>
+                            </include>
+                            <control type="group">
+                                <include content="Object_Indicator_Visible">
+                                    <param name="include_type">Solo_Library</param>
+                                    <param name="listitem">$PARAM[listitem]</param>
+                                </include>
+                                <include content="Object_Control" condition="!Skin.HasSetting(Indicator.DisableLibrary)">
+                                    <param name="control">image</param>
+                                    <bordersize>20</bordersize>
+                                    <texture>indicator/library.png</texture>
+                                </include>
+                            </control>
+                            <control type="group">
+                                <include content="Object_Indicator_Visible">
+                                    <param name="include_type">No_Library</param>
+                                    <param name="listitem">$PARAM[listitem]</param>
+                                </include>
+                                <control type="group">
+                                    <include content="Object_Indicator_Visible">
+                                        <param name="include_type">Solo_Collection</param>
+                                        <param name="listitem">$PARAM[listitem]</param>
+                                    </include>
+                                    <include content="Object_Control" condition="!Skin.HasSetting(Indicator.DisableCollection)">
+                                        <param name="control">image</param>
+                                        <bordersize>20</bordersize>
+                                        <texture>indicator/movieset.png</texture>
+                                    </include>
+                                </control>
+                            </control>
+                        </control>
                     </control>
                 </control>
-
-                <!-- Progress -->
-                <include content="Object_Control" condition="!Skin.HasSetting(Indicator.DisableProgress)">
-                    <param name="control">image</param>
-                    <bordersize>20</bordersize>
-                    <texture>indicator/timer.png</texture>
-                    <include content="Object_Indicator_Visible">
-                        <param name="include_type">Progress</param>
-                        <param name="listitem">$PARAM[listitem]</param>
-                    </include>
-                </include>
-
-                <!-- Watched -->
-                <include content="Object_Control" condition="!Skin.HasSetting(Indicator.DisableWatched)">
-                    <param name="control">group</param>
-                    <control type="image">
-                        <texture colordiffuse="$VAR[ColorWatchedProgress]" diffuse="indicator/circle-diffuse.png" background="true" flipx="true" flipy="true">progress/circle/p100.png</texture>
-                        <aspectratio align="center" aligny="center">keep</aspectratio>
-                    </control>
-                    <control type="image">
-                        <bordersize>20</bordersize>
-                        <texture colordiffuse="$VAR[ColorWatchedProgress]">indicator/checkmark.png</texture>
-                    </control>
-                    <include content="Object_Indicator_Visible">
-                        <param name="include_type">Watched</param>
-                        <param name="listitem">$PARAM[listitem]</param>
-                    </include>
-                </include>
-
-                <!-- Library -->
-                <include content="Object_Control" condition="!Skin.HasSetting(Indicator.DisableLibrary)">
-                    <param name="control">image</param>
-                    <bordersize>20</bordersize>
-                    <texture>indicator/library.png</texture>
-                    <include content="Object_Indicator_Visible">
-                        <param name="include_type">Library</param>
-                        <param name="listitem">$PARAM[listitem]</param>
-                    </include>
-                </include>
-
-                <!-- Collection -->
-                <include content="Object_Control" condition="!Skin.HasSetting(Indicator.DisableCollection)">
-                    <param name="control">image</param>
-                    <bordersize>20</bordersize>
-                    <texture>indicator/movieset.png</texture>
-                    <include content="Object_Indicator_Visible">
-                        <param name="include_type">Collection</param>
-                        <param name="listitem">$PARAM[listitem]</param>
-                    </include>
-                </include>
-
-                <!-- Playing -->
-                <include content="Object_Control" condition="True">
-                    <param name="control">group</param>
-                    <control type="image">
-                        <bordersize>20</bordersize>
-                        <texture>indicator/play.png</texture>
-                    </control>
-                    <include content="Object_Indicator_Visible">
-                        <param name="include_type">Playing</param>
-                        <param name="listitem">$PARAM[listitem]</param>
-                    </include>
-                </include>
-
             </control>
+        </control>
         </definition>
     </include>
 

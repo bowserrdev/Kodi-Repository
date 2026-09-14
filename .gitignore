@@ -1,4 +1,5 @@
 /tests
+/strumenti
 deploy_local.py
 generate_repo.py
 *.md

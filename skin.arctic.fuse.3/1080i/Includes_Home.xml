@@ -252,12 +252,35 @@
         <animation effect="fade" start="0" end="100" time="400" tween="cubic" easing="out">Visible</animation>
         <animation effect="fade" end="0" start="100" time="200" tween="cubic" easing="out">Hidden</animation>
     </include>
+    <!-- LOTTO 297: il logo che scende quando il blocco dettagli + trama sparisce. Prima erano DUE mezze
+         animazioni non reversibili (scende / sale, 400 ms, la salita con 100 ms di attesa). Con
+         reversible="false", se la condizione cambia a meta' corsa Kodi AZZERA di colpo quella in corso
+         (CAnimation::UpdateCondition -> ResetAnimation, VisibleEffect.cpp:625-640) e fa partire l'altra dal
+         suo inizio: il logo salta. Sul passaggio all'intestazione non si notava, ma il rilevatore della
+         navigazione veloce cambia stato anche con pressioni singole ravvicinate. Una sola animazione
+         reversibile invece torna indietro DA DOVE SI TROVA (m_start = time - (m_length - m_amount), riga 477).
+         All'apertura non cambia niente: SetInitialCondition applica lo stato senza animarlo (righe 642-649).
+         Il gruppo che la usa ora parte da top 0 invece che 200, e l'animazione porta a +200: stessa geometria
+         di prima (0 normale, 200 col blocco nascosto). 200 ms invece di 400, voluto dall'utente anche per
+         l'intestazione dell'hub. -->
+    <!-- LOTTO 297b: la discesa e' il CENTRO DELLO SPAZIO VUOTO, che non e' lo stesso nei due casi (screenshot
+         della stick, 14/09). Con l'intestazione lo spazio va dalle icone (~215) al titolo della riga (512): 200.
+         Nella navigazione veloce sopra non c'e' niente: 100, scelto a occhio dall'utente (su Kodi per Mac),
+         cioe' centrato fra il bordo alto dello schermo e il titolo della riga. Due animazioni che Kodi compone:
+         +100 per "veloce o intestazione", +100 in piu' per "intestazione". Stessa durata e stessa curva:
+         partono e arrivano insieme, un solo gesto, e passare da un caso all'altro fa solo il pezzo che manca. -->
     <include name="Home_Slide_Animation">
-        <animation effect="slide" start="0,-200" end="0" time="400" tween="cubic" easing="out" reversible="false" condition="$EXP[Exp_Hubs_SlideInfo]">Conditional</animation>
-        <animation effect="slide" end="0,-200" start="0" delay="100" time="400" tween="cubic" easing="out" reversible="false" condition="!$EXP[Exp_Hubs_SlideInfo]">Conditional</animation>
+        <param name="condition">$EXP[Exp_Hubs_SlideInfo]</param>
+        <param name="condition_fast">false</param>
+        <definition>
+            <animation effect="slide" start="0" end="0,100" time="200" tween="cubic" easing="out" reversible="true" condition="$PARAM[condition] | $PARAM[condition_fast]">Conditional</animation>
+            <animation effect="slide" start="0" end="0,100" time="200" tween="cubic" easing="out" reversible="true" condition="$PARAM[condition]">Conditional</animation>
+        </definition>
     </include>
     <include name="Home_Info_Animation">
-        <animation effect="fade" start="0" end="100" time="400" delay="200" tween="cubic" easing="in">Visible</animation>
+        <!-- LOTTO 297: 150 ms senza attesa (erano 200 di attesa + 400). L'attesa ora la fa il rilevatore di
+             assestamento, che fa ricomparire il blocco quando il logo e' gia' fermo. -->
+        <animation effect="fade" start="0" end="100" time="150" tween="cubic" easing="in">Visible</animation>
         <!-- <animation effect="fade" end="0" start="100" time="200" tween="cubic" easing="in">Hidden</animation> -->
     </include>
 

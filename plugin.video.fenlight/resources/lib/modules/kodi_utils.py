@@ -954,6 +954,22 @@ def modal_dialog_open():
 	# nemmeno, ed e' li' che prendere il lock grafico da un thread di plugin fa danno (lotto 111).
 	return get_visibility('System.HasActiveModalDialog')
 
+def modal_dialog_present():
+	# LOTTO 286 -- la stessa domanda SENZA la porta del FrameMove, per i cicli periodici dei servizi.
+	# getCondVisibility prende GuiLock -> CApplication::LockFrameMoveGuard (Kodi 21.1, AddonUtils.cpp:29-30,
+	# Application.cpp:1784-1790), e il ciclo della GUI al giro dopo DORME 2-80 ms per lasciarla passare
+	# (Application.cpp:1836-1850): una chiamata ogni 0,3 s dal watcher era un sonno imposto alla GUI
+	# tre volte al secondo, anche mentre l'utente scorre. getCurrentWindowDialogId prende solo il lock
+	# grafico (ModuleXbmcgui.cpp:34-39) e torna GetTopmostModalDialog(): 9999, WINDOW_INVALID, se non
+	# c'e' nessun dialogo modale.
+	# Unica differenza da modal_dialog_open: conta anche un modale che sta CHIUDENDO, che
+	# System.HasActiveModalDialog esclude (HasModalDialog(true), GUIWindowManager.cpp:1488-1501). Ed e'
+	# proprio la finestra contro cui si risolve Container(N) (GUIInfoHelper.cpp:92-117, GetTopmostModalDialog
+	# senza ignoreClosing), quindi per chi dopo legge infolabel dei contenitori e' la risposta piu' esatta.
+	# Costa al piu' un giro di attesa in piu' durante l'animazione di chiusura.
+	# kodi_refresh_ids e WidgetRefresher restano su modal_dialog_open: sono su richiesta, non periodici.
+	return xbmcgui.getCurrentWindowDialogId() != 9999
+
 # TIPO DI RINVIO CHE NOMINA UN INSIEME DI TITOLI. L'invariante del lotto 210: chi accoda con questo
 # tipo ha SEMPRE almeno un id o un'azione -- lo garantiscono i quattro punti che lo scrivono
 # (_defer_refresh_if_busy sul ramo del dialogo, kodi_refresh_ids in due punti, il riarmo a mano in
