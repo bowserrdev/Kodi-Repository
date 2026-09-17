@@ -7,10 +7,10 @@ from modules.utils import get_datetime, adjust_premiered_date, make_thread_list
 from modules.watched_status import get_database, watched_info_season, get_watched_status_season, get_progress_status_season
 # logger = kodi_utils.logger
 
-poster_empty, cast_label, set_category, home = kodi_utils.empty_poster, kodi_utils.cast_label, kodi_utils.set_category, kodi_utils.home
+poster_empty, cast_label, set_category = kodi_utils.empty_poster, kodi_utils.cast_label, kodi_utils.set_category
 add_items, set_content, end_directory, set_view_mode = kodi_utils.add_items, kodi_utils.set_content, kodi_utils.end_directory, kodi_utils.set_view_mode
 make_listitem, build_url, external, date_offset_info, tmdb_api_key = kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.external, settings.date_offset, settings.tmdb_api_key
-watched_indicators_info, widget_hide_watched, show_specials, mpaa_region = settings.watched_indicators, settings.widget_hide_watched, settings.show_specials, settings.mpaa_region
+watched_indicators_info, show_specials, mpaa_region = settings.watched_indicators, settings.show_specials, settings.mpaa_region
 string, run_plugin, unaired_label, tmdb_poster = str, 'RunPlugin(%s)', '[COLOR red][I]%s[/I][/COLOR]', 'https://image.tmdb.org/t/p/w780%s'
 # Vedi il commento in movies.py: URL per formattazione diretta invece che con build_url/urlencode.
 # Il poster non viaggia piu' in options_params -- options_menu_choice lo rilegge dai metadati, che
@@ -72,9 +72,7 @@ def build_season_list(params):
 				extras_params = URL_EXTRAS % (tmdb_id, is_external)
 				options_params = URL_OPTIONS % (tmdb_id, is_external)
 				cm_append(('[B]Opzioni[/B]', run_plugin % options_params))
-				if playcount:
-					if hide_watched: continue
-				elif not unaired and not season_special:
+				if not playcount and not unaired and not season_special:
 						cm_append(('[B]Segna come visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_season', 'action': 'mark_as_watched',
 															'title': show_title, 'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'season': season_number})))
 				if progress:
@@ -106,7 +104,7 @@ def build_season_list(params):
 				paginator.phase_record(_p1 - _p0, _p2 - _p1, _p3 - _p2, _p4 - _p3, _p5 - _p4, _perf() - _p5)
 				yield (url_params, listitem, True)
 			except: pass
-	handle, is_external, is_home, category_name = int(sys.argv[1]), external(), home(), 'Season'
+	handle, is_external, category_name = int(sys.argv[1]), external(), 'Season'
 	_t0 = paginator.now()
 	# single_seasons chiama questa funzione in PARALLELO, una volta per stagione: azzerare li' le fasi
 	# cancellerebbe le misure di una lista che un altro thread sta ancora costruendo. Su quella strada
@@ -116,7 +114,7 @@ def build_season_list(params):
 	# Letto UNA volta per costruzione: e' lo stesso valore per tutte le stagioni della lista.
 	_nonce = kodi_utils.get_property(kodi_utils.PANEL_RELOAD_PROP)
 	panel_nonce = ('&reload=%s' % _nonce) if _nonce else ''
-	watched_indicators, adjust_hours, hide_watched = watched_indicators_info(), date_offset_info(), is_home and widget_hide_watched()
+	watched_indicators, adjust_hours = watched_indicators_info(), date_offset_info()
 	current_date = get_datetime()
 	watched_title = 'Trakt' if watched_indicators == 1 else 'Fen Light'
 	meta = tvshow_meta('tmdb_id', params['tmdb_id'], tmdb_api_key(), mpaa_region(), current_date)

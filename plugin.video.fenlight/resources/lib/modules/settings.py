@@ -308,9 +308,6 @@ def meta_language():
 def widget_hide_next_page():
 	return get_setting('fenlight.widget_hide_next_page', 'false') == 'true'
 
-def widget_hide_watched():
-	return get_setting('fenlight.widget_hide_watched', 'false') == 'true'
-
 # Widget "dubbed content" filter: keep only items released (streaming or home video) in the chosen
 # language's primary country, so users who only want likely-dubbed content aren't shown unlocalised titles.
 dub_filter_country_dict = {'it': 'IT'}

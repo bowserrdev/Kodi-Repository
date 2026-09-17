@@ -12,11 +12,11 @@ from modules.metadata import tvshow_meta, episodes_meta, all_episodes_meta, tvsh
 from modules.utils import jsondate_to_datetime, adjust_premiered_date, make_day, get_datetime, title_key, date_difference, make_thread_list, get_current_timestamp
 # logger = kodi_utils.logger
 
-set_view_mode, external, home = kodi_utils.set_view_mode, kodi_utils.external, kodi_utils.home
+set_view_mode, external = kodi_utils.set_view_mode, kodi_utils.external
 add_items, set_content, set_sort_method, end_directory = kodi_utils.add_items, kodi_utils.set_content, kodi_utils.set_sort_method, kodi_utils.end_directory
 date_offset_info, default_all_episodes, nextep_include_unwatched = settings.date_offset, settings.default_all_episodes, settings.nextep_include_unwatched
 nextep_airing_today, nextep_sort_key, nextep_sort_direction = settings.nextep_airing_today, settings.nextep_sort_key, settings.nextep_sort_direction
-nextep_include_unaired, ep_display_format, widget_hide_watched = settings.nextep_include_unaired, settings.single_ep_display_format, settings.widget_hide_watched
+nextep_include_unaired, ep_display_format = settings.nextep_include_unaired, settings.single_ep_display_format
 make_listitem, build_url, cast_label, set_category = kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.cast_label, kodi_utils.set_category
 nextep_limit_history, nextep_limit, tmdb_api_key, mpaa_region = settings.nextep_limit_history, settings.nextep_limit, settings.tmdb_api_key, settings.mpaa_region
 get_property, nextep_include_airdate, calendar_sort_order = kodi_utils.get_property, settings.nextep_include_airdate, settings.calendar_sort_order
@@ -80,7 +80,6 @@ def build_episode_list(params):
 				if season_special: playcount, progress = 0, None
 				else:
 					playcount = get_watched_status_episode(watched_info, (season, episode))
-					if playcount and hide_watched: continue
 					if total_seasons: progress = get_progress_status_all_episode(bookmarks, season, episode)
 					else: progress = get_progress_status_episode(bookmarks, episode)
 				# Extras non e' piu' una voce di menu (come nei film e nelle serie), ma extras_params resta
@@ -131,14 +130,14 @@ def build_episode_list(params):
 				paginator.phase_record(_ph1 - _ph0, _ph2 - _ph1, _ph3 - _ph2, _ph4 - _ph3, _ph5 - _ph4, _ph6 - _ph5, _perf() - _ph6)
 				yield (url_params, listitem, False)
 			except: pass
-	handle, is_external, is_home, category_name = int(sys.argv[1]), external(), home(), 'Episodes'
+	handle, is_external, category_name = int(sys.argv[1]), external(), 'Episodes'
 	_t0 = paginator.now()
 	paginator.phase_reset()
 	item_list = []
 	append = item_list.append
 	fanart_empty = kodi_utils.addon_fanart()
 	watched_indicators, adjust_hours = watched_indicators_info(), date_offset_info()
-	current_date, hide_watched = get_datetime(), is_home and widget_hide_watched()
+	current_date = get_datetime()
 	watched_title = 'Trakt' if watched_indicators == 1 else 'Fen Light'
 	meta = tvshow_meta('tmdb_id', params.get('tmdb_id'), tmdb_api_key(), mpaa_region(), current_date)
 	meta_get = meta.get
@@ -405,7 +404,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 		# Rilanciata di proposito: la cattura sta in _process, che cosi' puo' distinguere un ERRORE da
 		# uno scarto voluto. Prima erano indistinguibili, entrambi 'pass'.
 		except: raise
-	handle, is_external, is_home, category_name = int(sys.argv[1]), external(), home(), 'Episodes'
+	handle, is_external, category_name = int(sys.argv[1]), external(), 'Episodes'
 	_t0 = paginator.now()
 	# Accumulatori LOCALI all'invocazione, non le liste globali di paginator: 'continua a guardare'
 	# chiama questa funzione due volte in parallelo nello stesso interprete (episodi in pausa e
@@ -423,7 +422,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 	fanart_empty = kodi_utils.addon_fanart()
 	window_command = 'ActivateWindow(Videos,%s,return)' if is_external else 'Container.Update(%s)'
 	all_episodes, watched_indicators, display_format = default_all_episodes(), watched_indicators_info(), ep_display_format(is_external)
-	current_date, adjust_hours, unwatched_info, hide_watched = get_datetime(), date_offset_info(), single_ep_unwatched_episodes(), is_home and widget_hide_watched()
+	current_date, adjust_hours, unwatched_info = get_datetime(), date_offset_info(), single_ep_unwatched_episodes()
 	api_key, mpaa_region_value, current_time = tmdb_api_key(), mpaa_region(), get_current_timestamp()
 	_prefetch = {}
 	watched_db = get_database(watched_indicators)

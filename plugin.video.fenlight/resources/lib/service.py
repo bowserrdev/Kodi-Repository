@@ -177,6 +177,14 @@ class SetAddonConstants:
 					('fenlight.addon_icon', xbmcvfs.translatePath(_info('icon'))),
 					('fenlight.addon_fanart', xbmcvfs.translatePath(_info('fanart')))]
 		for item in addon_items: self.set_property(*item)
+		# LOTTO 311 -- la sessione dei widget si apre QUI, nel primo servizio, e non nella manutenzione
+		# dei database: quella puo' essere rimandata (vedi _boot_work_can_wait) e intanto i widget
+		# costruiscono. Una lista registrata senza sessione non si potrebbe mai buttare, quindi senza
+		# questo id le build non registrano affatto.
+		try:
+			from caches.widgets_cache import avvia_sessione
+			avvia_sessione()
+		except Exception as e: logger('Fen Light', 'sessione widget non aperta (%s)' % e)
 		return logger('Fen Light', 'SetAddonConstants Service Finished')
 
 	def set_property(self, prop, value):
@@ -380,7 +388,7 @@ class WidgetRefresher:
 		# rinvio nasceva verso il quindicesimo secondo e si consumava verso il trentasettesimo, cioe'
 		# oltre venti secondi di attesa morta con l'interfaccia disallineata da Trakt.
 		# Ora la tempesta si riconosce da sola: ogni costruzione dichiara "sto costruendo"
-		# (paginator.INFLIGHT_PROP, alzata in get_pages e abbassata in set_head) e il rinvio parte
+		# (paginator.INFLIGHT_PROP, alzata in passi_da_caricare e abbassata in set_head) e il rinvio parte
 		# APPENA l'ultima si spegne. Nessun numero da indovinare.
 		# Il giro e' di un secondo perche' la reazione dev'essere pronta, ma il lavoro periodico resta
 		# a dieci (contatore `tick`): quando non c'e' nessun rinvio in attesa il giro veloce costa una
@@ -586,8 +594,6 @@ class WidgetPaginator:
 	def run(self):
 		logger('Fen Light', 'WidgetPaginator Service Starting')
 		from time import time
-		from caches.settings_cache import get_setting
-		from modules.settings import page_limit
 		from modules import paginator, cw_head
 		from modules.kodi_utils import modal_dialog_present, search_running
 		monitor, player = xbmc.Monitor(), xbmc.Player()
@@ -595,9 +601,11 @@ class WidgetPaginator:
 		window = xbmcgui.Window(10000)
 		get_infolabel = xbmc.getInfoLabel
 		pending = {}  # key -> time the loading flag was set, to self-heal a build that never finishes
+		# LOTTO 312 -- quante letture vuote di fila ha dato ogni contenitore: vedi paginator.azzerare_token.
+		conferme_vuoto = {}
 		# Timeout di autoguarigione per una build che non finisce mai. NON abbassarlo senza misurare:
 		# se scade MENTRE la build sta ancora lavorando, il flag LOADING viene tolto sotto i piedi e
-		# get_pages() -- che lo legge per decidere se ricostruire N pagine o solo il lotto iniziale --
+		# passi_da_caricare() -- che lo legge per decidere se ricostruire N pagine o solo il lotto iniziale --
 		# fa collassare il widget alla prima pagina. Sul Mi Stick una ricostruzione cumulativa supera
 		# regolarmente gli 8 secondi originali (interprete Python nuovo a ogni build + tutti i widget
 		# ricostruiti insieme dall'UpdateLibrary globale): era questa la ragione per cui in home la
@@ -605,7 +613,7 @@ class WidgetPaginator:
 		stuck_timeout = 90
 		# Secondo timeout, molto piu' corto, per una domanda DIVERSA: non "la build e' lenta?" ma "la
 		# build e' mai partita?". Scritto il token, la skin rilegge il <content> e Kodi lancia il plugin
-		# entro un attimo -- get_pages timbra LASTBUILD prima di qualunque lavoro, quindi il timbro
+		# entro un attimo -- passi_da_caricare timbra LASTBUILD prima di qualunque lavoro, quindi il timbro
 		# arriva anche se poi la costruzione dura mezzo minuto. Se dopo questo tempo non e' arrivato
 		# NIENTE, il widget non sta leggendo il token: e' un disallineamento fra addon e skin, non
 		# lentezza. Vedi LASTBUILD_PROP in paginator.py per il caso reale che lo ha reso necessario.
@@ -635,8 +643,7 @@ class WidgetPaginator:
 				# cui il player sta scrivendo la cache dello stream.
 				# LOTTO 238 -- search_running(): paginare un widget mentre l'utente aspetta le sorgenti
 				# toglie cpu allo scraping e alla sonda. Vedi kodi_utils.SEARCH_ACTIVE_PROP.
-				if is_playing() or search_running() or window.getProperty(pause_services_prop) == 'true' \
-						or get_setting('fenlight.paginate.interactive', 'true') != 'true':
+				if is_playing() or search_running() or window.getProperty(pause_services_prop) == 'true':
 					log_change('idle (off/playing/paused/ricerca)')
 					wait_for_abort(1); continue
 				# Never paginate a widget inside an overlay dialog (e.g. the video-info card). Its related
@@ -849,14 +856,21 @@ class WidgetPaginator:
 					else: window.clearProperty('TMDbHelper.ListItem.base_poster')
 				key, first_url = paginator.container_head(widget_id, scope)
 				if not key:
-					# Contenitore VUOTO con un token residuo: e' la ricerca a casella vuota, dove il path di
-					# base sparisce e resterebbe il solo '&pages=N', che Kodi non sa risolvere. Si azzera solo a
-					# zero elementi: durante una ricostruzione gli elementi restano e la chiave torna subito,
-					# quindi non si rischia di svuotare un widget vivo.
-					if int(get_infolabel('Container(%s).NumItems' % widget_id) or 0) == 0:
+					# Contenitore VUOTO con un token residuo: e' la ricerca a casella vuota (vedi
+					# paginator.azzerare_token, che tiene la regola e il perche' delle sue due condizioni).
+					# La domanda sul dialogo si rifa' QUI, subito prima di decidere: fra il controllo in
+					# cima al giro e questa lettura un menu contestuale fa in tempo ad aprirsi.
+					numitems = int(get_infolabel('Container(%s).NumItems' % widget_id) or 0)
+					azzera, conferme_vuoto[widget_id] = paginator.azzerare_token(
+						numitems, modal_dialog_present(), conferme_vuoto.get(widget_id, 0))
+					if azzera:
 						window.clearProperty(paginator.CTL_PAGES_PROP % (scope, widget_id))
-					log_change('idle id=%s no-head first=%s' % (widget_id, (first_url[:50] if first_url else '-')))
+						conferme_vuoto[widget_id] = 0
+					log_change('idle id=%s no-head first=%s numitems=%s conferme=%s azzerato=%s'
+								% (widget_id, (first_url[:50] if first_url else '-'), numitems,
+									conferme_vuoto.get(widget_id, 0), azzera))
 					wait_for_abort(0.3); continue
+				conferme_vuoto[widget_id] = 0
 				# LOTTO 92: qui stava la seconda copia del controllo di cambio inquilino, tolta per la
 				# stessa ragione dell'altra -- la riconciliazione appartiene alla build, che SA quale lista
 				# sta costruendo, non al watcher, che poteva solo dedurlo dal contenuto a schermo.
@@ -866,7 +880,9 @@ class WidgetPaginator:
 					loading = bool(window.getProperty(paginator.LOADING_PROP % key))
 					hasmore = window.getProperty(paginator.HASMORE_PROP % key) == 'true'
 					built = int(window.getProperty(paginator.BUILT_PROP % key) or 0)
-					runway = page_limit(True) * paginator.lookahead_pages()
+					# Il margine e' in PASSI, come tutto il resto (lotto 317): la definizione del passo
+					# sta in paginator.passo() e non si ricopia qui.
+					runway = paginator.passo() * paginator.lookahead_pages()
 					log_change('id=%s key=%s current=%s/%s remaining=%s runway=%s built=%s hasmore=%s loading=%s' %
 								(widget_id, paginator.short(key), current, numitems, numitems - current, runway, built, hasmore, loading))
 					if loading:
@@ -910,22 +926,26 @@ class WidgetPaginator:
 						# real build -- we wait instead of piling up loads. An empty filtered page leaves
 						# built == numitems, so heavily-filtered searches still keep advancing.
 						if hasmore and numitems - current <= runway and numitems >= built and moved:
-							pages = paginator.raw_pages(key, paginator.initial_batch())
+							passi = paginator.raw_pages(key, paginator.passi_iniziali())
 							now = time()
 							window.setProperty(paginator.LOADING_PROP % key, str(now))
-							window.setProperty(paginator.PAGES_PROP % key, str(pages + 1))
+							window.setProperty(paginator.PAGES_PROP % key, str(passi + 1))
 							pending[key] = now
-							paginator.log('watcher TRIGGER key=%s pages %s->%s current=%s/%s built=%s -> token ctl%s' %
-										(paginator.short(key), pages, pages + 1, current, numitems, built, widget_id))
+							paginator.log('watcher TRIGGER key=%s passi %s->%s current=%s/%s built=%s -> token ctl%s' %
+										(paginator.short(key), passi, passi + 1, current, numitems, built, widget_id))
 							# Ricarica MIRATA: il token compare dentro il <content> del widget come $INFO[],
 							# quindi cambiarlo fa ricaricare SOLO questo contenitore. Prima si sparava
 							# UpdateLibrary, che e' un evento globale: per paginare un widget si
 							# ricostruivano tutti quelli della schermata, ognuno con il suo interprete
 							# Python nuovo. Era la causa principale della lentezza in home, e la coda di
 							# invocazioni che ne usciva e' quella che faceva scadere il flag LOADING.
+							# LOTTO 325 -- il token lo scrive scrivi_token e nessun altro, sotto lock. Qui
+							# c'era una setProperty secca, che cancellava un ordine di ricarica appena
+							# messo da un altro processo -- e dal 324 quell'ordine porta anche il motivo,
+							# quindi perderlo riportava la watchlist a non aggiornarsi.
 							ctl_prop = paginator.CTL_PAGES_PROP % (scope, widget_id)
-							window.setProperty(ctl_prop, str(pages + 1))
-							token_written[key] = (now, ctl_prop, pages + 1)
+							paginator.scrivi_token(scope, widget_id, passi=passi + 1)
+							token_written[key] = (now, ctl_prop, passi + 1)
 							wait_for_abort(0.5); continue
 			except Exception as e:
 				paginator.log('watcher EXC %s' % e)
@@ -936,168 +956,9 @@ class WidgetPaginator:
 		except: pass
 		return logger('Fen Light', 'WidgetPaginator Service Finished')
 
-class DubResolver:
-	# LOTTO 95, punto 3 del piano concordato: *"coda dei verdetti doppiaggio, risolta dal servizio"*.
-	#
-	# La costruzione di un widget non fa piu' rete per il filtro doppiaggio: nasconde l'elemento e lo
-	# accoda (modules/dub_queue). Qui la coda si svuota, a stick ferma, e i verdetti finiscono in
-	# dub_cache. Se qualcuno risulta disponibile si ordina UNA ricarica mirata dei soli contenitori
-	# interessati -- alla ricostruzione quegli elementi hanno il verdetto in cache e compaiono senza
-	# toccare la rete.
-	#
-	# Le tre condizioni per lavorare, e la ragione di ognuna:
-	#  1. NON si riproduce. Richiesta esplicita dell'utente: *"durante la riproduzione non si fa nulla,
-	#     si usa tutto per la riproduzione"*. E' il punto 4 applicato a questo servizio.
-	#  2. La coda e' FERMA da QUIET_SECONDS. Finche' i widget si costruiscono continuano ad accodare;
-	#     mettersi a fare rete in mezzo all'ondata e' la raffica che le note sui crash dicono di evitare.
-	#  3. Per la RICARICA soltanto, non per le interrogazioni: l'utente non sta toccando il telecomando
-	#     da IDLE_BEFORE_REFRESH secondi. Gli elementi rientrano al loro posto in lista (l'ordine e'
-	#     preservato, invariante del paginatore), quindi cio' che sta sotto il cursore si sposta:
-	#     farlo mentre il dito si muove sarebbe esattamente il focus instabile che l'utente ha chiesto
-	#     di evitare. Le interrogazioni invece si fanno comunque -- non si vedono.
-	POLL = 2.0
-	QUIET_SECONDS = 4.0
-	IDLE_BEFORE_REFRESH = 3
-	# Titoli per giro. Piccolo di proposito: fra un lotto e l'altro si ricontrolla la riproduzione e
-	# l'abort, cosi' un film che parte ferma il lavoro entro pochi secondi invece che a coda finita.
-	BATCH = 8
-	# Oltre questo, la ricarica si fa comunque anche se l'utente non e' mai fermo: meglio uno spostamento
-	# di lista che elementi nascosti per sempre in una sessione di navigazione continua.
-	MAX_REFRESH_HOLD = 120
-	# LOTTO 97. Quante volte si riprova una ricarica che non ha raggiunto NESSUN contenitore, e quanto
-	# si aspetta fra un tentativo e l'altro. Vedi il commento al punto in cui si usano.
-	REFRESH_ATTEMPTS = 10
-	REFRESH_RETRY = 6.0
-
-	def run(self):
-		logger('Fen Light', 'DubResolver Service Starting')
-		from time import time
-		from modules.settings import dub_filter_enabled, dub_filter_country, tmdb_api_key
-		from modules import dub_queue, paginator
-		from modules.kodi_utils import modal_dialog_present, search_running
-		monitor, player = xbmc.Monitor(), xbmc.Player()
-		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
-		window = xbmcgui.Window(10000)
-		# Id risolti come DISPONIBILI e non ancora portati a schermo, con l'istante del primo.
-		to_show, held_since = [], 0
-		tentativi, prossimo_tentativo = 0, 0
-		breaker_reported = False
-		while not wait_for_abort(self.POLL):
-			try:
-				# LOTTO 238 -- search_running(): risolvere i doppiaggi vuol dire scaricare schede TMDb
-				# e macinarle, la cosa piu' cara che questo servizio fa. Vedi kodi_utils.SEARCH_ACTIVE_PROP.
-				if is_playing() or search_running() or window.getProperty(pause_services_prop) == 'true': continue
-				now = time()
-				# --- la ricarica in sospeso viene prima: e' cio' che l'utente aspetta di vedere -------
-				# Si aspetta che la coda sia VUOTA, non che il lotto sia finito. Un lotto e' 8 titoli:
-				# ricaricare a ogni lotto significherebbe, su cache fredda, una decina di ricostruzioni
-				# degli stessi contenitori a pochi secondi l'una dall'altra -- la raffica che tutto il
-				# resto del lavoro esiste per evitare. Peggio: ogni ricostruzione rimetterebbe in coda i
-				# titoli ancora ignoti, alimentando il proprio ciclo. Una sola ricarica a svuotamento.
-				# LOTTO 97 -- il guardiano del dialogo, e perche' mancava proprio qui.
-				# Con un dialogo modale a schermo l'infolabel Container(N) si risolve contro il DIALOGO,
-				# non contro la finestra sotto: refresh_containers_for_ids non trova nessun contenitore
-				# Fen Light, torna 0 e non ricarica niente. Il watcher della paginazione questo controllo
-				# ce l'ha da sempre (vedi 'idle (modal dialog open)' in WidgetPaginator); qui non era
-				# stato riportato, e il difetto e' peggiore di quanto sembri perche' il cancello
-				# dell'inattivita' SELEZIONA il caso rotto: stare fermi a leggere la scheda di un film e'
-				# proprio cio' che fa crescere getGlobalIdleTime. Misurato sul Mac (log zmac, 26/08): due
-				# ricariche alle 02:50:33 e 02:50:59, entrambe dentro il dialogo 13000, entrambe
-				# 'contenitori ricaricati 0', e 5 titoli gia' risolti buttati via.
-				# Si ferma la sola RICARICA: interrogare la rete dentro un dialogo non da' fastidio a
-				# nessuno, non si vede.
-				# LOTTO 286 -- la domanda si fa per ULTIMA, solo quando c'e' davvero una ricarica da fare:
-				# prima si valutava a ogni giro da 2 s anche con to_show vuoto. E senza porta del FrameMove:
-				# vedi kodi_utils.modal_dialog_present, che conta anche il modale in chiusura -- cioe'
-				# esattamente la finestra contro cui Container(N) si risolverebbe.
-				if to_show and now >= prossimo_tentativo \
-						and (dub_queue.pending_count() == 0 or now - held_since > self.MAX_REFRESH_HOLD) \
-						and (xbmc.getGlobalIdleTime() >= self.IDLE_BEFORE_REFRESH
-								or now - held_since > self.MAX_REFRESH_HOLD) \
-						and not modal_dialog_present():
-					hit = paginator.refresh_containers_for_ids(to_show)
-					raggiunti = hit + paginator.LAST_OTHER_HITS[0]
-					logger('Fen Light', 'DubResolver: %s titoli tornati disponibili, contenitori ricaricati %s '
-							'(altre finestre %s)' % (len(to_show), hit, paginator.LAST_OTHER_HITS[0]))
-					# Gli id si buttano SOLO se qualcosa e' stato davvero raggiunto. Prima si svuotava
-					# to_show prima ancora di sapere l'esito, quindi una ricarica a vuoto perdeva per
-					# sempre verdetti gia' pagati -- ed era muta. Restano i casi legittimi in cui non
-					# c'e' niente da ricaricare (finestra Video, nessun widget nostro a schermo): per
-					# quelli si riprova qualche volta e poi si lascia perdere, dicendolo.
-					if raggiunti:
-						to_show, held_since, tentativi, prossimo_tentativo = [], 0, 0, 0
-					else:
-						tentativi += 1
-						prossimo_tentativo = now + self.REFRESH_RETRY
-						if tentativi >= self.REFRESH_ATTEMPTS:
-							logger('Fen Light', 'DubResolver: %s titoli risolti ma nessun contenitore raggiungibile '
-									'dopo %s tentativi. Restano nascosti fino alla prossima ricostruzione del loro '
-									'widget, che li mostrera\' leggendo il verdetto dalla cache.'
-									% (len(to_show), tentativi))
-							to_show, held_since, tentativi, prossimo_tentativo = [], 0, 0, 0
-					continue
-				if not dub_queue.pending_count(): continue
-				if now - dub_queue.last_enqueue() < self.QUIET_SECONDS: continue
-				# Il filtro puo' essere stato spento mentre la coda era piena: in quel caso non c'e'
-				# niente da risolvere e la coda va buttata, non lavorata.
-				if not dub_filter_enabled():
-					dub_queue.clear(); continue
-				country = dub_filter_country()
-				if not country:
-					dub_queue.clear(); continue
-				api_key = tmdb_api_key()
-				batch = dub_queue.drain(self.BATCH)
-				if not batch: continue
-				from modules.metadata import dub_resolve
-				t0, resolved, inconclusive = time(), 0, 0
-				for pos, entry in enumerate(batch):
-					if monitor.abortRequested() or is_playing():
-						# Si restituisce il NON lavorato, compreso quello in corso: e' la sola cosa che
-						# rende sicuro il drain distruttivo.
-						dub_queue.requeue(batch[pos:]); break
-					media_type, tmdb_id, title, year, verify = entry
-					try:
-						verdict = dub_resolve(country, media_type, tmdb_id, title, year, verify, api_key)
-					except Exception as e:
-						logger('Fen Light', 'DubResolver: errore su tmdb=%s (%s)' % (tmdb_id, e)); verdict = None
-					if verdict is None:
-						inconclusive += 1
-						continue
-					resolved += 1
-					# Solo i DISPONIBILI muovono qualcosa a schermo: un negativo conferma cio' che si
-					# vede gia' (l'elemento e' nascosto) e non vale una ricostruzione.
-					if verdict:
-						if not to_show: held_since = time()
-						to_show.append(tmdb_id)
-				logger('Fen Light', 'DubResolver: lotto di %s in %.1f s | risolti %s (da mostrare %s) | '
-						'inconcludenti %s | in coda %s'
-						% (len(batch), time() - t0, resolved, len(to_show), inconclusive, dub_queue.pending_count()))
-				# La rete muta: se l'interruttore di blu-ray.com e' aperto, il filtro sta nascondendo
-				# elementi per una ragione che non e' un verdetto. Va detto, UNA volta per apertura --
-				# era la richiesta dell'utente: *"magari una notifica che avvisa l'utente che la rete
-				# non ha risposto per il filtro doppiaggio"*.
-				breaker_reported = self._report_breaker(inconclusive, breaker_reported)
-			except Exception as e:
-				logger('Fen Light', 'DubResolver EXC %s' % e)
-		try: del monitor
-		except: pass
-		try: del player
-		except: pass
-		return logger('Fen Light', 'DubResolver Service Finished')
-
-	def _report_breaker(self, inconclusive, already):
-		try:
-			from modules.http_client import breaker_state
-			is_open, remaining = breaker_state('www.blu-ray.com')
-			if not is_open:
-				return False   # richiuso: la prossima apertura torna a essere una notizia
-			if already or not inconclusive: return already
-			from modules.kodi_utils import notification
-			notification('Filtro doppiaggio: blu-ray.com non risponde, riprovo fra %s min. '
-						'Alcuni titoli restano nascosti.' % max(1, remaining // 60), 6000)
-			return True
-		except Exception:
-			return already
+# LOTTO 333 -- qui stava DubResolver, che svuotava la coda dei verdetti rimandati dalle costruzioni e
+# ricostruiva le righe a gruppi. Le costruzioni non rimandano piu' niente: i verdetti li decide il
+# preparatore (modules/preparatore.py) PRIMA che un titolo entri in lista.
 
 class PerfSampler:
 	# Lotto 83. Il pezzo che mancava: finora ogni misura veniva da DENTRO un'invocazione del plugin,
@@ -1358,6 +1219,16 @@ class FenLightMonitor(xbmc.Monitor):
 		# SetAddonConstants resta SEMPRE qui e sempre in sincrono: sono 5 ms misurati, e la skin legge
 		# fenlight.addon_path / _profile / _icon / _fanart appena disegna. Rimandarlo si vedrebbe.
 		SetAddonConstants().run()
+		# LOTTO 332 -- IL PREPARATORE PARTE SUBITO, non con il resto dell'avvio differito: le righe della Home
+		# lo stanno aspettando (la costruzione non va piu' in rete da se'), e rimandarlo fino a "Home piena"
+		# le fermerebbe tutte fino al limite di sicurezza. Prima, il token dei contenitori: il preparatore
+		# ordina ricariche da questo processo (lotto 325).
+		self._preparatore = None
+		try:
+			from modules import paginator as _pg, preparatore
+			_pg.abilita_token_locale()
+			self._preparatore = preparatore.avvia()
+		except Exception as e: logger('Fen Light', 'preparatore NON avviato (%s)' % e)
 		# IL RESTO ASPETTA CHE LA HOME SIA PIENA (lotto 2, 08/09/2026).
 		#
 		# Perche'. Su Android il Python di Kodi vive dentro un solo processo e i sotto-interpreti si
@@ -1385,10 +1256,11 @@ class FenLightMonitor(xbmc.Monitor):
 		# spariscono l'import di Pillow, il ciclo di polling a 0.3s e ogni generazione di immagine.
 		# Per riaccenderlo basta ripristinare la riga sotto: e' l'unico punto che lo avvia.
 		# Thread(target=self._delayed_blur_start).start()
+		# LOTTO 325 -- il token dei contenitori ha questo processo come unico scrittore: lo dichiara
+		# startServices, prima del preparatore, che ordina ricariche.
 		self._filo('FL:trakt', TraktMonitor().run).start()
 		self._filo('FL:widgetref', WidgetRefresher().run).start()
 		self._filo('FL:paginator', WidgetPaginator().run).start()
-		self._filo('FL:dub', DubResolver().run).start()
 		self._filo('FL:perf', PerfSampler().run).start()
 		# Aggiornamento della skin senza ReloadSkin. Vive in modules/skin_updater.py e non qui perche'
 		# quel modulo ha il suo .pyc, mentre questo file Kodi lo esegue come __main__ e lo ricompila a
@@ -1513,6 +1385,24 @@ class FenLightMonitor(xbmc.Monitor):
 		BlurService().run()
 
 	def onNotification(self, sender, method, data):
+		# LOTTO 314 -- lo strato dati delle liste ha UN SOLO scrittore, ed e' questo. Le build
+		# spediscono cio' che hanno consegnato (widgets_cache.invia) e qui si scrive, in ordine di
+		# arrivo, su una connessione sola aperta per tutta la sessione. Il checkpoint del giornale lo
+		# fa questo thread subito dopo, che e' il "momento di quiete" giusto: la cartella e' gia'
+		# chiusa e nessun contenitore sta aspettando.
+		if method.startswith('Other.') and sender == 'plugin.video.fenlight':
+			# L'import sta qui dentro: onNotification riceve OGNI notifica di Kodi (player compreso),
+			# e i messaggi 'Other.' sono solo i nostri.
+			from modules import paginator
+			messaggio = method[len('Other.'):]
+			# LOTTO 332 -- le consegne (pgdb, lotto 314), le richieste di passo e le schede da rinnovare vanno
+			# tutte al preparatore: e' l'unico thread che scrive widgets.db. Qui si smista soltanto.
+			if self._preparatore is not None and self._preparatore.ricevi(messaggio, data): return
+			# LOTTO 325 -- il token di ricarica di un contenitore ha UN SOLO scrittore ed e' questo processo.
+			if messaggio == paginator.MESSAGGIO_TOKEN:
+				try: paginator.applica_ricariche(data)
+				except Exception as e: logger('Fen Light', 'pg: ricarica non applicata (%s)' % e)
+				return
 		# Marcatori di memoria attorno alla riproduzione (lotto 83). Sono il gruppo di controllo della
 		# domanda posta dall'utente: il player E' capace di liberare risorse, quindi se la memoria
 		# risale a OnPlay e riscende a OnStop, allora la memoria si puo' liberare e il problema e' che
@@ -1534,14 +1424,14 @@ class FenLightMonitor(xbmc.Monitor):
 			# IL RITORNO DAL PLAYER E' UN REFRESH IN POSTO (lotto 112).
 			#
 			# Uscendo dal player Kodi reinvalida da solo tutti i CDirectoryProvider. Quella
-			# ricostruzione non era marcata in nessun modo, quindi _get_pages_legacy la trattava come
+			# ricostruzione non era marcata in nessun modo, quindi _passi_legacy la trattava come
 			# l'apertura di un widget nuovo e tornava 'default' (2 pagine): il contenitore si
 			# accorciava, gli elementi si spostavano e il fuoco tornava al primo. Misurato nel log
 			# del 29/08: prima di riprodurre 'watcher id=504 current=2/27', dopo la chiusura
 			# 'current=1/27', con la firma del contenuto IDENTICA (3c418f7c) -- cioe' non era
 			# cambiato niente, si perdeva la posizione e basta.
 			#
-			# Lo dice gia' il commento di _get_pages_legacy: il conteggio accumulato serve quando
+			# Lo dice gia' il commento di _passi_legacy: il conteggio accumulato serve quando
 			# "il contenitore deve mantenere la lunghezza corrente cosi' gli elementi restano fermi e
 			# il fuoco e' preservato". Il ritorno dalla riproduzione e' esattamente quel caso, e non
 			# era nell'elenco. E' anche il problema lasciato aperto a voce in kodi_refresh: "il fuoco
@@ -1550,7 +1440,7 @@ class FenLightMonitor(xbmc.Monitor):
 			# hold_refresh_flag scrive una SCADENZA e torna subito -- nessuna attesa dentro
 			# l'invocazione, e a spegnere la bandiera pensa WidgetRefresher, che gira gia'. La
 			# finestra di 20 s copre abbondantemente il ritardo osservato fra OnStop (17:18:57,078) e
-			# la prima get_pages (17:18:59,031).
+			# la prima passi_da_caricare (17:18:59,031).
 			#
 			# LOTTO 177. Qui NON si timbra piu' una ricostruzione globale. Il passo 1.2 lo faceva
 			# perche' Kodi, uscendo dal player, invalidava davvero tutti i contenitori; da quando
@@ -1574,5 +1464,7 @@ class FenLightMonitor(xbmc.Monitor):
 			logger('OnNotificationActions', 'UNPAUSING Fen Light Services Due to Device Awake')
 
 logger('Fen Light', 'Main Monitor Service Starting')
-FenLightMonitor().waitForAbort()
+_principale = FenLightMonitor()
+_principale.waitForAbort()
+if _principale._preparatore is not None: _principale._preparatore.ferma()
 logger('Fen Light', 'Main Monitor Service Finished')

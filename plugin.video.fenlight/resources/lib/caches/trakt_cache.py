@@ -360,14 +360,21 @@ class TraktWatched:
 
 trakt_watched_cache = TraktWatched()
 
-def cache_trakt_object(function, string, url):
-	cache = trakt_cache.get(string)
-	if cache: return cache
+def cache_trakt_object(function, string, url, rinnova=False):
+	# rinnova (lotto 334): chi SA che il dato e' cambiato lo rilegge e sostituisce la copia, invece di
+	# cancellarla e lasciare la rilettura al primo lettore -- che puo' essere una costruzione, senza rete.
+	if not rinnova:
+		cache = trakt_cache.get(string)
+		if cache: return cache
 	result = function(url)
 	# LOTTO 237 -- `None` significa che la chiamata non e' arrivata a Trakt, ed e' diverso da una
 	# lista vuota. Memorizzarlo faceva si' che un momento di rete assente -- o un rinnovo del
 	# token non concluso -- svuotasse la watchlist fino alla scadenza della cache.
-	if result is None: return None
+	# Una rilettura fallita invece CANCELLA: la copia e' sicuramente vecchia, e il primo lettore che ha la
+	# rete (il preparatore del servizio) la rifara'.
+	if result is None:
+		if rinnova: trakt_cache.delete(string)
+		return None
 	trakt_cache.set(string, result)
 	return result
 
@@ -409,14 +416,6 @@ def clear_trakt_hidden_data(list_type):
 	try:
 		dbcon = connect_database('trakt_db')
 		dbcon.execute(DELETE, ('trakt_hidden_items_%s' % list_type,))
-	except: pass
-
-def clear_trakt_collection_watchlist_data(list_type, media_type):
-	if media_type == 'movies': media_type = 'movie'
-	if media_type in ('tvshows', 'shows'): media_type = 'tvshow'
-	try:
-		dbcon = connect_database('trakt_db')
-		dbcon.execute(DELETE, ('trakt_%s_%s' % (list_type, media_type),))
 	except: pass
 
 def clear_trakt_calendar():

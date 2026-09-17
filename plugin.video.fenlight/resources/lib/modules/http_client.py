@@ -83,6 +83,25 @@ class Throttled(NetworkError):
 class PermanentError(NetworkError):
 	"""4xx diverso da 403/408/429. L'host sta bene, la richiesta no."""
 
+class ReteVietata(NetworkError):
+	"""Questa invocazione non puo' andare in rete (lotto 333): vedi kodi_utils.vieta_rete."""
+
+_VIETATE_SEGNALATE = set()
+
+def _rete_vietata(url):
+	# Si guarda kodi_utils solo se e' GIA' caricato: chi non l'ha importato non puo' aver vietato niente,
+	# e importarlo qui costerebbe a ogni processo che usa il client.
+	import sys
+	ku = sys.modules.get('modules.kodi_utils')
+	motivo = getattr(ku, 'RETE_VIETATA', (None,))[0] if ku else None
+	if not motivo: return
+	host = _split_url(url)[1]
+	if host not in _VIETATE_SEGNALATE:
+		_VIETATE_SEGNALATE.add(host)
+		try: ku.logger('FenLight RETE VIETATA', '%s: richiesta a %s rifiutata (%s)' % (motivo, host, url[:120]))
+		except Exception: pass
+	raise ReteVietata('rete vietata in %s: %s' % (motivo, host))
+
 class CircuitOpen(NetworkError):
 	"""L'interruttore per quell'host e' aperto: si rinuncia senza toccare la rete."""
 
@@ -270,15 +289,16 @@ class _Pool:
 	def __init__(self):
 		self._free, self._lock = {}, Lock()
 
-	def acquire(self, scheme, host, port, timeout):
+	def prendi(self, scheme, host, port, timeout, nuova=False):
+		"""(connessione, riciclata). `nuova` salta il pool: la si chiede dopo che una riciclata e' morta."""
 		key = (scheme, host, port, timeout)
-		with self._lock:
-			bucket = self._free.get(key)
-			if bucket:
-				return bucket.pop()
+		if not nuova:
+			with self._lock:
+				bucket = self._free.get(key)
+				if bucket: return bucket.pop(), True
 		if scheme == 'https':
-			return http.client.HTTPSConnection(host, port, timeout=timeout)
-		return http.client.HTTPConnection(host, port, timeout=timeout)
+			return http.client.HTTPSConnection(host, port, timeout=timeout), False
+		return http.client.HTTPConnection(host, port, timeout=timeout), False
 
 	def release(self, scheme, host, port, timeout, conn):
 		key = (scheme, host, port, timeout)
@@ -289,6 +309,14 @@ class _Pool:
 				return
 		try: conn.close()
 		except: pass
+
+	def svuota(self, scheme, host, port, timeout):
+		"""Chiude le connessioni ferme di questo host: una di loro e' appena risultata morta (lotto 334)."""
+		with self._lock:
+			bucket = self._free.pop((scheme, host, port, timeout), [])
+		for conn in bucket:
+			try: conn.close()
+			except: pass
 
 	def close_all(self):
 		with self._lock:
@@ -460,6 +488,7 @@ class Session:
 
 	# --- interno --------------------------------------------------------------------------------
 	def _send(self, method, url, body, headers, timeout, allow_redirects, budget, validate=None):
+		_rete_vietata(url)
 		scheme, host, port, path = _split_url(url)
 		# L'interruttore si consulta PRIMA di aprire il socket: e' qui che sta tutto il guadagno.
 		breaker_check(host)
@@ -514,18 +543,22 @@ class Session:
 	def _attempt(self, method, scheme, host, port, path, body, headers, timeout):
 		# DUE riprove distinte, e la distinzione conta perche' costano in modo diverso:
 		#
-		# 1) CONNESSIONE RICICLATA. Un socket tenuto aperto puo' essere stato chiuso dall'altro capo
-		#    mentre era fermo, e la prima scrittura fallisce. Non e' un guasto di rete e non fallisce
-		#    lentamente: si riapre e si rifa'. Non conta per l'interruttore. (Lotto 84.)
+		# 1) CONNESSIONE RICICLATA MORTA. Un socket tenuto aperto puo' essere stato chiuso dall'altro capo
+		#    mentre era fermo, e la prima scrittura fallisce. Non e' un guasto di rete e non conta per
+		#    l'interruttore. (Lotto 84.)
+		#    LOTTO 334 -- e non e' morta da sola. Le connessioni ferme di un host hanno la stessa eta', e il
+		#    server le chiude tutte insieme: qui si riprovava con la SUCCESSIVA del pool, morta anche lei, e
+		#    la riprova dei guasti veloci con una terza. Sulla stick, 16/09 19:52:14, la ricerca "go" e'
+		#    fallita cosi' in 140 ms dopo un minuto di silenzio, senza aprire un solo socket. Ora si buttano
+		#    le sorelle ferme e si riprova con una connessione NUOVA.
 		#
-		# 2) GUASTO CHE FALLISCE SUBITO (connessione rifiutata/azzerata, DNS). Vale la pena riprovare
-		#    una volta perche' costa poco. Un TIMEOUT invece NON si riprova: ha gia' consumato
-		#    DEFAULT_TIMEOUT e riprovarlo raddoppierebbe il caso peggiore, che su questa stick e'
+		# 2) GUASTO CHE FALLISCE SUBITO (connessione rifiutata/azzerata, DNS) su una connessione nuova. Vale
+		#    la pena riprovare una volta perche' costa poco. Un TIMEOUT invece NON si riprova: ha gia'
+		#    consumato DEFAULT_TIMEOUT e riprovarlo raddoppierebbe il caso peggiore, che su questa stick e'
 		#    esattamente il sintomo da evitare. (Lotto 93, vedi _is_fast_failure.)
-		last_error, fast_retries = None, 0
-		attempt = 0
+		fast_retries, nuova = 0, False
 		while True:
-			conn, reused = self._checkout(scheme, host, port, timeout)
+			conn, reused = self.pool.prendi(scheme, host, port, timeout, nuova)
 			try:
 				conn.request(method, path, body=body, headers=headers)
 				raw = conn.getresponse()
@@ -545,23 +578,16 @@ class Session:
 					self.pool.release(scheme, host, port, timeout, conn)
 				return Response(status, payload, hdrs, '%s://%s%s' % (scheme, host, path))
 			except (http.client.HTTPException, socket.error, OSError) as error:
-				last_error = error
 				try: conn.close()
 				except: pass
-				if reused and attempt == 0:
-					attempt += 1; continue
+				if reused:
+					self.pool.svuota(scheme, host, port, timeout)
+					nuova = True
+					continue
 				if _is_fast_failure(error) and fast_retries < RETRY_FAST_ERRORS:
-					fast_retries += 1; attempt += 1; continue
+					fast_retries += 1; nuova = True; continue
 				# Guasto vero: alimenta l'interruttore e si presenta classificato. TemporaryError
 				# deriva da OSError, quindi ogni `except` gia' scritto nei chiamanti lo cattura
 				# esattamente come prima -- cambia solo che ora sappiamo COSA e' successo.
 				breaker_failure(host, type(error).__name__ or 'errore di trasporto')
 				raise TemporaryError('%s: %s' % (host, error)) from error
-
-	def _checkout(self, scheme, host, port, timeout):
-		key = (scheme, host, port, timeout)
-		with self.pool._lock:
-			bucket = self.pool._free.get(key)
-			if bucket:
-				return bucket.pop(), True
-		return self.pool.acquire(scheme, host, port, timeout), False

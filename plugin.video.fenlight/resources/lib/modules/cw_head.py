@@ -40,7 +40,7 @@ Quindi o il confronto e' sempre vero o e' sempre falso: non c'e' nessuna finestr
 puo' andare in un modo o nell'altro, che e' la condizione richiesta -- comportamento sempre identico.
 
 PERCHE' NON STA IN paginator.py. 'Continua a guardare' non e' un widget paginato: non chiama
-get_pages, non ha pagine, nel log dichiara hasmore=False. Questa regola vale per quella riga sola.
+passi_da_caricare, non ha pagine, nel log dichiara hasmore=False. Questa regola vale per quella riga sola.
 Stava dentro il paginatore per un incidente di percorso -- set_head passava di li' -- e da quella
 convivenza sono arrivati un controllo sull'azione, una proprieta' in piu' e una coda con due
 committenti che non si somigliano. La coda fenlight.pg.rehead resta al suo unico proprietario

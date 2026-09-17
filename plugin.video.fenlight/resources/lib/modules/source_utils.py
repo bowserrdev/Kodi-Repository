@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import re
 import json
+from string import printable
 from urllib.parse import unquote, unquote_plus
 from modules import kodi_utils
 from modules.metadata import episodes_meta
@@ -197,8 +198,12 @@ def check_title(title, release_title, aliases, year, season, episode):
 		cleaned_titles_append = cleaned_titles.append
 		year = string(year)
 		for i in all_titles:
-			cleaned_titles_append(
-				i.lower().replace('\'', '').replace(':', '').replace('!', '').replace('(', '').replace(')', '').replace('&', 'and').replace(' ', '.').replace(year, ''))
+			# Stessa pulizia del titolo della fonte, che gli scraper passano gia' da normalize(): senza,
+			# 'pokémon' non corrisponde mai a 'pokemon'. Un titolo che resta vuoto (alias tutto in
+			# caratteri non latini) si scarta: la stringa vuota e' contenuta in qualunque titolo.
+			cleaned = strip_non_ascii_and_unprintable(normalize(i)).lower().replace('\'', '').replace(':', '').replace('!', '').replace('(', '').replace(')', '').replace('&', 'and').replace(' ', '.').replace(year, '')
+			if cleaned: cleaned_titles_append(cleaned)
+		if not cleaned_titles: return True
 		release_title = strip_non_ascii_and_unprintable(release_title).lstrip('/ ').replace(' ', '.').replace(':', '.').lower()
 		releasetitle_startswith = release_title.startswith
 		for i in UNWANTED_TAGS:

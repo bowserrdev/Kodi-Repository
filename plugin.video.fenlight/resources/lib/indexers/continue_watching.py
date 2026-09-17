@@ -24,7 +24,7 @@ def build_continue_watching(params):
 	# (build_single_episode con return_results) usciva prima di qualunque riga di log. I marcatori qui
 	# separano le LETTURE dalle COSTRUZIONI, e ogni costruzione dalle altre due che le girano accanto.
 	# "Sto costruendo" dichiarato a voce (lotto 106). Questo widget non e' paginato, quindi non passa
-	# da get_pages e non si timbrerebbe da solo: sarebbe l'unico dei tre della Home invisibile al
+	# da passi_da_caricare e non si timbrerebbe da solo: sarebbe l'unico dei tre della Home invisibile al
 	# canale dei rinvii, ed e' quello che ci mette di piu'. La skin gli passa la posizione
 	# (pgctl=home.501), quindi la chiave e' la stessa forma degli altri.
 	_pg_key = None
@@ -135,7 +135,7 @@ def build_continue_watching(params):
 	# scarterebbe proprio mentre va ricostruito. E' lo stesso motivo per cui la watchlist di Trakt ha
 	# gia' la sua ('trakt_watchlist', vedi trakt_api._refresh_watchlist).
 	if _pg_key:
-		try: paginator.set_head(_pg_key, final_items, kodi_utils.CONTINUE_WATCHING_ACTION)
+		try: paginator.set_head(_pg_key, final_items, kodi_utils.CONTINUE_WATCHING_ACTION, params)
 		except: pass
 		# LOTTO 216 -- e QUI si dichiara la testa, non dentro set_head. Che questa riga debba tornare
 		# sul primo elemento quando arriva un titolo nuovo e' una regola di QUESTO widget: non e'

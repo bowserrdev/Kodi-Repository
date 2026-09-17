@@ -3,10 +3,10 @@ import sys
 from time import perf_counter as _perf
 # modules.meta_lists non si importa piu' (lotto 110): questo file non ne usava un solo nome.
 from modules import kodi_utils, settings
-from modules import paginator
-from modules.metadata import tvshow_meta, discover_filter_sort, discover_imdb_sort_from_url, discover_min_rating_from_url, dub_filter
+from modules import paginator, sorgenti
+from modules.metadata import tvshow_meta
 from modules.metadata import tvshow_meta_prefetch, meta_prefetch_key
-from modules.utils import manual_function_import, get_datetime, make_thread_list, get_current_timestamp, paginate_list
+from modules.utils import get_datetime, make_thread_list, get_current_timestamp, paginate_list
 from modules.watched_status import get_database, watched_info_tvshow, get_watched_status_tvshow, get_progress_status_tvshow
 logger = kodi_utils.logger
 
@@ -16,7 +16,7 @@ set_category, make_listitem, build_url, set_property = kodi_utils.set_category, 
 set_content, end_directory, set_view_mode, folder_path = kodi_utils.set_content, kodi_utils.end_directory, kodi_utils.set_view_mode, kodi_utils.folder_path
 poster_empty, nextpage_landscape = kodi_utils.empty_poster, kodi_utils.nextpage_landscape
 media_open_action, default_all_episodes, page_limit, paginate = settings.media_open_action, settings.default_all_episodes, settings.page_limit, settings.paginate
-widget_hide_next_page, widget_hide_watched, watched_indicators = settings.widget_hide_next_page, settings.widget_hide_watched, settings.watched_indicators
+widget_hide_next_page, watched_indicators = settings.widget_hide_next_page, settings.watched_indicators
 mpaa_region = settings.mpaa_region
 run_plugin, container_update = 'RunPlugin(%s)', 'Container.Update(%s)'
 # Vedi il commento in movies.py: URL per formattazione diretta invece che con build_url/urlencode.
@@ -35,23 +35,14 @@ URL_MARK_TVSHOW = _BASE + 'mode=watched_status.mark_tvshow&action=%s&tmdb_id=%s&
 URL_WATCHLIST_TOGGLE = _BASE + 'mode=trakt.watchlist_toggle&media_type=tvshow&tmdb_id=%s&in_watchlist=%s'
 URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets&user=true'
 URL_EXIT_MEDIA_MENU = _BASE + 'mode=navigator.exit_media_menu'
-main = ('tmdb_tv_popular', 'tmdb_tv_popular_today', 'tmdb_tv_premieres', 'tmdb_tv_airing_today','tmdb_tv_on_the_air','tmdb_tv_upcoming',
-'tmdb_anime_popular', 'tmdb_anime_popular_recent', 'tmdb_anime_premieres', 'tmdb_anime_upcoming', 'tmdb_anime_on_the_air')
-special = ('tmdb_tv_languages', 'tmdb_tv_networks', 'tmdb_tv_providers', 'tmdb_tv_year', 'tmdb_tv_decade', 'tmdb_tv_recommendations', 'tmdb_tv_genres',
-'tmdb_tv_search', 'tmdb_tv_search_filtered', 'tmdb_tv_keyword_results', 'tmdb_tv_keyword_results_direct', 'tmdb_anime_year', 'tmdb_anime_decade', 'tmdb_anime_genres',
-'tmdb_anime_providers', 'tmdb_anime_search')
-personal = {'in_progress_tvshows': ('modules.watched_status', 'get_in_progress_tvshows'), 'favorites_tvshows': ('modules.favorites', 'get_favorites'),
-'favorites_anime_tvshows': ('modules.favorites', 'get_favorites'), 'watched_tvshows': ('modules.watched_status', 'get_watched_items')}
-trakt_main = ('trakt_tv_trending', 'trakt_tv_trending_recent', 'trakt_tv_most_watched', 'trakt_tv_most_favorited',
-'trakt_anime_trending', 'trakt_anime_trending_recent', 'trakt_anime_most_watched', 'trakt_anime_most_favorited')
-trakt_special = ('trakt_tv_certifications', 'trakt_anime_certifications')
-trakt_personal = ('trakt_collection', 'trakt_watchlist', 'trakt_collection_lists', 'trakt_watchlist_lists', 'trakt_favorites')
+# LOTTO 331 -- le azioni stanno in modules/sorgenti.py, con le sorgenti che le leggono. Qui restano i nomi
+# che usano i rami a pagina singola (lotto 335).
+_AZIONI = sorgenti.AZIONI['tvshow']
+main, special, personal, trakt_main, trakt_personal = _AZIONI['main'], _AZIONI['special'], _AZIONI['personal'], \
+	_AZIONI['trakt_main'], _AZIONI['trakt_personal']
+trakt_special = _AZIONI['trakt_special']
 view_mode, content_type = 'view.tvshows', 'tvshows'
 internal_nav_check = ('build_season_list', 'build_episode_list')
-# Actions the "dubbed content" filter must NEVER touch: the user's own personal lists (in-progress,
-# watched, favorites, Trakt collection/watchlist/favorites). Everything else (tmdb/trakt/anime discovery,
-# searches) is filtered. continue_watching / next-episode bypass this path (they call worker() directly).
-dub_filter_excluded = set(personal) | set(trakt_personal)
 
 class TVShows:
 	def __init__(self, params):
@@ -60,11 +51,14 @@ class TVShows:
 		self.category_name = self.params_get('category_name', None) or self.params_get('name', None) or 'TV Shows'
 		self.id_type, self.list, self.action = self.params_get('id_type', 'tmdb_id'), self.params_get('list', []), self.params_get('action', None)
 		self.items, self.new_page, self.total_pages, self.is_external, self.is_home = [], {}, None, external(), home()
-		self.interactive = False
+		# LOTTO 333 -- `preparata`: questa istanza costruisce gli elementi di una lista mista che il servizio ha
+		# preparato (Trakt, MDbList). Vale la stessa regola delle righe paginate: niente rete, schede scadute
+		# servite, mancanti segnalate -- per conto della lista (pg_key, pg_params), non di questa istanza.
+		self.interactive = bool(self.params_get('preparata'))
+		if self.interactive: self.pg_key, self.pg_params = self.params['pg_key'], self.params['pg_params']
 		# Popolato da worker() prima del pool; vuoto significa solo "nessuna anticipazione", non errore.
 		self.meta_prefetch = {}
 		self.widget_hide_next_page = self.is_home and widget_hide_next_page()
-		self.widget_hide_watched = self.is_home and widget_hide_watched()
 		self.custom_order = self.params_get('custom_order', 'false') == 'true'
 		self.paginate_start = int(self.params_get('paginate_start', '0'))
 		self.append = self.items.append
@@ -78,6 +72,9 @@ class TVShows:
 
 	# LOTTO 119. Vedi la nota al punto di chiamata di set_head.
 	PG_MEDIA_TYPE = 'tvshow'
+	# L'identita' di un elemento e' la coppia (tipo, id TMDb), la stessa che sta nel database: qui il
+	# tipo e' fisso, questa classe costruisce serie. Vedi la gemella in indexers/movies.py.
+	PG_TIPO = paginator.TIPI['tvshow']
 
 	def pg_action(self):
 		"""L'azione pubblicata per la ricarica mirata, qualificata per tipo di media.
@@ -99,31 +96,24 @@ class TVShows:
 			if page_no == 1 and not self.is_external:
 				folderpath = folder_path()
 				if not any([x in folderpath for x in internal_nav_check]): set_property('fenlight.exit_params', folderpath)
-			if self.action in personal: var_module, import_function = personal[self.action]
-			else: var_module, import_function = 'apis.%s_api' % self.action.split('_')[0], self.action
-			# Vedi la nota gemella in movies.py (lotto 85): senza questa inizializzazione un import
-			# fallito lascia il nome non assegnato e la riga dopo solleva UnboundLocalError, chiudendo
-			# la directory vuota. Qui non e' ancora stato osservato in un log, ma il codice e' identico.
-			function = None
-			try: function = manual_function_import(var_module, import_function)
-			except: pass
-			fetch_page = self.build_fetch_page(function) if (function and paginator.interactive_enabled() and self.is_external and not is_random) else None
-			if fetch_page and settings.dub_filter_enabled() and self.action not in dub_filter_excluded:
-				fetch_page = self._apply_dub_filter(fetch_page)
-			paginator.log('tvshows fetch_list action=%s is_home=%s is_external=%s random=%s setting=%s -> interactive=%s' %
-						(self.action, self.is_home, self.is_external, is_random, paginator.interactive_enabled(), bool(fetch_page)))
-			if fetch_page:
+			# LOTTO 333 -- una riga paginata la PREPARA il servizio: qui si legge dal database e basta. Vedi
+			# la gemella in movies.py e modules/preparatore.py.
+			paginata = self.is_external and not is_random and sorgenti.paginabile('tvshow', self.params)
+			function = None if paginata else sorgenti.funzione_api('tvshow', self.action)
+			paginator.log('tvshows fetch_list action=%s is_home=%s is_external=%s random=%s -> preparata=%s' %
+						(self.action, self.is_home, self.is_external, is_random, paginata))
+			if paginata:
 				self.interactive = True
-				self.pg_key = paginator.widget_key(self.params)
+				kodi_utils.vieta_rete('tvshows %s' % self.action)
+				self.pg_key, self.pg_params = paginator.widget_key(self.params), self.params
+				self.id_type = 'tmdb_id'
+				kodi_utils.tappa('tvshows.sorgente')
 				paginator.log('tvshows BUILD action=%s key=%s params=%s' % (self.action, paginator.short(self.pg_key),
 						{k: self.params.get(k) for k in ('mode', 'action', 'category_name', 'key_id', 'url', 'query') if self.params.get(k)}))
-				pages_to_load = paginator.get_pages(self.pg_key, paginator.initial_batch(), params=self.params)
-				# Fill every build to a full screen: server- or post-build filtering (text search, advanced
-				# search) can thin a TMDB page down to a few items, so keep loading until a page's worth is
-				# gathered. Neutral for unfiltered widgets (a single page already meets the target).
-				min_items = paginator.fill_target()
-				self.list, has_more, _last = paginator.load_cumulative(fetch_page, pages_to_load, min_items)
-				paginator.set_state(self.pg_key, _last, has_more)
+				pronta, self._pg_pages = paginator.passo_pronto(self.params, self.pg_key, 'tvshow', self.pg_action())
+				kodi_utils.tappa('tvshows.pagine')
+				self.list = [tmdb for _tipo, tmdb in (pronta.voci if pronta else ())]
+				paginator.set_state(self.pg_key, pronta.passi if pronta else 0, bool(pronta and pronta.fine and not pronta.altri))
 			elif self.action in main:
 				data = function(page_no)
 				self.list = [i['id'] for i in data['results']]
@@ -186,6 +176,7 @@ class TVShows:
 			# percent-codifica del titolo per ogni elemento di ogni lista costruita.
 			self._resolve_list_name()
 			_t1 = paginator.now()
+			kodi_utils.tappa('tvshows.risoluzione')
 			items = self.worker()
 			paginator.log_build('tvshows', self.action, _t0, _t1, paginator.now(), len(items) if items else 0,
 						getattr(self, '_pg_pages', None), self.params_get('pages'))
@@ -202,7 +193,9 @@ class TVShows:
 				# serie. Il qualificatore lo aggiunge chi COSTRUISCE, che e' l'unico a sapere con
 				# certezza di che tipo e' il proprio widget. Chi chiede senza qualificatore li prende
 				# ancora entrambi: vedi paginator._action_matches.
-				if self.interactive: paginator.set_head(self.pg_key, items, self.pg_action())
+				if self.interactive:
+					paginator.set_head(self.pg_key, items, self.pg_action(), self.params, preparata=True)
+					kodi_utils.tappa('tvshows.testa')
 				if self.new_page and not self.widget_hide_next_page:
 							self.new_page.update({'mode': 'build_tvshow_list', 'action': self.action, 'category_name': self.category_name})
 							add_dir(self.new_page, 'Next Page (%s) >>' % self.new_page['new_page'], handle, 'nextpage', nextpage_landscape)
@@ -226,6 +219,9 @@ class TVShows:
 			_pk = meta_prefetch_key(self.id_type, _id, 'tvshow')
 			meta = self.meta_prefetch.get(_pk) if _pk else None
 			if meta is None:
+				# Una riga preparata non scarica: la scheda che manca la chiede al servizio (lotto 333).
+				if self.interactive:
+					self._mancanti.append(_id); return
 				meta = tvshow_meta(self.id_type, _id, self.tmdb_api_key, self.mpaa_region, self.current_date, self.current_time)
 			if not meta or 'blank_entry' in meta: return
 			_b1 = _perf()
@@ -262,9 +258,7 @@ class TVShows:
 				cm_append(('[B]Sfoglia[/B]', container_update % url_params))
 				url_params = extras_params
 			cm_append(('[B]Opzioni[/B]', run_plugin % options_params))
-			if playcount:
-				if self.widget_hide_watched: return
-			elif not unaired:
+			if not playcount and not unaired:
 				cm_append(('[B]Segna come visto[/B]',
 							run_plugin % (URL_MARK_TVSHOW % ('mark_as_watched', tmdb_id, tvdb_id))))
 			if progress:
@@ -321,6 +315,12 @@ class TVShows:
 		except: pass
 
 	def worker(self):
+		kodi_utils.tappa('tvshows.worker_in')
+		# LOTTO 324 -- da qui in poi questa costruzione ha in mano visti, segnalibri e watchlist, e
+		# quindi COPRE qualunque cambiamento di stato arrivato fin qui: una ricarica mirata per id
+		# non serve piu'. Il timbro va prima delle letture, non dopo: cio' che conta e' che tutto
+		# quello che si legge da questo istante in avanti sia gia' aggiornato.
+		paginator.marca_stato_letto()
 		self.current_date, self.current_time = get_datetime(), get_current_timestamp()
 		self.tmdb_api_key, self.mpaa_region = tmdb_api_key(), mpaa_region()
 		self.all_episodes, self.open_extras = default_all_episodes(), media_open_action('tvshow') == 1
@@ -337,13 +337,20 @@ class TVShows:
 		else: self.watchlist_ids = set()
 		self.window_command = 'ActivateWindow(Videos,%s,return)' if self.is_external else 'Container.Update(%s)'
 		paginator.phase_reset()
+		kodi_utils.tappa('tvshows.preparato')
 		# UNA lettura per l'intera lista, in sequenza. Vedi meta_cache.get_many.
 		_pf0 = _perf()
 		_ids = [i[1] for i in self.list] if self.custom_order else list(self.list)
-		try: self.meta_prefetch = tvshow_meta_prefetch(self.id_type, _ids, self.current_time)
+		# LOTTO 333 -- una riga preparata serve anche le schede scadute: vedi movies.py.
+		self._scadute, self._mancanti = [], []
+		try: self.meta_prefetch = tvshow_meta_prefetch(self.id_type, _ids, self.current_time,
+													self._scadute if self.interactive else None)
 		except: self.meta_prefetch = {}
 		paginator.log_prefetch('tvshows %s' % self.action, len(self.list), len(self.meta_prefetch), _perf() - _pf0)
-		self._resolve_missing(_ids)
+		kodi_utils.tappa('tvshows.prefetch')
+		if not self.interactive:
+			self._resolve_missing(_ids)
+			kodi_utils.tappa('tvshows.rete')
 		# Costruzione in SEQUENZA: vedi la nota in Movies.worker -- sotto il pool le chiamate all'API
 		# C++ costano fino a 74 volte tanto per l'effetto convoglio sul GIL, e qui non c'e' piu' I/O.
 		if self.custom_order:
@@ -352,6 +359,11 @@ class TVShows:
 			for _position, _id in enumerate(self.list): self.build_tvshow_content(_position, _id)
 			self.items.sort(key=lambda k: k[1])
 			self.items = [i[0] for i in self.items]
+		kodi_utils.tappa('tvshows.elementi')
+		if self.interactive:
+			tipo = self.PG_TIPO
+			paginator.segnala_schede(self.pg_key, self.pg_params, 'tvshow', [(tipo, int(t)) for t in self._scadute],
+									[(tipo, paginator.tmdb_di(t)) for t in self._mancanti if paginator.tmdb_di(t)])
 		paginator.phase_report('tvshows %s' % self.action,
 							('meta', 'prep+cm', 'setLabel', 'ctxmenu', 'setArt', 'infotag', 'cast+props'))
 		return self.items
@@ -368,7 +380,10 @@ class TVShows:
 		prefix = self._LIST_NAME_PREFIX.get(self.action)
 		if not prefix: return
 		try:
-			meta = tvshow_meta('tmdb_id', name_id, tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp())
+			# Una riga preparata legge solo dalla cache (lotto 333): la scheda del titolo di partenza c'e' quasi
+			# sempre -- l'utente ci e' arrivato da li' -- e se non c'e' resta il nome che c'era.
+			if self.interactive: meta = tvshow_meta_prefetch('tmdb_id', [name_id]).get('tmdb_id|%s' % name_id)
+			else: meta = tvshow_meta('tmdb_id', name_id, tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp())
 			if meta and meta.get('title'): self.category_name = prefix % meta['title']
 		except: pass
 
@@ -398,83 +413,3 @@ class TVShows:
 			if self.is_home: self.paginate_start = limit
 		else: total_pages = 1
 		return data, total_pages
-
-	def _apply_dub_filter(self, fetch_page):
-		# Wraps an interactive fetch_page so each page's ids are filtered to those with a localised release
-		# (streaming or home video) in the chosen language's country. Applied per page so the paginator's
-		# fill (min_items) keeps loading until a full screen of survivors is gathered. self.id_type is read
-		# here (after build_fetch_page has set it, e.g. 'trakt_dict' for Trakt lists) so meta resolves right.
-		country = settings.dub_filter_country()
-		if not country: return fetch_page
-		api_key, mpaa, cdate, ctime = tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp()
-		def wrapped(page_no):
-			ids, has_more = fetch_page(page_no)
-			ids = dub_filter('tvshow', self.id_type, ids, country, api_key, mpaa, cdate, ctime)
-			return ids, has_more
-		return wrapped
-
-	def build_fetch_page(self, function):
-		# Returns fetch_page(page_no) -> (ids, has_more) for interactive (cumulative) widget pagination,
-		# or None for non-paginable/single-page actions (which fall back to the legacy single-page path).
-		action = self.action
-		limit = page_limit(True)
-		if action in main:
-			def fetch_page(page_no):
-				data = function(page_no)
-				return [i['id'] for i in data['results']], data['total_pages'] > page_no
-			return fetch_page
-		if action in special:
-			key_id = self.params_get('key_id') or self.params_get('query')
-			if not key_id: return None
-			def fetch_page(page_no):
-				data = function(key_id, page_no)
-				return [i['id'] for i in data['results']], data['total_pages'] > page_no
-			return fetch_page
-		if action == 'tmdb_tv_discover':
-			url = self.params_get('url')
-			# Advanced search: re-qualify each TMDb page via IMDb (drop low-vote junk) and, when sorting by
-			# rating / no sort, re-order the page by IMDb rating (direction from the URL's sort_by). The
-			# music-video filter is movies-only.
-			imdb_sort, min_rating = discover_imdb_sort_from_url(url), discover_min_rating_from_url(url)
-			api_key, mpaa, cdate, ctime = tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp()
-			def fetch_page(page_no):
-				data = function(url, page_no)
-				ids = [i['id'] for i in data['results']]
-				ids = discover_filter_sort('tvshow', ids, imdb_sort, min_rating, api_key, mpaa, cdate, ctime)
-				return ids, data['total_pages'] > page_no
-			return fetch_page
-		if action in personal:
-			full = [i['media_id'] for i in function('anime' if self.is_anime else 'tvshow', 1)]
-			def fetch_page(page_no):
-				return full[(page_no - 1) * limit:page_no * limit], len(full) > page_no * limit
-			return fetch_page
-		if action in trakt_main:
-			self.id_type = 'trakt_dict'
-			def fetch_page(page_no):
-				data = function(page_no)
-				try: ids = [i['show']['ids'] for i in data]
-				except: ids = [i['ids'] for i in data]
-				return ids, bool(ids)
-			return fetch_page
-		if action in trakt_special:
-			key_id = self.params_get('key_id', None)
-			if not key_id: return None
-			self.id_type = 'trakt_dict'
-			def fetch_page(page_no):
-				data = function(key_id, page_no)
-				return [i['show']['ids'] for i in data], bool(data)
-			return fetch_page
-		if action in trakt_personal:
-			if action in ('trakt_collection_lists', 'trakt_watchlist_lists', 'trakt_favorites'): return None
-			self.id_type = 'trakt_dict'
-			full = [i['media_ids'] for i in function('shows', 1)]
-			def fetch_page(page_no):
-				return full[(page_no - 1) * limit:page_no * limit], len(full) > page_no * limit
-			return fetch_page
-		if action == 'trakt_recommendations':
-			self.id_type = 'trakt_dict'
-			full = [i['ids'] for i in function('shows')]
-			def fetch_page(page_no):
-				return full[(page_no - 1) * limit:page_no * limit], len(full) > page_no * limit
-			return fetch_page
-		return None

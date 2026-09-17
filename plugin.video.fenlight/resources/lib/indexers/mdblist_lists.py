@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 import sys
-from apis.mdblist_api import mdblist_get_my_lists, mdblist_get_liked_lists, mdblist_get_list_contents
+from apis.mdblist_api import mdblist_get_my_lists, mdblist_get_liked_lists
 from indexers.movies import Movies
 from indexers.tvshows import TVShows
-from modules.dub_filter import _dub_filter_items, _dub_paginate
+from modules import sorgenti
 from modules import kodi_utils
 from modules import paginator
 from modules.utils import paginate_list
@@ -69,50 +69,37 @@ def build_mdblist_list(params):
 		paginate_enabled = paginate(is_home)
 		page_no, paginate_start = int(params.get('new_page', '1')), int(params.get('paginate_start', '0'))
 		if page_no == 1 and not is_external: set_property('fenlight.exit_params', folder_path())
-		result = mdblist_get_list_contents(list_id)
 		_t0 = paginator.now()
-		interactive = paginator.interactive_enabled() and is_external
-		paginator.log('mdblist build list_id=%s is_home=%s is_external=%s setting=%s result=%s -> interactive=%s' %
-					(list_id, is_home, is_external, paginator.interactive_enabled(), len(result), interactive))
+		# LOTTO 333 -- come ogni riga paginata, la PREPARA il servizio: qui non si legge la lista e non si va
+		# in rete. Il servizio legge la lista intera, la giudica a passi e scrive in `widgets.db` cio' che va
+		# mostrato, nell'ordine di consegna (regola del 16/09: chi c'era resta dov'era, i nuovi in coda).
+		interactive = is_external
+		paginator.log('mdblist build list_id=%s is_home=%s is_external=%s -> preparata=%s' % (list_id, is_home, is_external, interactive))
 		if interactive:
 			pg_key = paginator.widget_key(params)
-			# Il ?pages= del path del widget: e' il segnale durevole che questa ricostruzione
-			# appartiene a un widget gia' espanso. Senza, si ricade sui flag transitori e QUALUNQUE
-			# ricostruzione non innescata dal watcher -- l'avvio di una riproduzione, per esempio --
-			# fa collassare il widget al lotto iniziale.
-			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch(), params=params)
-			# Fill past the requested window when the dub filter thins the list (see _dub_paginate).
-			# process_list is already dub-filtered here -> no second _dub_filter_items.
-			process_list, pages_consumed, has_more = _dub_paginate(result, pages_to_load, is_external)
-			paginator.log('mdblist BUILD key=%s pages=%s consumed=%s shown=%s has_more=%s' %
-						(paginator.short(pg_key), pages_to_load, pages_consumed, len(process_list), has_more))
-			# ATTENZIONE ALL'UNITA': si registra pages_to_load (pagine RICHIESTE, cioe' quelle che
-			# l'utente vede), NON pages_consumed (pagine grezze lette dalla sorgente per riempirle).
-			# PAGES_PROP viene riletto come pages_to_load alla ricostruzione successiva e il watcher lo
-			# incrementa di 1: le tre cose devono essere nella stessa unita'. Registrando le pagine
-			# consumate, ogni ricostruzione riconvertiva "pagine grezze" in "pagine da mostrare" e
-			# rimoltiplicava per 1/frazione-sopravvissuta -- un cricchetto. Nel log del Mac del 21/08
-			# la lista mdblist 91378 e' passata da 47 a 202 elementi in 252 ms senza che nessuno
-			# scorresse (2 -> 5 -> 10 -> 17 pagine richieste), e ogni ricostruzione successiva costava
-			# 5,3 volte tanto per sempre. E' sicuro perche' _dub_paginate riempie fino a
-			# pages_to_load*limit SOPRAVVISSUTI: a parita' di richiesta rende la stessa lunghezza.
-			# NON copiare questo ragionamento su load_cumulative: la' il riempimento e' a min_items
-			# assoluto, non proporzionale, quindi solo last_page riproduce la lunghezza ed e' giusto
-			# registrare quello.
-			paginator.set_state(pg_key, pages_to_load, has_more)
-			all_movies = [i for i in process_list if i['type'] == 'movie']
-			all_tvshows = [i for i in process_list if i['type'] == 'show']
+			kodi_utils.vieta_rete('mdblist %s' % list_id)
+			kodi_utils.tappa('mdblist.sorgente')
+			pronta, passi = paginator.passo_pronto(params, pg_key, 'mdblist')
+			kodi_utils.tappa('mdblist.pagine')
+			process_list = paginator.voci_miste(pronta.voci if pronta else ())
+			paginator.log('mdblist BUILD key=%s passi=%s voci=%s' % (paginator.short(pg_key), passi, len(process_list)))
+			paginator.set_state(pg_key, pronta.passi if pronta else 0, bool(pronta and pronta.fine and not pronta.altri))
 		else:
+			result = sorgenti.lista_mdblist(params)
+			kodi_utils.tappa('mdblist.sorgente')
 			process_list, total_pages, paginate_start = _paginate_list(result, page_no, paginate_start)
-			all_movies = _dub_filter_items([i for i in process_list if i['type'] == 'movie'], 'movie', is_external)
-			all_tvshows = _dub_filter_items([i for i in process_list if i['type'] == 'show'], 'tvshow', is_external)
+		all_movies = [i for i in process_list if i['type'] == 'movie']
+		all_tvshows = [i for i in process_list if i['type'] == 'show']
 		# Confine reale fra le due fasi. Prima qui si passava _t0 anche come "risolto", quindi la riga
 		# PERF diceva sempre "risoluzione 0.00s" e sommava il filtro doppiaggio dentro "costruzione":
 		# una lista di serie a 198 elementi risultava costruita in 9.79s con il 100% dei metadati gia'
 		# in cache, il che era impossibile e infatti non era vero.
 		_t_resolved = paginator.now()
+		kodi_utils.tappa('mdblist.risoluzione')
 		movie_list = {'list': [(i['order'], i['media_ids']) for i in all_movies], 'id_type': 'trakt_dict', 'custom_order': 'true'}
 		tvshow_list = {'list': [(i['order'], i['media_ids']) for i in all_tvshows], 'id_type': 'trakt_dict', 'custom_order': 'true'}
+		if interactive:
+			for _l in (movie_list, tvshow_list): _l.update(preparata=True, pg_key=pg_key, pg_params=params)
 		content = max([('movies', len(all_movies)), ('tvshows', len(all_tvshows))], key=lambda k: k[1])[0]
 		from threading import Thread  # pigro, vedi la nota in caches/base_cache.py
 		for function, _list in ((Movies, movie_list), (TVShows, tvshow_list)):
@@ -120,19 +107,26 @@ def build_mdblist_list(params):
 			t.start()
 			threads.append(t)
 		[t.join() for t in threads]
+		kodi_utils.tappa('mdblist.uniti')
 		item_list.sort(key=lambda k: k[1])
 		final_items = [i[0] for i in item_list]
 		add_items(handle, final_items)
 		if interactive:
-			paginator.set_head(pg_key, final_items)
+			paginator.set_head(pg_key, final_items, None, params, preparata=True)
+			kodi_utils.tappa('mdblist.testa')
 			paginator.log_build('mdblist', 'mdblist %s' % list_id, _t0, _t_resolved, paginator.now(), len(final_items),
-						pages_to_load, params.get('pages'))
+						passi, params.get('pages'))
 		if not interactive and total_pages > page_no:
 			new_page = str(page_no + 1)
 			add_dir({'mode': 'mdblist.list.build_mdblist_list', 'list_id': list_id, 'list_name': list_name,
 					'paginate_start': str(paginate_start), 'new_page': new_page},
 					'Next Page (%s) >>' % new_page, handle, 'nextpage', nextpage_landscape)
-	except: pass
+	except Exception as e:
+		# LOTTO 329 -- MAI silenzioso, come in movies.py: con `except: pass` una costruzione che esplodeva
+		# consegnava a Kodi una riga vuota e nel log non restava niente. E' cosi' che il disimballaggio
+		# sbagliato del 327 e' arrivato sulla stick senza che nessuno lo vedesse.
+		import traceback
+		kodi_utils.logger('FenLight BUILD FALLITA', 'mdblist: %s\n%s' % (e, traceback.format_exc()))
 	set_content(handle, content)
 	set_category(handle, list_name)
 	end_directory(handle, cacheToDisc=False if is_external else True)
