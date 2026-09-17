@@ -19,7 +19,7 @@ make_listitem, build_url, add_items = kodi_utils.make_listitem, kodi_utils.build
 nextpage_landscape, get_property, clear_property, focus_index = kodi_utils.nextpage_landscape, kodi_utils.get_property, kodi_utils.clear_property, kodi_utils.focus_index
 set_category, home, folder_path = kodi_utils.set_category, kodi_utils.home, kodi_utils.folder_path
 trakt_trending_popular_lists, trakt_get_lists, trakt_search_lists = trakt_api.trakt_trending_popular_lists, trakt_api.trakt_get_lists, trakt_api.trakt_search_lists
-trakt_fetch_collection_watchlist, get_trakt_list_contents = trakt_api.trakt_fetch_collection_watchlist, trakt_api.get_trakt_list_contents
+trakt_fetch_collection_watchlist = trakt_api.trakt_fetch_collection_watchlist
 trakt_lists_with_media = trakt_api.trakt_lists_with_media
 
 def search_trakt_lists(params):
@@ -204,11 +204,9 @@ def get_trakt_lists_with_media(params):
 	set_view_mode('view.main')
 
 def build_trakt_list(params):
-	# Il filtro doppiaggio vive in modules/dub_filter.py dal lotto 110: mdblist_lists ne usava due
-	# funzioni e importava QUESTO file per averle, pagando 2811 righe e 5 moduli per due helper.
-	# L'import sta qui e non in testa perche' indexers/random_lists.py importa trakt_lists senza
-	# mai costruire una lista Trakt, e non deve pagarlo.
-	from modules.dub_filter import _dub_paginate, _dub_filter_items
+	# L'import sta qui e non in testa perche' indexers/random_lists.py importa trakt_lists senza mai
+	# costruire una lista Trakt, e non deve pagarlo.
+	from modules import sorgenti
 	def _process(function, _list, _type):
 		if not _list['list']: return
 		if _type in ('movies', 'tvshows'): item_list_extend(function(_list).worker())
@@ -231,54 +229,52 @@ def build_trakt_list(params):
 		use_result = 'result' in params
 		page_no, paginate_start = int(params.get('new_page', '1')), int(params.get('paginate_start', '0'))
 		if page_no == 1 and not is_external: set_property('fenlight.exit_params', folder_path())
-		if use_result: result = params.get('result', [])
-		else:
-			user, slug, list_type = params.get('user'), params.get('slug'), params.get('list_type')
-			with_auth = list_type == 'my_lists'
-			result = get_trakt_list_contents(list_type, user, slug, with_auth)
 		_t0 = paginator.now()
-		interactive = (not use_result) and paginator.interactive_enabled() and is_external
-		paginator.log('trakt build list_type=%s name=%s is_home=%s use_result=%s setting=%s paginate_enabled=%s result=%s -> interactive=%s' %
-					(params.get('list_type'), list_name, is_home, use_result, paginator.interactive_enabled(), paginate_enabled, len(result), interactive))
+		# LOTTO 333 -- come ogni riga paginata, la PREPARA il servizio: vedi mdblist_lists.py.
+		interactive = (not use_result) and is_external
+		paginator.log('trakt build list_type=%s name=%s is_home=%s use_result=%s -> preparata=%s' %
+					(params.get('list_type'), list_name, is_home, use_result, interactive))
 		if interactive:
+			user, slug, list_type = params.get('user'), params.get('slug'), params.get('list_type')
 			pg_key = paginator.widget_key(params)
-			# Il ?pages= del path del widget: e' il segnale durevole che questa ricostruzione
-			# appartiene a un widget gia' espanso. Senza, si ricade sui flag transitori e QUALUNQUE
-			# ricostruzione non innescata dal watcher -- l'avvio di una riproduzione, per esempio --
-			# fa collassare il widget al lotto iniziale.
-			pages_to_load = paginator.get_pages(pg_key, paginator.initial_batch(), params=params)
-			# Fill past the requested window when the dub filter thins the list, so the widget lands full
-			# (see _dub_paginate). process_list is already dub-filtered here -> no second _dub_filter_items.
-			process_list, pages_consumed, has_more = _dub_paginate(result, pages_to_load, is_external)
-			paginator.log('trakt BUILD key=%s pages=%s consumed=%s shown=%s has_more=%s' %
-					(paginator.short(pg_key), pages_to_load, pages_consumed, len(process_list), has_more))
-			# ATTENZIONE ALL'UNITA': si registra pages_to_load (pagine RICHIESTE, cioe' quelle che
-			# l'utente vede), NON pages_consumed (pagine grezze lette dalla sorgente per riempirle).
-			# PAGES_PROP viene riletto come pages_to_load alla ricostruzione successiva e il watcher lo
-			# incrementa di 1: le tre cose devono essere nella stessa unita'. Registrando le pagine
-			# consumate, ogni ricostruzione riconvertiva "pagine grezze" in "pagine da mostrare" e
-			# rimoltiplicava per 1/frazione-sopravvissuta -- un cricchetto. Nel log del Mac del 21/08
-			# la lista mdblist 91378 e' passata da 47 a 202 elementi in 252 ms senza che nessuno
-			# scorresse (2 -> 5 -> 10 -> 17 pagine richieste), e ogni ricostruzione successiva costava
-			# 5,3 volte tanto per sempre. E' sicuro perche' _dub_paginate riempie fino a
-			# pages_to_load*limit SOPRAVVISSUTI: a parita' di richiesta rende la stessa lunghezza.
-			# NON copiare questo ragionamento su load_cumulative: la' il riempimento e' a min_items
-			# assoluto, non proporzionale, quindi solo last_page riproduce la lunghezza ed e' giusto
-			# registrare quello.
-			paginator.set_state(pg_key, pages_to_load, has_more)
-			all_movies = [i for i in process_list if i['type'] == 'movie']
-			all_tvshows = [i for i in process_list if i['type'] == 'show']
+			kodi_utils.vieta_rete('trakt %s' % list_type)
+			kodi_utils.tappa('trakt.sorgente')
+			pronta, passi = paginator.passo_pronto(params, pg_key, 'trakt')
+			kodi_utils.tappa('trakt.pagine')
+			if pronta is not None and pronta.mista:
+				# ECCEZIONE DICHIARATA: una lista con stagioni o episodi il servizio non la prepara (il database
+				# identifica solo film e serie). La si costruisce qui, per intero fino ai passi chiesti, come
+				# prima del lotto 318 -- e con la rete permessa, perche' stagioni ed episodi le schede se le
+				# scaricano da se'. Niente filtro doppiaggio: il verdetto lo decide solo il servizio.
+				kodi_utils.RETE_VIETATA[0] = None
+				result = sorgenti.lista_trakt(params) or []
+				quanti = passi * paginator.passo()
+				process_list = [dict(v, order=n) for n, v in enumerate(result[:quanti])]
+				paginator.set_state(pg_key, passi, len(result) <= quanti)
+			else:
+				process_list = paginator.voci_miste(pronta.voci if pronta else ())
+				paginator.set_state(pg_key, pronta.passi if pronta else 0, bool(pronta and pronta.fine and not pronta.altri))
+			paginator.log('trakt BUILD key=%s passi=%s voci=%s mista=%s' % (paginator.short(pg_key), passi, len(process_list),
+						bool(pronta and pronta.mista)))
 		else:
+			if use_result: result = params.get('result', [])
+			else:
+				user, slug, list_type = params.get('user'), params.get('slug'), params.get('list_type')
+				result = sorgenti.lista_trakt(params)
+			kodi_utils.tappa('trakt.sorgente')
 			process_list, total_pages, paginate_start = _paginate_list(result, page_no, paginate_start)
-			all_movies = _dub_filter_items([i for i in process_list if i['type'] == 'movie'], 'movie', is_external)
-			all_tvshows = _dub_filter_items([i for i in process_list if i['type'] == 'show'], 'tvshow', is_external)
+		all_movies = [i for i in process_list if i['type'] == 'movie']
+		all_tvshows = [i for i in process_list if i['type'] == 'show']
 		all_seasons = [i for i in process_list if i['type'] == 'season']
 		all_episodes = [i for i in process_list if i['type'] == 'episode']
 		# Confine reale fra le due fasi: prima del filtro doppiaggio e' "risoluzione", dopo e'
 		# "costruzione". Vedi la nota identica in mdblist_lists.py.
 		_t_resolved = paginator.now()
+		kodi_utils.tappa('trakt.risoluzione')
 		movie_list = {'list': [(i['order'], i['media_ids']) for i in all_movies], 'id_type': 'trakt_dict', 'custom_order': 'true'}
 		tvshow_list = {'list': [(i['order'], i['media_ids']) for i in all_tvshows], 'id_type': 'trakt_dict', 'custom_order': 'true'}
+		if interactive and not (pronta is not None and pronta.mista):
+			for _l in (movie_list, tvshow_list): _l.update(preparata=True, pg_key=pg_key, pg_params=params)
 		season_list = {'list': all_seasons}
 		episode_list = {'list': all_episodes}
 		content = max([('movies', len(all_movies)), ('tvshows', len(all_tvshows)), ('seasons', len(all_seasons)), ('episodes', len(all_episodes))], key=lambda k: k[1])[0]
@@ -289,20 +285,27 @@ def build_trakt_list(params):
 			threaded_object.start()
 			threads.append(threaded_object)
 		[i.join() for i in threads]
+		kodi_utils.tappa('trakt.uniti')
 		item_list.sort(key=lambda k: k[1])
 		if use_result: return [i[0] for i in item_list]
 		final_items = [i[0] for i in item_list]
 		add_items(handle, final_items)
 		if interactive:
-			paginator.set_head(pg_key, final_items)
+			paginator.set_head(pg_key, final_items, None, params, preparata=True)
+			kodi_utils.tappa('trakt.testa')
 			paginator.log_build('trakt', params.get('list_type') or 'list', _t0, _t_resolved, paginator.now(), len(final_items),
-						pages_to_load, params.get('pages'))
+						passi, params.get('pages'))
 		if not interactive and total_pages > page_no:
 			new_page = str(page_no + 1)
 			new_params = {'mode': 'trakt.list.build_trakt_list', 'list_type': list_type, 'list_name': list_name,
 							'user': user, 'slug': slug, 'paginate_start': paginate_start, 'new_page': new_page}
 			add_dir(new_params, 'Next Page (%s) >>' % new_page, handle, 'nextpage', nextpage_landscape)
-	except: pass
+	except Exception as e:
+		# LOTTO 329 -- MAI silenzioso, come in movies.py: con `except: pass` una costruzione che esplodeva
+		# consegnava a Kodi una riga vuota e nel log non restava niente. E' cosi' che il disimballaggio
+		# sbagliato del 327 e' arrivato sulla stick senza che nessuno lo vedesse.
+		import traceback
+		kodi_utils.logger('FenLight BUILD FALLITA', 'trakt: %s\n%s' % (e, traceback.format_exc()))
 	set_content(handle, content)
 	set_category(handle, list_name)
 	end_directory(handle, cacheToDisc=False if is_external else True)

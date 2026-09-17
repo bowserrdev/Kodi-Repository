@@ -126,7 +126,7 @@ def make_batch_insert(action, media_type, media_id, season, episode, last_played
 	if action == 'mark_as_watched': return (media_type, media_id, season, episode, last_played, title)
 	else: return (media_type, media_id, season, episode)
 
-def refresh_container_for(media_id, refresh=True):
+def refresh_container_for(media_id, refresh=True, continua_a_guardare=True):
 	# Quando sappiamo QUALE elemento e' cambiato -- e in tutte le voci del menu contestuale lo sappiamo
 	# -- si ricaricano i soli contenitori che lo contengono invece di sparare UpdateLibrary, che
 	# ricostruisce ogni widget della schermata. Senza media_id si ricade sul globale.
@@ -139,8 +139,21 @@ def refresh_container_for(media_id, refresh=True):
 	# un film che entra quando lo metti in pausa, uno che esce quando ne azzeri l'avanzamento. La
 	# regola per id non puo' decidere quel caso, perche' in aggiunta l'id non e' ancora nell'elenco
 	# del widget e in rimozione l'elenco e' quello di prima.
+	# LOTTO 327 -- "sempre" era troppo. L'azione serve SOLO quando un titolo puo' ENTRARE nel widget, perche'
+	# e' l'unico caso che la regola per id non copre (l'id non e' ancora nell'elenco pubblicato). Uscire lo
+	# copre gia' l'id: se il titolo e' in 'continua a guardare', il suo id e' nell'elenco e il widget si
+	# ricarica comunque. Le regole, dette dall'utente il 16/09: cambiano la composizione solo un media
+	# riprodotto e non finito, e un episodio visto quando la serie ne ha di successivi.
+	#   - film segnato visto/non visto: non puo' entrare -> niente azione (se c'era, esce per id);
+	#   - segnalibro cancellato: esce -> niente azione;
+	#   - episodio/stagione/serie segnati, segnalibro scritto, voce nascosta o mostrata: puo' entrare.
+	# Misurato il 16/09: cinque 'segna come visto' su film della riga Horror, cinque ricariche di
+	# 'continua a guardare' in Home, tutte con lo stesso contenuto -- e l'utente, tornando in Home, l'ha
+	# visto ricostruirsi senza motivo.
 	if not refresh: return
-	if media_id: return kodi_refresh_ids([str(media_id)], (kodi_utils.CONTINUE_WATCHING_ACTION,), coalesce=False)
+	if media_id:
+		azioni = (kodi_utils.CONTINUE_WATCHING_ACTION,) if continua_a_guardare else ()
+		return kodi_refresh_ids([str(media_id)], azioni, coalesce=False)
 	kodi_refresh(coalesce=False)
 
 def active_tvshows_information(status_type):
@@ -315,8 +328,10 @@ def _mark_on_trakt(args, cache_media_type, ep_map_for=None):
 				return notification('Episodio non presente su Trakt', 3500)
 			args = tuple(args) + _coppia
 		if not trakt_watched_status_mark(*args): return notification('Error')
-		from caches.trakt_cache import clear_trakt_collection_watchlist_data
-		clear_trakt_collection_watchlist_data('watchlist', cache_media_type)
+		# Trakt toglie dalla watchlist cio' che e' stato visto: la copia si RILEGGE qui, dove la rete c'e'
+		# (lotto 334). Cancellarla la lasciava vuota per le costruzioni, che non possono rifarla.
+		from apis.trakt_api import rinnova_watchlist
+		rinnova_watchlist(cache_media_type)
 		# Timbro per il monitor Trakt: questo cambiamento l'abbiamo fatto NOI e la riga locale e' gia'
 		# scritta. Senza, il monitor lo scambia per una modifica remota e ricostruisce l'intera
 		# cronologia -- 6 pagine e 1275 episodi, 4 secondi sul Mi Stick. Vedi trakt_watched_episodes.
@@ -382,7 +397,8 @@ def erase_bookmark(media_type, media_id, season='', episode='', refresh='false')
 			watched_db.execute(PROGRESS_MARK_DELETED, (media_type, media_id, season, episode))
 		else:
 			watched_db.execute(PROGRESS_DROP, (media_type, media_id, season, episode))
-		refresh_container_for(media_id, refresh == 'true')
+		# Un segnalibro cancellato fa USCIRE il titolo: lo copre l'id.
+		refresh_container_for(media_id, refresh == 'true', continua_a_guardare=False)
 		if watched_indicators == 1 and resume_id is not None:
 			_spawn(_clear_progress_on_trakt, (media_type, media_id, season, episode, resume_id))
 	except: pass
@@ -521,7 +537,8 @@ def mark_movie(params):
 	watched_indicators = watched_indicators_function()
 	# Prima il locale e l'interfaccia, poi la rete. Vedi _mark_on_trakt.
 	watched_status_mark(watched_indicators, media_type, tmdb_id, action, title=title)
-	refresh_container_for(tmdb_id, refresh)
+	# Un film segnato non puo' ENTRARE in 'continua a guardare'; se ne esce, lo copre l'id.
+	refresh_container_for(tmdb_id, refresh, continua_a_guardare=False)
 	if watched_indicators == 1:
 		_spawn(_mark_on_trakt, ((action, 'movies', tmdb_id), media_type))
 

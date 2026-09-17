@@ -94,6 +94,14 @@ def routing(sys):
 	# lavoro", dentro i ~10 s che nessuno strumento vedeva. Timbrato solo sui rami usati all'avvio e
 	# nella navigazione serie: non serve sporcare tutti i trenta rami per rispondere a una domanda.
 	mark_phase('routing_in')
+	# LOTTO 323 -- da qui in poi ogni impostazione si legge UNA volta. E' il punto giusto perche' e' il
+	# punto da cui passa ogni invocazione del plugin e nessun servizio: il ricordo non deve mai armarsi
+	# in un processo che vive per tutta la sessione, o smetterebbe di vedere i cambiamenti. Va prima di
+	# qualunque lettura, quindi prima ancora di leggere i parametri.
+	try:
+		from caches.settings_cache import memo_avvia
+		memo_avvia()
+	except Exception: pass
 	params = dict(parse_qsl(sys.argv[2][1:], keep_blank_values=True))
 	_get = params.get
 	mode = _get('mode', 'navigator.main')
@@ -112,10 +120,20 @@ def routing(sys):
 	except Exception: pass
 	# LOTTO 176, PASSO 1.2 BIS. Chi ha un pgctl E' la costruzione di un widget, e questo e' l'istante
 	# piu' presto in cui lo si sa: i parametri sono appena stati letti e non e' ancora stato importato
-	# nessun indexer. Prima si dichiarava l'inizio in get_pages e in mark_build_start, che pero'
+	# nessun indexer. Prima si dichiarava l'inizio in passi_da_caricare e in mark_build_start, che pero'
 	# stanno entrambe DOPO gli import pigri: fra l'avvio dell'interprete e quel punto passa oltre un
 	# secondo in cui la costruzione e' in corso e builds_in_flight() risponde "niente in volo".
 	# Vedi paginator.mark_invocation_start per la misura.
+	# LOTTO 307 -- il contatore delle traversate (vedi kodi_utils.installa_traversate). Solo a
+	# strumentazione accesa, e PRIMA di importare qualunque indexer: gli indexer copiano i nomi di
+	# kodi_utils a livello di modulo, quindi devono trovarli gia' avvolti. perf.enabled() e' una
+	# lettura di proprieta' tenuta in memoria, la stessa che l'import del paginator paga comunque.
+	try:
+		from modules.perf import enabled as _perf_enabled
+		if _perf_enabled():
+			from modules.kodi_utils import installa_traversate
+			installa_traversate()
+	except Exception: pass
 	_pgctl = _get('pgctl')
 	if _pgctl:
 		try:
@@ -149,7 +167,7 @@ def routing(sys):
 		if mode == 'playback.media':
 			# MARCATORE IN POSTO (lotto 113). Questo e' l'istante del Select: si apre
 			# sources_playback.xml, la home passa in secondo piano e Kodi reinvalida i suoi
-			# CDirectoryProvider. Senza marcatore _get_pages_legacy tratta quelle ricostruzioni come
+			# CDirectoryProvider. Senza marcatore _passi_legacy tratta quelle ricostruzioni come
 			# l'APERTURA di un widget nuovo e torna al default (2 pagine). Nel log del 29/08 alle
 			# 17:46:50 un contenitore da 101 elementi e' cosi' tornato a 50 col fuoco sul primo --
 			# NOVE secondi prima di Player.OnPlay, cioe' la paginazione si perdeva gia' al Select,
@@ -174,6 +192,7 @@ def routing(sys):
 	if 'trakt.' in mode:
 		if '.list' in mode:
 			from indexers import trakt_lists
+			mark_phase('indexer_in')
 			return getattr(trakt_lists, mode.split('.')[2])(params)
 		from apis import trakt_api
 		return getattr(trakt_api, mode.split('.')[1])(params)
@@ -197,6 +216,7 @@ def routing(sys):
 				from xbmcgui import Window
 				Window(10000).clearProperty('FenLight.Discover.ContentPath')
 			from indexers.movies import Movies
+			mark_phase('indexer_in')
 			movies = Movies(params)
 			result = movies.fetch_list()
 			_text_search_done(search_win, _get('query', ''), 'Movie', len(movies.list))
@@ -209,6 +229,7 @@ def routing(sys):
 				from xbmcgui import Window
 				Window(10000).clearProperty('FenLight.Discover.ContentPath')
 			from indexers.tvshows import TVShows
+			mark_phase('indexer_in')
 			tvshows = TVShows(params)
 			result = tvshows.fetch_list()
 			_text_search_done(search_win, _get('query', ''), 'TV', len(tvshows.list))
@@ -433,9 +454,6 @@ def routing(sys):
 		if mode == 'show_text':
 			from modules.kodi_utils import show_text
 			return show_text(_get('heading'), _get('text', None), _get('file', None), _get('font_size', 'small'), _get('kodi_log', 'false') == 'true')
-		if mode == 'show_text_media':
-			from modules.kodi_utils import show_text_media
-			return show_text(_get('heading'), _get('text', None), _get('file', None), _get('meta'), {})
 	if 'settings_manager.' in mode:
 		from caches import settings_cache
 		return getattr(settings_cache, mode.split('.')[1])(params)
@@ -443,9 +461,6 @@ def routing(sys):
 		from modules import downloader
 		return getattr(downloader, mode.split('.')[1])(params)
 	##EXTRA modes##
-	if mode == 'set_view':
-		from modules.kodi_utils import set_view
-		return kodi_utils.set_view(_get('view_type'))
 	if mode == 'fen_blur': 
 		from modules.blur_service import blur_image
 		return blur_image(params)

@@ -699,7 +699,11 @@ def _log_tmdb_call(url):
 def get_tmdb(url):
 	_log_tmdb_call(url)
 	try: response = _get_session().get(url, timeout=timeout)
-	except: response = None
+	except Exception as e:
+		# None dice solo "non e' arrivato niente": la causa va scritta qui, l'unico punto che la conosce. Il
+		# 16/09 la ricerca "go" e' fallita con un AttributeError a valle e nient'altro (lotto 334).
+		logger('FenLight TMDB', 'richiesta non riuscita: %r (%s)' % (e, url.split('?')[0]))
+		response = None
 	return response
 
 def streaming_available(media_type, tmdb_id, country, api_key):

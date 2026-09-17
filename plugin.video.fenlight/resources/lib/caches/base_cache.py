@@ -44,16 +44,21 @@ dub_db = translatePath(path_join(database_path_raw, 'dub.db'))
 # tabella dentro maincache: e' l'unico dato che NON e' una cache (non scade e non si rigenera
 # leggendo di nuovo una API), e finirebbe cancellato dalle pulizie insieme al resto.
 playback_db = translatePath(path_join(database_path_raw, 'playback.db'))
+# LOTTO 311 -- lo stato delle liste dei widget: quali id, in quale ordine, chi sta in quale
+# posizione. File a se' perche' le sue scritture cadono DENTRO la costruzione di un widget: in un
+# file condiviso si metterebbero in coda dietro a quelle di metacache, che nello stesso istante sta
+# salvando i metadati appena scaricati.
+widgets_db = translatePath(path_join(database_path_raw, 'widgets.db'))
 
 database_timeout = 20
 current_dbs = ('navigator.db', 'watched.db', 'favourites.db', 'traktcache.db', 'maincache.db', 'lists.db',
 				'discover.db', 'metacache.db', 'debridcache.db', 'external.db', 'settings.db', 'episode_groups.db', 'dub.db',
-				'playback.db')   # <- senza questa riga remove_old_databases() lo cancella al primo avvio
+				'playback.db', 'widgets.db')   # <- senza questa riga remove_old_databases() lo cancella al primo avvio
 database_locations = {
 	'navigator_db': navigator_db, 'watched_db': watched_db, 'favorites_db': favorites_db, 'settings_db': settings_db,
 	'trakt_db': trakt_db, 'maincache_db': maincache_db, 'metacache_db': metacache_db, 'debridcache_db': debridcache_db,
 	'lists_db': lists_db, 'discover_db': discover_db, 'external_db': external_db, 'episode_groups_db': episode_groups_db,
-	'dub_db': dub_db, 'playback_db': playback_db
+	'dub_db': dub_db, 'playback_db': playback_db, 'widgets_db': widgets_db
 }
 integrity_check = {
 	'settings_db': ('settings',),
@@ -69,7 +74,8 @@ integrity_check = {
 	'external_db': ('results_data',),
 	'episode_groups_db': ('groups_data',),
 	'dub_db': ('dubcache',),
-	'playback_db': ('playback_stats', 'sorgenti_bocciate')
+	'playback_db': ('playback_stats', 'sorgenti_bocciate'),
+	'widgets_db': ('liste', 'elementi', 'attese', 'pronti', 'consegne', 'meta')
 }
 # LOTTO 133 -- lo stato di sincronizzazione e' una COLONNA, non piu' una deduzione.
 #   sync_state  'synced' | 'pending_put' | 'pending_delete'  (vedi caches/progress_sync)
@@ -95,6 +101,54 @@ PROGRESS_CREATE = (
 TRAKT_AUTH_LOCK_CREATE = (
 	'CREATE TABLE IF NOT EXISTS trakt_auth_lock (id integer primary key check (id = 1), expires real not null default 0)',
 	'INSERT OR IGNORE INTO trakt_auth_lock (id, expires) VALUES (1, 0)')
+
+WIDGETS_CREATE = (
+	# LOTTO 311 -- lo strato dati della paginazione. Le chiavi sono INTERE di proposito: `liste.id`
+	# viaggia dentro ogni riga di `elementi` e di `attese` e dentro i loro indici, mentre l'impronta
+	# md5 della lista (32 caratteri) resta scritta una volta sola, qui.
+	# `ultima_pagina` e' la pagina GREZZA raggiunta nella sorgente (lotto 318): da li' riprende la
+	# costruzione successiva. Non e' il numero di passi -- quello sta nel token del path, ed e' un'altra
+	# unita' di misura.
+	'CREATE TABLE IF NOT EXISTS liste (id integer primary key, chiave text not null unique, parametri text not null, \
+	azione text, sessione text not null, elementi integer not null default 0, ultima_pagina integer not null default 0, \
+	fine integer not null default 0, aggiornata real not null default 0, ricarica text not null default \'\', \
+	passi integer not null default 0, mista integer not null default 0)',
+	'CREATE INDEX IF NOT EXISTS liste_sessione ON liste (sessione)',
+	# La lista vera e propria, un id per riga. `ordine` si assegna SOLO in coda: nessuna riga si
+	# sposta mai, ed e' la regola decisa il 16/09 (ogni consegna in ordine cronologico).
+	# WITHOUT ROWID: le righe stanno fisicamente ordinate per (lista, ordine), quindi leggere i primi
+	# N elementi e' una lettura di seguito e la riga porta gia' tutto (nessun secondo accesso).
+	# LOTTO 332 -- `passo`: il passo in cui l'elemento e' stato assegnato. Lo assegna il servizio, che e'
+	# l'unico a decidere la composizione; serve alle liste nelle cartelle (una pagina = un passo).
+	'CREATE TABLE IF NOT EXISTS elementi (lista_id integer not null references liste (id) on delete cascade, \
+	ordine integer not null, tipo integer not null, tmdb integer not null, passo integer not null default 0, \
+	primary key (lista_id, ordine)) without rowid',
+	# L'indice delle ricariche mirate: "quali liste contengono questo titolo". Il TIPO fa parte della
+	# chiave perche' gli id TMDb di film e serie sono due numerazioni separate: l'id 27 esiste in
+	# entrambe, e oggi la ricarica per solo numero puo' colpire il widget sbagliato.
+	'CREATE INDEX IF NOT EXISTS elementi_id ON elementi (tipo, tmdb)',
+	# Chi aspetta un verdetto del doppiaggio. Non e' un elemento: non ha ancora un posto nella lista,
+	# e se il verdetto e' positivo entrera' in CODA, con l'ordine del momento in cui si e' saputo.
+	'CREATE TABLE IF NOT EXISTS attese (lista_id integer not null references liste (id) on delete cascade, \
+	tipo integer not null, tmdb integer not null, primary key (lista_id, tipo, tmdb)) without rowid',
+	'CREATE INDEX IF NOT EXISTS attese_id ON attese (tipo, tmdb)',
+	# LOTTO 332 -- i titoli PREPARATI e non ancora consegnati: scheda in cache, verdetto positivo, nell'ordine
+	# in cui la sorgente li ha dati. Un passo li sposta in `elementi`. Li scrive e li legge solo il servizio.
+	'CREATE TABLE IF NOT EXISTS pronti (lista_id integer not null references liste (id) on delete cascade, \
+	ordine integer not null, tipo integer not null, tmdb integer not null, primary key (lista_id, ordine)) without rowid',
+	# Chi sta in quale posizione, per la sessione in corso. Nessun indice: sono decine di righe.
+	'CREATE TABLE IF NOT EXISTS consegne (posizione text primary key, lista_id integer not null, aggiornata real not null)',
+	'CREATE TABLE IF NOT EXISTS meta (chiave text primary key, valore text)')
+
+# Versione dello schema qui sopra. widgets.db e' una CACHE -- si rifa' leggendo le sorgenti -- quindi
+# quando lo schema cambia non si migra: si butta e si ricrea. Senza questo numero un cambio di colonne
+# avrebbe due esiti, entrambi silenziosi: le scritture falliscono per sempre (e le liste smettono di
+# aggiornarsi) oppure si legge una colonna che vuol dire un'altra cosa. Alzarlo e' l'unica cosa da
+# ricordare quando si tocca WIDGETS_CREATE.
+# 328: liste.ricarica -- l'ultimo ordine di ricarica di composizione gia' onorato.
+# 332: liste.passi (passi coperti), liste.mista, elementi.passo, tabella pronti -- il servizio prepara, la
+#      costruzione legge.
+WIDGETS_SCHEMA = '332'
 
 table_creators = {
 	'navigator_db': (
@@ -143,6 +197,7 @@ table_creators = {
 	# NULL dove la misura non c'e' (nessun salto, dimensione non ottenuta): il wizard deve poter
 	# distinguere 'non misurato' da 'misurato zero', ed e' la distinzione che nei lotti 191-198 mi e'
 	# costata due sonde.
+	'widgets_db': WIDGETS_CREATE,
 	'playback_db': (
 		'CREATE TABLE IF NOT EXISTS playback_stats ('
 		'  id integer primary key autoincrement,'

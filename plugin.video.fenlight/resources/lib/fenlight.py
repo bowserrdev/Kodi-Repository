@@ -80,8 +80,10 @@ try:
 	_b.__import__ = _real_import
 except: pass
 try:
-	from modules.kodi_utils import log_invocation, log_import_profile
+	from modules.kodi_utils import log_invocation, log_import_profile, log_costruzione
 	log_invocation(sys.argv, _T_START, _T_IMPORT, _T_END, _C_START, _C_IMPORT, _C_END)
+	# LOTTO 307: tappe, conti e traversate in una riga. Qui e' gia' dopo endOfDirectory.
+	log_costruzione(sys.argv, _T_START)
 	log_import_profile(sys.argv, _IMPORT_TIMES, _IMPORT_ORDER, _IMPORT_PARENT, cpus=_IMPORT_CPU)
 except: pass
 if sys_exit_check(): sys.exit(1)

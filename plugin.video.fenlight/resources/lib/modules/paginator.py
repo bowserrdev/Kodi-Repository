@@ -41,7 +41,7 @@ HEAD_PROP = 'fenlight.pg.head.%s'
 # Distinguishes an in-place refresh of a live, expanded widget from a genuine fresh open (which has no
 # flag and starts from the initial batch). The watcher's own pagination refresh uses LOADING instead.
 PG_REFRESH_PROP = 'fenlight.pg.refresh'
-# Istante dell'ultima build INIZIATA per questa chiave (lo timbra get_pages, che e' il primo punto di
+# Istante dell'ultima build INIZIATA per questa chiave (lo timbra passi_da_caricare, che e' il primo punto di
 # ogni costruzione paginata). Serve a una sola domanda, ma decisiva: quando il watcher scrive il token
 # e non succede niente, la build e' partita ed e' lenta, o non e' MAI partita?
 # Non e' teoria: dal 24/08 al 25/08, sul Mac, il file generato della skin era fermo al 14/08 e leggeva
@@ -61,6 +61,17 @@ from modules.kodi_utils import PG_LASTBUILD_PROP as LASTBUILD_PROP
 # cio' che il lotto 23 ha dovuto spegnere (DIAG) perche' si perdevano aggiornamenti. Qui ogni build
 # scrive e cancella SOLO la propria chiave: due build concorrenti non si toccano.
 INFLIGHT_PROP = 'fenlight.pg.%s.inflight'
+# LOTTO 321 -- "questa riga va ricaricata, ma non adesso". Alzata quando un cambiamento arriva mentre
+# una costruzione di QUESTA chiave e' gia' in volo ed e' partita PRIMA del cambiamento: il suo
+# risultato e' gia' vecchio, quindi ricaricare subito significherebbe far correre due costruzioni
+# insieme e lasciare che a pubblicare per ultima sia la piu' vecchia (misurato il 16/09: tre
+# costruzioni della riga Horror in sette secondi, l'ultima a scrivere partita prima che l'utente
+# segnasse il titolo come visto). La consuma set_head, cioe' il momento in cui quella costruzione
+# pubblica: da li' in poi non c'e' piu' niente in volo e la ricarica e' una sola.
+# UNO SCRITTORE ALLA VOLTA, e senza contatori: e' un interruttore, non una coda. Due cambiamenti
+# durante la stessa costruzione si fondono in una ricarica sola, ed e' il comportamento voluto --
+# ricostruire la riga due volte darebbe lo stesso risultato della prima.
+PENDING_RELOAD_PROP = 'fenlight.pg.%s.ricarica'
 # Rete di sicurezza contro il blocco, NON il criterio di scatto. Se un'invocazione muore prima di
 # pubblicare la testa (su questo dispositivo succede: vedi l'indagine sui riavvii) la sua marca
 # resterebbe alzata per sempre e il rinvio non partirebbe mai piu' -- che e' il guasto peggiore, gia'
@@ -84,6 +95,34 @@ INFLIGHT_MAX_SECONDS = 60
 # ('...Gary&pages=5' -> '...Gary' e Trending da 80 elementi a 26). Lo spazio dei nomi deve essere
 # (finestra, contenitore), non il solo contenitore. Vedi ctl_scope().
 CTL_PAGES_PROP = 'fenlight.pg.w%s.ctl%s.pages'
+#
+# LOTTO 325 -- QUESTA PROPRIETA' HA UN SOLO SCRITTORE, ED E' IL SERVIZIO.
+#
+# Il valore porta DUE fatti indipendenti in una stringa sola -- quanti passi mostrare e un ordine di
+# ricarica -- perche' il widget ha un solo posto dinamico nel proprio path: la skin compone il
+# <content> con un unico $INFO[...pages] (Includes_Widgets.xml, Defs_Widget_Content). Con due fatti in
+# uno slot, scriverne uno obbliga a rileggere e riscrivere l'altro, e fin qui lo facevano tre processi
+# diversi: il watcher nel servizio (passi+1), la ricarica mirata nel processo dell'azione, e dal lotto
+# 321 anche set_head nel processo della costruzione. Lettura-modifica-scrittura fra processi, cioe' la
+# stessa cosa che il lotto 23 ha dovuto spegnere.
+#
+# Due danni veri, non teorici:
+#   - il watcher scriveva str(passi+1) SECCO, quindi cancellava un ordine di ricarica appena messo. Dal
+#     324 quell'ordine porta anche il MOTIVO ('rifai=azione'), e perderlo significa che una ricarica di
+#     composizione torna a essere una ripresa: il film aggiunto alla watchlist non compare -- il difetto
+#     del lotto 322, rientrato dalla finestra.
+#   - la ricarica rileggeva i passi e li riscriveva, quindi poteva riportare indietro di un passo un
+#     incremento appena fatto dal watcher: una costruzione intera buttata (12-19 s misurati).
+#
+# Non si toglie con un accorgimento: uno slot, due padroni e nessuna operazione atomica NON si possono
+# rendere sicuri. Le uscite sono due -- due slot (cioe' toccare il file generato della skin, che e'
+# per-dispositivo) oppure UNO SCRITTORE. La seconda e' gia' la regola di questo addon: il lotto 314
+# l'ha applicata al database delle liste per ragioni identiche. Qui si applica al token.
+#
+# Chi vuole cambiare il token non lo scrive: lo SPEDISCE (ordina_ricarica). Il servizio lo applica in
+# scrivi_token, che e' l'unica funzione che compone il valore, e lo fa sotto un lock -- lock che qui ha
+# senso, a differenza del lotto 233, perche' i due chiamanti (watcher e notifiche) sono due thread
+# dello STESSO interprete.
 # IMPRONTA DEL CONTENUTO attualmente in quella posizione (lotto 92: prima ci stava la chiave del
 # widget, quando chiave e contenuto erano la stessa cosa). Una posizione e' fissa, ma la lista che ci
 # sta dentro no: un hub cambia categoria, la ricerca cambia query a ogni tasto. Quando l'impronta
@@ -125,10 +164,14 @@ def ctl_scope():
 # Lo compila WidgetRefresher/WidgetPaginator a ogni cambio di finestra (~20 infolabel, una volta per
 # passaggio), non a ogni giro.
 CTL_REGISTRY_PROP = 'fenlight.pg.ctlreg'
-# Quanti contenitori di ALTRE finestre ha toccato l'ultima ricarica mirata. Lo legge kodi_refresh_ids
-# nella stessa invocazione per sapere se il lavoro fuori dalla finestra a schermo e' stato fatto qui
-# (e allora non serve nessun rinvio) o se non c'era niente di censito da raggiungere.
+# Quanti contenitori di ALTRE finestre ha toccato l'ultima ricarica mirata (per il log), e quanti ne ha
+# VISTI -- censiti e con qualcosa costruito -- anche se non contenevano i titoli cambiati.
+# LOTTO 335 -- sono due domande, e il rinvio alla Home si decideva sulla prima: una Home censita i cui
+# widget non contenevano il titolo dava zero ricaricati, letto come "nessuna finestra censita". Il rinvio
+# consumato in Home colpiva poi di nuovo l'hub da cui si era partiti (16/09 19:48:27 -> 19:48:59, la riga
+# Horror ricostruita per intero due volte per lo stesso titolo). La stessa distinzione di LAST_SEEN_ANY.
 LAST_OTHER_HITS = [0]
+LAST_OTHER_SEEN = [0]
 # L'ultimo sondaggio ha VISTO almeno un contenitore Fen Light nella finestra a schermo? Distingue le
 # due ragioni per cui una ricarica mirata puo' finire con zero contenitori ricaricati, che sono
 # opposte fra loro: 'non ho potuto verificare niente' (nessun contenitore nostro qui) e 'ho verificato
@@ -200,6 +243,22 @@ WIDGET_CONTAINER_IDS = tuple(range(500, 521))
 # Nome del parametro nonce accodato al token del contenitore per forzarne la ricarica. E' gia' in
 # _VOLATILE_PARAMS, quindi non entra nella chiave del widget e la paginazione non se ne accorge.
 RELOAD_PARAM = 'reload'
+# LOTTO 322 -- il MOTIVO della ricarica, che il contenitore porta alla costruzione insieme al nonce.
+# Ce ne sono due, e chiedono due cose diverse:
+#   - per ID: e' cambiato uno STATO di un titolo che la riga contiene gia' (il distintivo 'visto', un
+#     segnalibro). La composizione della lista non cambia, quindi la sorgente direbbe le stesse cose
+#     che ha gia' detto: la lista si RIPRENDE dal database e si paga solo la costruzione delle voci.
+#   - per AZIONE: e' cambiata la COMPOSIZIONE (un titolo entra o esce dalla watchlist, dai preferiti).
+#     Qui la lista consegnata NON e' piu' la verita', e riprenderla significa riconsegnarla identica --
+#     che e' esattamente il difetto visto il 16/09 alle 14:23 e alle 14:26, due volte di fila:
+#         passi_da_caricare key=1101.501 loading=False soft_refresh=False -> pages_to_load=2
+#         carica niente da chiedere (gia=24 bersaglio=16 finita=True)
+#         PERF PREFETCH: 24 richiesti, 24 gia' in cache (100%)
+#     Zero richieste di rete in quella costruzione: il film aggiunto alla watchlist non e' mai comparso
+#     perche' a Trakt non e' stato chiesto niente. Con questo motivo nel path la sorgente si rilegge.
+# Sta fra i parametri volatili come il nonce: non entra nella chiave del widget.
+RELOAD_KIND_PARAM = 'rifai'
+RELOAD_KIND_ACTION = 'azione'
 
 # LOTTO 92 -- L'IDENTITA' DI UN WIDGET E' LA SUA POSIZIONE, NON IL SUO CONTENUTO.
 #
@@ -222,7 +281,8 @@ CTL_PARAM = 'pgctl'
 # Params that change between cumulative reloads of the SAME widget and must not affect its key.
 # 'pgctl' e' qui perche' make_key ora calcola l'impronta del CONTENUTO, che e' un'altra domanda:
 # "in questa posizione e' cambiata la lista?". La posizione non deve entrarci.
-_VOLATILE_PARAMS = ('new_page', 'paginate_start', 'refreshed', 'pages', 'reload', 'reload_property', CTL_PARAM)
+_VOLATILE_PARAMS = ('new_page', 'paginate_start', 'refreshed', 'pages', 'reload', 'reload_property',
+					RELOAD_KIND_PARAM, CTL_PARAM)
 
 # Text-search hub debounce + anti-stale. The skin rebuilds the search widgets on EVERY keystroke, so a
 # burst of typing (or deleting) launches many overlapping builds for the same container; because each
@@ -265,10 +325,9 @@ def log(msg):
 def short(key):
 	return key[:8] if key else key
 
-def interactive_enabled():
-	return get_setting('fenlight.paginate.interactive', 'true') == 'true'
-
-def initial_batch():
+def passi_iniziali():
+	# Quanti PASSI carica l'apertura di una lista. Vedi carica(): l'unita' di tutto cio' che si conta
+	# qui e' il passo, non la pagina della sorgente.
 	try: value = int(get_setting('fenlight.paginate.initial_batch', '2'))
 	except: value = 2
 	return max(2, value)
@@ -287,36 +346,17 @@ def lookahead_pages():
 	except: value = 2
 	return max(1, value)
 
-def max_items():
-	# Tetto agli ELEMENTI che un widget puo' arrivare a mostrare. Contare le PAGINE sarebbe la misura
-	# sbagliata: con il filtro doppiaggio una pagina puo' rendere pochissimi elementi o nessuno, quindi
-	# lo stesso numero di pagine produce liste di lunghezze molto diverse. Il costo che vogliamo
-	# limitare, invece, e' rigorosamente per elemento -- la consegna a Kodi misura ~20 ms/elemento
-	# a macchina scarica e fino a 250 sotto contesa (log stick 23/08).
-	# Il rapporto e' a cricchetto: ogni paginazione allarga PER SEMPRE cio' che ogni ricostruzione
-	# successiva dovra' ricostruire e riconsegnare. Nel log si vede crescere 48 -> 62 -> 87 -> 115.
-	# Raggiunto il tetto il widget smette di ALLUNGARSI: nessuna lista si accorcia mai e la posizione
-	# non salta, semplicemente non si carica altro.
-	try: value = int(get_setting('fenlight.paginate.max_items', '75'))
-	except: value = 75
-	return max(20, value)
-
-# Hard ceiling on the EXTRA raw pages a fill (see load_cumulative min_items) may fetch beyond the
-# requested count. A sparse query -- one whose results are mostly filtered out (server-side for text
-# search, post-build for advanced search) -- must not spin through dozens of TMDB pages chasing the
-# target; it just hands back whatever it gathered. Generous because advanced search re-qualifies pages
-# against IMDb (votes>=1000 + non-film removal) and can discard most of an early vote_average.desc page.
-_FILL_PAGE_CAP = 12
-
-def fill_target():
-	# Filtered pages (text search server-side; advanced search post-build against IMDb) yield only a
-	# handful of display items -- far short of a normal widget page. Every build fills up to this many
-	# items so the initial screen is full and the focus starts well clear of the watcher's load-ahead
-	# runway. Otherwise landing on item 1 of a 6-item list is already "within a page of the end" and the
-	# watcher cascades pages 3,4,... just from arriving. Neutral for unfiltered widgets (a single page
-	# already meets the target). See load_cumulative(min_items=...).
+def passo():
+	# IL PASSO: quanti elementi aggiunge una paginazione. Uno solo, per ogni lista di Fen Light, ed e'
+	# l'impostazione 'elementi per pagina' dei widget. Tutto cio' che si conta da qui in avanti --
+	# il token nel path, il conteggio che il watcher incrementa, il bersaglio di carica() -- e' in
+	# passi: la PAGINA resta un dettaglio della sorgente, che di sue ne rende quante gliene pare.
 	from modules.settings import page_limit
 	return page_limit(True)
+
+# Limite di assurdita' sul numero di passi che il token del path puo' dichiarare: vedi
+# passi_da_caricare. Non e' una politica sulla lunghezza delle liste -- quella non esiste piu'.
+PASSI_ASSURDI = 500
 
 # A genuine supersede always produces a NON-EMPTY different live label (the user typed more letters:
 # "av" -> "avenger"). An EMPTY live label means the search box just isn't readable right now -- focus
@@ -410,6 +450,28 @@ def _current_query():
 		return dict(parse_qsl(_sys.argv[2].lstrip('?'), keep_blank_values=True))
 	except: return {}
 
+# Per quanto un ordine di ricarica nel path vale ancora. Non e' una politica: e' il tempo entro cui la
+# costruzione che quell'ordine ha provocato e' certamente partita -- la piu' lenta misurata sulla stick
+# e' 19 s. Serve perche' il token RESTA nel path finche' nessuno lo riscrive: nel log del 23/08
+# 'reload=1787487459568' e' rimasto per SEI minuti, e ogni rilettura spontanea di Kodi in quel periodo
+# si presentava come ricarica mirata. Senza questa scadenza, dal lotto 322 sarebbe anche peggio: una
+# 'rifai=azione' residua farebbe RILEGGERE LA SORGENTE a ogni re-show della finestra.
+RELOAD_VALIDO_SECONDS = 60
+
+def nonce_fresco(query):
+	"""L'ordine di ricarica nel path e' ancora quello di adesso, o e' un residuo? (lotto 325)
+
+	Il nonce E' l'istante di emissione in millisecondi: non serve nient'altro per datarlo. Nel dubbio
+	-- un nonce illeggibile -- si risponde SI', che e' la risposta prudente: si ricostruisce una volta
+	di troppo, non si lascia a schermo un dato vecchio.
+	"""
+	nonce = (query or {}).get(RELOAD_PARAM)
+	if not nonce: return False
+	try:
+		from time import time
+		return 0 < (time() - float(nonce) / 1000.0) < RELOAD_VALIDO_SECONDS
+	except Exception: return True
+
 def _build_cause(query):
 	# Il nonce nel path esiste solo se il token l'ha messo refresh_containers_for_ids: quella
 	# ricostruzione l'abbiamo ordinata noi. Senza nonce e' Kodi che rilegge il DirectoryProvider da
@@ -419,14 +481,9 @@ def _build_cause(query):
 	# 'reload=1787487459568' e' rimasto per SEI minuti, e ogni rilettura spontanea di Kodi in quel
 	# periodo si presentava come 'ricarica-mirata'. Si confronta con l'ultimo nonce emesso e con
 	# l'istante in cui e' stato emesso: oltre la finestra, quel token e' solo un residuo.
-	_nonce = query.get(RELOAD_PARAM)
-	if _nonce:
-		try:
-			from time import time
-			# Il nonce E' l'istante di emissione in millisecondi: non serve nient'altro per datarlo.
-			if 0 < (time() - float(_nonce) / 1000.0) < 60: return 'ricarica-mirata'
-			return 'apertura/re-show (token scaduto)'
-		except: return 'ricarica-mirata'
+	if query.get(RELOAD_PARAM):
+		if nonce_fresco(query): return 'ricarica-mirata'
+		return 'apertura/re-show (token scaduto)'
 	if query.get('new_page') or query.get('paginate_start'): return 'paginazione'
 	# UpdateLibrary non lascia niente nel path: senza questo timbro le ricostruzioni che innesca
 	# sarebbero indistinguibili dalle re-show spontanee di Kodi, ed e' esattamente la distinzione che
@@ -670,9 +727,15 @@ def make_key(params):
 	# e' cambiata la lista?", che e' l'unica ragione per cui un conteggio pagine va azzerato.
 	if not isinstance(params, dict):
 		params = dict(parse_qsl(params, keep_blank_values=True))
+	return md5(canonical_params(params).encode('utf-8')).hexdigest()
+
+def canonical_params(params):
+	# I parametri della lista in forma canonica: l'impronta e' il suo md5, e il testo serve a chi deve
+	# RIFARE la lista (riconvalida all'avvio), perche' da un md5 non si torna indietro.
+	if not isinstance(params, dict):
+		params = dict(parse_qsl(params, keep_blank_values=True))
 	items = sorted((k, v) for k, v in params.items() if k not in _VOLATILE_PARAMS)
-	canonical = '&'.join('%s=%s' % (k, v) for k, v in items)
-	return md5(canonical.encode('utf-8')).hexdigest()
+	return '&'.join('%s=%s' % (k, v) for k, v in items)
 
 def position_of(params):
 	"""(scope, id contenitore) letti dal path, o (None, None) se la skin non li ha messi.
@@ -723,12 +786,6 @@ def _warn_no_position(params):
 				'shortcuts/skinvariables-generator.json.' % (mode, CTL_PARAM))
 	except: pass
 
-def query_from_path(folderpath):
-	# Extracts the query dict from a plugin:// folder path (the part after '?').
-	if not folderpath: return {}
-	query = folderpath.split('?', 1)[1] if '?' in folderpath else ''
-	return dict(parse_qsl(query, keep_blank_values=True))
-
 def _item_url(item):
 	# Plugin path di UN elemento della lista passata ad add_items. Gli indexer usano due forme: la tupla
 	# (url, listitem, isfolder) oppure la forma con ordinamento di movies/tvshows ((url, li, isf), pos).
@@ -776,6 +833,7 @@ def _head_signature_from_items(items):
 # Ogni URL di elemento porta 'tmdb_id=' (URL_PLAY, URL_OPTIONS, URL_MARK... in tutti gli indexer),
 # quindi gli id si estraggono senza dover conoscere la forma dei dati di ciascuno.
 _TMDB_IN_URL = re_compile(r'[?&]tmdb_id=(\d+)')
+_MEDIA_TYPE_IN_URL = re_compile(r'[?&]media_type=(\w+)')
 # LOTTO 119 -- l'identita' a livello EPISODIO. Il tmdb_id di un episodio E' quello della serie: nel
 # canale degli id 'S03E04 di X in pausa' e 'la serie X' erano la stessa stringa, quindi un
 # avanzamento su un episodio ricaricava OGNI widget che contenesse quella serie -- le serie popolari,
@@ -799,35 +857,6 @@ def _episode_uid_from_url(url, tmdb_id):
 	from modules.kodi_utils import episode_uid
 	return episode_uid(tmdb_id, s.group(1), e.group(1))
 
-# LOTTO 95 -- gli id NASCOSTI dal filtro doppiaggio in attesa di verdetto (vedi modules/dub_queue).
-# Vivono in una lista di modulo e non in una proprieta' perche' non devono attraversare i processi:
-# chi li mette (dub_keep_mask) e chi li legge (_publish_ids, poche righe di codice piu' tardi) stanno
-# nella STESSA invocazione. La filtratura gira sempre prima della costruzione, quindi quando set_head
-# passa la lista e' gia' completa.
-_DEFERRED_IDS = []
-# Contatore separato dalla lista, e VOLUTAMENTE mai azzerato dentro l'invocazione: _DEFERRED_IDS lo
-# svuota _publish_ids alla fine, mentre questo deve restare valido per tutta la costruzione. Lo legge
-# il riempimento delle pagine -- vedi deferred_count.
-_DEFERRED_COUNT = [0]
-
-def defer_ids(ids):
-	for i in ids or []:
-		if i:
-			_DEFERRED_IDS.append(str(i))
-			_DEFERRED_COUNT[0] += 1
-
-def deferred_count():
-	"""Quanti elementi questa costruzione ha nascosto in attesa del verdetto (lotto 95).
-
-	Serve ai cicli di RIEMPIMENTO -- load_cumulative(min_items) qui, _dub_paginate in trakt_lists --
-	che tirano altre pagine grezze finche' non hanno abbastanza SOPRAVVISSUTI. Senza questo conteggio
-	un elemento rimandato conta come scartato, e su cache fredda ogni riempimento andrebbe dritto al
-	suo tetto (12 pagine in piu', con tutti i metadati che comporta) inseguendo elementi che stanno
-	per ricomparire da soli -- trascinando per giunta altri titoli ignoti dentro la coda. Un elemento
-	rimandato e' un elemento che sara' li' fra pochi secondi: per il riempimento vale come presente.
-	"""
-	return _DEFERRED_COUNT[0]
-
 def _publish_ids(key, items):
 	# Pubblica gli id di cui questo widget si occupa, per la ricarica mirata. Best-effort: se fallisce,
 	# refresh_containers_for_ids non riesce a escludere il widget e lo ricostruisce -- prudente, non rotto.
@@ -848,14 +877,6 @@ def _publish_ids(key, items):
 			euid = _episode_uid_from_url(url, tid)
 			if euid and euid not in seen:
 				seen.add(euid); ids.append(euid)
-		# "Si occupa" comprende cio' che ha NASCOSTO. Un elemento tolto dal filtro doppiaggio non
-		# compare fra gli item, quindi senza questa aggiunta il contenitore che lo ha nascosto sarebbe
-		# proprio quello che refresh_containers_for_ids salta -- e il verdetto risolto dal servizio non
-		# arriverebbe mai a schermo. E' l'unico punto che tiene insieme il punto 3 e la ricarica mirata.
-		for tid in _DEFERRED_IDS:
-			if tid in seen: continue
-			seen.add(tid); ids.append(tid)
-		del _DEFERRED_IDS[:]
 		set_property(IDS_PROP % key, ','.join(ids))
 	except: pass
 
@@ -886,7 +907,101 @@ def _register(key, headhash):
 			if h: clear_property(HEAD_PROP % h)
 	set_property(REGISTRY_PROP, ','.join(entries))
 
-def set_head(key, items, action=None):
+# LOTTO 316 -- il messaggio delle consegne vive QUI, non in caches.widgets_cache.
+# Ogni build e' un interprete nuovo e importava quel modulo solo per due cose -- la tabella dei tipi e
+# la funzione che spedisce -- pagando 4-7 ms a build (31 alla prima, con la compilazione). Del resto di
+# quel modulo, dal lotto 314, una build non tocca piu' niente: connessione, transazioni e query sono
+# lavoro del servizio. paginator lo importano tutte le build comunque.
+# I tipi di media sono numeri: stanno dentro l'indice delle ricariche, e un intero costa meno di una
+# stringa in ogni riga di quell'indice.
+TIPI = {'movie': 1, 'tvshow': 2, 'episode': 3}
+TIPI_NOME = {v: k for k, v in TIPI.items()}
+MESSAGGIO_DB = 'pgdb'
+ADDON_ID = 'plugin.video.fenlight'
+
+def invia(messaggio, dati):
+	"""L'UNICO modo in cui Fen Light parla a se stessa fra processi: JSONRPC.NotifyAll, mittente l'addon."""
+	import json, xbmc
+	xbmc.executeJSONRPC(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'JSONRPC.NotifyAll',
+		'params': {'sender': ADDON_ID, 'message': messaggio, 'data': dati}}))
+
+def _coppia_da_url(url):
+	# (tipo, tmdb) da un URL consegnato. Il TIPO viene dall'URL perche' gli id TMDb di film e serie
+	# sono due numerazioni separate: l'id 27 esiste in entrambe.
+	if not url: return None
+	m = _TMDB_IN_URL.search(url)
+	if not m: return None
+	t = _MEDIA_TYPE_IN_URL.search(url)
+	tipo = TIPI.get(t.group(1) if t else '', 0)
+	return (tipo, int(m.group(1))) if tipo else None
+
+def _voci_per_db(items):
+	"""Da cio' che e' stato consegnato alle coppie (tipo, tmdb), nell'ordine di consegna, senza doppioni.
+
+	Serve solo alle righe che il servizio NON prepara ('continua a guardare'): per quelle preparate il
+	database ha gia' tutto, e la costruzione spedisce soltanto la posizione (lotto 332).
+	"""
+	coda, visti = [], set()
+	for item in items or []:
+		coppia = _coppia_da_url(_item_url(item))
+		if coppia is None or coppia in visti: continue
+		visti.add(coppia)
+		coda.append(coppia)
+	return coda
+
+# Cio' che c'e' da scrivere nel database, in attesa che la cartella sia chiusa. Vedi scrivi_db.
+_DA_SCRIVERE = []
+# Le chiavi che hanno pubblicato la testa in questa invocazione. Servono a far partire, DOPO la
+# registrazione, le ricariche che erano in attesa della fine di questa costruzione. Vedi set_head.
+_PUBBLICATE = []
+
+def _registra_db(key, items, action, params, preparata=False):
+	# LOTTO 311: si annota soltanto. Tutto il resto -- lettura degli URL, impronta, invio -- lo fa
+	# scrivi_db() DOPO endOfDirectory: set_head e' chiamato mentre il thread grafico di Kodi aspetta
+	# questa cartella (lotto 313), e tutto cio' che si fa qui lo aspetta l'utente.
+	if params is None: return
+	_DA_SCRIVERE.append((key, items, action, params, bool(preparata)))
+
+def scrivi_db():
+	# Chiamato da kodi_utils.end_directory subito dopo endOfDirectory.
+	# LOTTO 314 -- una build non scrive: SPEDISCE al servizio, che e' l'unico scrittore.
+	# LOTTO 332 -- una riga PREPARATA spedisce solo "questa lista sta in questa posizione": i suoi
+	# elementi li ha scritti il servizio. Le altre ('continua a guardare') spediscono la lista intera,
+	# che nel database SOSTITUISCE quella di prima.
+	# Le ricariche rimandate vanno fatte comunque, anche senza niente da spedire.
+	if not _DA_SCRIVERE:
+		_fai_ricariche_rimandate()
+		return
+	from time import perf_counter as _pc
+	_t = _pc()
+	quanti = 0
+	from modules.kodi_utils import conta as _conta
+	try:
+		consegne = []
+		for key, items, action, params, preparata in _DA_SCRIVERE:
+			voce = {'chiave': make_key(params), 'parametri': canonical_params(params), 'azione': action or '',
+					'posizione': key if position_of(params)[0] else ''}
+			if preparata: voce['preparata'] = True
+			else:
+				voce['voci'] = [list(v) for v in _voci_per_db(items)]
+				quanti += len(voce['voci'])
+			consegne.append(voce)
+		_tn = _pc()
+		invia(MESSAGGIO_DB, consegne)
+		_conta('db_notifica', _pc() - _tn, quanti)
+		log('db spedite=%s voci=%s' % (len(consegne), quanti))
+	except Exception as e:
+		log('db invio fallito: %r' % e)
+	del _DA_SCRIVERE[:]
+	_conta('db_widget', _pc() - _t, quanti)
+	# Adesso che la consegna e' spedita, le ricariche rimaste in attesa possono partire. Vedi set_head.
+	_fai_ricariche_rimandate()
+
+def _fai_ricariche_rimandate():
+	chiavi, _PUBBLICATE[:] = list(_PUBBLICATE), []
+	for chiave in chiavi: esegui_ricarica_rimandata(chiave)
+
+def set_head(key, items, action=None, params=None, preparata=False):
 	# Final step of an interactive build (called right after add_items). Publishes:
 	#  - the first item's path -> widget key, so the watcher can identify the focused container;
 	#  - the count of items actually shown (BUILT_PROP), the watcher's catch-up gate;
@@ -895,16 +1010,13 @@ def set_head(key, items, action=None):
 	from modules.kodi_utils import set_property, clear_property
 	count = len(items) if items else 0
 	set_property(BUILT_PROP % key, str(count))
-	# Il tetto si applica QUI e non in set_state: questo e' l'unico punto che conosce quanti elementi
-	# sono stati COSTRUITI davvero, cioe' dopo il filtro doppiaggio. Spegnere has_more e' il segnale
-	# che il watcher legge per decidere se caricare oltre; applicare invece un tetto a raw_pages
-	# accorcerebbe una lista gia' mostrata a ogni ricostruzione, facendo saltare la posizione --
-	# esattamente cio' che il paginatore esiste per evitare.
-	cap = max_items()
-	if count >= cap:
-		set_property(HASMORE_PROP % key, 'false')
-		from modules.kodi_utils import logger
-		logger('Fen Light', 'DIAG paginazione: tetto di %s elementi raggiunto (%s costruiti), il widget non si allunga oltre' % (cap, count))
+	# LOTTO 317 -- qui c'era il TETTO agli elementi (impostazione paginate.max_items, 75 di default):
+	# raggiunto il numero, has_more veniva spento e la lista smetteva di allungarsi. Era una difesa
+	# dal costo per elemento della consegna a Kodi, e in cambio diceva all'utente una bugia -- 'non
+	# c'e' altro' quando invece c'era. Il tetto e' caduto per decisione esplicita (specifica del
+	# 15/09): una lista finisce quando la SORGENTE e' finita, e nient'altro la ferma. Il costo per
+	# elemento si affronta dove nasce, cioe' nella costruzione della voce (fase 6), non nascondendo
+	# elementi che esistono.
 	url = _first_item_url(items)
 	# Due firme, e la seconda e' una rete di sicurezza, non un ripensamento. Quella a tre elementi e'
 	# la buona ed e' quella che il watcher prova per prima. Quella a un elemento -- il comportamento di
@@ -920,7 +1032,17 @@ def set_head(key, items, action=None):
 	# Fine dichiarata della costruzione (lotto 106): set_head e' l'ultimo passo di una build, chiamato
 	# subito dopo add_items. Da qui in poi questo widget non e' piu' in volo.
 	mark_build_end(key)
+	# LOTTO 321 -- se qualcosa e' cambiato MENTRE questa costruzione lavorava, la ricarica messa in
+	# attesa va fatta partire. Non da qui pero': qui siamo ancora davanti a endOfDirectory, con il
+	# thread grafico di Kodi che aspetta questa cartella (lotto 313).
+	# LOTTO 326 -- e non e' solo una questione di tempi. Ordinando la ricarica QUI, la costruzione che
+	# ne nasce poteva partire PRIMA che scrivi_db avesse registrato questa consegna, e quindi
+	# riprendere da una lista vecchia: rileggeva dalla sorgente il passo appena letto. La si annota e
+	# la fa scrivi_db, dopo la registrazione. Prima si registra cio' che si e' consegnato, poi si
+	# ordina di ricostruire: in quest'ordine non c'e' niente da indovinare.
+	_PUBBLICATE.append(key)
 	_publish_ids(key, items)
+	_registra_db(key, items, action, params, preparata)
 	if action: set_property(ACTION_PROP % key, str(action))
 	_register(key, (headhash, headhash_one))
 	# Il censimento (registry_add) passa solo sui contenitori A SCHERMO, e all'avvio i widget spesso
@@ -1010,6 +1132,206 @@ def _action_matches(stored, wanted_actions):
 	if stored in wanted_actions: return True
 	return stored.partition(':')[0] in wanted_actions
 
+def _in_volo(key, adesso):
+	"""La costruzione in corso per questa chiave: (inizio, per_azione, stato_letto). (0, False, 0) se non c'e'.
+
+	Una marca piu' vecchia di INFLIGHT_MAX_SECONDS e' orfana -- l'invocazione e' morta senza pubblicare
+	la testa, su questo dispositivo succede -- e vale come "niente in volo": aspettare un fantasma
+	sarebbe il guasto peggiore, gia' visto nel lotto 100.
+	"""
+	from modules.kodi_utils import get_property
+	niente = (0.0, False, 0.0)
+	raw = get_property(INFLIGHT_PROP % key)
+	if not raw:
+		# LOTTO 334 -- ORDINATA ma non ancora partita. Il watcher accende LOADING e scrive il token del passo;
+		# l'interprete della costruzione alza la sua marca solo un secondo dopo. In quel secondo una ricarica
+		# per "visto" credeva la riga ferma e ne ordinava una seconda (16/09 19:43:42: due costruzioni della
+		# riga Horror, una del passo e una della ricarica). Una costruzione ordinata lo stato lo leggera': copre
+		# un cambiamento di stato, non uno di composizione (un passo non rilegge la sorgente).
+		ordinata = loading_started(key)
+		if ordinata and adesso - ordinata <= INFLIGHT_MAX_SECONDS: return ordinata, False, 0.0
+		return niente
+	pezzi = raw.split('|')
+	try: iniziata = float(pezzi[0] or 0)
+	except: return niente
+	if not iniziata or adesso - iniziata > INFLIGHT_MAX_SECONDS: return niente
+	motivo = pezzi[1] if len(pezzi) > 1 else ''
+	try: letto = float(pezzi[2]) if len(pezzi) > 2 and pezzi[2] else 0.0
+	except: letto = 0.0
+	return iniziata, motivo == RELOAD_KIND_ACTION, letto
+
+def ricarica_decisa(key, adesso, per_azione=False):
+	"""'adesso' | 'coperta' | 'dopo' -- la ricarica mirata di questa chiave, decisa SUL FATTO.
+
+	La domanda giusta non e' "ricarico?" ma "quello che sta per pubblicare contiene gia' il
+	cambiamento?". E la risposta dipende da COSA e' cambiato, perche' le due cose si leggono in due
+	momenti diversi della costruzione:
+
+	  - COMPOSIZIONE (un titolo entra o esce da una lista): la decide la lettura della SORGENTE, che
+	    sta in testa alla costruzione. Copre solo una costruzione che a) rilegge davvero la sorgente
+	    -- cioe' e' essa stessa una ricarica di composizione -- e b) e' partita dopo il cambiamento.
+	    Una ricarica per id in volo NON copre un cambiamento di composizione: quella riprende la lista
+	    dal database e alla sorgente non chiede niente.
+	  - STATO (visto, segnalibro): lo legge worker(), in un colpo solo, DOPO le pagine. Quindi copre
+	    ogni costruzione che a quel punto non e' ancora arrivata -- e sono la maggioranza, perche'
+	    worker() e' l'ultima fase. Misurato il 16/09: l'utente segna un titolo alle 14:21:02 mentre tre
+	    costruzioni della riga sono in volo; tutte e tre leggeranno lo stato DOPO (la piu' avanti sta
+	    ancora chiedendo pagine alle 14:21:08), quindi il distintivo sarebbe comparso da solo e le
+	    ricariche ordinate erano tutte e tre da buttare -- 12-19 secondi l'una.
+
+	`adesso` e' l'istante della ricarica, non quello esatto della scrittura del cambiamento -- che il
+	chiamante spesso non conosce. E' una differenza di millisecondi, e cade dalla parte prudente.
+	"""
+	iniziata, in_volo_per_azione, stato_letto = _in_volo(key, adesso)
+	if not iniziata: return 'adesso'
+	if per_azione:
+		return 'coperta' if (in_volo_per_azione and iniziata >= adesso) else 'dopo'
+	# Lo stato non e' ancora stato letto: lo leggera' da qui in avanti, cioe' dopo il cambiamento.
+	return 'coperta' if (not stato_letto or stato_letto >= adesso) else 'dopo'
+
+# --- IL TOKEN DEL CONTENITORE: uno scrittore solo (lotto 325) -----------------------------------------
+# Vedi il commento su CTL_PAGES_PROP per il perche'. Qui ci sono i due lati:
+#   ordina_ricarica()   chiunque, da qualunque processo: mette in coda "questo contenitore va ricaricato"
+#   scrivi_token()      SOLO il servizio: e' l'unico che tocca la proprieta', e lo fa sotto lock.
+MESSAGGIO_TOKEN = 'pgtok'
+_ORDINI = []
+# Il servizio si dichiara all'avvio (abilita_token_locale). Senza questo, una ricarica ordinata DENTRO
+# il servizio -- il DubResolver lo fa -- farebbe un giro inutile per la notifica e potrebbe arrivare
+# dopo una scrittura del watcher partita dopo di lei.
+_TOKEN_LOCALE = [False]
+
+def abilita_token_locale():
+	"""Chiamata dal servizio all'avvio: da qui in poi gli ordini si applicano subito, senza notifica."""
+	_TOKEN_LOCALE[0] = True
+
+def ordina_ricarica(scope, cid, nonce, per_azione=False):
+	# Non scrive niente: annota. Lo scrittore e' uno solo e non e' qui.
+	_ORDINI.append({'scope': str(scope), 'cid': str(cid), 'nonce': str(nonce), 'azione': bool(per_azione)})
+
+def spedisci_ricariche():
+	"""Manda al servizio gli ordini raccolti. Dentro il servizio li applica e basta."""
+	if not _ORDINI: return
+	ordini, _ORDINI[:] = list(_ORDINI), []
+	if _TOKEN_LOCALE[0]:
+		applica_ricariche(ordini)
+		return
+	try: invia(MESSAGGIO_TOKEN, ordini)
+	except Exception as e:
+		log('ordini di ricarica non spediti: %r' % e)
+
+def applica_ricariche(dati):
+	"""Lato SERVIZIO: applica gli ordini arrivati. Torna quanti ne ha applicati."""
+	try:
+		if isinstance(dati, str):
+			import json
+			dati = json.loads(dati)
+		if isinstance(dati, dict): dati = [dati]
+	except Exception as e:
+		log('ordini di ricarica illeggibili: %r' % e); return 0
+	fatti = 0
+	for o in dati or []:
+		try:
+			scrivi_token(o.get('scope'), o.get('cid'), ricarica=(o.get('nonce'), bool(o.get('azione'))))
+			fatti += 1
+		except Exception as e:
+			log('ordine di ricarica non applicato (%r): %r' % (o, e))
+	return fatti
+
+from threading import Lock as _Lock
+_TOKEN_LOCK = _Lock()
+
+def scrivi_token(scope, cid, passi=None, ricarica=None):
+	"""L'UNICA funzione che compone il token di un contenitore. La chiama solo il servizio.
+
+	passi    nuovo numero di passi (lo alza il watcher). None = lascia quello che c'e'.
+	ricarica (nonce, per_azione) per ordinare una ricostruzione. None = lascia quella che c'e'.
+
+	Il token vive nel <content> del widget come $INFO[], quindi cambiarne il valore ricarica SOLO
+	questo contenitore invece di sparare UpdateLibrary, che e' globale. 'reload' e 'rifai' stanno in
+	_VOLATILE_PARAMS: cambiano il path ma non la chiave del widget, quindi la paginazione non li nota.
+
+	Il lock serve davvero: watcher e notifiche sono due thread dello stesso interprete, e senza di lui
+	i due si sovrascriverebbero a vicenda esattamente come facevano i tre processi di prima.
+	"""
+	from modules.kodi_utils import get_property, set_property
+	prop = CTL_PAGES_PROP % (scope, cid)
+	with _TOKEN_LOCK:
+		pezzi = (get_property(prop) or '').split('&')
+		testa = pezzi[0]
+		coda = [p for p in pezzi[1:] if p]
+		if passi is not None:
+			testa = str(passi)
+			# Un passo di paginazione e' un ordine NUOVO: quello di ricarica ha gia' prodotto la sua
+			# costruzione, e tenerlo vorrebbe dire trascinarsi 'rifai=azione' per tutta la sessione,
+			# facendo rileggere la sorgente a ogni ricostruzione spontanea di Kodi.
+			coda = []
+		if ricarica is not None:
+			nonce, per_azione = ricarica
+			coda = ['%s=%s' % (RELOAD_PARAM, nonce)]
+			if per_azione: coda.append('%s=%s' % (RELOAD_KIND_PARAM, RELOAD_KIND_ACTION))
+			# Token vuoto (azzerato da un cambio inquilino, o sessione appena aperta) ma la riga puo'
+			# essere gia' espansa: il conteggio vero sta nella proprieta' PER CHIAVE, che la scrive
+			# set_state a fine costruzione. Ripiegare sul lotto iniziale la farebbe collassare, ed e'
+			# esattamente il guasto che il lotto 89 ha dovuto disfare.
+			if not testa: testa = str(raw_pages('%s.%s' % (scope, cid), passi_iniziali()))
+		set_property(prop, '&'.join([testa] + coda) if coda else testa)
+
+def _ricarica(scope, cid, key, nonce, adesso, per_azione=False):
+	"""Applica la decisione a un contenitore e la torna, cosi' il log puo' dire quale delle tre e' stata.
+
+	Il contenitore e' RAGGIUNTO in tutti e tre i casi, e i tre casi contano tutti come successo per il
+	chiamante: 'dopo' e 'coperta' sono risposte, non fallimenti. Contarle come fallimento farebbe
+	ricadere il chiamante sul refresh GLOBALE, che ricostruisce tutti i widget della schermata -- il
+	contrario esatto di quello che stiamo facendo.
+	"""
+	from modules.kodi_utils import get_property, set_property, clear_property
+	decisione = ricarica_decisa(key, adesso, per_azione) if key else 'adesso'
+	if decisione == 'coperta':
+		# Una costruzione partita dopo il cambiamento sta gia' portando il dato nuovo. Se c'era
+		# un'annotazione da prima si spegne qui: quella costruzione la soddisfa.
+		clear_property(PENDING_RELOAD_PROP % key)
+		return decisione
+	if decisione == 'dopo':
+		# Il motivo si annota insieme all'istante: quando set_head la eseguira', chi l'aveva chiesta non
+		# ci sara' piu'. E se durante la stessa costruzione arrivano sia un cambiamento di stato sia uno
+		# di composizione, vince la composizione -- rileggere la sorgente soddisfa anche l'altro.
+		gia_annotata = get_property(PENDING_RELOAD_PROP % key)
+		if gia_annotata and gia_annotata.endswith('|' + RELOAD_KIND_ACTION): per_azione = True
+		set_property(PENDING_RELOAD_PROP % key, '%s|%s' % (adesso, RELOAD_KIND_ACTION if per_azione else ''))
+		return decisione
+	# 'adesso': si ricarica, e un'eventuale annotazione rimasta orfana (costruzione morta senza
+	# pubblicare) si smaltisce qui invece di far scattare una seconda ricarica piu' tardi.
+	if key: clear_property(PENDING_RELOAD_PROP % key)
+	ordina_ricarica(scope, cid, nonce, per_azione)
+	return decisione
+
+def esegui_ricarica_rimandata(key):
+	"""Chiamata da set_head: la costruzione che teneva ferma una ricarica ha appena pubblicato.
+
+	Da qui in poi non c'e' piu' niente in volo per questa chiave, quindi la ricarica e' UNA e arriva
+	nel primo istante utile. Non e' un ritardo aggiunto: la stessa ricarica, lanciata subito, avrebbe
+	comunque dovuto attendere la fine di questa costruzione -- una cartella gia' consegnata non si
+	puo' ne' estendere ne' modificare (PR.md 13). Cambia solo che ora le costruzioni sono una invece
+	di due, e a pubblicare per ultima e' la piu' recente.
+	"""
+	from modules.kodi_utils import get_property, clear_property
+	try:
+		annotazione = get_property(PENDING_RELOAD_PROP % key)
+		if not annotazione: return False
+		clear_property(PENDING_RELOAD_PROP % key)
+		quando, _, motivo = annotazione.partition('|')
+		scope, _, cid = key.partition('.')
+		if not (scope and cid): return False
+		from time import time
+		ordina_ricarica(scope, cid, '%d' % (time() * 1000), motivo == RELOAD_KIND_ACTION)
+		spedisci_ricariche()
+		log('ricarica rimandata eseguita key=%s motivo=%s (attendeva da %s)'
+			% (short(key), motivo or 'id', quando))
+		return True
+	except Exception as e:
+		log('ricarica rimandata fallita key=%s: %r' % (short(key), e))
+		return False
+
 def refresh_containers_for_ids(ids, actions=()):
 	"""Ricostruisce SOLO i contenitori toccati da questi tmdb_id. Torna quanti ne ha ricaricati.
 
@@ -1048,29 +1370,40 @@ def refresh_containers_for_ids(ids, actions=()):
 	wanted_actions = set(str(a) for a in (actions or ()) if a)
 	if not wanted and not wanted_actions: return 0
 	from time import time
-	nonce = '%d' % (time() * 1000)
+	# Un solo istante per tutto il giro, ed e' anche il metro con cui si giudica ogni costruzione in
+	# volo (lotto 321): la finestra non cambia a meta' ciclo, e il cambiamento e' uno solo.
+	adesso = time()
+	nonce = '%d' % (adesso * 1000)
 	# Lo scope si legge UNA volta: la finestra non cambia a meta' di questo ciclo.
 	scope = ctl_scope()
-	seen_any, hit, hit_other, skipped = False, 0, 0, 0
+	seen_any, hit, hit_other, seen_other, skipped = False, 0, 0, 0, 0
+	# Quante delle ricariche decise sono partite subito, quante aspettano una costruzione in volo e
+	# quante erano gia' coperte da una costruzione piu' recente del cambiamento (lotto 321).
+	esiti = {'adesso': 0, 'dopo': 0, 'coperta': 0}
+	def _decidi(sc, c, k, per_azione):
+		return _ricarica(sc, c, k, nonce, adesso, per_azione)
 	identified = set()
+	colpite = []
 	for cid in WIDGET_CONTAINER_IDS:
 		key, first_url = container_head(cid, scope)
 		if not first_url or 'plugin.video.fenlight' not in first_url: continue
 		seen_any = True
 		identified.add(str(cid))
-		if key and not _action_matches(get_property(ACTION_PROP % key), wanted_actions):
+		# LOTTO 322 -- 'per azione' non e' solo il criterio per colpire: e' il MOTIVO, e cambia cosa la
+		# costruzione dovra' fare. Un'azione dice che la lista cambia COMPOSIZIONE, quindi la sorgente
+		# va riletta; un id dice che cambia lo STATO di un titolo che la lista contiene gia'.
+		# L'elenco mai pubblicato cade dalla parte prudente: non si puo' dimostrare niente, e rileggere
+		# la sorgente e' l'unica risposta che non lascia a schermo un dato vecchio.
+		per_azione = _action_matches(get_property(ACTION_PROP % key), wanted_actions) if key else True
+		if key and not per_azione:
 			stored = get_property(IDS_PROP % key)
 			# stored vuota = elenco mai pubblicato: non si puo' dimostrare niente, quindi si ricarica.
-			if stored and not wanted.intersection(stored.split(',')):
+			if not stored: per_azione = True
+			elif not wanted.intersection(stored.split(',')):
 				skipped += 1
 				continue
-		# Il token vive nel <content> come $INFO[], quindi cambiarne il valore ricarica SOLO questo
-		# contenitore. Il numero di pagine va conservato tale e quale -- e' quello che l'utente vede --
-		# e il nonce si accoda come parametro a parte: 'reload' e' in _VOLATILE_PARAMS, quindi non
-		# entra nella chiave del widget e la paginazione non lo nota.
-		pages = (get_property(CTL_PAGES_PROP % (scope, cid)) or '').split('&')[0]
-		if not pages: pages = str(raw_pages(key, initial_batch())) if key else str(initial_batch())
-		set_property(CTL_PAGES_PROP % (scope, cid), '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
+		esiti[_decidi(scope, cid, key, per_azione)] += 1
+		colpite.append('%s.%s' % (scope, cid))
 		hit += 1
 	# --- QUESTA finestra, i contenitori che l'infolabel non ha saputo leggere -----------------------
 	# container_head interroga una infolabel VIVA, e un contenitore che Kodi non ha ancora popolato non
@@ -1093,17 +1426,18 @@ def refresh_containers_for_ids(ids, actions=()):
 		if not get_property(BUILT_PROP % key): continue
 		unresolved += 1
 		seen_any = True
-		if not _action_matches(get_property(ACTION_PROP % key), wanted_actions):
+		per_azione = _action_matches(get_property(ACTION_PROP % key), wanted_actions)
+		if not per_azione:
 			stored = get_property(IDS_PROP % key)
 			# Elenco vuoto = mai pubblicato: non si dimostra niente, quindi si ricarica. Qui, a
 			# differenza del giro sulle altre finestre, il contenitore E' a schermo: lasciarlo stare
 			# vorrebbe dire lasciare un widget visibile con il dato vecchio.
-			if stored and not wanted.intersection(stored.split(',')):
+			if not stored: per_azione = True
+			elif not wanted.intersection(stored.split(',')):
 				skipped += 1
 				continue
-		pages = (get_property(CTL_PAGES_PROP % (scope, cid)) or '').split('&')[0]
-		if not pages: pages = str(raw_pages(key, initial_batch()))
-		set_property(CTL_PAGES_PROP % (scope, cid), '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
+		esiti[_decidi(scope, cid, key, per_azione)] += 1
+		colpite.append('%s.%s' % (scope, cid))
 		hit += 1
 		recovered += 1
 
@@ -1128,22 +1462,35 @@ def refresh_containers_for_ids(ids, actions=()):
 		# resta comunque raggiunto dal giro sulla finestra a schermo, qui sopra.
 		key = '%s.%s' % (other_scope, cid)
 		if not get_property(BUILT_PROP % key): continue
-		if not _action_matches(get_property(ACTION_PROP % key), wanted_actions):
+		seen_other += 1
+		per_azione = _action_matches(get_property(ACTION_PROP % key), wanted_actions)
+		if not per_azione:
 			stored = get_property(IDS_PROP % key)
 			if stored and not wanted.intersection(stored.split(',')): continue
 			if not stored: continue  # mai pubblicato: qui non si puo' verificare nulla e non si vede niente
-		pages = (get_property(CTL_PAGES_PROP % (other_scope, cid)) or '').split('&')[0]
-		if not pages: pages = str(raw_pages(key, initial_batch()))
-		set_property(CTL_PAGES_PROP % (other_scope, cid), '%s&%s=%s' % (pages, RELOAD_PARAM, nonce))
+		esiti[_decidi(other_scope, cid, key, per_azione)] += 1
+		colpite.append('%s.%s' % (other_scope, cid))
 		hit_other += 1
-	LAST_OTHER_HITS[0] = hit_other
+	# Gli ordini raccolti nei tre giri partono TUTTI INSIEME e in un messaggio solo: cosi' il servizio
+	# li applica nell'ordine in cui questa funzione li ha decisi, e non ci sono ricariche a meta'.
+	spedisci_ricariche()
+	LAST_OTHER_HITS[0], LAST_OTHER_SEEN[0] = hit_other, seen_other
+	# LOTTO 311, modalita' ombra: il database dice quali posizioni ricaricherebbe, il log mette la sua
+	# risposta accanto a quella vera. Qui non decide niente: e' l'ultima cosa che si fa, e non
+	# tocca nessuna proprieta'.
+	try:
+		from caches import widgets_cache
+		coppie = [(None, int(i)) for i in wanted if str(i).isdigit()]
+		widgets_cache.ombra(coppie, wanted_actions, colpite)
+	except Exception: pass
 	LAST_SEEN_ANY[0] = seen_any
 	# 'non_identificati' e 'recuperati' vanno nel log per una ragione precisa: senza di loro questo
 	# difetto era invisibile: si vedevano solo 'ricaricati' e 'saltati', e per accorgersi che mancava
 	# qualcuno bisognava conoscere a memoria il numero di widget della schermata.
-	log('refresh_for_ids ids=%s azioni=%s contenitori=%s ricaricati=%s altre_finestre=%s saltati=%s non_identificati=%s recuperati=%s' %
+	log('refresh_for_ids ids=%s azioni=%s contenitori=%s ricaricati=%s altre_finestre=%s saltati=%s non_identificati=%s recuperati=%s'
+		' | subito=%s rimandati=%s gia_coperti=%s' %
 		(len(wanted), len(wanted_actions), 'trovati' if seen_any else 'NESSUNO', hit, hit_other, skipped,
-			unresolved, recovered))
+			unresolved, recovered, esiti['adesso'], esiti['dopo'], esiti['coperta']))
 	# Il conteggio restituito resta quello della finestra a schermo: e' cio' che decide il fallback
 	# globale del chiamante, e ricadere sul globale perche' l'unico contenitore interessato sta in
 	# un'altra finestra sarebbe esattamente il contrario di quello che si vuole.
@@ -1186,7 +1533,7 @@ def container_head(cid, scope=None):
 def is_loading(key):
 	# Il flag LOADING contiene il timestamp in cui il watcher ha lanciato la ricostruzione (prima era
 	# la stringa 'true'). Qualunque valore non vuoto significa "build in corso": e' il segnale con cui
-	# get_pages decide di ricostruire tutte le pagine accumulate invece di ricadere sul lotto iniziale.
+	# passi_da_caricare decide di ricostruire tutte le pagine accumulate invece di ricadere sul lotto iniziale.
 	from modules.kodi_utils import get_property
 	return bool(get_property(LOADING_PROP % key))
 
@@ -1199,9 +1546,9 @@ def loading_started(key):
 	except: return 0
 
 def _stamp_build(key):
-	# Timbra l'inizio di questa build. Chiamata da get_pages, cioe' una volta per costruzione: il costo
+	# Timbra l'inizio di questa build. Chiamata da passi_da_caricare, cioe' una volta per costruzione: il costo
 	# e' una setProperty, ed e' l'unico modo di sapere DALL'ESTERNO che una build e' davvero partita.
-	from modules.kodi_utils import set_property
+	from modules.kodi_utils import get_property, set_property
 	from time import time
 	now = str(time())
 	try: set_property(LASTBUILD_PROP % key, now)
@@ -1210,15 +1557,21 @@ def _stamp_build(key):
 	# QUI e non solo in set_head. Il motivo e' preciso: builds_in_flight() enumera le coppie censite,
 	# quindi un contenitore che si iscrive solo alla FINE della propria costruzione sarebbe invisibile
 	# proprio mentre sta costruendo -- cioe' l'unico momento in cui la marca conta.
+	#
+	# LOTTO 324 -- la marca la scrive UNA funzione sola, marca_invocazione. Qui si riscriveva con il
+	# solo istante, e siccome dal 324 la marca porta anche il motivo della ricarica e l'istante in cui
+	# si e' letto lo stato, riscriverla cosi' li cancellava: una ricarica di composizione tornava a
+	# valere come una ricarica per id, e la watchlist sarebbe tornata a non aggiornarsi -- lo stesso
+	# difetto del 322, per un'altra strada. Chi non e' passato dal router (non ha pgctl) la alza qui.
 	try:
-		set_property(INFLIGHT_PROP % key, now)
+		if not get_property(INFLIGHT_PROP % key): _marca_invocazione(key, now)
 		_scope, _, _cid = key.partition('.')
 		if _scope and _cid: registry_add(_scope, _cid)
 	except: pass
 
 def mark_build_start(key):
-	# Inizio dichiarato di una costruzione, per i widget che NON passano da get_pages -- oggi
-	# 'continua a guardare', che non e' paginato e quindi non chiama get_pages: senza questa
+	# Inizio dichiarato di una costruzione, per i widget che NON passano da passi_da_caricare -- oggi
+	# 'continua a guardare', che non e' paginato e quindi non chiama passi_da_caricare: senza questa
 	# dichiarazione sarebbe l'unico dei tre widget della Home invisibile a builds_in_flight(), ed e'
 	# anche il piu' lento.
 	_stamp_build(key)
@@ -1226,7 +1579,7 @@ def mark_build_start(key):
 def mark_invocation_start(key):
 	"""Alza SOLO la bandiera 'sto costruendo', appena l'invocazione entra nel router.
 
-	LOTTO 176, PASSO 1.2 BIS. mark_build_start e get_pages timbrano l'inizio della costruzione, ma
+	LOTTO 176, PASSO 1.2 BIS. mark_build_start e passi_da_caricare timbrano l'inizio della costruzione, ma
 	arrivano DOPO gli import pigri: fra l'avvio dell'interprete e la prima di quelle due chiamate
 	passa oltre un secondo in cui la build e' partita e nessuno lo sa. Misura sulla stick del 06/09,
 	fine della terza riproduzione:
@@ -1242,7 +1595,7 @@ def mark_invocation_start(key):
 	venivano ricostruiti una seconda volta, e il timbro del passo 1.2 non serviva a niente.
 
 	Non chiama _stamp_build: LASTBUILD_PROP deve continuare a significare "una costruzione e'
-	ARRIVATA IN FONDO", perche' e' su quello che si regge il giudizio soft_refresh di get_pages.
+	ARRIVATA IN FONDO", perche' e' su quello che si regge il giudizio soft_refresh di passi_da_caricare.
 	Qui si sa solo che una e' partita, ed e' l'unica cosa che si dichiara.
 
 	La marca orfana -- invocazione morta prima di pubblicare la testa -- se la ripulisce
@@ -1251,9 +1604,60 @@ def mark_invocation_start(key):
 	from modules.kodi_utils import set_property
 	from time import time
 	try:
-		set_property(INFLIGHT_PROP % key, str(time()))
+		_marca_invocazione(key, str(time()))
 		_scope, _, _cid = key.partition('.')
 		if _scope and _cid: registry_add(_scope, _cid)
+	except: pass
+
+def _marca_invocazione(key, inizio):
+	"""L'UNICO scrittore della marca "sto costruendo". Tre campi: inizio | motivo | stato_letto.
+
+	I tre servono a ricarica_decisa, che e' l'unico lettore che li interpreta tutti:
+	  inizio      quando questa costruzione e' partita;
+	  motivo      'azione' se sta rileggendo la sorgente (una ricarica di composizione), vuoto se no;
+	  stato_letto quando ha letto visti e segnalibri -- vuoto finche' non ci arriva.
+	Il motivo si legge dal path di QUESTA invocazione, che e' dove chi ha ordinato la ricarica l'ha
+	scritto: nessun canale in piu' da tenere allineato.
+	"""
+	from modules.kodi_utils import set_property
+	_CHIAVE_INVOCAZIONE[0] = key
+	# 'azione' solo se questa costruzione fara' davvero ricomporre la lista: un nonce gia' eseguito rimasto
+	# nel path non rilegge niente, e dichiararlo coprirebbe per sbaglio un cambiamento arrivato dopo.
+	motivo = ''
+	query = _current_query()
+	nonce = composizione_chiesta(query)
+	if nonce:
+		try:
+			from caches.widgets_cache import pronta
+			fatta = pronta(make_key(query))
+			if fatta is None or fatta.ricarica != nonce: motivo = RELOAD_KIND_ACTION
+		except Exception: motivo = RELOAD_KIND_ACTION
+	set_property(INFLIGHT_PROP % key, '%s|%s|' % (inizio, motivo))
+
+# La chiave del widget che QUESTA invocazione sta costruendo. Una invocazione costruisce una lista
+# sola, quindi non c'e' niente da sbagliare -- ed evita di far passare la chiave a mano in tre punti
+# diversi degli indexer, che e' il modo in cui il lotto 318 si e' preso la chiave sbagliata.
+_CHIAVE_INVOCAZIONE = [None]
+
+def marca_stato_letto():
+	""""Da qui in poi questa costruzione ha in mano visti, segnalibri e watchlist" (lotto 324).
+
+	E' il solo istante che conta per decidere se una ricarica per ID serve davvero. Un titolo segnato
+	come visto mentre la riga sta ancora chiedendo pagine alla sorgente e' GIA' dentro quella
+	costruzione: lo stato si legge in un colpo solo in worker(), che viene dopo. Senza questo timbro
+	l'unico riferimento era l'inizio dell'invocazione, e si ordinava una ricostruzione da 12-19 secondi
+	per un distintivo che sarebbe comparso da solo.
+	"""
+	key = _CHIAVE_INVOCAZIONE[0]
+	if not key: return
+	from modules.kodi_utils import get_property, set_property
+	from time import time
+	try:
+		raw = get_property(INFLIGHT_PROP % key)
+		if not raw: return
+		inizio, _, resto = raw.partition('|')
+		motivo = resto.partition('|')[0]
+		set_property(INFLIGHT_PROP % key, '%s|%s|%s' % (inizio, motivo, time()))
 	except: pass
 
 def mark_build_end(key):
@@ -1270,16 +1674,17 @@ def builds_in_flight():
 	# separatore. Nessun elenco parallelo da tenere allineato.
 	from modules.kodi_utils import get_property, clear_property
 	from time import time
+	# LOTTO 324 -- la marca si legge con _in_volo, che e' l'UNICO posto che la sa interpretare. Qui
+	# c'era un secondo lettore con la sua `float(raw)`, e quando la marca ha smesso di essere un numero
+	# solo avrebbe letto ogni costruzione viva come orfana, cancellandola: il canale dei rinvii sarebbe
+	# tornato a dire "niente in volo" sempre. Un dato, un parser.
 	vive, adesso = [], time()
 	for pair in registry_pairs():
 		key = pair.replace(':', '.', 1)
-		raw = get_property(INFLIGHT_PROP % key)
-		if not raw: continue
-		try: started = float(raw)
-		except: started = 0
-		# Marca orfana: l'invocazione e' morta senza pubblicare la testa. Si cancella qui, cosi' il
-		# guasto si ripara da solo invece di bloccare il canale per il resto della sessione.
-		if not started or adesso - started > INFLIGHT_MAX_SECONDS:
+		if not get_property(INFLIGHT_PROP % key): continue
+		if not _in_volo(key, adesso)[0]:
+			# Marca orfana: l'invocazione e' morta senza pubblicare la testa. Si cancella qui, cosi' il
+			# guasto si ripara da solo invece di bloccare il canale per il resto della sessione.
 			clear_property(INFLIGHT_PROP % key)
 			continue
 		vive.append(key)
@@ -1372,7 +1777,7 @@ def token_is_stale(params):
 def reconcile_position(key, params):
 	"""Azzera il conteggio se in questa posizione e' cambiata la lista. Torna il path_pages da usare.
 
-	La chiama get_pages, quindi ogni build passa di qui una volta sola, prima di decidere quante
+	La chiama passi_da_caricare, quindi ogni build passa di qui una volta sola, prima di decidere quante
 	pagine caricare. E' il rimpiazzo del controllo di cambio inquilino che stava nel watcher: qui il
 	contenuto e' noto per certo, li' era dedotto da cio' che si credeva di vedere a schermo.
 
@@ -1418,8 +1823,8 @@ def reconcile_position(key, params):
 	log('reconcile %s: contenuto %s -> %s, conteggio azzerato' % (key, short(was) if was else '(nuovo)', short(content)))
 	return 0
 
-def get_pages(key, default, path_pages=0, params=None):
-	# params: quando c'e', get_pages riconcilia da se' la posizione e IGNORA il path_pages passato --
+def passi_da_caricare(key, default, path_pages=0, params=None):
+	# params: quando c'e', passi_da_caricare riconcilia da se' la posizione e IGNORA il path_pages passato --
 	# lo rilegge da params, perche' un reset deve poterlo annullare. Vedi reconcile_position.
 	if params is not None: path_pages = reconcile_position(key, params)
 	# path_pages e' il ?pages=N letto dal path del widget: dice che questa ricostruzione appartiene a
@@ -1441,30 +1846,28 @@ def get_pages(key, default, path_pages=0, params=None):
 	# 25/08, `get_pages path_pages=4 -> pages_to_load=2`, e tre azzeramenti in dieci minuti.
 	#
 	# Ora il path puo' solo ALZARE, mai abbassare. Non serve riscrivere niente qui: la build carica N
-	# pagine e chiama set_state(key, N), quindi il conteggio per chiave si ripara da solo al primo giro.
-	# Il rischio residuo di un token sbagliato e' di caricare qualche pagina di troppo, non di perdere
-	# elementi -- ed e' comunque limitato da has_more e dal tetto di max_items.
+	# passi e chiama set_state(key, N), quindi il conteggio per chiave si ripara da solo al primo giro.
+	# Il rischio residuo di un token sbagliato e' di caricare qualche passo di troppo, non di perdere
+	# elementi -- ed e' comunque limitato dalla fine della sorgente.
 	_stamp_build(key)
 	try: path_pages = int(path_pages or 0)
 	except: path_pages = 0
 	if path_pages > default:
 		stored = raw_pages(key, default)
 		result = max(path_pages, stored)
-		# Limite di ASSURDITA', non di politica. Finche' il `min()` c'era, il conteggio per chiave
-		# faceva anche da tetto implicito; togliendolo, un token corrotto nel path diventerebbe un
-		# numero di pagine qualunque, e load_cumulative cicla esattamente pages_to_load volte
-		# (max_items spegne has_more DOPO la build, non limita quante pagine si chiedono).
-		# Il tetto e' max_items pagine: nel caso peggiore una pagina per elemento, quindi non stringe
-		# mai su un widget vero -- serve solo a rendere impossibile un ciclo lunghissimo.
-		cap = max_items()
-		if result > cap:
-			log('get_pages key=%s path_pages=%s ASSURDO, limitato a %s' % (short(key), path_pages, cap))
-			result = cap
-		log('get_pages key=%s path_pages=%s stored=%s -> pages_to_load=%s (default=%s)' % (short(key), path_pages, stored, result, default))
+		# Limite di ASSURDITA', non di politica: un token corrotto nel path diventerebbe un numero di
+		# passi qualunque, e il preparatore leggerebbe la sorgente fino a coprirli tutti.
+		# PASSI_ASSURDI sono 500 passi, cioe' 10.000 elementi: piu' lunga di qualunque lista che una
+		# delle nostre sorgenti sappia rendere, quindi non stringe mai su un widget vero -- serve solo
+		# a rendere impossibile un ciclo lunghissimo.
+		if result > PASSI_ASSURDI:
+			log('passi_da_caricare key=%s path_pages=%s ASSURDO, limitato a %s' % (short(key), path_pages, PASSI_ASSURDI))
+			result = PASSI_ASSURDI
+		log('passi_da_caricare key=%s path_pages=%s stored=%s -> pages_to_load=%s (default=%s)' % (short(key), path_pages, stored, result, default))
 		return result
-	return _get_pages_legacy(key, default)
+	return _passi_legacy(key, default)
 
-def _get_pages_legacy(key, default):
+def _passi_legacy(key, default):
 	# A genuine fresh widget open starts from the initial batch, so re-opening a widget never reloads its
 	# whole previously-expanded history at once. The accumulated page count is used only when this rebuild
 	# is either a watcher-driven pagination step (LOADING set) or an in-place soft refresh of the live
@@ -1474,58 +1877,212 @@ def _get_pages_legacy(key, default):
 	loading = is_loading(key)
 	soft_refresh = get_property(PG_REFRESH_PROP) == 'true'
 	result = raw_pages(key, default) if (loading or soft_refresh) else default
-	log('get_pages key=%s loading=%s soft_refresh=%s -> pages_to_load=%s (default=%s)' % (short(key), loading, soft_refresh, result, default))
+	log('passi_da_caricare key=%s loading=%s soft_refresh=%s -> pages_to_load=%s (default=%s)' % (short(key), loading, soft_refresh, result, default))
 	return result
 
-def set_state(key, pages, has_more):
-	# Publishes the cumulative page count and whether more pages exist. LOADING is deliberately NOT
-	# cleared here -- set_head clears it after add_items, so the watcher can't re-fire mid-build.
+CONFERME_VUOTO = 2
+
+def azzerare_token(numitems, dialogo, conferme=0, richieste=CONFERME_VUOTO):
+	"""Va azzerato il token delle pagine di questo contenitore? Torna (azzera, conferme).
+
+	Il token si azzera in UN solo caso legittimo: la ricerca a casella vuota, dove il contenitore
+	resta senza path di base e resterebbe il solo '&pages=N', che Kodi non sa risolvere.
+
+	Due condizioni, e sono entrambe cicatrici di letture che NON descrivevano il contenitore:
+
+	  dialogo   con un dialogo in cima, Container(N) si risolve contro il DIALOGO (vedi PR.md, voce
+	            12): il contenitore sembra vuoto anche quando ha 239 elementi. Misurato sulla stick il
+	            16/09 alle 01:26:01: menu contestuale aperto al fotogramma prima della lettura, token
+	            azzerato, riga Horror tornata da 239 a 25 elementi.
+	  conferme  una lettura vuota isolata non basta: la si vuole vedere due giri di fila (0,6 s). Una
+	            casella di ricerca vuota resta vuota, quindi il caso buono passa comunque; un vuoto di
+	            passaggio -- ricostruzione, dialogo che si apre, finestra che cambia -- no.
+
+	La cura definitiva e' la fase 4: lo stato dentro il primo elemento, e nessuna proprieta' da
+	azzerare.
+	"""
+	if dialogo or numitems: return False, 0
+	conferme += 1
+	return conferme >= richieste, conferme
+
+def set_state(key, passi, finita):
+	# I passi che la lista sta mostrando e se ce ne saranno altri. Stanno in proprieta' di finestra perche'
+	# li legge il watcher: `passi` e' cio' che incrementa di uno. Li scrive la costruzione, che e' chi
+	# consegna in QUESTA posizione (una posizione ospita liste diverse nel tempo).
+	# LOADING non si spegne qui ma in set_head, dopo add_items: fra i due c'e' la consegna a Kodi, e il
+	# watcher non deve poter far ripartire un passo in quella finestra.
 	from modules.kodi_utils import set_property
-	set_property(PAGES_PROP % key, str(pages))
-	set_property(HASMORE_PROP % key, 'true' if has_more else 'false')
-	log('set_state key=%s pages=%s has_more=%s' % (short(key), pages, has_more))
+	set_property(PAGES_PROP % key, str(passi))
+	set_property(HASMORE_PROP % key, 'false' if finita else 'true')
+	log('set_state key=%s passi=%s finita=%s' % (short(key), passi, finita))
 
-def _id_signature(item):
-	# Hashable de-dup key for an id. Plain TMDB ids are ints/strings (hashable as-is); Trakt ids are
-	# dicts ({'trakt':..,'tmdb':..,'imdb':..,'slug':..}) -- the same title always carries the same dict,
-	# so a tuple of its sorted items is a safe, exact signature (no risk of merging distinct titles).
-	if isinstance(item, dict):
-		return tuple(sorted((k, str(v)) for k, v in item.items()))
-	return item
+def tmdb_di(item):
+	"""Il numero TMDb di un id, qualunque forma abbia: intero, stringa o dizionario Trakt.
 
-def load_cumulative(fetch_page, pages_to_load, min_items=0):
-	# fetch_page(page_no) -> (ids: list, has_more: bool). Loads cumulative pages 1..N and stops early when a
-	# page reports no more. Normally stops at pages_to_load; when min_items > 0 (heavily-filtered text
-	# search, whose pages each yield only a few display items) it keeps fetching PAST pages_to_load until the
-	# accumulated count reaches min_items -- bounded by _FILL_PAGE_CAP extra pages. This hands back a full
-	# screen in a single build instead of letting the watcher discover the shortfall and cascade many tiny
-	# load-ahead refreshes just because item 1 of a short list already sits within the runway.
-	# Returns (concatenated_ids, has_more, last_loaded_page) -- last_page is the REAL count fetched, so the
-	# caller records it (set_state) and the watcher bumps the page count from reality, not from the request.
-	# De-duplicates across pages keeping the FIRST occurrence: "live" feeds (Trending/Popular) reorder
-	# between requests, so a title loaded on page N can resurface on a later page and would otherwise be
-	# shown twice. Dropping only the later (tail) duplicate keeps every already-shown item at its index,
-	# so the append-only invariant -- and the focus -- are preserved.
-	all_ids, seen, has_more, last_page = [], set(), False, 0
-	page_cap = pages_to_load + (_FILL_PAGE_CAP if min_items else 0)
-	page_no = 0
-	while page_no < page_cap:
-		page_no += 1
-		ids, has_more = fetch_page(page_no)
-		last_page = page_no
-		added = 0
-		if ids:
-			for item in ids:
-				sig = _id_signature(item)
-				if sig in seen: continue
-				seen.add(sig)
-				all_ids.append(item)
-				added += 1
-		log('load_cumulative page=%s items=%s new=%s has_more=%s (total so far=%s, rimandati=%s, min_items=%s)'
-			% (page_no, len(ids) if ids else 0, added, has_more, len(all_ids), deferred_count(), min_items))
-		if not has_more: break
-		# Past the requested pages, stop as soon as the fill target is met (min_items=0 -> stop exactly at
-		# pages_to_load, the legacy behavior for every non-search widget). Gli elementi rimandati dal
-		# filtro doppiaggio contano come presenti: vedi deferred_count.
-		if page_no >= pages_to_load and len(all_ids) + deferred_count() >= min_items: break
-	return all_ids, has_more, last_page
+	None quando non c'e' -- un id Trakt puo' portare solo imdb o slug. Chi lo usa deve trattare None
+	come "identita' non dimostrabile", non come zero.
+	"""
+	if isinstance(item, dict): item = item.get('tmdb')
+	if not item: return None
+	try: return int(item)
+	except Exception: return None
+
+def lista_identificabile(voci):
+	"""Questa lista si puo' riprendere dal database?
+
+	Il database identifica un elemento con (tipo, id TMDb), e per film e serie e' un'identita' vera.
+	Per STAGIONI ed EPISODI non lo e': dieci episodi della stessa serie portano lo stesso id TMDb,
+	quindi si schiaccerebbero l'uno sull'altro -- una lista Trakt di episodi perderebbe elementi a ogni
+	ricostruzione. Finche' non hanno un'identita' loro, quelle liste continuano a ricostruirsi per
+	intero dalla sorgente: e' cio' che facevano prima del 318, e per loro non costa niente perche' la
+	lista e' gia' tutta in memoria.
+	"""
+	try: return not any(i.get('type') not in ('movie', 'show') for i in voci or ())
+	except Exception: return False
+
+def come_id(tmdb, id_type):
+	"""Un id ripreso dal database, nella forma che la costruzione sa risolvere.
+
+	Il database tiene il solo numero TMDb -- e' l'identita', non la provenienza. Le sorgenti Trakt
+	lavorano a dizionari, e movie_meta/tvshow_meta da un dizionario estraggono proprio il tmdb: si
+	rimette li' dentro, cosi' la lista resta omogenea invece di mescolare due forme.
+	"""
+	return {'tmdb': str(tmdb)} if id_type == 'trakt_dict' else tmdb
+
+# --- LOTTO 332: LA COSTRUZIONE LEGGE, IL SERVIZIO PREPARA -----------------------------------------------
+# Il lato costruzione del dialogo con modules/preparatore.py. Vedi la testa di quel modulo.
+MESSAGGIO_PASSO = 'pgpasso'
+MESSAGGIO_PRONTO = 'pgpronto'
+MESSAGGIO_SERVIZIO = 'pgservizio'
+MESSAGGIO_SCADUTE = 'pgscadute'
+MESSAGGIO_ANTICIPO = 'pganticipo'
+# Il servizio e' vivo, e l'istante del suo ultimo segno di vita: il preparatore lo riscrive a ogni pagina letta e
+# a ogni lavoro (lotto 334). Vuoto = il servizio non e' ancora partito, o si e' fermato.
+SERVIZIO_PROP = 'fenlight.pg.servizio'
+# L'unico tempo del meccanismo, deciso il 16/09: se il servizio TACE per questo limite la costruzione
+# consegna cio' che c'e' e lo scrive nel log. Si misura sul silenzio, non sulla durata dell'attesa: un passo
+# che legge decine di pagine (una ricerca che il filtro svuota) e' un servizio che lavora, e batte.
+# Quando scatta e' un difetto da cercare: un servizio vivo batte sempre, anche in pausa.
+LIMITE_ATTESA = 60
+# La fetta d'attesa. Coincide con quella interna di Kodi (PR.md, voce 14): non aggiunge ritardo.
+FETTA_ATTESA = 0.1
+# Il battito si guarda una volta al secondo: e' una proprieta' di finestra, costa poco, ma non serve di piu'.
+GIRI_PER_BATTITO = 10
+
+def _attesa():
+	"""Il Monitor con cui una costruzione aspetta il servizio. Si crea PRIMA di leggere il database: una
+	risposta arrivata fra la lettura e l'attesa non puo' cosi' andare persa."""
+	import json, xbmc
+	class Attesa(xbmc.Monitor):
+		def __init__(self):
+			super(Attesa, self).__init__()
+			self.pronte, self.servizio = {}, False
+		def onNotification(self, sender, method, data):
+			if sender != ADDON_ID: return
+			if method == 'Other.%s' % MESSAGGIO_PRONTO:
+				try: d = json.loads(data) if isinstance(data, str) else data
+				except Exception: return
+				if d.get('chiave'): self.pronte[d['chiave']] = d.get('esito') or 'ok'
+			elif method == 'Other.%s' % MESSAGGIO_SERVIZIO:
+				self.servizio = True
+	return Attesa()
+
+def composizione_chiesta(params):
+	"""Il nonce della ricomposizione che il path chiede, o ''. Vale finche' il database non dice che e' stata
+	eseguita (lotto 328): e' la costruzione a confrontarlo con `Pronta.ricarica`."""
+	params = params or {}
+	if params.get(RELOAD_KIND_PARAM) != RELOAD_KIND_ACTION: return ''
+	return str(params.get(RELOAD_PARAM) or '')
+
+def passo_pronto(params, key, tipo, azione=None, esterna=True):
+	"""La lista da consegnare in questa costruzione, preparata dal servizio. Torna (Pronta o None, passi).
+
+	Tre casi:
+	  - il database copre gia' i passi chiesti, e nessuno chiede di ricomporre: si legge e basta (ricariche
+	    per stato, riletture di Kodi, ritorni da una riproduzione: nessun messaggio, nessuna attesa);
+	  - no: si chiede il passo al servizio e si aspetta la sua risposta;
+	  - il servizio tace per LIMITE_ATTESA: si consegna cio' che c'e', e il log lo dice.
+	I passi del token possono essere MENO di quelli coperti (una riga riaperta nella stessa sessione): si
+	consegna comunque tutto cio' che la lista ha, com'era.
+	"""
+	from time import time as _now
+	from caches import widgets_cache as W
+	passi = passi_da_caricare(key, passi_iniziali(), params=params)
+	chiave = make_key(params)
+	nonce = composizione_chiesta(params)
+	monitor = _attesa()
+	def basta(p):
+		if p is not None and p.mista: return True
+		return p is not None and p.passi >= passi and (not nonce or p.ricarica == nonce)
+	p = W.pronta(chiave)
+	if basta(p): return p, passi
+	from modules.kodi_utils import get_property
+	t0 = _now()
+	richiesta = {'chiave': chiave, 'parametri': canonical_params(params), 'tipo': tipo, 'azione': azione or '',
+				'posizione': key if position_of(params)[0] else '', 'passi': passi, 'ricomponi': nonce, 'esterna': bool(esterna),
+				'istante': t0}
+	battito, vivo = get_property(SERVIZIO_PROP), t0
+	inviata = False
+	if battito:
+		invia(MESSAGGIO_PASSO, richiesta); inviata = True
+	log('passo_pronto key=%s chiesti=%s coperti=%s ricomponi=%s servizio=%s' % (short(key), passi,
+		p.passi if p else '-', bool(nonce), 'pronto' if inviata else 'NON ANCORA'))
+	esito, giri = None, 0
+	while True:
+		if monitor.waitForAbort(FETTA_ATTESA):
+			esito = 'abort'; break
+		giri += 1
+		if monitor.servizio:
+			# Il servizio e' (ri)partito: una richiesta fatta prima non esiste piu'. Si rimanda.
+			monitor.servizio = False
+			invia(MESSAGGIO_PASSO, richiesta); inviata = True
+		esito = monitor.pronte.pop(chiave, None)
+		if esito is not None:
+			p = W.pronta(chiave)
+			if esito != 'ok' or basta(p): break
+			esito = None
+		if giri % GIRI_PER_BATTITO: continue
+		adesso = get_property(SERVIZIO_PROP)
+		if adesso != battito:
+			battito, vivo = adesso, _now()
+		elif _now() - vivo > LIMITE_ATTESA:
+			esito = 'limite'
+			p = W.pronta(chiave)
+			from modules.kodi_utils import logger
+			logger('FenLight SERVIZIO NON RISPONDE', 'key=%s chiave=%s passi=%s inviata=%s coperti=%s: nessun battito da %s s, consegno cio\' che c\'e\''
+					% (key, short(chiave), passi, inviata, p.passi if p else '-', LIMITE_ATTESA))
+			break
+	del monitor
+	log('passo_pronto key=%s esito=%s in %.0f ms coperti=%s' % (short(key), esito, (_now() - t0) * 1000, p.passi if p else '-'))
+	return p, passi
+
+def segnala_schede(key, params, tipo, scadute, mancanti):
+	"""Schede servite scadute, o mancanti: le rinnova il servizio (P2)."""
+	if not scadute and not mancanti: return
+	try:
+		invia(MESSAGGIO_SCADUTE, {'chiave': make_key(params), 'parametri': canonical_params(params), 'tipo': tipo,
+			'scadute': [list(x) for x in scadute], 'mancanti': [list(x) for x in mancanti]})
+		log('schede segnalate key=%s scadute=%s mancanti=%s' % (short(key), len(scadute), len(mancanti)))
+	except Exception as e: log('segnalazione schede fallita: %r' % e)
+
+def ricarica_posizioni(posizioni):
+	"""Ricarica per STATO queste posizioni ('scope.cid'). La usa il servizio quando una lista cambia da se':
+	un verdetto arrivato tardi su una lista finita, una scheda che mancava. Torna quante ne ha ordinate."""
+	from time import time
+	adesso = time()
+	nonce = '%d' % (adesso * 1000)
+	fatte = 0
+	for posizione in posizioni or ():
+		scope, _, cid = str(posizione).rpartition('.')
+		if not scope or not cid.isdigit(): continue
+		_ricarica(scope, cid, posizione, nonce, adesso, False)
+		fatte += 1
+	spedisci_ricariche()
+	log('ricarica_posizioni %s' % (','.join(posizioni or ()) or '-'))
+	return fatte
+
+def voci_miste(voci):
+	"""Le voci di una lista mista preparata (Trakt, MDbList) nella forma che i loro costruttori leggono."""
+	nomi = {TIPI['movie']: 'movie', TIPI['tvshow']: 'show'}
+	return [{'type': nomi[t], 'media_ids': {'tmdb': str(tmdb)}, 'order': n}
+			for n, (t, tmdb) in enumerate(voci or ()) if t in nomi]

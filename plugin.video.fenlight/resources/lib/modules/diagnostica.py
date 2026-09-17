@@ -160,9 +160,14 @@ def battezza(nome, percorso=None):
 	"""
 	if not attiva(): return False
 	try:
-		import os, threading
+		# LOTTO 307: _thread e non threading. threading si tira dietro functools, collections, reprlib e
+		# compagnia, e il profilatore degli import lo attribuiva proprio a questo modulo in OGNI invocazione
+		# a diagnostica accesa (referti af-hub-302 e 304): lo strumento pesava sulla misura. _thread e' un
+		# modulo C gia' caricato e ha la stessa get_native_id.
+		import os
+		from _thread import get_native_id
 		if percorso is None:
-			percorso = '/proc/self/task/%d/comm' % threading.get_native_id()
+			percorso = '/proc/self/task/%d/comm' % get_native_id()
 		fd = os.open(percorso, os.O_WRONLY)
 		try: os.write(fd, nome[:15].encode('utf-8', 'replace'))
 		finally: os.close(fd)

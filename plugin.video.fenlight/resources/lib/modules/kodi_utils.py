@@ -227,6 +227,140 @@ def mark_phase(name):
 	_PHASE[name] = perf_counter()
 	_c = _thread_cpu()
 	if _c is not None: _PHASE_CPU[name] = _c
+	tappa(name)
+
+# ------------------------------------------------------------------------------------------------
+# LOTTO 307 -- IL CRONOMETRO DELLA COSTRUZIONE (blocco B, passo 0).
+#
+# La divisione del lavoro concordata: il tempo lo giudica la suite FUORI da Kodi (strumenti/
+# diagnostica), che pero' vede un'invocazione come UN thread e non puo' dire quale funzione Python
+# stesse girando. Qui dentro si prendono solo TIMBRI IN MEMORIA -- orologio, cpu del thread, tid --
+# e si scrive UNA riga sola, dopo endOfDirectory (vedi log_costruzione). Niente traversate verso la
+# GUI, niente file, niente righe per pagina: quelle crescono con N, cioe' proprio con la variabile
+# che si vuole misurare.
+#
+#   tappa(nome)                   un confine di fase, nell'ordine in cui avviene, col thread che lo passa
+#   conta(nome, secondi, q)       un costo che si ripete (una pagina, una decodifica): volte, tempo, quantita'
+#   installa_traversate()         conta le chiamate che prendono il lock grafico di Kodi
+#
+# Le tappe portano la cpu ASSOLUTA del thread (thread_time), non la differenza: e' costruzioni.py a
+# sottrarre fra tappe dello STESSO thread. Una differenza calcolata qui fra thread diversi non
+# significherebbe niente, e le build MDBList/Trakt costruiscono film e serie in thread separati.
+_TAPPE = []
+_CONTI = {}
+
+def _tid():
+	# _thread e' un modulo C gia' caricato: nessun albero di import, a differenza di threading.
+	try:
+		from _thread import get_native_id
+		return get_native_id()
+	except Exception: return 0
+
+# LOTTO 333 -- UNA COSTRUZIONE PREPARATA NON VA IN RETE. Lo decide la struttura, non la disciplina: la riga
+# paginata, appena sa di esserlo, chiama vieta_rete, e da quel momento modules/http_client rifiuta ogni
+# richiesta scrivendolo nel log ('FenLight RETE VIETATA'). La rete di quelle righe la fa il servizio
+# (modules/preparatore.py): una richiesta rifiutata qui e' un difetto da cercare, non un caso previsto.
+RETE_VIETATA = [None]
+
+def vieta_rete(motivo):
+	RETE_VIETATA[0] = motivo or 'costruzione'
+
+def tappa(name):
+	from time import perf_counter
+	_TAPPE.append((name, perf_counter(), _thread_cpu(), _tid()))
+
+def conta(name, seconds, quantity=0):
+	# Aggiornamento in posto di una lista: sicuro fra thread sotto GIL, e per la diagnostica una
+	# somma persa per contesa sarebbe comunque visibile come conteggio incoerente, non come errore.
+	voce = _CONTI.get(name)
+	if voce is None:
+		voce = _CONTI[name] = [0, 0.0, 0]
+	voce[0] += 1
+	voce[1] += seconds
+	voce[2] += quantity
+
+# LE TRAVERSATE. Verificato nel sorgente di Kodi 21 (branch Omega, xbmc/interfaces/legacy/):
+#   Window::getProperty / setProperty / clearProperty   Window.cpp:605-629
+#       SingleLockWithDelayGuard gslock(GetWinSystem()->GetGfxContext(), languageHook)
+#   getCurrentWindowId                                  ModuleXbmcgui.cpp:27-32, lock sul GfxContext
+#   getCondVisibility                                   ModuleXbmc.cpp:355-363, XBMCAddonUtils::GuiLock
+# Il GfxContext e' il lock che il thread GUI tiene mentre elabora e disegna un fotogramma: ogni
+# proprieta' letta o scritta dal plugin aspetta il suo turno. I ListItem creati offscreen invece NON
+# lo prendono (ListItem.cpp, GuiLock con offScreen=true). getInfoLabel non prende un lock esplicito
+# nella funzione, ma interroga lo stato della GUI: si conta a parte, senza presumere.
+# E si contano anche le righe di log, perche' Kodi le scrive in modo sincrono sul thread chiamante
+# (flush_on(debug), xbmc/utils/log.cpp:53): e' il peso della strumentazione stessa.
+_TRAVERSATE = {}
+_TRAVERSATE_ATTIVE = []
+
+def installa_traversate():
+	"""Avvolge le funzioni di questo modulo che attraversano verso Kodi. Idempotente.
+
+	Si riassegnano i NOMI del modulo: chi li legge al momento della chiamata (le funzioni di questo
+	file, e chi fa `from modules.kodi_utils import get_property` dentro una funzione) prende la
+	versione contata; chi li ha copiati PRIMA dell'installazione no. Il router la chiama prima di
+	importare l'indexer, quindi gli indexer -- che copiano i nomi a livello di modulo -- sono coperti.
+	Restano fuori le poche chiamate dirette a xbmcgui.Window(...) sparse nel codice: la riga lo dice
+	contando solo cio' che vede, non stimando il resto.
+	"""
+	if _TRAVERSATE_ATTIVE: return
+	_TRAVERSATE_ATTIVE.append(True)
+	from time import perf_counter
+	g = globals()
+	def avvolgi(nome, tipo):
+		originale = g[nome]
+		def contata(*args, **kwargs):
+			t = perf_counter()
+			try: return originale(*args, **kwargs)
+			finally:
+				voce = _TRAVERSATE.get(tipo)
+				if voce is None: voce = _TRAVERSATE[tipo] = [0, 0.0]
+				voce[0] += 1
+				voce[1] += perf_counter() - t
+		g[nome] = contata
+	for nome, tipo in (('get_property', 'prop_get'), ('set_property', 'prop_set'), ('clear_property', 'prop_clear'),
+						('get_infolabel', 'infolabel'), ('get_visibility', 'visibility'),
+						('getCurrentWindowId', 'window_id'), ('log', 'log')):
+		if nome in g: avvolgi(nome, tipo)
+	# perf.log chiama xbmc.log direttamente: si conta anche quello, nello stesso cassetto.
+	try:
+		_xlog = xbmc.log
+		def _xbmc_log_contato(*args, **kwargs):
+			t = perf_counter()
+			try: return _xlog(*args, **kwargs)
+			finally:
+				voce = _TRAVERSATE.get('log')
+				if voce is None: voce = _TRAVERSATE['log'] = [0, 0.0]
+				voce[0] += 1
+				voce[1] += perf_counter() - t
+		xbmc.log = _xbmc_log_contato
+	except Exception: pass
+
+def log_costruzione(argv, t_start):
+	"""LA riga del lotto 307: tappe, conti e traversate di questa invocazione, in una riga sola.
+
+	Formato a chiavi, pensato per costruzioni.py e non per l'occhio:
+	  mode=<mode> tid=<tid> t0=<epoch dell'avvio di fenlight.py>
+	  tappe=<nome>:<ms da t0>:<cpu ms assoluta del thread>:<tid>,...
+	  conti=<nome>:<volte>:<ms>:<quantita'>,...
+	  trav=<tipo>:<volte>:<ms>,...
+	Va chiamata DOPO endOfDirectory: la riga non deve ritardare la consegna della lista.
+	"""
+	try:
+		from time import perf_counter, time as _epoch_now
+		t0_epoch = _epoch_now() - (perf_counter() - t_start)
+		mode = ''
+		try:
+			for part in (argv[2] if len(argv) > 2 else '').lstrip('?').split('&'):
+				if part.startswith('mode='): mode = part[5:]; break
+		except: pass
+		tappe = ','.join('%s:%.1f:%s:%s' % (n, (w - t_start) * 1000, ('%.1f' % (c * 1000)) if c is not None else '-', tid)
+						for n, w, c, tid in list(_TAPPE))
+		conti = ','.join('%s:%d:%.1f:%d' % (n, v[0], v[1] * 1000, v[2]) for n, v in sorted(_CONTI.items()))
+		trav = ','.join('%s:%d:%.1f' % (n, v[0], v[1] * 1000) for n, v in sorted(_TRAVERSATE.items()))
+		perf_log('FenLight PERF COSTRUZIONE', 'mode=%s tid=%s t0=%.3f tappe=%s conti=%s trav=%s'
+				% (mode or '?', _tid(), t0_epoch, tappe or '-', conti or '-', trav or '-'))
+	except: pass
 
 def add_items(handle, item_list):
 	from time import perf_counter as _pc
@@ -234,9 +368,12 @@ def add_items(handle, item_list):
 	_PHASE['add_start'] = _t
 	_c = _thread_cpu()
 	if _c is not None: _PHASE_CPU['add_start'] = _c
+	_TAPPE.append(('add_start', _t, _c, _tid()))
 	addDirectoryItems(handle, item_list)
 	_DELIVERY[0] = (_pc() - _t) * 1000
 	_DELIVERY[1] = len(item_list) if item_list else 0
+	tappa('add_end')
+	conta('consegna', _DELIVERY[0] / 1000.0, _DELIVERY[1])
 
 def set_content(handle, content):
 	setContent(handle, content)
@@ -278,6 +415,13 @@ def end_directory(handle, cacheToDisc=True):
 	endOfDirectory(handle, cacheToDisc=cacheToDisc)
 	_eod = (_pc() - _t) * 1000
 	_PHASE['eod_end'] = _pc()
+	tappa('eod_end')
+	# LOTTO 313 -- lo strato dati si scrive QUI, a cartella chiusa. Prima stava dentro set_head, cioe'
+	# mentre il thread grafico aspettava la cartella: 30-50 ms regalati all'attesa dell'utente.
+	try:
+		from modules.paginator import scrivi_db
+		scrivi_db()
+	except Exception: pass
 	try:
 		# Il timbro sta DOPO endOfDirectory, e la ragione non e' stilistica. external() interroga la
 		# GUI (getInfoLabel su Container.PluginName): metterlo PRIMA significava chiedere il lock
@@ -923,7 +1067,7 @@ PG_REFRESH_FLAG = 'fenlight.pg.refresh'
 def mark_inplace_rebuild():
 	"""Dichiara che le prossime ricostruzioni sono un REFRESH IN POSTO, non l'apertura di un widget.
 
-	get_pages, quando trova questa bandiera, ricostruisce alla LUNGHEZZA CORRENTE invece che al
+	passi_da_caricare, quando trova questa bandiera, ricostruisce alla LUNGHEZZA CORRENTE invece che al
 	default: gli elementi restano fermi dove sono e il fuoco e' preservato. E' lo stesso meccanismo
 	del lotto 112 alla chiusura del player, esteso all'altro estremo della riproduzione.
 
@@ -1378,9 +1522,9 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	try:
 		from modules import paginator
 		hit = paginator.refresh_containers_for_ids(ids, actions)
-		seen_any, other = paginator.LAST_SEEN_ANY[0], paginator.LAST_OTHER_HITS[0]
+		seen_any, other, other_seen = paginator.LAST_SEEN_ANY[0], paginator.LAST_OTHER_HITS[0], paginator.LAST_OTHER_SEEN[0]
 	except:
-		hit, seen_any, other = 0, False, 0
+		hit, seen_any, other, other_seen = 0, False, 0, 0
 	# LOTTO 119 -- il fallback globale scatta solo se non si e' potuto verificare NIENTE, da nessuna
 	# parte. Prima bastava 'zero contenitori ricaricati a schermo', che confonde due esiti opposti:
 	#   - nessun contenitore nostro in questa finestra, e nessuna altra finestra raggiunta
@@ -1390,7 +1534,7 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	#     lavoro appena fatto, ed e' il modo in cui una ricarica mirata tornava a essere globale.
 	#   - niente a schermo ma ALTRE finestre gia' invalidate -> il lavoro e' fatto, si rileggeranno
 	#     da sole al rientro; un UpdateLibrary adesso non aggiungerebbe nulla.
-	if not hit and not seen_any and not other:
+	if not hit and not seen_any and not other_seen:
 		logger('Fen Light', 'DIAG refresh: nessun contenitore identificato, si ricade sul GLOBALE | id=%s azioni=%s finestra=%s'
 				% (len(ids or []), len(actions or ()), getCurrentWindowId()))
 		kodi_refresh(coalesce)
@@ -1413,8 +1557,8 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# tornano a schermo. Niente due tempi, e nessuna finestra puo' restare disallineata.
 	# Rete di sicurezza per il solo caso in cui non ci fosse NIENTE di censito da raggiungere -- una
 	# finestra mai aperta in questa sessione. Se il censimento ha risposto, un rinvio sarebbe lavoro
-	# doppio sugli stessi contenitori.
-	if window_id != 10000 and not other:
+	# doppio sugli stessi contenitori. "Ha risposto" = ha VISTO contenitori, non ne ha ricaricati (lotto 335).
+	if window_id != 10000 and not other_seen:
 		# Marca la finestra d'origine: questo riarmo serve alle ALTRE, e senza la marca verrebbe
 		# riconsumato qui ogni 10 s all'infinito. Vedi PENDING_SCOPE_PROP.
 		try:
@@ -1424,7 +1568,7 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 		queue_pending_refresh('kodi_refresh_ids', ids, actions, scope=_scope)
 	logger('Fen Light', 'DIAG refresh: MIRATO %s contenitori ricaricati | altre finestre %s | id=%s azioni=%s finestra=%s%s'
 			% (hit, other, len(ids or []), len(actions or ()), window_id,
-				'' if (window_id == 10000 or other) else ' | nessuna finestra censita, resto RIMANDATO alla Home'))
+				'' if (window_id == 10000 or other_seen) else ' | nessuna finestra censita, resto RIMANDATO alla Home'))
 
 def refresh_widgets(show_notification='false', coalesce=True):
 	# Due padroni: la voce di menu "Aggiorna widget" (comando esplicito dell'utente, da eseguire

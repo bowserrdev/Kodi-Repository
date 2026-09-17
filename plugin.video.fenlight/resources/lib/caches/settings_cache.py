@@ -23,7 +23,13 @@ class SettingsCache:
 			dbcon = connect_database('settings_db')
 			setting_id = setting_id.replace('fenlight.', '')
 			setting_value = dbcon.execute(BASE_GET, (setting_id,)).fetchone()[0]
-			self.set_memory_cache(setting_id, setting_value)
+			# LOTTO 324 -- si pubblica la proprieta' SENZA passare da set_memory_cache. Le due cose si
+			# assomigliano ma non sono la stessa: questa e' una LETTURA che riempie la cache, non un
+			# cambiamento. Passando di la' spegneva il ricordo del lotto 323, e siccome all'inizio di una
+			# sessione molte impostazioni stanno solo nel database, il ricordo veniva azzerato di
+			# continuo: misurato, la seconda lettura della stessa impostazione tornava a chiedere la
+			# proprieta'. L'ottimizzazione c'era e non funzionava, in silenzio.
+			set_property('fenlight.%s' % setting_id, setting_value)
 		except: setting_value = None
 		return setting_value
 
@@ -65,9 +71,11 @@ class SettingsCache:
 
 	def set_memory_cache(self, setting_id, setting_value):
 		set_property('fenlight.%s' % setting_id, setting_value)
+		memo_svuota()
 
 	def delete_memory_cache(self, setting_id):
 		clear_property('fenlight.%s' % setting_id)
+		memo_svuota()
 
 	def setting_info(self, setting_id):
 		return [i for i in default_settings if i['setting_id'] == setting_id][0]
@@ -84,8 +92,55 @@ settings_cache = SettingsCache()
 def set_setting(setting_id, value):
 	settings_cache.set(setting_id, value)
 
+# LOTTO 323 -- IL RICORDO PER INVOCAZIONE.
+#
+# La proprieta' di finestra non e' il valore dell'impostazione: e' il canale con cui un'impostazione
+# CAMBIATA raggiunge gli altri interpreti, che in memoria hanno un dizionario ormai vecchio. Ma
+# getProperty prende il lock grafico, quindi ogni lettura e' una presa di lock -- e il percorso dei
+# metadati ne rilegge una quindicina per titolo. Misurato sulla stick il 16/09, due costruzioni della
+# stessa riga a pochi minuti di distanza:
+#     trav=prop_get:35:116.7      build tranquilla:  35 letture, 3,3 ms l'una
+#     trav=prop_get:282:1906.7    build sotto carico: 282 letture, 6,8 ms l'una -- 1,9 s in una build
+# Il costo unitario raddoppia sotto contesa perche' e' lo STESSO lock che serve alla GUI per scorrere:
+# non e' solo tempo nostro, e' anche interfaccia che rallenta.
+#
+# Un'invocazione del plugin legge ogni impostazione una volta e poi se la ricorda. Non e' una scommessa
+# sul fatto che nessuno la cambi: con reuselanguageinvoker=false ogni invocazione e' un interprete nuovo,
+# quindi il ricordo nasce e muore con lei, e chi scrive un'impostazione lo svuota comunque (vedi
+# set_memory_cache). Una costruzione che leggesse un valore cambiato a meta' sarebbe da rifare in ogni
+# caso: cambiare un'impostazione ricostruisce i widget.
+#
+# SI ARMA, non e' attivo per contratto, e la ragione e' il SERVIZIO: e' l'unico processo che vive per
+# tutta la sessione, e se si ricordasse le impostazioni non vedrebbe piu' nessun cambiamento per ore.
+# Ad armarlo e' il router, cioe' il punto da cui passa ogni invocazione del plugin e nessun servizio.
+_memo = {}
+_memo_armato = [False]
+
+def memo_avvia():
+	"""Da qui in poi ogni impostazione si legge una volta sola. La chiama il router."""
+	_memo_armato[0] = True
+	_memo.clear()
+
+def memo_ferma():
+	"""Torna a rileggere sempre. Serve alle prove e a chi vive a lungo; il servizio non arma mai."""
+	_memo_armato[0] = False
+	_memo.clear()
+
+def memo_svuota():
+	# Chi scrive un'impostazione se la deve ritrovare, anche dentro la stessa invocazione: il pannello
+	# delle impostazioni e' esso stesso un'invocazione, e scrive e rilegge.
+	_memo.clear()
+
 def get_setting(setting_id, fallback=''):
-	return get_property(setting_id) or settings_cache.get(setting_id) or fallback
+	if not _memo_armato[0]:
+		return get_property(setting_id) or settings_cache.get(setting_id) or fallback
+	# Si ricorda il valore RISOLTO -- proprieta' oppure database -- non solo la lettura della proprieta'.
+	# Ricordare solo la proprieta' lasciava fuori dal ricordo proprio le impostazioni che costano di
+	# piu': quelle che la proprieta' non ce l'hanno ancora e a ogni accesso aprivano il database.
+	# Il ripiego resta FUORI dal ricordo: e' del chiamante, e due chiamanti possono averlo diverso.
+	try: valore = _memo[setting_id]
+	except KeyError: valore = _memo[setting_id] = get_property(setting_id) or settings_cache.get(setting_id)
+	return valore or fallback
 
 def get_many(settings_list):
 	return settings_cache.get_many(settings_list)
@@ -236,7 +291,6 @@ default_settings = [
 #==================== Widgets
 {'setting_id': 'widget_refresh_timer', 'setting_type': 'string', 'setting_default': '0'},
 {'setting_id': 'widget_refresh_notification', 'setting_type': 'boolean', 'setting_default': 'true'},
-{'setting_id': 'widget_hide_watched', 'setting_type': 'boolean', 'setting_default': 'false'},
 {'setting_id': 'widget_hide_next_page', 'setting_type': 'boolean', 'setting_default': 'false'},
 {'setting_id': 'dub_filter.enabled', 'setting_type': 'boolean', 'setting_default': 'false'},
 {'setting_id': 'dub_filter.language', 'setting_type': 'action', 'setting_default': 'it', 'settings_options': {'it': 'Italiano'}},
@@ -244,13 +298,11 @@ default_settings = [
 {'setting_id': 'paginate.lists', 'setting_type': 'action', 'setting_default': '0', 'settings_options': {'0': 'Off', '1': 'Within Addon Only', '2': 'Widgets Only', '3': 'Both'}},
 {'setting_id': 'paginate.limit_addon', 'setting_type': 'action', 'setting_default': '20'},
 {'setting_id': 'paginate.limit_widgets', 'setting_type': 'action', 'setting_default': '20'},
-{'setting_id': 'paginate.interactive', 'setting_type': 'boolean', 'setting_default': 'true'},
 # Interruttore unico della strumentazione (lotto 83). Vedi modules/perf.py. Default acceso finche'
 # l'indagine sulla navigazione e' aperta: le misure servono adesso, e spegnerlo e' una spunta.
 {'setting_id': 'perf.instrumentation', 'setting_type': 'boolean', 'setting_default': 'true'},
 {'setting_id': 'paginate.initial_batch', 'setting_type': 'action', 'setting_default': '2', 'min_value': '2', 'max_value': '10'},
 {'setting_id': 'paginate.lookahead', 'setting_type': 'action', 'setting_default': '1', 'min_value': '1', 'max_value': '5'},
-{'setting_id': 'paginate.max_items', 'setting_type': 'action', 'setting_default': '75', 'min_value': '20', 'max_value': '500'},
 {'setting_id': 'recommend_service', 'setting_type': 'action', 'setting_default': '0', 'settings_options': {'0': 'Recommended (TMDb)', '1': 'More Like This (IMDb)'}},
 {'setting_id': 'recommend_seed', 'setting_type': 'action', 'setting_default': '5', 'settings_options': {'1': 'Last Watched Only', '2': 'Last 2 Watched',
 '3': 'Last 3 Watched', '4': 'Last 4 Watched', '5': 'Last 5 Watched'}},

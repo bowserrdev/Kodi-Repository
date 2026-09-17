@@ -42,38 +42,63 @@ class MetaCache:
 			if row:
 				meta, expiry = json.loads(row[0]), row[1]
 				if expiry < current_time:
-					# Marcatore diagnostico (lotto 53): distingue "mai scritto in cache" da
-					# "scritto e poi cancellato perche' gia' scaduto alla lettura successiva".
+					# Marcatore diagnostico (lotto 53): distingue "mai scritto in cache" da "scritto e scaduto".
 					try:
 						from modules.kodi_utils import logger
 						logger('FenLight CACHE SCADUTA', '%s %s=%s | scaduto da %s s' % (media_type, id_type, media_id, current_time - expiry))
 					except: pass
-					self.delete(media_type, id_type, media_id, meta=meta)
+					# LOTTO 334 -- scaduta NON vuol dire cancellata. Chi la chiede la riscarica e la sovrascrive
+					# (INSERT OR REPLACE); cancellarla prima apriva un buco in cui una costruzione -- che le schede
+					# scadute le serve (get_many, lotto 333) -- non la trovava piu' e perdeva il titolo. E se il
+					# download fallisce, la vecchia resta servibile invece di sparire.
 					meta = None
 		except: meta = None
 		return meta
 
-	def get_many(self, media_type, id_type, media_ids, current_time=None):
+	def get_many(self, media_type, id_type, media_ids, current_time=None, scadute=None):
 		# UNA query per l'intera lista invece di una per elemento, da eseguire in sequenza fuori dal
 		# pool di thread. Misurato dentro Kodi: la stessa lettura costa 0.036 ms/elemento in
 		# sequenza e 1.0-1.7 ms sotto il pool a 6-10 worker -- non perche' sia lenta, ma per
 		# l'effetto convoglio sul GIL (sqlite3 lo rilascia durante execute e per riprenderlo aspetta
 		# un passaggio di consegne, fino a 5 ms). Le voci scadute NON vengono restituite: cadono sul
-		# percorso normale, che le cancella e le riscarica.
+		# percorso normale, che le riscarica.
+		# LOTTO 333 -- tranne quando il chiamante passa `scadute`: allora si restituiscono lo stesso e il
+		# loro id finisce in quella lista. E' la costruzione di una riga preparata, che la rete non la
+		# tocca: serve il dato che ha e chiede al servizio di rinnovarlo.
 		results = {}
 		if not media_ids: return results
+		# LOTTO 307: tre costi separati -- aprire la connessione, far girare la query (righe lette dal
+		# disco e convertite in tuple) e decodificare il JSON -- perche' vogliono rimedi diversi. La
+		# query e' la differenza fra il tempo del ciclo e quello delle decodifiche.
+		from time import perf_counter as _pc
+		_t0 = _pc()
+		_dec_s, _dec_byte, _righe = 0.0, 0, 0
 		try:
 			if not current_time: current_time = get_timestamp()
 			dbcon = connect_database('metacache_db')
+			_t1 = _pc()
 			media_ids = list(media_ids)
 			# SQLite limita il numero di parametri per statement: la lista va spezzata.
 			for start in range(0, len(media_ids), 500):
 				chunk = media_ids[start:start + 500]
 				query = GET_MOVIE_SHOW_MANY % (id_type, id_type, ', '.join('?' for _ in chunk))
 				for row in dbcon.execute(query, [media_type] + chunk):
-					if row[2] < current_time: continue
+					_righe += 1
+					if row[2] < current_time:
+						if scadute is None: continue
+						scadute.append(string(row[0]))
+					_td = _pc()
 					try: results[string(row[0])] = json.loads(row[1])
 					except: pass
+					_dec_s += _pc() - _td
+					_dec_byte += len(row[1]) if row[1] else 0
+			_t2 = _pc()
+			try:
+				from modules.kodi_utils import conta
+				conta('prefetch_connessione', _t1 - _t0, 0)
+				conta('prefetch_query', (_t2 - _t1) - _dec_s, _righe)
+				conta('prefetch_json', _dec_s, _dec_byte)
+			except Exception: pass
 		except: pass
 		return results
 

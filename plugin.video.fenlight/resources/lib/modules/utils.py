@@ -165,10 +165,6 @@ def _run_pool(_target, _list, _style, _max_workers=None):
 def make_thread_list(_target, _list):
 	return _run_pool(_target, _list, 0)
 
-def make_thread_list_capped(_target, _list, max_workers):
-	# Come make_thread_list ma con un tetto proprio di worker.
-	return _run_pool(_target, _list, 0, max_workers)
-
 def make_thread_list_multi_arg(_target, _list):
 	return _run_pool(_target, _list, 1)
 
@@ -347,15 +343,6 @@ def clean_file_name(s, use_encoding=False, use_blanks=True):
 		s = s.strip()
 	except: pass
 	return s
-
-def byteify(data, ignore_dicts=False):
-	try:
-		if isinstance(data, unicode): return data.encode('utf-8')
-		if isinstance(data, list): return [byteify(item, ignore_dicts=True) for item in data]
-		if isinstance(data, dict) and not ignore_dicts:
-			return dict([(byteify(key, ignore_dicts=True), byteify(value, ignore_dicts=True)) for key, value in data.iteritems()])
-	except: pass
-	return data
 
 def normalize(txt):
 	txt = re.sub(r'[^\x00-\x7f]',r'', txt)

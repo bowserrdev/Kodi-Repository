@@ -53,7 +53,7 @@ _SYNC_DEFERRED = set()
 # la riconciliazione tocca solo cio' che cambia, e una riga `synced` assente dallo snapshot e' una
 # cancellazione qualunque sia stato il motivo dell'attivita'.
 clear_daily_cache = trakt_cache.clear_daily_cache
-clear_trakt_collection_watchlist_data, clear_trakt_hidden_data = trakt_cache.clear_trakt_collection_watchlist_data, trakt_cache.clear_trakt_hidden_data
+clear_trakt_hidden_data = trakt_cache.clear_trakt_hidden_data
 # LOTTO 119: qui vivevano anche clear_trakt_recommendations, clear_trakt_list_data e
 # clear_trakt_favorites. Erano usate SOLO dai rami della sincronizzazione ora rimossi (vedi la nota
 # 'strumenti morti' in trakt_sync_activities): le funzioni restano in caches/trakt_cache per chi le
@@ -731,7 +731,7 @@ def trakt_watchlist(media_type, dummy_arg):
 	else: data.sort(key=lambda k: k.get('released'), reverse=True)
 	return data
 
-def trakt_fetch_collection_watchlist(list_type, media_type):
+def trakt_fetch_collection_watchlist(list_type, media_type, rinnova=False):
 	def _process(params):
 		data = get_trakt(params)
 		# Nel log della Shield del 10/09: due 'BUILD FALLITA ... NoneType object is not iterable' di
@@ -748,7 +748,7 @@ def trakt_fetch_collection_watchlist(list_type, media_type):
 	string = 'trakt_%s_%s' % (list_type, string_insert)
 	path = 'sync/%s/%s?extended=full'
 	params = {'path': path, 'path_insert': (list_type, media_type), 'with_auth': True, 'pagination': False}
-	return cache_trakt_object(_process, string, params) or []
+	return cache_trakt_object(_process, string, params, rinnova) or []
 
 def _tmdb_ids_from_data(data):
 	# I dati spediti a Trakt hanno forma {'movies'|'shows': [{'ids': {'tmdb'|'imdb'|'tvdb': id}}]}.
@@ -774,12 +774,18 @@ def _refresh_for_data(data):
 	else: kodi_refresh(coalesce=False)
 
 def _refresh_watchlist(data):
-	# Due insiemi diversi di contenitori, e servono entrambi:
-	#  - per ID: i widget che gia' mostrano il titolo, la cui voce di menu deve passare da "Aggiungi"
-	#    a "Rimuovi" (o viceversa);
-	#  - per AZIONE: il widget della watchlist, che cambia composizione. In AGGIUNTA il suo elenco di
-	#    id non contiene ancora il titolo, quindi la regola per id lo scarterebbe proprio mentre va
-	#    ricostruito -- ed e' esattamente il motivo per cui "aggiungi" non era istantaneo.
+	# SOLO per AZIONE: il widget della watchlist del tipo di media toccato, che cambia composizione.
+	# In AGGIUNTA il suo elenco di id non contiene ancora il titolo, quindi la regola per id lo
+	# scarterebbe proprio mentre va ricostruito.
+	#
+	# LOTTO 312 -- gli ID non si mandano piu'. Servivano a far ricostruire i widget che GIA' mostrano
+	# il titolo, perche' la loro voce di menu passasse da "Aggiungi" a "Rimuovi": all'utente non
+	# cambia niente a schermo (l'appartenenza alla watchlist non e' contrassegnata in nessun modo) e
+	# in cambio si ricostruivano righe da centinaia di elementi. Misurato il 16/09 alle 01:27:34:
+	# aggiungere un film ricostruiva 1101.501 (la watchlist, giusto) e 1101.502 (Horror, inutile).
+	# L'etichetta del menu resta quella vecchia fino alla prossima ricostruzione naturale di quella
+	# riga, ma l'AZIONE e' comunque giusta: watchlist_toggle non si fida piu' dell'URL e rilegge
+	# l'appartenenza al momento del clic.
 	# coalesce=False: e' sempre un comando dell'utente. Vedi kodi_refresh in kodi_utils.
 	# L'azione e' QUALIFICATA per tipo di media (lotto 119): la watchlist sono due widget e i dati
 	# spediti a Trakt dicono gia' quale dei due e' stato toccato -- 'movies' e/o 'shows'. Aggiungere un
@@ -792,7 +798,7 @@ def _refresh_watchlist(data):
 	# Se i dati non dicono di che tipo sono, si torna al nome nudo: non qualificato vuol dire
 	# 'entrambi i widget', cioe' il comportamento di prima. Vedi paginator._action_matches.
 	if not actions: actions.add(kodi_utils.WATCHLIST_ACTION)
-	kodi_refresh_ids(_tmdb_ids_from_data(data), tuple(sorted(actions)), coalesce=False)
+	kodi_refresh_ids((), tuple(sorted(actions)), coalesce=False)
 
 def add_to_list(user, slug, data):
 	result = call_trakt('/users/%s/lists/%s/items' % (user, slug), data=data)
@@ -830,6 +836,15 @@ def remove_from_watchlist(data, refresh=True):
 	if refresh and (path_check('trakt_watchlist') or external()): _refresh_watchlist(data)
 	return result
 
+def rinnova_watchlist(media_type):
+	"""Rilegge da Trakt la watchlist di questo tipo e sostituisce la copia (lotto 334).
+
+	La chiama chi sa che la watchlist e' cambiata: il clic, "segna come visto" (Trakt toglie i visti dalla
+	watchlist) e la sincronizzazione. Le costruzioni la leggono senza rete, quindi la copia deve esserci.
+	media_type: 'movie' | 'movies' | 'tvshow' | 'shows'.
+	"""
+	trakt_fetch_collection_watchlist('watchlist', 'movies' if media_type in ('movie', 'movies') else 'shows', rinnova=True)
+
 def watchlist_tmdb_ids(media_type='movies'):
 	# Insieme dei tmdb_id gia' in watchlist, letto una volta sola per costruzione di lista (come
 	# watched_info e bookmarks). Passa da cache_trakt_object, quindi e' una lettura da SQLite:
@@ -850,9 +865,18 @@ def watchlist_toggle(params):
 	# Nell'ordine opposto il widget si ridisegnerebbe leggendo ancora la watchlist vecchia. Finora la
 	# rimozione funzionava perche' trakt_sync_activities ripuliva la cache in tempo: una corsa vinta,
 	# non una garanzia.
-	if params.get('in_watchlist') == 'true': remove_from_watchlist(data, refresh=False)
+	# L'appartenenza si RILEGGE adesso (lettura da SQLite, nessuna rete): l'URL della voce di menu
+	# porta lo stato di quando la riga e' stata costruita, e dal lotto 312 quella riga non viene piu'
+	# ricostruita a ogni aggiunta. Se la lettura non riesce si ricade sul valore dell'URL, cioe' sul
+	# comportamento di prima.
+	dentro = params.get('in_watchlist') == 'true'
+	try:
+		attuali = watchlist_tmdb_ids(key)
+		if attuali: dentro = str(media_id) in attuali
+	except: pass
+	if dentro: remove_from_watchlist(data, refresh=False)
 	else: add_to_watchlist(data, refresh=False)
-	clear_trakt_collection_watchlist_data('watchlist', key)
+	rinnova_watchlist(key)
 	# Non piu' un kodi_refresh globale (ricostruirebbe TUTTI i widget per una sola etichetta), ma
 	# nemmeno l'attesa della prossima ricostruzione naturale: mirato, e quindi immediato.
 	_refresh_watchlist(data)
@@ -2389,10 +2413,10 @@ def trakt_sync_activities(force_update=False):
 	# Solo l'AZIONE, e nessun id: l'evento e' 'la lista e' cambiata', e il titolo entrato non e'
 	# ancora nell'elenco pubblicato dal widget -- la regola per id lo scarterebbe.
 	if _compare(latest_movies['watchlisted_at'], cached_movies['watchlisted_at']):
-		clear_trakt_collection_watchlist_data('watchlist', 'movie')
+		rinnova_watchlist('movie')
 		changed_actions.add(kodi_utils.qualify_action(kodi_utils.WATCHLIST_ACTION, 'movie'))
 	if _compare(latest_shows['watchlisted_at'], cached_shows['watchlisted_at']):
-		clear_trakt_collection_watchlist_data('watchlist', 'tvshow')
+		rinnova_watchlist('tvshow')
 		changed_actions.add(kodi_utils.qualify_action(kodi_utils.WATCHLIST_ACTION, 'tvshow'))
 	if _compare(latest_movies['paused_at'], cached_movies['paused_at']): refresh_movies_progress = True
 	if _compare(latest_episodes['paused_at'], cached_episodes['paused_at']): refresh_shows_progress = True

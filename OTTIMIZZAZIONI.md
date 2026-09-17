@@ -35306,3 +35306,302 @@ elemento, 90 ms di caricamento):
 Rossa sulla skin precedente (4 rotte), verde dopo. Suite 68 su 72 (i soliti 202-205).
 
 DA VERIFICARE a occhio sulla stick, tasto tenuto sull'orizzontale.
+
+---
+
+# Blocco B -- il costo di caricare gli elementi dei widget
+
+## LOTTO 307 -- il cronometro della costruzione, e la base misurata delle due famiglie (b1-paginazione-20260915-0014)
+
+### Perche', e la divisione del lavoro
+
+La suite fuori da Kodi vede un'invocazione come UN thread: sa quanta cpu ha usato e quanto ha aspettato un core,
+non quale funzione Python stesse girando (niente ptrace senza root, `wchan` a 0). Regola concordata con l'utente:
+**dentro il plugin solo timbri in memoria, una riga per invocazione dopo endOfDirectory; il cronometro vero resta
+fuori** (log di Kodi e sonda). Il divieto dei lotti 248/261 riguardava i cicli di campionamento dentro Kodi, non una
+lettura di orologio.
+
+### Cosa e' stato aggiunto (solo strumentazione)
+
+- `kodi_utils`: `tappa(nome)` (orologio, cpu del thread, tid), `conta(nome, secondi, quantita')`, e la riga
+  `PERF COSTRUZIONE` scritta da `fenlight.py` dopo `log_invocation`, cioe' dopo la consegna.
+- Tappe nelle quattro strade (movies, tvshows, mdblist, trakt): sorgente, pagine, risoluzione, worker_in, preparato,
+  prefetch, rete, elementi, uniti, add_start/add_end, testa, eod_end. `indexer_in` anche per `build_movie_list`,
+  `build_tvshow_list` e le liste Trakt, che scrivevano solo `routing->lista`.
+- Conteggi: `pagina` (load_cumulative e _dub_paginate), `filtro_dub`, `filtro_discover`, e il prefetch diviso in
+  `prefetch_connessione` / `prefetch_query` / `prefetch_json` (con i byte decodificati).
+- **Traversate**: `installa_traversate()` conta proprieta' lette/scritte/azzerate, infolabel, visibilita', id finestra
+  e righe di log. Verificato nel sorgente di Kodi 21 (branch Omega) che `Window::getProperty/setProperty/clearProperty`
+  prendono il lock del contesto grafico (`xbmc/interfaces/legacy/Window.cpp:605-629`), come `getCurrentWindowId`
+  (`ModuleXbmcgui.cpp:27-32`) e `getCondVisibility` (`ModuleXbmc.cpp:355-363`); i ListItem `offscreen` no
+  (`ListItem.cpp`, GuiLock con offScreen). Attenzione: nei pool di thread il tempo e' la SOMMA dei thread.
+- `diagnostica.battezza` prende il tid da `_thread` invece di importare `threading` (che il profilatore degli import
+  attribuiva allo strumento in ogni invocazione a diagnostica accesa).
+- `strumenti/diagnostica/costruzioni.py`: per ogni invocazione il ciclo di vita dal log di Kodi (attesa dello slot,
+  avvio del motore, python, chiusura dell'interprete, limite superiore all'arrivo nel contenitore dal watcher),
+  la contemporaneita' dagli intervalli di vita, le fasi per catena di thread, cpu e attesa dalla traccia, e la
+  regressione fisso + per elemento. `--chiave` e `--soli` (costruzioni senza altri interpreti vivi). Il ciclo di
+  vita si legge anche a strumentazione spenta.
+
+Prova: `tests/test_307.py`, 65 controlli, rossa su HEAD (27 rotti). Suite 69 su 73 (i soliti 202-205). Deploy della
+lib intera a Kodi fermo, 105 file, md5 identici.
+
+### La base: MDBList Top 250 (home.503), passi da soli, N 75 -> 225
+
+Nove passi, r2 fra 0,92 e 0,99 sulle voci principali. Escluso N=233, che ha scaricato una scheda in 2,36 s.
+
+| fase | fisso | per elemento | note |
+|---|---:|---:|---|
+| motore Python (Kodi) | 93 ms | -- | |
+| import + import pigri | 60 + 463 ms | -- | cpu 410 ms: lavoro, non attesa |
+| sorgente, pagine, preparato | 19 + 18 + 48 ms | -- | |
+| risoluzione (filtro doppiaggio, esiti in cache) | 33 ms | **0,66 ms** | cpu = parete: lavoro |
+| prefetch | 16 ms | **1,93 ms** | di cui json 1,44 (7,1 KB/film) e query 0,49 |
+| elementi (ListItem) | -- | **2,04 ms** | cpu 1,95 |
+| consegna + testa | -- | 0,30 ms | |
+| **python totale** | **739 ms** | **5,09 ms** | r2 0,92; a N=225: 1,88 s |
+| chiusura interprete (Kodi) | 97 ms | -- | |
+| **contenitore aggiornato (limite sup.)** | 162 ms | **3,79 ms** | r2 0,95; dopo la fine dello script |
+
+Il costo fisso dello script e il costo per elemento si pareggiano a ~145 elementi. **Lato Kodi il costo per
+elemento (3,8 ms) e' quasi pari al nostro**: un passo a N=225 costa ~3 s dal TRIGGER alla riga allungata.
+
+### La base: Discover (1105.505), passi da soli, N 28 -> 217
+
+Quattordici passi. Escluso N=231, che ha scaricato 4 schede.
+
+| fase | fisso | per elemento | note |
+|---|---:|---:|---|
+| import + import pigri | 61 + 457 ms | -- | |
+| sorgente, preparato | 90 + 76 ms | -- | |
+| pagina nuova da TMDb + client http | ~1 s | -- | OGNI passo: 1 chiamata di rete e l'import del client (400-574 ms) |
+| filtro_discover | -- | **7,15 ms** | r2 0,98: `movie_meta` per id, in pool, su TUTTE le pagine gia' mostrate |
+| filtro_dub | -- | 1,29 ms | |
+| letture di proprieta' | 44 | 1,41 per elemento | 9,4 ms/el sommati sui thread: `meta_language()` per id, col lock grafico |
+| risoluzione: parete / cpu | 1032 / 592 ms | **9,53 / 2,11 ms** | per elemento il 78% e' attesa |
+| prefetch, elementi, consegna | -- | 1,54 + 1,86 + 0,19 ms | stessi costi di MDBList |
+| **python totale** | **1856 ms** | **12,8 ms** | r2 0,79; a N=217: 4,6 s |
+
+Ogni passo rifa' il filtro Discover e il filtro doppiaggio di tutte le pagine gia' mostrate: e' la ricostruzione
+cumulativa, e qui pesa tre quarti del costo per elemento.
+
+### L'hub (1101, 18 widget, tre alla volta)
+
+Attesa dello slot da 14 ms a **16,4 s** per il diciottesimo. Liste corte (20-36): il costo e' tutto fisso, e gli import
+pigri durano 0,8-1,8 s per ~360 ms di cpu (tre interpreti sullo stesso GIL). Da approfondire nella misura dedicata.
+
+### Taratura: non conclusiva, e va detto
+
+Seconda sessione dello stesso referto (dopo un riavvio di Kodi), strumentazione spenta, stessa riga MDBList. Python dei
+primi nove passi: acceso 1498 ms di media, spento 1624. Il peso della strumentazione non si vede sopra la differenza
+fra due sessioni (~10%). La sonda si e' fermata al riavvio (`bersaglio_scomparso`), quindi la seconda sessione non ha
+traccia: per un confronto stretto va fatto nella stessa sessione, alternando l'interruttore.
+
+### Cosa resta, nell'ordine concordato
+
+1. Unificazione della paginazione (mandatoria, pulizia del codice): una sola scrittura per le quattro strade. La base
+   qui sopra e' il riferimento per dimostrarla neutra.
+2. Ottimizzazioni, fatte una volta: risoluzione ripetuta delle pagine gia' mostrate, prefetch (json), elementi,
+   costo lato Kodi per elemento, import pigri e client http per passo.
+
+## LOTTO 308 -- via 'Hide Watched Items in Widgets' (fase 1 del blocco B)
+
+### Perche'
+
+Specifica approvata il 15/09/2026, punto 3. L'utente non usa l'impostazione, e la pipeline unica della paginazione
+non deve portarsela dietro. Scartare gli elementi visti DENTRO la costruzione rende il numero consegnato diverso da
+quello della lista risolta: un passo da 20 ne mostra meno. Inoltre la regola decisa il 16/09 ("ogni consegna in coda,
+gli elementi non cambiano mai posizione") non regge se un elemento sparisce quando lo guardi. Correzione a monte.
+
+### Modifica
+
+- `movies.py`, `tvshows.py`: via `self.widget_hide_watched` e il `return` nella costruzione dell'elemento. Nelle serie
+  `if playcount: if hide: return / elif not unaired:` diventa `if not playcount and not unaired:`: menu contestuale
+  identico.
+- `seasons.py`, `episodes.py`: via `hide_watched` e il `continue` nel ciclo. In `build_single_episode` era calcolato e
+  mai usato. Tolti anche `is_home` e l'import di `home`, rimasti senza uso.
+- `settings.py` (`widget_hide_watched()`), `settings_cache.py` (voce di `default_settings`), `settings_manager.xml`
+  (riga del menu Widgets).
+- La riga gia' salvata sulla stick non si tocca a mano: `sync_settings`, a ogni avvio del servizio, cancella le
+  impostazioni che non stanno piu' in `default_settings`.
+
+Nota: `settings.py` ha i fine riga CRLF. La prima riscrittura li aveva convertiti tutti (diff di 741 righe);
+ripristinati, il diff e' di 3 righe.
+
+### Prova e verifica
+
+`tests/test_308.py`, rossa sul codice vecchio (5 controlli): la riga salvata non veniva potata, e c'erano lettori nel
+plugin, nel menu e nelle impostazioni. pyflakes confrontato con HEAD: nessun avviso nuovo, sparisce quello su
+`hide_watched`. Deploy a Kodi fermo il 16/09 (lib intera, 105 file, e `settings_manager.xml`), md5 identici.
+Sulla stick: `SyncSettings` finito in 0,55 s, nessun traceback. L'utente ha confermato la voce sparita dal menu e le
+righe di Home e hub Film uguali a prima.
+
+## LOTTO 309 -- rami del router che non potevano funzionare
+
+### Il difetto
+
+Due modi del router importavano da `kodi_utils` un nome che non esiste:
+
+- `set_view`: `from modules.kodi_utils import set_view` (ImportError), poi `kodi_utils.set_view(...)` con
+  `kodi_utils` mai importato (NameError);
+- `show_text_media`: `from modules.kodi_utils import show_text_media` (ImportError), poi `show_text(...)` non importato.
+
+Nessuno produce questi modi: la scelta della vista usa `navigator.set_view`, e il testo con poster e' un metodo delle
+finestre `people.py` ed `extras.py`, che non passa dal router. Erano rami morti con dentro un errore: si tolgono
+invece di correggere il nome. Correzione a monte.
+
+### Prova
+
+`tests/test_309.py` non cerca le due righe: controlla la classe di errori su TUTTA la lib. Un import pigro rotto
+esplode solo quando qualcuno percorre il ramo, e sulla stick puo' non succedere mai durante le prove.
+
+- ogni `from <modulo della lib> import nome` trova il nome nel modulo;
+- nessun nome letto senza essere definito o importato nel suo file;
+- nessun ramo per i due modi, e la scelta della vista resta su `navigator.set_view`.
+
+Rossa sul codice vecchio (4 controlli). Il controllo sui nomi indefiniti ha trovato altri due difetti del Fen Light
+originale, corretti nel lotto 310. Suite 72 su 76 (i soliti 202-205). Deploy e verifica insieme al lotto 308.
+
+## LOTTO 310 -- i due nomi indefiniti trovati dal lotto 309
+
+### `source_utils.strip_non_ascii_and_unprintable`
+
+Usava `printable` senza importarlo. Il NameError finiva nell'except nudo e il testo tornava intatto: la funzione non
+ha mai tolto niente.
+
+Correggere solo l'import sarebbe stata una regressione. `check_title` confronta il titolo della fonte con i titoli
+attesi (titolo e alias). Il titolo della fonte arriva gia' passato da `normalize()` in tutti gli scraper interni
+(cartelle, cloud dei debrid, Easynews); i titoli attesi no. Con il solo import una fonte "Løgn.2019" diventava "lgn"
+contro l'atteso "løgn", e veniva scartata, mentre oggi passa. E gia' oggi "Pokemon.Detective.Pikachu" veniva scartata
+contro l'atteso "pokémon.detective.pikachu".
+
+Correzione a monte: la stessa pulizia (`normalize` + `strip_non_ascii_and_unprintable`) sui due lati del confronto.
+Un titolo atteso che resta vuoto (alias tutto in caratteri non latini) si scarta, perche' la stringa vuota e'
+contenuta in qualunque titolo. Se non resta nessun titolo confrontabile non si filtra, come fa gia' la funzione quando
+qualcosa va storto.
+
+Perimetro: solo gli scraper interni di Fen Light con "Filter Results by Name" acceso (spento di default). CocoScrapers
+usa il suo `check_title` e non cambia. Sulla configurazione dell'utente non ha effetto: nessuna prova sulla stick,
+per decisione dell'utente (16/09).
+
+### `utils.byteify`
+
+Codice Python 2 (`unicode`, `iteritems`), nessun chiamante. Cancellato.
+
+### Prova
+
+`tests/test_310.py`: pulizia della funzione, accenti sui due lati, nessuna regressione su cio' che passava (ø, titoli
+ASCII, episodi), titoli attesi vuoti, `byteify` assente. Rossa sul codice vecchio (5 controlli). Rossa anche sulla
+correzione con il solo import (5 controlli, fra cui le due regressioni). `tests/test_309.py` ora non ha eccezioni
+note. pyflakes: spariscono i due nomi indefiniti, nessun avviso nuovo. Suite 72 su 76 (i soliti 202-205). Deploy a
+Kodi fermo il 16/09 insieme ai lotti 308-309, md5 identici.
+
+## LOTTI 311-315 -- lo strato dati delle liste dei widget (fase 2 del blocco B)
+
+### Perche'
+
+Specifica del 15/09, punti 2 e 6: cache per sessione e ricariche mai globali. Oggi lo stato di una
+lista sta in tre posti -- pagine grezze in `lists_db` con scadenza, conteggi e "chi sta dove" in
+proprieta' di finestra, e la composizione ricalcolata a ogni build -- e le ricariche mirate chiedono
+ai contenitori A SCHERMO cosa contengono (`refresh_for_ids`, letture sotto il lock grafico che con un
+dialogo aperto rispondono sul dialogo). La fase 2 costruisce il posto unico dove quei dati stanno, in
+MODALITA' OMBRA: si scrive e si risponde, ma a ricaricare resta il meccanismo di prima, e il log mette
+le due risposte a confronto.
+
+### Lo schema (lotto 311)
+
+`widgets.db`, file a se' (le sue scritture cadono dentro la costruzione di un widget e non devono
+mettersi in coda dietro a metacache). Cinque tabelle:
+
+- `liste` -- id INTERO, impronta del contenuto (`make_key`), parametri canonici per rifarla, azione,
+  sessione, conteggio, stato della sorgente;
+- `elementi` -- un id per riga, `ordine` assegnato SOLO in coda, PK (lista_id, ordine) `WITHOUT ROWID`
+  (le righe stanno fisicamente ordinate: leggere i primi N e' una lettura di seguito), indice
+  (tipo, tmdb);
+- `attese` -- chi aspetta un verdetto sul doppiaggio: non e' ancora un elemento, e se il verdetto e'
+  positivo entrera' in coda con l'ordine del momento in cui si e' saputo;
+- `consegne` -- posizione -> lista, quanti elementi vede l'utente; si svuota a ogni sessione;
+- `meta` -- sessione corrente e precedente.
+
+Chiavi INTERE di proposito: `liste.id` viaggia dentro ogni riga di `elementi` e dentro i suoi indici,
+mentre l'md5 (32 caratteri) resta scritto una volta sola. Il TIPO fa parte dell'indice perche' gli id
+TMDb di film e serie sono due numerazioni separate: l'id 27 esiste in entrambe, e la ricarica per solo
+numero puo' colpire il widget sbagliato.
+
+Niente tabella delle dipendenze: le dipendenze SONO i dati (gli elementi che la lista contiene, i
+titoli che aspetta, e il tipo di lista che e'). Una tabella a parte sarebbe una seconda copia.
+
+### Uno scrittore solo (lotto 314) e dove sta la scrittura (lotto 313)
+
+Prima versione: ogni build scriveva da se'. Misurato il 16/09 -- 78 build, **media 47 ms, punte 184**,
+e un `database is locked` all'apertura a freddo dell'hub. Due difetti distinti:
+
+1. **il costo non dipendeva dagli elementi** (222 elementi come 10): era apertura del file, commit e
+   checkpoint del giornale WAL, pagati da ogni interprete nuovo;
+2. **il `locked` non era un timeout scaduto**: `registra` leggeva e poi scriveva dentro una
+   transazione DIFFERITA, e SQLite rifiuta SUBITO la promozione da lettore a scrittore se nel
+   frattempo qualcuno ha scritto -- apposta, per non creare uno stallo.
+
+Correzioni: `BEGIN IMMEDIATE` (si chiede il diritto di scrivere in partenza, e il timeout torna a
+valere); le build non scrivono piu' ma SPEDISCONO al servizio (`JSONRPC.NotifyAll`), che e' l'unico
+scrittore, con una connessione sola per tutta la sessione; `synchronous = OFF` e nessun checkpoint
+automatico per questo file, che si rifa' sempre leggendo le sorgenti. E la scrittura avviene DOPO
+`endOfDirectory` (lotto 313): prima stava in `set_head`, cioe' mentre il thread grafico aspettava la
+cartella.
+
+Esito misurato (sessioni del 16/09, 02:56 e 03:29): **zero `database is locked`**, 57 su 57 e 46 su 46
+consegne arrivate, ritardo notifica -> scrittura **183 ms di mediana**, e **zero millisecondi sulla
+strada dell'utente** (erano 47).
+
+### La dipendenza trovata dall'ombra (lotto 315)
+
+Due righe di ombra con differenza, sulla ricerca:
+
+    03:03  OMBRA id=2 azioni=- | db=- vero=['1105.502']  <-- DIFFERENZA
+
+Aveva ragione il meccanismo vecchio: erano titoli IN ATTESA del verdetto sul doppiaggio. Una lista che
+aspetta un verdetto dipende da quel titolo esattamente come da quelli che mostra -- quando il verdetto
+arriva, quella riga va ricostruita o il titolo non comparira' mai. La query delle ricariche guarda ora
+`elementi` E `attese`. Confermato sulla stick il 16/09 alle 03:30:54: "3 titoli tornati disponibili,
+contenitori ricaricati 1" con `db=['1105.502'] vero=['1105.502']`, nessuna differenza.
+
+Nello stesso lotto, la lettura degli URL degli elementi consegnati (da cui si ricavano tipo e id) e'
+passata anch'essa dopo `endOfDirectory`.
+
+### Due difetti corretti strada facendo (lotto 312)
+
+- **La riga tornata da 239 a 25 elementi.** Menu contestuale aperto alle 01:26:01.370, lettura del
+  servizio alle .371 che vede zero elementi, token delle pagine azzerato, riga ricostruita da 2 pagine.
+  Con un dialogo in cima `Container(502)` si risolve contro il DIALOGO: la skin no, perche' valuta con
+  la propria finestra come contesto (`GUIInfoHelper.cpp:92-105`, `DirectoryProvider.cpp:216,662`);
+  Python si', perche' `getInfoLabel` passa `DEFAULT_CONTEXT` e non ha modo di dichiarare altro
+  (`ModuleXbmc.cpp:301-307`, vedi PR.md voce 12). La decisione di azzerare e' ora una funzione pura con
+  due condizioni: mai con un dialogo in cima, mai su una sola lettura vuota. Resta una difesa: la cura
+  e' la fase 4, dove lo stato sta nel primo elemento e non c'e' niente da azzerare.
+- **La watchlist ricostruiva chi contiene il titolo.** Aggiungere un film ricaricava la watchlist
+  (giusto) e la riga Horror (inutile: l'appartenenza non e' contrassegnata a schermo). Ora si ricarica
+  per sola AZIONE, e `watchlist_toggle` rilegge l'appartenenza al momento del clic invece di fidarsi
+  dell'URL: con l'etichetta vecchia, un secondo clic avrebbe aggiunto un titolo gia' presente.
+
+### Prove
+
+`tests/test_311.py` (sessioni e cascata, ordine di consegna, attese, query per id e per azione,
+l'aggancio da set_head), `test_312.py`, `test_314.py` (la build non apre il database, il servizio
+scrive in ordine, BEGIN IMMEDIATE e pragma, messaggi persi), `test_315.py`. Tutte rosse sul codice
+precedente. La prova del 311 ha scovato un difetto suo: l'id di sessione al millisecondo dava lo
+stesso id a due aperture ravvicinate, e la pulizia avrebbe tenuto per sempre una sessione credendola
+corrente. Suite 76 su 80 (i soliti 202-205).
+
+### Cosa resta acceso, e cosa muore
+
+La modalita' ombra e' un ponte: `ombra()` e il ripiego "qualunque tipo" in `posizioni_per_id` -- che
+esiste solo perche' chi chiede la ricarica oggi non dichiara il tipo -- si cancellano nella fase 5,
+insieme a `kodi_refresh` globale, `refresh_containers_for_ids` e le proprieta' IDS/ACTION.
+
+### Numeri per la fase 3
+
+Nella sessione del 16/09, **15 consegne su 33 non hanno aggiunto nemmeno un elemento**, e la ricerca e'
+cresciuta 17, 20, 24, 26, 30, 30, 33, 33, 36, 36, 37, 37, 38, 38, 38, 38, 38, 38, 40: cinque
+ricostruzioni di fila per restare a 38. E' il riempimento assoluto, che la regola proporzionale della
+fase 3 sostituisce. La riga dell'hub si e' fermata a 256 elementi per il tetto di `max_items`, che la
+specifica toglie.
