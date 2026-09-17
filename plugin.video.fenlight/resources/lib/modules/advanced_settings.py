@@ -212,6 +212,61 @@ def hide_parent(params):
 	notification('Impostazione scritta')
 	ok_dialog(heading='Fatto', text='Riavvia Kodi per applicare la modifica.')
 
+# -------------------------------------------------------------------------- #
+# Stato di riproduzione scritto da Kodi (profiles.xml -> canwritedatabases)
+# -------------------------------------------------------------------------- #
+# Non e' cache ne' streaming, ma sta qui perche' e' l'altra manopola che riguarda il comportamento di
+# Kodi durante e dopo la riproduzione, e perche' e' l'unico menu del progetto che scrive nei file di
+# Kodi invece che nei propri. Il meccanismo -- e perche' la scrittura non puo' essere immediata -- sta
+# tutto in modules/profile_flag.py.
+def playback_state(params):
+	from modules import profile_flag
+	stato = profile_flag.read_flag()
+	if stato is None:
+		return ok_dialog(heading='Stato di riproduzione',
+						text='profiles.xml non trovato o illeggibile.[CR]Nessuna modifica fatta.')
+	if stato == 'true':
+		lines = ['Adesso: [B]Kodi scrive[/B] lo stato di riproduzione nel proprio database.',
+				'',
+				'A ogni chiusura del player Kodi salva una riga usando come chiave l\'URL risolto del momento,',
+				'che non si ripete mai. La scrittura annuncia un aggiornamento della libreria, e Kodi ricostruisce',
+				'[B]tutti[/B] i widget della schermata principale.',
+				'',
+				'Fen Light quel database non lo legge: visto/non visto e punto di ripresa vengono da Trakt e dal',
+				'proprio archivio. Bloccandolo si perdono solo le voci native di Kodi "Segna come gia\' visto",',
+				'che restano visibili ma non fanno piu\' niente.',
+				'',
+				'Bloccare la scrittura?']
+		if not confirm_dialog(heading='Stato di riproduzione di Kodi', text='[CR]'.join(lines),
+							ok_label='Blocca', cancel_label='Annulla'): return
+		voluto, azione = 'false', 'bloccata'
+	else:
+		lines = ['Adesso: la scrittura e\' [B]bloccata[/B].',
+				'',
+				'Ripristinandola Kodi tornera\' a salvare lo stato di riproduzione nel proprio database, e i widget',
+				'della schermata principale torneranno a ricostruirsi tutti al rientro dal player.',
+				'',
+				'Ripristinare?']
+		if not confirm_dialog(heading='Stato di riproduzione di Kodi', text='[CR]'.join(lines),
+							ok_label='Ripristina', cancel_label='Annulla'): return
+		voluto, azione = 'true', 'ripristinata'
+	try:
+		# Prima il marcatore: se la scrittura del file fallisce, la richiesta resta registrata e la
+		# riconciliazione all'uscita o al prossimo avvio ci riprova. Al contrario -- file scritto e
+		# richiesta non registrata -- Kodi riscriverebbe profiles.xml alla chiusura e la modifica
+		# sparirebbe senza che nessuno se ne accorga.
+		profile_flag.set_wanted(voluto)
+		profile_flag.write_flag(voluto)
+	except Exception as e:
+		return ok_dialog(heading='Errore', text='Impossibile scrivere profiles.xml:[CR]%s' % e)
+	notification('Scrittura %s' % azione)
+	restart = confirm_dialog(heading='Riavvio richiesto',
+							text='La sessione in corso tiene il valore vecchio in memoria: la modifica vale dal[CR]'
+								'prossimo avvio di Kodi. Riavviare ora?',
+							ok_label='Riavvia', cancel_label='Piu\' tardi')
+	if restart:
+		execute_builtin('RestartApp')
+
 def show(params):
 	path = translate_path(SETTINGS_PATH)
 	if not os.path.exists(path):
