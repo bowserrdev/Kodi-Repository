@@ -1465,6 +1465,20 @@ class FenLightMonitor(xbmc.Monitor):
 
 logger('Fen Light', 'Main Monitor Service Starting')
 _principale = FenLightMonitor()
+# canwritedatabases: i due soli momenti in cui il file dei profili si puo' riconciliare. Vedi
+# modules/profile_flag.py -- senza il marcatore scritto dal pulsante entrambe le chiamate tornano
+# subito senza toccare niente.
+try:
+	from modules.profile_flag import on_service_start
+	on_service_start()
+except Exception as e: logger('Fen Light', 'profile_flag: controllo all\'avvio non riuscito (%s)' % e)
 _principale.waitForAbort()
 if _principale._preparatore is not None: _principale._preparatore.ferma()
+# QUI, e non prima: Kodi riscrive profiles.xml dalla memoria al terzo passo di CApplication::Stop()
+# ("Saving settings"), e i servizi Python vengono fermati molto piu' avanti. Scrivere adesso significa
+# scrivere per ultimi. Misura sulla Mi Stick (17/09 04:48): salvataggio 31.818, servizi 32.61.
+try:
+	from modules.profile_flag import on_service_stop
+	on_service_stop()
+except Exception as e: logger('Fen Light', 'profile_flag: controllo all\'uscita non riuscito (%s)' % e)
 logger('Fen Light', 'Main Monitor Service Finished')
