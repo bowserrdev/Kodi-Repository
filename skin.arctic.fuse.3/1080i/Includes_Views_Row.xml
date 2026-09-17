@@ -73,9 +73,6 @@
                     <include content="$PARAM[include]">
                         <param name="id">$PARAM[id]</param>
                         <top>view_row</top>
-                        <include content="Action_View_Movement_OnUp">
-                            <param name="id">$PARAM[id]</param>
-                        </include>
                         <include content="Action_View_Movement_OnBack">
                             <param name="id">$PARAM[id]</param>
                             <param name="onback">[Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)]</param>

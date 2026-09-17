@@ -101,18 +101,6 @@
         </include>
     </include>
 
-
-
-    <include name="Home_ControlList_Item_1108">
-        <include content="Home_ControlList_Item">
-            <param name="label">Addons</param>
-            <param name="action">ReplaceWindow(1108)</param>
-            <param name="enabled">!String.IsEmpty(Skin.String(HomeSwitcher.1108.Toggle))</param>
-            <param name="visible">Window.IsVisible(1105) | Window.IsVisible(Home) | Window.IsVisible(1101) | Window.IsVisible(1102) | Window.IsVisible(1103) | Window.IsVisible(1104) | Window.IsVisible(1106) | Window.IsVisible(1107) | Window.IsVisible(1108)</param>
-            <param name="mod">$PARAM[mod]</param>
-        </include>
-    </include>
-
     <include name="Home_ControlList_Items">
         <definition>
             <include content="Home_ControlList_Item_1105">
@@ -133,12 +121,13 @@
             <include content="Home_ControlList_Item_1104">
                 <param name="mod">$PARAM[mod]</param>
             </include>
-            <include content="Home_ControlList_Item_1108">
-                <param name="mod">$PARAM[mod]</param>
-            </include>
         </definition>
     </include>
 
+    <!-- La lista e' la rotazione degli hub a partire dalla finestra corrente: [corrente, successivi...,
+         icone di destra, precedenti...]. 300 legge ListItem(1) a destra e ListItem(-1) a sinistra (che
+         avvolge). L'elemento "icone di destra" separa l'ultimo hub dal primo: a destra dell'ultimo hub il
+         fuoco passa alle icone (vedi onright di 300), a sinistra del primo hub non succede niente. -->
     <include name="Home_ControlList">
         <control type="list" id="399">
             <top>-2000</top>
@@ -152,12 +141,8 @@
                 </include>
 
                 <item>
-                    <property name="action">ActivateWindow(1170)</property>
-                    <visible>!$EXP[Exp_Hubs_Menu_Loopback]</visible>
-                </item>
-                <item>
                     <property name="action">noop</property>
-                    <visible>!$EXP[Exp_Hubs_Menu_Loopback]</visible>
+                    <property name="header_icons">true</property>
                 </item>
 
                 <include content="Home_ControlList_Items">
@@ -167,79 +152,146 @@
         </control>
     </include>
 
-    <include name="Home_Horz_Movement">
+    <include name="Home_Movement">
         <onup>SetProperty(Bumper.Direction,Up,Home)</onup>
         <onup>ActivateWindow(1181)</onup>
         <oninfo>ActivateWindow(1181)</oninfo>
         <ondown>$VAR[Hub_Action_Down]</ondown>
-    </include>
-
-    <include name="Home_Vert_Movement">
-        <onleft>SetProperty(Bumper.Direction,Left,Home)</onleft>
-        <!-- <onleft>ActivateWindow(1180)</onleft> -->
-        <onleft>ActivateWindow(1181)</onleft>
-        <oninfo>ActivateWindow(1181)</oninfo>
-
-        <!-- <onright condition="![String.IsEqual(Skin.String(HomeSwitcher.$PARAM[window].Mode),Wall) | String.IsEqual(Skin.String(HomeSwitcher.$PARAM[window].Mode),Combined)]">SetFocus($INFO[Window.Property(TMDBHelper.WidgetContainer)],0,absolute)</onright>
-        <onright condition="[String.IsEqual(Skin.String(HomeSwitcher.$PARAM[window].Mode),Wall) | String.IsEqual(Skin.String(HomeSwitcher.$PARAM[window].Mode),Combined)]">400</onright> -->
-
-        <onright>400</onright>
-
-    </include>
-
-    <include name="Home_Movement">
-        <include content="Home_Horz_Movement" condition="!Skin.HasSetting(HomeSwitcher.Vertical)">
-            <param name="window">$PARAM[window]</param>
-        </include>
-        <include content="Home_Vert_Movement" condition="Skin.HasSetting(HomeSwitcher.Vertical)">
-            <param name="window">$PARAM[window]</param>
-        </include>
 
         <onback condition="Player.HasMedia">SetProperty(FullscreenRefocus,SetFocus(300))</onback>
         <onback condition="Player.HasMedia">309</onback>
-        <onback condition="!Player.HasMedia">303</onback>
+        <!-- Indietro porta il fuoco all'icona di spegnimento con navigazione diretta, in un solo passo: passare
+             da un pulsante nascosto faceva riaccendere per un istante l'icona dell'hub. Dove lo spegnimento non
+             c'e' (ricerca, 1109) Kodi non trova il controllo e non succede niente. -->
+        <onback condition="!Player.HasMedia">3184</onback>
     </include>
 
+    <!-- Gruppo 3190: tutto cio' che nell'intestazione puo' avere il fuoco (300 e le icone di destra).
+         Chi deve sapere "il fuoco e' sull'intestazione" chiede ControlGroup(3190).HasFocus(). -->
     <include name="Home_Control">
         <param name="onclick_condition">true</param>
+        <param name="header_icons">false</param>
         <definition>
             <include>Home_ControlList</include>
-            <control type="button" id="300">
-                <top>-1000</top>
-                <height>10</height>
-                <texturenofocus />
-                <texturefocus />
+            <control type="group" id="3190">
+                <control type="button" id="300">
+                    <top>-1000</top>
+                    <height>10</height>
+                    <texturenofocus />
+                    <texturefocus />
 
-                <onleft condition="!Skin.HasSetting(HomeSwitcher.Vertical)">$INFO[Container(399).ListItem(-1).Property(action)]</onleft>
-                <onright condition="!Skin.HasSetting(HomeSwitcher.Vertical)">$INFO[Container(399).ListItem(1).Property(action)]</onright>
-                <onup condition="Skin.HasSetting(HomeSwitcher.Vertical)">$INFO[Container(399).ListItem(-1).Property(action)]</onup>
-                <ondown condition="Skin.HasSetting(HomeSwitcher.Vertical)">$INFO[Container(399).ListItem(1).Property(action)]</ondown>
+                    <onleft>$INFO[Container(399).ListItem(-1).Property(action)]</onleft>
+                    <onright>$INFO[Container(399).ListItem(1).Property(action)]</onright>
+                    <!-- Navigazione numerica e non SetFocus: Kodi (CGUIWindow::OnMove) salta da solo le icone
+                         nascoste seguendo la loro catena, SetFocus su un controllo nascosto invece fallisce. -->
+                    <onright condition="String.IsEqual(Container(399).ListItem(1).Property(header_icons),true)">3180</onright>
 
-                <onfocus>SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
-                <onfocus condition="$PARAM[overlay]">SetProperty(InfoPanel.FullSwitch,Wall,Home)</onfocus>
-                <onfocus condition="![$PARAM[overlay]]">ClearProperty(InfoPanel.FullSwitch,Home)</onfocus>
-                <onfocus condition="$PARAM[overlay]">SetProperty(Background.ShowOverlay,True,Home)</onfocus>
-                <onfocus condition="![$PARAM[overlay]]">ClearProperty(Background.ShowOverlay,Home)</onfocus>
-                <onclick condition="$PARAM[onclick_condition] + !String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">ActivateWindow($INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target)],$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)],return)</onclick>
-                <onclick condition="$PARAM[onclick_condition] + String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)]</onclick>
-                <onclick condition="Window.IsVisible(1108)">ActivateWindow(addonbrowser)</onclick>
-                <onclick condition="Window.IsVisible(1105)">SetFocus(3001)</onclick>
-                <onclick condition="Window.IsVisible(1105)">AlarmClock(reclick,Action(Select),00:00,silent)</onclick>
+                    <include content="Home_Header_Focus_Actions">
+                        <param name="overlay">$PARAM[overlay]</param>
+                    </include>
+                    <onclick condition="$PARAM[onclick_condition] + !String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">ActivateWindow($INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target)],$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)],return)</onclick>
+                    <onclick condition="$PARAM[onclick_condition] + String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)]</onclick>
+                    <onclick condition="Window.IsVisible(1105)">SetFocus(3001)</onclick>
+                    <onclick condition="Window.IsVisible(1105)">AlarmClock(reclick,Action(Select),00:00,silent)</onclick>
 
-                <include content="Home_Movement">
-                    <param name="window">$PARAM[window]</param>
+                    <include>Home_Movement</include>
+
+                    <nested />
+                </control>
+                <include content="Home_Header_Icon_Buttons" condition="$PARAM[header_icons]">
+                    <param name="overlay">$PARAM[overlay]</param>
                 </include>
-
-                <nested />
             </control>
             <control type="image">
                 <include>Home_Fade_Animation</include>
                 <visible>!String.IsEmpty(Window(Home).Property(HomeSwitcher.IsVisible))</visible>
-                <visible>!Skin.HasSetting(HomeSwitcher.Vertical)</visible>
                 <texture colordiffuse="main_bg_70">resource://resource.images.arcticfuse/backgrounds/overlay/combined_topmenu.png</texture>
                 <bottom>0</bottom>
             </control>
         </definition>
+    </include>
+
+    <!-- Stato dell'intestazione quando uno dei suoi controlli prende il fuoco: identico per 300 e per le icone. -->
+    <include name="Home_Header_Focus_Actions">
+        <onfocus>SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
+        <onfocus condition="$PARAM[overlay]">SetProperty(InfoPanel.FullSwitch,Wall,Home)</onfocus>
+        <onfocus condition="![$PARAM[overlay]]">ClearProperty(InfoPanel.FullSwitch,Home)</onfocus>
+        <onfocus condition="$PARAM[overlay]">SetProperty(Background.ShowOverlay,True,Home)</onfocus>
+        <onfocus condition="![$PARAM[overlay]]">ClearProperty(Background.ShowOverlay,Home)</onfocus>
+    </include>
+
+    <!-- ICONE DI DESTRA DELL'INTESTAZIONE: profilo (facoltativo), slot 1 e 2 (facoltativi), impostazioni,
+         spegnimento. I pulsanti stanno nella finestra dell'hub (il fuoco non puo' entrare nel dialogo 1182
+         che disegna l'intestazione) e sono invisibili fuori schermo come 300; il disegno e' in
+         Home_Header_Icons, che li riconosce da System.CurrentControlID.
+         La catena sinistra/destra e' completa anche attraverso le icone nascoste: Kodi la percorre saltando
+         quelle che non possono avere il fuoco. Destra sullo spegnimento non fa niente. -->
+    <include name="Home_Header_Icon_Button">
+        <param name="onright" />
+        <param name="onback">3184</param>
+        <definition>
+            <control type="button" id="$PARAM[id]">
+                <top>-1000</top>
+                <height>10</height>
+                <texturenofocus />
+                <texturefocus />
+                <visible>$PARAM[visible]</visible>
+                <onleft>$PARAM[onleft]</onleft>
+                <onright>$PARAM[onright]</onright>
+                <ondown>$VAR[Hub_Action_Down]</ondown>
+                <include content="Home_Header_Focus_Actions">
+                    <param name="overlay">$PARAM[overlay]</param>
+                </include>
+                <onback condition="Player.HasMedia">SetProperty(FullscreenRefocus,SetFocus($PARAM[id]))</onback>
+                <onback condition="Player.HasMedia">309</onback>
+                <onback condition="!Player.HasMedia">$PARAM[onback]</onback>
+                <nested />
+            </control>
+        </definition>
+    </include>
+
+    <include name="Home_Header_Icon_Buttons">
+        <include content="Home_Header_Icon_Button">
+            <param name="id">3180</param>
+            <param name="visible">$EXP[Exp_Header_Profile_Enabled]</param>
+            <param name="onleft">300</param>
+            <param name="onright">3181</param>
+            <param name="overlay">$PARAM[overlay]</param>
+        </include>
+        <include content="Home_Header_Icon_Button">
+            <param name="id">3181</param>
+            <param name="visible">$EXP[Exp_Header_Slot1_Enabled]</param>
+            <param name="onleft">3180</param>
+            <param name="onright">3182</param>
+            <param name="overlay">$PARAM[overlay]</param>
+            <onclick condition="!String.IsEmpty(Skin.String(HeaderIcons.Slot1.Target))">ActivateWindow($INFO[Skin.String(HeaderIcons.Slot1.Target)],$INFO[Skin.String(HeaderIcons.Slot1.Path)],return)</onclick>
+            <onclick condition="String.IsEmpty(Skin.String(HeaderIcons.Slot1.Target))">$INFO[Skin.String(HeaderIcons.Slot1.Path)]</onclick>
+        </include>
+        <include content="Home_Header_Icon_Button">
+            <param name="id">3182</param>
+            <param name="visible">$EXP[Exp_Header_Slot2_Enabled]</param>
+            <param name="onleft">3181</param>
+            <param name="onright">3183</param>
+            <param name="overlay">$PARAM[overlay]</param>
+            <onclick condition="!String.IsEmpty(Skin.String(HeaderIcons.Slot2.Target))">ActivateWindow($INFO[Skin.String(HeaderIcons.Slot2.Target)],$INFO[Skin.String(HeaderIcons.Slot2.Path)],return)</onclick>
+            <onclick condition="String.IsEmpty(Skin.String(HeaderIcons.Slot2.Target))">$INFO[Skin.String(HeaderIcons.Slot2.Path)]</onclick>
+        </include>
+        <include content="Home_Header_Icon_Button">
+            <param name="id">3183</param>
+            <param name="visible">true</param>
+            <param name="onleft">3182</param>
+            <param name="onright">3184</param>
+            <param name="overlay">$PARAM[overlay]</param>
+            <onclick>ActivateWindow(settings)</onclick>
+        </include>
+        <include content="Home_Header_Icon_Button">
+            <param name="id">3184</param>
+            <param name="visible">true</param>
+            <param name="onleft">3183</param>
+            <param name="onback">noop</param>
+            <param name="overlay">$PARAM[overlay]</param>
+            <onclick>Quit()</onclick>
+        </include>
     </include>
 
     <include name="Home_Animation">
@@ -357,104 +409,127 @@
                     </include>
                 </control>
 
-                <include>Home_Switcher_Right_Buttons</include>
+                <include>Home_Header_Icons</include>
             </control>
         </control>
     </include>
 
-    <include name="Home_Switcher_Vert">
-        <control type="image">
-            <visible>Window.IsActive(1181)</visible>
-            <include content="Animation_Fade_In">
-                <param name="type">Visible</param>
+    <!-- Disegno delle icone di destra (i pulsanti sono in Home_Header_Icon_Buttons, nella finestra dell'hub).
+         Lo spegnimento occupa il posto dove prima c'era l'ingranaggio: stessa geometria del gruppo di prima,
+         compreso il gruppo finale a larghezza zero che lascia l'ultimo spazio a destra. Il passo fra le icone
+         (80 + 20) e' quello degli hub a sinistra. Il grouplist non conta le icone nascoste. -->
+    <include name="Home_Header_Icons">
+        <control type="grouplist">
+            <include content="Object_Right" condition="Skin.HasSetting(HomeSwitcher.DisableSearch)">
+                <param name="right">-40</param>
             </include>
-            <include content="Animation_Fade_Out">
-                <param name="type">Hidden</param>
+            <right>-30</right>
+            <align>right</align>
+            <height>80</height>
+            <width>600</width>
+            <centertop>50%</centertop>
+            <orientation>horizontal</orientation>
+            <itemgap>20</itemgap>
+            <include content="Home_Header_Icon">
+                <param name="id">3180</param>
+                <param name="visible">$EXP[Exp_Header_Profile_Enabled]</param>
+                <param name="icon">$VAR[Image_ProfileThumb]</param>
+                <param name="mono">false</param>
             </include>
-            <texture colordiffuse="shadow_back">common/white.png</texture>
-        </control>
-        <control type="group">
-            <animation type="Conditional" reversible="false" condition="!String.IsEmpty(Window(Home).Property(HomeSwitcher.IsVisible))">
-                <effect type="fade" start="0" end="100" time="400" delay="200" tween="cubic" easing="out" />
-                <effect type="slide" tween="cubic" start="0" end="100" time="400" />
-            </animation>
-            <animation type="Conditional" reversible="false" condition="String.IsEmpty(Window(Home).Property(HomeSwitcher.IsVisible))">
-                <effect type="fade" end="0" start="100" time="200" tween="cubic" easing="out" />
-                <effect type="slide" tween="cubic" start="100" end="0" time="400" />
-            </animation>
+            <include content="Home_Header_Icon">
+                <param name="id">3181</param>
+                <param name="visible">$EXP[Exp_Header_Slot1_Enabled]</param>
+                <param name="icon">$VAR[Home_Header_Slot1_Icon]</param>
+                <param name="mono">$EXP[Exp_Header_Slot1_MonoIcon]</param>
+            </include>
+            <include content="Home_Header_Icon">
+                <param name="id">3182</param>
+                <param name="visible">$EXP[Exp_Header_Slot2_Enabled]</param>
+                <param name="icon">$VAR[Home_Header_Slot2_Icon]</param>
+                <param name="mono">$EXP[Exp_Header_Slot2_MonoIcon]</param>
+            </include>
+            <include content="Home_Header_Icon">
+                <param name="id">3183</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/settings.png</param>
+            </include>
+            <include content="Home_Header_Icon">
+                <param name="id">3184</param>
+                <param name="icon">resource://resource.images.arcticfuse/icons/power.png</param>
+            </include>
             <control type="group">
-                <control type="grouplist">
-                    <orientation>vertical</orientation>
-                    <centerleft>0</centerleft>
-                    <width>80</width>
-                    <itemgap>20</itemgap>
-                    <align>center</align>
-                    <include content="Home_Object_VertIcon" condition="!Skin.HasSetting(HomeSwitcher.DisableSearch)">
-                        <param name="icon">resource://resource.images.arcticfuse/icons/search.png</param>
-                        <param name="window">1105</param>
-                    </include>
-                    <include content="Home_Object_VertIcon">
-                        <param name="icon">$VAR[Home_Icon_home]</param>
-                        <param name="window">home</param>
-                    </include>
-                    <include content="Home_Object_VertIcon" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1101.Toggle))">
-                        <param name="icon">$VAR[Home_Icon_1101]</param>
-                        <param name="window">1101</param>
-                    </include>
-                    <include content="Home_Object_VertIcon" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1102.Toggle))">
-                        <param name="icon">$VAR[Home_Icon_1102]</param>
-                        <param name="window">1102</param>
-                    </include>
-                    <include content="Home_Object_VertIcon" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1103.Toggle))">
-                        <param name="icon">$VAR[Home_Icon_1103]</param>
-                        <param name="window">1103</param>
-                    </include>
-                    <include content="Home_Object_VertIcon" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1104.Toggle))">
-                        <param name="icon">$VAR[Home_Icon_1104]</param>
-                        <param name="window">1104</param>
-                    </include>
-                    <include content="Home_Object_VertIcon" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1108.Toggle))">
-                        <param name="icon">resource://resource.images.arcticfuse/icons/addon.png</param>
-                        <param name="window">1108</param>
-                    </include>
-                </control>
+                <width>0</width>
             </control>
         </control>
     </include>
 
-    <include name="Home_Object_VertIcon">
-        <param name="visible">True</param>
+    <!-- Un'icona di destra. mono=true: sagoma della skin colorata come le icone degli hub (grigia
+         trasparente, nera sul pallino bianco col fuoco). mono=false: immagine a colori (avatar, icone degli
+         addon), ritagliata a cerchio e piu' piccola del pallino (56 su 80), cosi' col fuoco il pallino le fa da bordo;
+         senza fuoco ha la stessa trasparenza delle icone degli hub. -->
+    <include name="Home_Header_Icon">
+        <param name="visible">true</param>
+        <param name="mono">true</param>
         <definition>
             <control type="group">
-                <visible>$PARAM[visible]</visible>
-                <height>80</height>
                 <width>80</width>
+                <height>80</height>
+                <visible>$PARAM[visible]</visible>
+                <control type="image">
+                    <visible>Integer.IsEqual(System.CurrentControlID,$PARAM[id])</visible>
+                    <include>Texture_Menu_Highlight_H</include>
+                </control>
                 <control type="group">
-                    <visible>Window.IsVisible($PARAM[window])</visible>
+                    <visible>$PARAM[mono]</visible>
                     <control type="image">
-                        <include>Texture_Menu_Highlight_H</include>
+                        <visible>!Integer.IsEqual(System.CurrentControlID,$PARAM[id])</visible>
+                        <include>Home_Grouplist_Icon_Definition</include>
+                        <texture background="true" colordiffuse="main_fg_30">$PARAM[icon]</texture>
                     </control>
                     <control type="image">
+                        <visible>Integer.IsEqual(System.CurrentControlID,$PARAM[id])</visible>
                         <include>Home_Grouplist_Icon_Definition</include>
                         <texture background="true" colordiffuse="$VAR[ColorSelected]">$PARAM[icon]</texture>
                     </control>
                 </control>
                 <control type="group">
-                    <visible>!Window.IsVisible($PARAM[window])</visible>
+                    <visible>![$PARAM[mono]]</visible>
                     <control type="image">
-                        <include>Home_Grouplist_Icon_Definition</include>
-                        <texture background="true" colordiffuse="main_fg_30">$PARAM[icon]</texture>
+                        <visible>!Integer.IsEqual(System.CurrentControlID,$PARAM[id])</visible>
+                        <include>Home_Header_Icon_Color_Definition</include>
+                        <texture background="true" colordiffuse="main_fg_30" diffuse="diffuse/circle/circle_120.png">$PARAM[icon]</texture>
+                    </control>
+                    <control type="image">
+                        <visible>Integer.IsEqual(System.CurrentControlID,$PARAM[id])</visible>
+                        <include>Home_Header_Icon_Color_Definition</include>
+                        <texture background="true" diffuse="diffuse/circle/circle_120.png">$PARAM[icon]</texture>
                     </control>
                 </control>
             </control>
         </definition>
     </include>
 
-    <variable name="Home_Switcher_Right_Buttons_Calendar">
-        <value>resource://resource.images.arcticfuse/icons/calendar.png</value>
+    <!-- Niente aspectratio: con "scale" Kodi ritaglia l'immagine ma applica la maschera circolare all'immagine
+         intera, e con un'immagine non quadrata (l'avatar e' 853x480) il cerchio esce tagliato sopra e sotto.
+         Come il vecchio riquadro del profilo, l'immagine si adatta al quadrato e il cerchio resta intero. -->
+    <include name="Home_Header_Icon_Color_Definition">
+        <centerleft>50%</centerleft>
+        <centertop>50%</centertop>
+        <width>56</width>
+        <height>56</height>
+    </include>
+
+    <variable name="Home_Header_Slot1_Icon">
+        <value condition="!String.IsEmpty(Skin.String(HeaderIcons.Slot1.Icon))">$INFO[Skin.String(HeaderIcons.Slot1.Icon)]</value>
+        <value>resource://resource.images.arcticfuse/icons/link.png</value>
+    </variable>
+    <variable name="Home_Header_Slot2_Icon">
+        <value condition="!String.IsEmpty(Skin.String(HeaderIcons.Slot2.Icon))">$INFO[Skin.String(HeaderIcons.Slot2.Icon)]</value>
+        <value>resource://resource.images.arcticfuse/icons/link.png</value>
     </variable>
 
-    <include name="Home_Switcher_Right_Buttons">
+    <!-- Nella ricerca (1105) il pulsante in alto a destra resta quello di sempre: l'icona della
+         schermata principale. Le icone di destra degli hub non ci sono. -->
+    <include name="Search_Header_Home_Button">
         <control type="grouplist">
             <include content="Object_Right" condition="Skin.HasSetting(HomeSwitcher.DisableSearch)">
                 <param name="right">-40</param>
@@ -466,80 +541,24 @@
             <centertop>50%</centertop>
             <orientation>horizontal</orientation>
             <itemgap>20</itemgap>
-            <include content="Home_Settings_Button" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1108.Toggle))">
-                <param name="icon">resource://resource.images.arcticfuse/icons/addon.png</param>
-                <param name="window">1108</param>
-                <param name="id">3108</param>
-            </include>
-            <include condition="!$EXP[Exp_Hubs_Menu_Loopback]">Home_Trailing_Button</include>
+            <control type="group">
+                <width>80</width>
+                <height>80</height>
+                <include content="Home_Grouplist_Icon">
+                    <param name="id">3171</param>
+                    <param name="icon">$VAR[Home_Icon_home]</param>
+                    <param name="window">home</param>
+                </include>
+            </control>
             <control type="group">
                 <width>0</width>
             </control>
         </control>
     </include>
 
-    <include name="Home_Settings_Button">
-        <param name="icon">resource://resource.images.arcticfuse/icons/settings.png</param>
-        <param name="window">1170</param>
-        <param name="id">3170</param>
-        <param name="visible">true</param>
-        <definition>
-            <control type="group">
-                <width>80</width>
-                <height>80</height>
-                <visible>$PARAM[visible]</visible>
-                <include content="Home_Grouplist_Icon">
-                    <param name="id">$PARAM[id]</param>
-                    <param name="icon">$PARAM[icon]</param>
-                    <param name="window">$PARAM[window]</param>
-                </include>
-            </control>
-        </definition>
-    </include>
-
-    <!-- Pulsante in alto a destra: nell'hub di ricerca (1105) mostra l'icona scelta per la
-         schermata principale e porta alla home; in tutti gli altri hub resta l'ingranaggio. -->
-    <include name="Home_Trailing_Button">
-        <control type="group">
-            <width>80</width>
-            <height>80</height>
-            <control type="group">
-                <visible>Window.IsVisible(1105)</visible>
-                <include content="Home_Settings_Button">
-                    <param name="icon">$VAR[Home_Icon_home]</param>
-                    <param name="window">home</param>
-                    <param name="id">3171</param>
-                </include>
-            </control>
-            <control type="group">
-                <visible>!Window.IsVisible(1105)</visible>
-                <include content="Home_Settings_Button">
-                    <param name="icon">resource://resource.images.arcticfuse/icons/settings.png</param>
-                    <param name="window">1170</param>
-                    <param name="id">3170</param>
-                </include>
-            </control>
-        </control>
-    </include>
-
-    <include name="Home_Submenu_Panel_VertReposition">
-        <animation effect="slide" start="0" end="0,40" condition="Integer.IsEqual(Container(80$PARAM[id]).NumItems,8)">Conditional</animation>
-        <animation effect="slide" start="0" end="0,80" condition="Integer.IsEqual(Container(80$PARAM[id]).NumItems,7)">Conditional</animation>
-        <animation effect="slide" start="0" end="0,120" condition="Integer.IsEqual(Container(80$PARAM[id]).NumItems,6)">Conditional</animation>
-        <animation effect="slide" start="0" end="0,160" condition="Integer.IsEqual(Container(80$PARAM[id]).NumItems,5)">Conditional</animation>
-        <animation effect="slide" start="0" end="0,200" condition="Integer.IsEqual(Container(80$PARAM[id]).NumItems,4)">Conditional</animation>
-        <animation effect="slide" start="0" end="0,240" condition="Integer.IsEqual(Container(80$PARAM[id]).NumItems,3)">Conditional</animation>
-        <animation effect="slide" start="0" end="0,280" condition="Integer.IsEqual(Container(80$PARAM[id]).NumItems,2)">Conditional</animation>
-        <animation effect="slide" start="0" end="0,320" condition="Integer.IsEqual(Container(80$PARAM[id]).NumItems,1)">Conditional</animation>
-    </include>
-
     <include name="Home_Submenu_Panel">
         <definition>
             <control type="group">
-
-                <include content="Home_Submenu_Panel_VertReposition" condition="Skin.HasSetting(HomeSwitcher.Vertical)">
-                    <param name="id">$PARAM[id]</param>
-                </include>
 
                 <top>100</top>
                 <width>560</width>
@@ -548,9 +567,6 @@
                     <visible>Window.IsVisible($PARAM[window])</visible>
                     <include>Animation_SlideIn_Dialog</include>
                     <control type="group">
-                        <include content="Object_Top" condition="Skin.HasSetting(HomeSwitcher.Vertical)">
-                            <param name="top">40</param>
-                        </include>
                         <control type="group">
                             <include>Part_Background_Panel</include>
                             <visible>Integer.IsGreater(Container(80$PARAM[id]).NumItems,8)</visible>
@@ -612,8 +628,8 @@
                         <left>60</left>
                         <right>60</right>
                         <oninfo>PreviousMenu</oninfo>
-                        <onup condition="!Skin.HasSetting(HomeSwitcher.Vertical)">PreviousMenu</onup>
-                        <ondown condition="!Skin.HasSetting(HomeSwitcher.Vertical)">noop</ondown>
+                        <onup>PreviousMenu</onup>
+                        <ondown>noop</ondown>
                         <onleft>PreviousMenu</onleft>
                         <onright>61$PARAM[id]</onright>
                         <orientation>vertical</orientation>
@@ -625,7 +641,7 @@
 
                 </control>
             </control>
-            <include content="Home_Focus_Object" condition="!Skin.HasSetting(HomeSwitcher.Vertical)">
+            <include content="Home_Focus_Object">
                 <param name="window">$PARAM[window]</param>
             </include>
         </definition>
@@ -683,7 +699,8 @@
                 <top>100</top>
                 <height>80</height>
                 <control type="group">
-                    <visible>Window.IsVisible($PARAM[window])</visible>
+                    <!-- Col fuoco sulle icone di destra la finestra resta quella dell'hub, ma la sua icona si spegne. -->
+                    <visible>Window.IsVisible($PARAM[window]) + !$EXP[Exp_Header_Icons_HasFocus]</visible>
                     <control type="button">
                         <font>font_main_bold</font>
                         <textcolor>00ffffff</textcolor>
@@ -771,40 +788,6 @@
         </definition>
     </include>
 
-    <include name="Home_Vert_Submenu">
-        <definition>
-            <include content="Home_Submenu_Start"><param name="id">00</param></include>
-            <include content="Home_Submenu_Start"><param name="id">01</param></include>
-            <include content="Home_Submenu_Start"><param name="id">02</param></include>
-            <include content="Home_Submenu_Start"><param name="id">03</param></include>
-            <include content="Home_Submenu_Start"><param name="id">04</param></include>
-            <control type="group">
-                <top>-20</top>
-                <left>120</left>
-                <include content="Home_Submenu_Panel">
-                    <param name="window">home</param>
-                    <param name="id">00</param>
-                </include>
-                <include content="Home_Submenu_Panel" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1101.Toggle))">
-                    <param name="window">1101</param>
-                    <param name="id">01</param>
-                </include>
-                <include content="Home_Submenu_Panel" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1102.Toggle))">
-                    <param name="window">1102</param>
-                    <param name="id">02</param>
-                </include>
-                <include content="Home_Submenu_Panel" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1103.Toggle))">
-                    <param name="window">1103</param>
-                    <param name="id">03</param>
-                </include>
-                <include content="Home_Submenu_Panel" condition="!String.IsEmpty(Skin.String(HomeSwitcher.1104.Toggle))">
-                    <param name="window">1104</param>
-                    <param name="id">04</param>
-                </include>
-            </control>
-        </definition>
-    </include>
-
     <include name="Home_Group_Definition">
         <left>view_pad</left>
         <right>view_pad</right>
@@ -885,7 +868,6 @@
             </control>
         </definition>
     </include>
-
 
     <include name="Home_Grouplist_Icon_Definition">
         <centerleft>50%</centerleft>

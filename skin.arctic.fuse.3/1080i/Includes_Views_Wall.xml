@@ -67,7 +67,6 @@
                         <top>290</top>
                         <bottom>-40</bottom>
                         <onright>611</onright>
-                        <onleft>ActivateWindow(1171)</onleft>
                         <pagecontrol>66</pagecontrol>
                         <include content="Action_View_Movement_OnBack">
                             <param name="id">$PARAM[id]</param>

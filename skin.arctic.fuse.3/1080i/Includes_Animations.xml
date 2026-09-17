@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <includes>
 
-
     <!-- ============== -->
     <!-- OSD Animations -->
     <!-- ============== -->
@@ -71,7 +70,6 @@
             <animation effect="fade" start="100" end="$PARAM[end]" time="200" condition="Container($PARAM[id]).IsUpdating">Conditional</animation>
         </definition>
     </include>
-
 
     <!-- ======== -->
     <!-- Standard -->
@@ -213,16 +211,6 @@
         </definition>
     </include>
 
-    <include name="Animation_Right_Delay">
-        <definition>
-            <include content="Animation_Direction_Delay">
-                <param name="windowopen_condition">$PARAM[windowopen_condition]</param>
-                <param name="windowclose_condition">$PARAM[windowclose_condition]</param>
-                <param name="posx">320</param>
-            </include>
-        </definition>
-    </include>
-
     <include name="Animation_Left">
         <definition>
             <include content="Animation_Direction">
@@ -323,7 +311,6 @@
             <animation effect="fade" start="100" end="0" delay="$PARAM[delay]" time="$PARAM[time]" tween="sine" easing="in" reversible="$PARAM[reversible]" condition="$PARAM[condition]">$PARAM[type]</animation>
         </definition>
     </include>
-
 
     <include name="Animation_FadeIn">
         <include content="Animation_Fade_In">

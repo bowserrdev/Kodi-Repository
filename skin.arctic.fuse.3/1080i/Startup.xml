@@ -2,7 +2,6 @@
 <window>
     <onload condition="Skin.HasSetting(SkinUserLogin.StartupLoginScreen) + !Skin.HasSetting(SkinUserLogin.Disabled) + String.IsEmpty(Window(Home).Property(StartupReplaceWindow))">SetProperty(StartupReplaceWindow,1195,Home)</onload>
 
-    <include>Action_ButtonMenu_Onload</include>
 
     <!-- Lotto 153. Prima: questa finestra apriva lo splash e lanciava skinvariables-startup.json,
          e la Home compariva 40 ms dopo la FINE di quello script, cioe' 2,45 s dopo (misurato sulla

@@ -62,11 +62,6 @@
         <value>$LOCALIZE[10036]</value>
     </variable>
 
-    <variable name="Label_UpdateLibrary">
-        <value condition="library.isscanningmusic | library.isscanningvideo">$LOCALIZE[31485]</value>
-        <value>$LOCALIZE[24138]</value>
-    </variable>
-
     <variable name="Label_Search_NoResults">
         <value condition="!String.IsEmpty(Control.GetLabel(3000).index(1)) + Integer.IsEqual(Container(601).NumItems,0)">$LOCALIZE[31500] "[CAPITALIZE]$INFO[Control.GetLabel(3000).index(1), , ][/CAPITALIZE]".[CR]$LOCALIZE[31501].</value>
         <value>$LOCALIZE[31291][CR]$LOCALIZE[31288]</value>
@@ -156,11 +151,6 @@
         <value>$INFO[System.ProfileName]</value>
     </variable>
 
-    <variable name="Label_SortMethod">
-        <value condition="!String.IsEmpty(Window.Property(MediaFilter.SortBy)) + Window.IsMedia + String.IsEqual(Container.FolderName,Skin Variables) + !String.IsEmpty(Window.Property(MediaFilter.BaseDir.Name))">[CAPITALIZE]$INFO[Window.Property(MediaFilter.SortBy)][/CAPITALIZE]</value>
-        <value>$INFO[Container.SortMethod]</value>
-    </variable>
-
     <variable name="Label_SortDirection">
         <value condition="!String.IsEmpty(Window.Property(MediaFilter.SortHow)) + Window.IsMedia + String.IsEqual(Container.FolderName,Skin Variables) + !String.IsEmpty(Window.Property(MediaFilter.BaseDir.Name))">$LOCALIZE[585]</value>
         <value condition="String.IsEmpty(Window.Property(MediaFilter.SortHow)) + Window.IsMedia + String.IsEqual(Container.FolderName,Skin Variables) + !String.IsEmpty(Window.Property(MediaFilter.BaseDir.Name))">$LOCALIZE[584]</value>
@@ -237,12 +227,6 @@
         <value>$INFO[Skin.String(Startup.ImageFolder)]</value>
     </variable>
 
-
-    <variable name="Label_OSD_PausePlay">
-        <value condition="Player.Playing">$LOCALIZE[31484]</value>
-        <value>$LOCALIZE[208]</value>
-    </variable>
-
     <variable name="Label_OSD_PlayPause">
         <value condition="Window.IsActive(musicosd) | Window.IsActive(videoosd)">$VAR[Image_OSD_PausePlay]</value>
         <value condition="Player.Paused">$LOCALIZE[31484]</value>
@@ -268,11 +252,6 @@
         <value condition="!String.IsEmpty(ListItem.EpisodeName)">$INFO[ListItem.EpisodeName]</value>
         <value condition="!String.IsEmpty(ListItem.Title)">$INFO[ListItem.Title]</value>
         <value condition="!String.IsEmpty(ListItem.Episode)">$INFO[ListItem.Season,,x]$INFO[ListItem.Episode]</value>
-    </variable>
-
-    <variable name="Label_Watched">
-        <value condition="System.Setting(hidewatched)">$LOCALIZE[16101]</value>
-        <value>$LOCALIZE[31382]</value>
     </variable>
 
     <variable name="Label_Filtered">
@@ -353,7 +332,6 @@
         <value condition="ListItem.IsFolder">$LOCALIZE[20334]</value>
         <value>$LOCALIZE[31025]</value>
     </variable>
-
 
     <variable name="Label_Studio">
         <value condition="!String.IsEmpty(ListItem.Studio)">$INFO[ListItem.Studio]</value>
@@ -472,11 +450,6 @@
         <value>$LOCALIZE[29915]</value>
     </variable>
 
-    <variable name="Label_Setting_Sidemenu">
-        <value condition="Skin.HasSetting(HomeSwitcher.Vertical)">$LOCALIZE[31059]</value>
-        <value>$LOCALIZE[31106]</value>
-    </variable>
-
     <variable name="Label_Setting_HomeIcons">
         <value condition="Skin.HasSetting(HomeSwitcher.EnableIcons)">$LOCALIZE[536]</value>
         <value>$LOCALIZE[31329]</value>
@@ -521,13 +494,6 @@
         <value condition="Window.IsVisible(fullscreenvideo)">$INFO[ListItem.ChannelNumberLabel,  |  CH ,]$INFO[ListItem.StartTime,  |  ,]$INFO[ListItem.EndTime, - ,]</value>
     </variable>
 
-    <variable name="Label_ButtonMenu_NowPlayingTitle">
-        <value condition="!String.IsEmpty(MusicPlayer.Artist)">$INFO[Player.Title]</value>
-        <value condition="!String.IsEmpty(VideoPlayer.TvShowTitle)">$VAR[Label_OSD_Plot_Episode_Number,,. ]$INFO[Player.Title]</value>
-        <value condition="!String.IsEmpty(Player.Title)">$INFO[Player.Title]</value>
-        <value>$INFO[System.Date(DDD)]</value>
-    </variable>
-
     <variable name="Label_System_Temp">
         <value condition="!String.IsEmpty(System.CPUTemperature) + !String.IsEqual(System.CPUTemperature,$LOCALIZE[10005])">$INFO[System.CPUTemperature]</value>
     </variable>
@@ -542,16 +508,6 @@
         <value condition="!String.IsEmpty(Container(7000).ListItem.Artist)">$INFO[Container(7000).ListItem.Title]</value>
         <value condition="!String.IsEmpty(Container(7000).ListItem.TvShowTitle)">$VAR[Label_Plot_Episode_Number_C7000,,. ]$INFO[Container(7000).ListItem.Title]</value>
         <value>$INFO[Container(7000).ListItem.Title]</value>
-    </variable>
-
-    <variable name="Label_ButtonMenu_NowPlayingSubLabel">
-        <value condition="!String.IsEmpty(MusicPlayer.Artist)">$INFO[MusicPlayer.Artist]</value>
-        <value condition="!String.IsEmpty(VideoPlayer.TvShowTitle)">$INFO[VideoPlayer.TvShowTitle]</value>
-        <value condition="!String.IsEmpty(VideoPlayer.ChannelNumberLabel)">$INFO[VideoPlayer.ChannelNumberLabel,$LOCALIZE[19029] ,]</value>
-        <value condition="!String.IsEmpty(VideoPlayer.Director)">$INFO[VideoPlayer.Director]</value>
-        <value condition="!String.IsEmpty(VideoPlayer.Studio)">$INFO[VideoPlayer.Studio]</value>
-        <value condition="!String.IsEmpty(VideoPlayer.Premiered)">$INFO[VideoPlayer.Premiered]</value>
-        <value>$INFO[System.Date(d MMM YYYY)]</value>
     </variable>
 
     <variable name="Label_NowPlayingSubLabel">
@@ -620,7 +576,6 @@
         <value condition="!String.IsEmpty(Window.Property(year))">$INFO[Window.Property(year)]$INFO[Window.Property(rating), [COLOR=panel_fg_30]•[/COLOR] ,]</value>
         <value>$INFO[Window.Property(rating)]</value>
     </variable>
-
 
     <variable name="Label_OSD_DirectorName">
         <value condition="!String.IsEmpty(VideoPlayer.Director)">$INFO[VideoPlayer.Director]</value>
@@ -769,10 +724,6 @@
         <value condition="Player.Paused">$LOCALIZE[112]</value>
         <value condition="!String.IsEmpty(Player.PlaySpeed) + !String.IsEqual(Player.PlaySpeed,1.00) + !String.IsEqual(Player.PlaySpeed,0.00)">$INFO[Player.PlaySpeed,$LOCALIZE[31071] ,x]</value>
     </variable>
-
-
-
-
 
     <variable name="Label_Header_Main">
         <value condition="Window.IsVisible(addonbrowser)">$LOCALIZE[24001]</value>

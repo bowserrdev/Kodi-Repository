@@ -2294,3 +2294,23 @@ msgstr "Aggiuntivo"
 msgctxt "#31605"
 msgid "Next aired"
 msgstr "Prossima trasmissione"
+
+#: /1080i/Custom_1115_Window_Shortcuts.xml
+msgctxt "#31606"
+msgid "Header icons"
+msgstr "Icone intestazione"
+
+#: /1080i/Dialog_DialogShortcuts.xml
+msgctxt "#31607"
+msgid "Profile"
+msgstr "Profilo"
+
+#: /1080i/Dialog_DialogShortcuts.xml
+msgctxt "#31608"
+msgid "Show profile icon"
+msgstr "Mostra icona profilo"
+
+#: /1080i/Dialog_DialogShortcuts.xml
+msgctxt "#31609"
+msgid "Slot"
+msgstr "Slot"

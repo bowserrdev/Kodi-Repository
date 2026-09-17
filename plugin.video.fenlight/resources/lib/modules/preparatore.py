@@ -183,7 +183,6 @@ class Preparatore:
 	def __init__(self, rete=None):
 		self._coda, self._seq = [], 0
 		self._cond = Condition()
-		self._monitor = None
 		self._rete = rete   # un esecutore con submit(); None = in linea (prove)
 		self._impronta = None
 		self._fermo = False
@@ -236,6 +235,19 @@ class Preparatore:
 		else: return False
 		return True
 
+	def _aspetta(self, secondi):
+		"""Attende fino a `secondi`, o meno se arriva un lavoro o l'arresto. Torna True se e' stato fermato.
+
+		Niente xbmc.Monitor in questo thread (lotto 17/09, crash alla chiusura di Kodi sul Mac): Kodi mette le
+		notifiche di OGNI Monitor nella sua coda globale e le consegna solo quando il thread che l'ha creato
+		chiama waitForAbort. Questo thread aspetta quasi sempre su _cond, quindi la coda cresceva senza che
+		nessuno la svuotasse, e all'uscita del processo Kodi distruggeva quelle callback con l'interprete gia'
+		chiuso (segfault in RetardedAsyncCallbackHandler). L'arresto arriva gia' da ferma(), che il servizio
+		chiama quando il suo Monitor principale vede l'abort."""
+		with self._cond:
+			if not self._fermo: self._cond.wait(secondi)
+			return self._fermo
+
 	def ferma(self):
 		with self._cond:
 			self._fermo = True
@@ -272,10 +284,6 @@ class Preparatore:
 		return ultima is not None and ultima[1] != lista.chiave
 
 	def run(self):
-		# Un Monitor tutto suo, creato in QUESTO thread: quello principale del servizio esegue le sue
-		# callback dove chiama waitForAbort, e non deve farlo da qui.
-		import xbmc
-		self._monitor = xbmc.Monitor()
 		self._batti()
 		paginator.invia(paginator.MESSAGGIO_SERVIZIO, {})
 		_log('avviato')
@@ -284,12 +292,13 @@ class Preparatore:
 				lavoro = self._prossimo()
 				if lavoro is None: break
 				if self._in_pausa(lavoro):
-					# Il lavoro torna in coda e il ciclo riguarda la coda dopo un secondo: cosi' un lavoro di fondo
-					# fermo per la ricerca sorgenti non tiene in ostaggio un passo arrivato dopo di lui, che
-					# ha la precedenza e verra' preso per primo. In pausa il servizio e' vivo: batte.
+					# Il lavoro torna in coda e il ciclo riguarda la coda dopo un secondo, o prima se arriva un altro
+					# lavoro: cosi' un lavoro di fondo fermo per la ricerca sorgenti non tiene in ostaggio un passo
+					# arrivato dopo di lui, che ha la precedenza e verra' preso per primo. In pausa il servizio e'
+					# vivo: batte.
 					self.accoda(lavoro)
 					self._batti()
-					if self._monitor.waitForAbort(1): break
+					if self._aspetta(1): break
 					continue
 				self.esegui(lavoro)
 		finally:

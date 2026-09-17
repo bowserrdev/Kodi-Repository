@@ -17,33 +17,10 @@
         <value>SetFocus(300)</value>
     </variable>
 
-
     <variable name="Action_DialogInfo_PlayMedia">
         <value condition="!String.IsEmpty(ListItem.FileNameAndPath)">PlayMedia($ESCINFO[ListItem.FileNameAndPath])</value>
         <value>PlayMedia($ESCINFO[ListItem.FolderPath])</value>
     </variable>
-
-    <include name="Action_ButtonMenu_Onload">
-        <onload condition="String.IsEmpty(Skin.String(OptionsTiles.Layout))">Skin.SetString(OptionsTiles.Layout,$NUMBER[3])</onload>
-
-        <onload condition="String.IsEmpty(Skin.String(OptionsTiles.01.Include))">Skin.SetString(OptionsTiles.01.Include,NowPlaying)</onload>
-        <onload condition="String.IsEmpty(Skin.String(OptionsTiles.02.Include))">Skin.SetString(OptionsTiles.02.Include,Settings)</onload>
-        <onload condition="String.IsEmpty(Skin.String(OptionsTiles.03.Include))">Skin.SetString(OptionsTiles.03.Include,Weather)</onload>
-        <onload condition="String.IsEmpty(Skin.String(OptionsTiles.04.Include))">Skin.SetString(OptionsTiles.04.Include,SystemInfo)</onload>
-
-        <onload condition="!String.IsEmpty(Skin.String(OptionsTiles.01.Target)) + !String.IsEmpty(Skin.String(OptionsTiles.01.Path))">Skin.SetString(OptionsTiles.01.Onclick,ActivateWindow($INFO[Skin.String(OptionsTiles.01.Target)],$INFO[Skin.String(OptionsTiles.01.Path)],return))</onload>
-        <onload condition="!String.IsEmpty(Skin.String(OptionsTiles.02.Target)) + !String.IsEmpty(Skin.String(OptionsTiles.02.Path))">Skin.SetString(OptionsTiles.02.Onclick,ActivateWindow($INFO[Skin.String(OptionsTiles.02.Target)],$INFO[Skin.String(OptionsTiles.02.Path)],return))</onload>
-        <onload condition="!String.IsEmpty(Skin.String(OptionsTiles.03.Target)) + !String.IsEmpty(Skin.String(OptionsTiles.03.Path))">Skin.SetString(OptionsTiles.03.Onclick,ActivateWindow($INFO[Skin.String(OptionsTiles.03.Target)],$INFO[Skin.String(OptionsTiles.03.Path)],return))</onload>
-        <onload condition="!String.IsEmpty(Skin.String(OptionsTiles.04.Target)) + !String.IsEmpty(Skin.String(OptionsTiles.04.Path))">Skin.SetString(OptionsTiles.04.Onclick,ActivateWindow($INFO[Skin.String(OptionsTiles.04.Target)],$INFO[Skin.String(OptionsTiles.04.Path)],return))</onload>
-
-        <onload condition="String.IsEmpty(Skin.String(OptionsTiles.01.Target)) + !String.IsEmpty(Skin.String(OptionsTiles.01.Path))">Skin.SetString(OptionsTiles.01.Onclick,$INFO[Skin.String(OptionsTiles.01.Path)])</onload>
-        <onload condition="String.IsEmpty(Skin.String(OptionsTiles.02.Target)) + !String.IsEmpty(Skin.String(OptionsTiles.02.Path))">Skin.SetString(OptionsTiles.02.Onclick,$INFO[Skin.String(OptionsTiles.02.Path)])</onload>
-        <onload condition="String.IsEmpty(Skin.String(OptionsTiles.03.Target)) + !String.IsEmpty(Skin.String(OptionsTiles.03.Path))">Skin.SetString(OptionsTiles.03.Onclick,$INFO[Skin.String(OptionsTiles.03.Path)])</onload>
-        <onload condition="String.IsEmpty(Skin.String(OptionsTiles.04.Target)) + !String.IsEmpty(Skin.String(OptionsTiles.04.Path))">Skin.SetString(OptionsTiles.04.Onclick,$INFO[Skin.String(OptionsTiles.04.Path)])</onload>
-
-        <!-- Check for options tray -->
-        <include>skinvariables-powertray-onload</include>
-    </include>
 
     <variable name="Action_View_ContainerID">
         <value>500</value>
@@ -78,10 +55,6 @@
              quel container non esiste piu' in Custom_1143. Restano i capitoli e SkipNext. -->
         <value>ChapterOrBigStepForward</value>
     </variable>
-
-
-
-
 
     <include name="Action_BlurImage_SimpleBackground_Onload">
         <!-- Lo sfondo semplice e' GIA' un'immagine sfocata: rifarne il blur costava ~5 s di
@@ -122,23 +95,6 @@
 
         </definition>
     </include>
-
-    <include name="Action_View_Movement_OnUp">
-        <definition>
-            <onup>ActivateWindow(1171)</onup>
-        </definition>
-    </include>
-
-    <variable name="Action_CurrentMediaWindow">
-        <value condition="Window.IsVisible(videos)">videos</value>
-        <value condition="Window.IsVisible(music)">music</value>
-        <value condition="Window.IsVisible(pictures)">pictures</value>
-        <value condition="Window.IsVisible(programs)">programs</value>
-        <value condition="Window.IsVisible(tvchannels)">tvchannels</value>
-        <value condition="Window.IsVisible(tvguide)">tvguide</value>
-        <value condition="Window.IsVisible(musicplaylist)">musicplaylist</value>
-        <value condition="Window.IsVisible(videoplaylist)">videoplaylist</value>
-    </variable>
 
     <!-- Lotto A: la rigenerazione dei template partiva a OGNI ingresso in Home. Nel 99% dei casi
          e' una guardia: skinvariables calcola un'impronta (lastbuildtime + generator.json + file
@@ -274,7 +230,6 @@
         <value condition="String.IsEqual(Window(Home).Property(ColorPicker_Type),season_finale)">Skin.SetString(season_finale_color.name,$VAR[Color_PC_to_Hex])</value>
         <value condition="String.IsEqual(Window(Home).Property(ColorPicker_Type),mid_season_finale)">Skin.SetString(mid_season_finale_color.name,$VAR[Color_PC_to_Hex])</value>
     </variable>
-
 
     <include name="Action_Scheme_Onclick_Bright">
         <onclick>Skin.Reset(focuscolor.name)</onclick>

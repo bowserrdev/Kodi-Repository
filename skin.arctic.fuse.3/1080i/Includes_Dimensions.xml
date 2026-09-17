@@ -158,13 +158,6 @@
         <include>Dimension_DialogCenter</include>
     </include>
 
-    <include name="Dimension_DialogSideMenu">
-        <width>640</width>
-        <right>0</right>
-        <top>0</top>
-        <bottom>0</bottom>
-    </include>
-
     <include name="Dimension_DialogNotification">
         <height>80</height>
         <centerbottom>105</centerbottom>

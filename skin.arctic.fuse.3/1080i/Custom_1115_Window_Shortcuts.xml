@@ -94,16 +94,11 @@
                                     <property name="editmenu">menu=search</property>
                                     <property name="enabled">$VAR[Action_SearchEnabled]</property>
                                     <onclick>Skin.ToggleSetting(HomeSwitcher.DisableSearch)</onclick>
-                                    <visible>!Skin.HasSetting(HomeSwitcher.Vertical)</visible>
-                                </item>
-                                <item id="8">
-                                    <label>$LOCALIZE[31604]</label>
-                                    <icon>resource://resource.images.arcticfuse/icons/window-restore.png</icon>
                                 </item>
                                 <item id="9">
-                                    <label>$LOCALIZE[33060]</label>
+                                    <label>$LOCALIZE[31606]</label>
                                     <icon>resource://resource.images.arcticfuse/icons/power.png</icon>
-                                    <property name="editmenu">menu=power</property>
+                                    <property name="editmenu">menu=headericons</property>
                                 </item>
                             </content>
                         </include>
@@ -125,8 +120,7 @@
 
                                 <include>DialogShortcuts_Window_Settings_Search</include>
                                 <include>DialogShortcuts_Window_Settings_Hubs</include>
-                                <include>DialogShortcuts_Window_Settings_Additional</include>
-                                <include>DialogShortcuts_Window_Settings_Power</include>
+                                <include>DialogShortcuts_Window_Settings_HeaderIcons</include>
 
                             </control>
                         </control>

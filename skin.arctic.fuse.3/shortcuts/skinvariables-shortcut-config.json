@@ -999,12 +999,6 @@
     ],
     "grouping://shortcuts/links/kodi/": [
         {
-            "name": "Options",
-            "path": "ActivateWindow(1170)",
-            "icon": "resource://resource.images.arcticfuse/icons/bars.png",
-            "link": "true"
-        },
-        {
             "name": "File Manager",
             "path": "ActivateWindow(filemanager)",
             "icon": "resource://resource.images.arcticfuse/icons/filebox.png",
