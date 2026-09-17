@@ -2304,3 +2304,23 @@ msgstr ""
 msgctxt "#31605"
 msgid "Next aired"
 msgstr ""
+
+#: /1080i/Custom_1115_Window_Shortcuts.xml
+msgctxt "#31606"
+msgid "Header icons"
+msgstr ""
+
+#: /1080i/Dialog_DialogShortcuts.xml
+msgctxt "#31607"
+msgid "Profile"
+msgstr ""
+
+#: /1080i/Dialog_DialogShortcuts.xml
+msgctxt "#31608"
+msgid "Show profile icon"
+msgstr ""
+
+#: /1080i/Dialog_DialogShortcuts.xml
+msgctxt "#31609"
+msgid "Slot"
+msgstr ""

@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Menu di spegnimento di Kodi (ActivateWindow(shutdownmenu): tasto S, tasto power del telecomando,
+     schermata di login). Prima rimandava al pannello Opzioni (1170), che non esiste piu'. Fa la stessa
+     cosa dell'icona di spegnimento nell'intestazione degli hub: chiude Kodi in modo ordinato. -->
 <window type="dialog">
     <onload>Close</onload>
-    <onload condition="!Window.IsActive(1170)">ActivateWindow(1170)</onload>
-    <onload condition="Window.IsActive(1170)">Dialog.Close(1170)</onload>
+    <onload>Quit()</onload>
     <controls />
 </window>

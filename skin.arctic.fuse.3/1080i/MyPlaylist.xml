@@ -49,7 +49,6 @@
                         <include>Texture_Scrollbar_V</include>
                         <onleft>50</onleft>
                         <onright>50</onright>
-                        <onright>ActivateWindow(1171)</onright>
                         <onback>50</onback>
                         <showonepage>true</showonepage>
                     </control>

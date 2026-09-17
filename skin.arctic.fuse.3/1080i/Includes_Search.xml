@@ -18,21 +18,20 @@
             <include content="Home_Control">
                 <param name="window">$PARAM[window]</param>
                 <param name="overlay">[false]</param>
-                <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetFocus(3001)</onfocus>
+                <onfocus>SetFocus(3001)</onfocus>
             </include>
 
             <control type="group">
                 <include>Animation_Group_Bumper</include>
 
 	                <control type="group">
-	                    <include condition="Skin.HasSetting(HomeSwitcher.Vertical)">Hub_Window_Side_Slide</include>
 
 	                    <!-- Content -->
                     <control type="group" id="400">
 
                         <control type="group">
                             <visible allowhiddenfocus="true">String.IsEmpty(Window.Property(Searchbar.IsHidden)) + !Window.IsActive(DialogKeyboard.xml)</visible>
-                            <animation effect="slide" start="0" end="0,-70" condition="Skin.HasSetting(HomeSwitcher.DisableHeader) | Skin.HasSetting(HomeSwitcher.Vertical)">Conditional</animation>
+                            <animation effect="slide" start="0" end="0,-70" condition="Skin.HasSetting(HomeSwitcher.DisableHeader)">Conditional</animation>
                             <include>Home_Animation</include>
                             <control type="group">
                                 <include>Home_Group_Definition</include>
@@ -43,10 +42,10 @@
                                     <include>Search_Bar_Clear</include>
                                     <include>Search_Bar_Actions</include>
                                 </control>
-                                <include condition="!Skin.HasSetting(HomeSwitcher.Vertical)">Home_Switcher_Right_Buttons</include>
+                                <include>Search_Header_Home_Button</include>
                             </control>
 
-                            <include content="Furniture_Header" condition="!Skin.HasSetting(HomeSwitcher.DisableHeader) + !Skin.HasSetting(HomeSwitcher.Vertical)">
+                            <include content="Furniture_Header" condition="!Skin.HasSetting(HomeSwitcher.DisableHeader)">
                                 <param name="label">$VAR[Home_Header_Label]</param>
                             </include>
                         </control>
@@ -189,9 +188,6 @@
 	                        </control>
 	                    </control>
 
-	                    <include content="Hub_VertMenu" condition="Skin.HasSetting(HomeSwitcher.Vertical)">
-                        <param name="window">$PARAM[window]</param>
-                    </include>
                 </control>
             </control>
         </definition>
@@ -345,8 +341,7 @@
 	            <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
 	            <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onfocus>
 	            <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(Background.HideArtwork)</onfocus>
-	            <onfocus condition="Skin.HasSetting(HomeSwitcher.Vertical)">ClearProperty(HomeSwitcher.IsVisible,Home)</onfocus>
-	            <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
+	            <onfocus>SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
 
             <onfocus condition="String.IsEmpty(Window.Property(RefocusMenu))">SetFocus(3000)</onfocus>
             <onfocus condition="!String.IsEmpty(Window.Property(RefocusMenu))">SetFocus(300)</onfocus>
@@ -399,17 +394,13 @@
 	            <ontextchange>ClearProperty(fenlight.pg.w1105.ctl502.pages,Home)</ontextchange>
 	            <ontextchange>ClearProperty(fenlight.pg.w1105.ctl503.pages,Home)</ontextchange>
 
-	            <onleft condition="Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(RefocusMenu,True)</onleft>
-            <onleft condition="Skin.HasSetting(HomeSwitcher.Vertical)">3001</onleft>
-
-            <onright condition="Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(Bumper.Direction,Right,Home)</onright>
-            <onright condition="Skin.HasSetting(HomeSwitcher.Vertical)">ActivateWindow(1180)</onright>
 
 
-            <onleft condition="!Skin.HasSetting(HomeSwitcher.Vertical)">$INFO[Container(399).ListItem(-1).Property(action)]</onleft>
+
+            <onleft>$INFO[Container(399).ListItem(-1).Property(action)]</onleft>
             <!-- Con testo presente, freccia destra seleziona la X di clear; senza testo va al pulsante filtri. -->
-            <onright condition="!Skin.HasSetting(HomeSwitcher.Vertical) + !String.IsEmpty(Control.GetLabel(3000).index(1))">SetFocus(3005)</onright>
-            <onright condition="!Skin.HasSetting(HomeSwitcher.Vertical) + String.IsEmpty(Control.GetLabel(3000).index(1))">3004</onright>
+            <onright condition="!String.IsEmpty(Control.GetLabel(3000).index(1))">SetFocus(3005)</onright>
+            <onright condition="String.IsEmpty(Control.GetLabel(3000).index(1))">3004</onright>
 
             <!-- Navigazione giù: advanced panel → 3009; testo vuoto + content path → widget 505;
                  testo presente → risultati 601/602. Box vuoto e nessun content path: sotto la barra
@@ -465,7 +456,7 @@
                 <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
                 <onfocus>ClearProperty(Background.HideArtwork)</onfocus>
                 <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
-                <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
+                <onfocus>SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
                 <onleft>3000</onleft>
                 <onright>3004</onright>
                 <onup>3000</onup>
@@ -529,8 +520,7 @@
     <include name="Search_Bar_Keys">
         <control type="wraplist" id="301">
             <orientation>horizontal</orientation>
-            <onunfocus condition="Skin.HasSetting(HomeSwitcher.Vertical)">ClearProperty(HomeSwitcher.IsVisible,Home)</onunfocus>
-            <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
+            <onfocus>SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
             <onunfocus>SetProperty(Searchbar.IsHidden,True)</onunfocus>
             <onfocus>ClearProperty(Searchbar.IsHidden)</onfocus>
             <!-- Andare sulla tastiera per digitare chiude il pannello avanzate se aperto. -->
@@ -788,12 +778,11 @@
                 <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onfocus>
                 <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(Background.HideArtwork)</onfocus>
                 <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
-                <onfocus condition="!Skin.HasSetting(HomeSwitcher.Vertical)">SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
-                <onunfocus condition="Skin.HasSetting(HomeSwitcher.Vertical)">ClearProperty(HomeSwitcher.IsVisible,Home)</onunfocus>
+                <onfocus>SetProperty(HomeSwitcher.IsVisible,True,Home)</onfocus>
                 <onup>ClearProperty(RefocusMenu)</onup>
                 <onup>3001</onup>
                 <onleft>3000</onleft>
-                <onright condition="!Skin.HasSetting(HomeSwitcher.Vertical)">$INFO[Container(399).ListItem(1).Property(action)]</onright>
+                <onright>$INFO[Container(399).ListItem(1).Property(action)]</onright>
                 <ondown condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">3009</ondown>
                 <ondown condition="String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !Container(505).IsUpdating + ![Integer.IsEqual(Container(505).NumItems,0) | [Integer.IsEqual(Container(505).NumItems,1) + String.IsEqual(Container(505).ListItemAbsolute(0).Label,$LOCALIZE[31046])]]">SetProperty(Searchbar.IsHidden,True)</ondown>
                 <ondown condition="String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !Container(505).IsUpdating + ![Integer.IsEqual(Container(505).NumItems,0) | [Integer.IsEqual(Container(505).NumItems,1) + String.IsEqual(Container(505).ListItemAbsolute(0).Label,$LOCALIZE[31046])]]">505</ondown>

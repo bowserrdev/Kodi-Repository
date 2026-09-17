@@ -85,7 +85,6 @@
         <value>resource://resource.images.arcticfuse/icons/settings-basic.png</value>
     </variable>
 
-
     <variable name="Image_Widget_Style">
         <value condition="String.IsEqual(ListItem.Property(widget_style),Landscape)">resource://resource.images.arcticfuse/icons/view-landscape.png</value>
         <value condition="String.IsEqual(ListItem.Property(widget_style),Square)">resource://resource.images.arcticfuse/icons/view-square.png</value>
@@ -114,14 +113,6 @@
         <value condition="!String.IsEmpty(Container(450).ListItem.Art(poster))">$INFO[Container(450).ListItem.Art(poster)]</value>
         <value condition="!String.IsEmpty(Container(450).ListItem.Art(season.poster))">$INFO[Container(450).ListItem.Art(season.poster)]</value>
         <value condition="!String.IsEmpty(Container(450).ListItem.Art(tvshow.poster))">$INFO[Container(450).ListItem.Art(tvshow.poster)]</value>
-    </variable>
-
-    <variable name="Image_ButtonMenu_NowPlayingThumb">
-        <value condition="!String.IsEmpty(Pvr.EPGEventIcon)">$INFO[Pvr.EPGEventIcon]</value>
-        <value condition="!String.IsEmpty(Player.Art(poster))">$INFO[Player.Art(poster)]</value>
-        <value condition="!String.IsEmpty(Player.Art(tvshow.poster))">$INFO[Player.Art(tvshow.poster)]</value>
-        <value condition="!String.IsEmpty(Player.Art(thumb))">$INFO[Player.Art(thumb)]</value>
-        <value>$VAR[Image_ProfileThumb]</value>
     </variable>
 
     <variable name="Image_OSD_Landscape">
@@ -182,8 +173,6 @@
         <value condition="!String.IsEmpty(Window(Home).Property(System.ProfileNumber))">$INFO[Window(Home).Property(System.ProfileNumber),special://skin/extras/profiles/Mountains (,).jpg]</value>
         <value>special://skin/extras/profiles/Mountains (1).jpg</value>
     </variable>
-
-
 
     <variable name="Image_SimpleDialogBackground">
         <value condition="Skin.String(Background.DialogImage,Blue)">resource://resource.images.arcticfuse/backgrounds/dialogs/blue_blur.png</value>
@@ -331,7 +320,6 @@
         <value>resource://resource.images.arcticfuse/backgrounds/launch/</value>
     </variable>
 
-
     <variable name="Image_ResourceIcon">
         <value condition="$EXP[Exp_IsGenre]">$VAR[Image_GenreIcon]</value>
         <value>$VAR[Image_OtherIcon]</value>
@@ -399,7 +387,6 @@
         <value condition="!String.IsEmpty(ListItem.Property(iscurrent))">buttons/check-on.png</value>
         <value>buttons/check-off.png</value>
     </variable>
-
 
     <variable name="Image_OSD_PausePlay">
         <value condition="Player.Playing">resource://resource.images.arcticfuse/icons/pause.png</value>
@@ -490,21 +477,9 @@
         <value>resource://resource.images.arcticfuse/icons/download.png</value>
     </variable>
 
-    <variable name="Image_Watched">
-        <value condition="System.Setting(hidewatched)">resource://resource.images.arcticfuse/icons/watched-hide.png</value>
-        <value>resource://resource.images.arcticfuse/icons/watched-show.png</value>
-    </variable>
-
     <variable name="Image_Filtered">
         <value condition="Container.Filtered | !String.IsEmpty(Control.GetLabel(19).index(1))">resource://resource.images.arcticfuse/icons/filter-circle-check.png</value>
         <value>resource://resource.images.arcticfuse/icons/filter-circle-xmark.png</value>
-    </variable>
-
-    <variable name="Image_SortDirection">
-        <value condition="!String.IsEmpty(Window.Property(MediaFilter.SortHow)) + Window.IsMedia + String.IsEqual(Container.FolderName,Skin Variables) + !String.IsEmpty(Window.Property(MediaFilter.BaseDir.Name))">resource://resource.images.arcticfuse/icons/arrow-down-z-a.png</value>
-        <value condition="String.IsEmpty(Window.Property(MediaFilter.SortHow)) + Window.IsMedia + String.IsEqual(Container.FolderName,Skin Variables) + !String.IsEmpty(Window.Property(MediaFilter.BaseDir.Name))">resource://resource.images.arcticfuse/icons/arrow-up-z-a.png</value>
-        <value condition="Container.SortDirection(Descending)">resource://resource.images.arcticfuse/icons/arrow-down-z-a.png</value>
-        <value>resource://resource.images.arcticfuse/icons/arrow-up-z-a.png</value>
     </variable>
 
     <variable name="Image_Player_RottenTomatoes">
@@ -574,7 +549,6 @@
         <value condition="ListItem.HasTimer">indicator/timer.png</value>
         <value condition="ListItem.IsPlayable + !Skin.HasSetting(Indicator.DisablePVRGuideCatchUp)">indicator/library.png</value>
     </variable>
-
 
     <variable name="Image_DialogConfirm_10">
         <value condition="String.IsEqual(Control.GetLabel(10),$LOCALIZE[222])">resource://resource.images.arcticfuse/icons/circle-xmark.png</value>

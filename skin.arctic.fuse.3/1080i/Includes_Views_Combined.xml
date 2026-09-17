@@ -139,9 +139,6 @@
     </include>
 
     <include name="View_Combined_List_Horz_Selector_Movement">
-        <include content="Action_View_Movement_OnUp">
-            <param name="id">52$PARAM[id]</param>
-        </include>
         <ondown>53$PARAM[id]</ondown>
         <onleft>52$PARAM[id]</onleft>
         <onright>52$PARAM[id]</onright>

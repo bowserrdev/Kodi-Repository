@@ -76,17 +76,6 @@
                         ]
                     }
                 ],
-                [
-                    {
-                        "rules": [
-                            "!String.IsEmpty(Skin.String(HomeSwitcher.1108.Toggle))"
-                        ],
-                        "value": [
-                            "ActivateWindow(1108)",
-                            "sleep=0.3"
-                        ]
-                    }
-                ],
                 "ActivateWindow(Home)"
             ]
         },

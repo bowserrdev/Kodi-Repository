@@ -19,7 +19,6 @@
          andrebbero in corsa con l'avvio asincrono del servizio. -->
     <expression name="Exp_Blur_IsUnavailable">[[$EXP[Exp_BackgroundArtwork_IsSimple] + String.IsEmpty(Window(Home).Property(TMDbHelper.SimpleBackground.BlurImage))] | [!$EXP[Exp_BackgroundArtwork_IsSimple] + String.IsEmpty(Window.Property(TMDbHelper.ListItem.BlurImage)) + String.IsEmpty(Window(Home).Property(TMDbHelper.ListItem.Current.BlurImage))]]</expression>
 
-
     <!-- ============== -->
     <!-- Colour Schemes -->
     <!-- ============== -->
@@ -64,7 +63,6 @@
     <expression name="Exp_Navigation_OnParent">[Skin.String(Navigation.OnBack,Parent)]</expression>
     <expression name="Exp_Navigation_OnPrevious">[Skin.String(Navigation.OnBack,Previous) | String.IsEmpty(Skin.String(Navigation.OnBack))]</expression>
 
-
     <!-- ==== -->
     <!-- Hubs -->
     <!-- ==== -->
@@ -74,12 +72,16 @@
     <expression name="Exp_Hubs_Spotlight_SlideDown">[Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),301)]</expression>
     <expression name="Exp_Hubs_Spotlight_ShowButtons">[ControlGroup(310).HasFocus()]</expression>
 
-    <expression name="Exp_Hubs_Menu_Loopback">[Skin.HasSetting(HomeSwitcher.LoopBack) | Skin.HasSetting(HomeSwitcher.Vertical)]</expression>
+    <!-- Icone di destra dell'intestazione (Home_Header_Icons). Impostazioni e spegnimento ci sono sempre. -->
+    <expression name="Exp_Header_Icons_HasFocus">[Integer.IsEqual(System.CurrentControlID,3180) | Integer.IsEqual(System.CurrentControlID,3181) | Integer.IsEqual(System.CurrentControlID,3182) | Integer.IsEqual(System.CurrentControlID,3183) | Integer.IsEqual(System.CurrentControlID,3184)]</expression>
+    <expression name="Exp_Header_Profile_Enabled">[Skin.HasSetting(HeaderIcons.ShowProfile)]</expression>
+    <expression name="Exp_Header_Slot1_Enabled">[!String.IsEmpty(Skin.String(HeaderIcons.Slot1.Path))]</expression>
+    <expression name="Exp_Header_Slot2_Enabled">[!String.IsEmpty(Skin.String(HeaderIcons.Slot2.Path))]</expression>
+    <!-- Le icone della skin sono sagome da colorare; tutte le altre (addon, immagini) vanno mostrate a colori. -->
+    <expression name="Exp_Header_Slot1_MonoIcon">[String.IsEmpty(Skin.String(HeaderIcons.Slot1.Icon)) | String.StartsWith(Skin.String(HeaderIcons.Slot1.Icon),resource://resource.images.arcticfuse/icons/)]</expression>
+    <expression name="Exp_Header_Slot2_MonoIcon">[String.IsEmpty(Skin.String(HeaderIcons.Slot2.Icon)) | String.StartsWith(Skin.String(HeaderIcons.Slot2.Icon),resource://resource.images.arcticfuse/icons/)]</expression>
 
-    <expression name="Exp_Hubs_SlideInfo">[[!String.IsEmpty(Window(Home).Property(HomeSwitcher.IsVisible)) + !Skin.HasSetting(HomeSwitcher.Vertical)] | [Window.IsVisible(1105) + String.IsEmpty(Window(1105).Property(Searchbar.IsHidden)) + !Window.IsActive(DialogKeyboard.xml)]]</expression>
-
-    <!-- <expression name="Exp_Hubs_SlideInfo">[!String.IsEmpty(Window(Home).Property(HomeSwitcher.IsVisible)) + !Skin.HasSetting(HomeSwitcher.Vertical)]</expression> -->
-
+    <expression name="Exp_Hubs_SlideInfo">[!String.IsEmpty(Window(Home).Property(HomeSwitcher.IsVisible)) | [Window.IsVisible(1105) + String.IsEmpty(Window(1105).Property(Searchbar.IsHidden)) + !Window.IsActive(DialogKeyboard.xml)]]</expression>
 
     <!-- ============== -->
     <!-- Standard Views -->
@@ -90,8 +92,6 @@
     <expression name="Exp_IsAlphabetStrip">[!Skin.HasSetting(Navigation.DisableAlphabetJump) + !Window.IsVisible(MyPlaylist.xml) + [String.IsEqual(Container.SortMethod,$LOCALIZE[20376]) | String.IsEqual(Container.SortMethod,$LOCALIZE[556]) | String.IsEqual(Container.SortMethod,$LOCALIZE[551]) | String.IsEqual(Container.SortMethod,$LOCALIZE[21899]) | String.IsEqual(Container.SortMethod,$LOCALIZE[557]) | String.IsEqual(Container.SortMethod,$LOCALIZE[558]) | String.IsEqual(Container.SortMethod,$LOCALIZE[578])]]</expression>
 
     <expression name="Exp_PVRGuide_NoFocus">[Control.HasFocus(28) | Control.HasFocus(11)]</expression>
-
-    <expression name="Exp_View_IsMedia">[Window.IsVisible(videos) | Window.IsVisible(music) | Window.IsVisible(programs) | Window.IsVisible(pictures) | Window.IsVisible(games) | $EXP[Exp_PVRWindows]]</expression>
 
     <!-- Scrollbar -->
     <expression name="Exp_BackgroundArtwork_IsHidden">[[![$EXP[Exp_InfoDialogs] | Window.IsVisible(1190)] + [Window.IsVisible(favouritesbrowser) | Window.IsVisible(weather) | !String.IsEmpty(Window.Property(Background.HideArtwork))]] | [[$EXP[Exp_InfoDialogs] | Window.IsVisible(1190)]]]</expression>
@@ -108,7 +108,6 @@
     <!-- ================= -->
     <!-- Windows / Dialogs -->
     <!-- ================= -->
-    <expression name="Exp_PVRWindows">[Window.IsVisible(MyPVRGuide.xml) | Window.IsVisible(MyPVRChannels.xml) | Window.IsVisible(MyPVRTimers.xml) | Window.IsVisible(MyPVRRecordings.xml) | Window.IsVisible(MyPVRSearch.xml)]</expression>
 
     <expression name="Exp_InfoDialogs">[Window.IsVisible(DialogVideoInfo.xml) | Window.IsVisible(DialogMusicInfo.xml)]</expression>
 
@@ -130,9 +129,9 @@
          SOLO nelle finestre qui sotto, dove l'elemento visibile sta in un contenitore che non ha il
          fuoco (il fuoco ce l'ha il pulsante nascosto) e 'ListItem' nudo non lo vede.
          L'elenco non e' a occhio: e' esattamente l'esito di 'grep -l Hub_Onload *.xml' (Home, 1101-1104
-         hub, 1105 ricerca, 1108 addons, 1109 impostazioni). Se una finestra nuova adotta le righe
+         hub, 1105 ricerca, 1109 impostazioni). Se una finestra nuova adotta le righe
          widget va aggiunta qui, altrimenti il suo menu contestuale perde l'intestazione. -->
-    <expression name="Exp_ContextMenu_UsesBaseProperties">[Window.IsVisible(home) | Window.IsVisible(1101) | Window.IsVisible(1102) | Window.IsVisible(1103) | Window.IsVisible(1104) | Window.IsVisible(1105) | Window.IsVisible(1108) | Window.IsVisible(1109)]</expression>
+    <expression name="Exp_ContextMenu_UsesBaseProperties">[Window.IsVisible(home) | Window.IsVisible(1101) | Window.IsVisible(1102) | Window.IsVisible(1103) | Window.IsVisible(1104) | Window.IsVisible(1105) | Window.IsVisible(1109)]</expression>
 
     <expression name="Exp_PlainBackgroundWindows">[Window.IsVisible(SettingsCategory.xml) | Window.IsVisible(SkinSettings.xml) | Window.IsVisible(SettingsProfile.xml) | Window.IsVisible(SettingsSystemInfo.xml) | Window.IsVisible(addonbrowser) | Window.IsVisible(filemanager) | Window.IsVisible(1115) | Window.IsVisible(Settings.xml) | Window.IsVisible(eventlog) | Window.IsVisible(SettingsScreenCalibration.xml) | Window.IsVisible(MyMusicPlaylistEditor.xml)]</expression>
 
@@ -148,7 +147,6 @@
     <expression name="Exp_HasWatchedProgress">[!Skin.HasSetting(Indicator.DisableProgress) + [[ListItem.IsResumable + !Integer.IsEqual(ListItem.PercentPlayed,0) + !Integer.IsEqual(ListItem.PercentPlayed,100)] | [!String.IsEmpty(ListItem.Property(WatchedProgress)) + !Integer.IsEqual(ListItem.Property(WatchedProgress),0) + !Integer.IsEqual(ListItem.Property(WatchedProgress),100)] | [!Integer.IsEqual(ListItem.Progress,0) + !Integer.IsEqual(ListItem.Progress,100)]]]</expression>
 
     <expression name="Exp_IsPVRItem">[!String.IsEmpty(ListItem.ChannelNumberLabel) | String.IsEqual(ListItem.Path,pvr://channels/tv/)]</expression>
-
 
     <!-- === -->
     <!-- OSD -->

@@ -10,7 +10,6 @@
     <onload condition="!Skin.HasSetting(Startup.EnableHubPreloading) + Skin.HasSetting(Startup.DisableWaitForLoad)">ClearProperty(SplashIsVisible,1198)</onload>
     <onload condition="!Skin.HasSetting(Startup.EnableHubPreloading) + Skin.HasSetting(Startup.DisableWaitForLoad)">CancelAlarm(SplashTimeOut,silent)</onload>
     <include>Action_BuildViews</include>
-    <include>Action_ButtonMenu_Onload</include>
     <include>Action_BuildShortcuts_OnLoad</include>
 
     <include content="Hub_Onload">

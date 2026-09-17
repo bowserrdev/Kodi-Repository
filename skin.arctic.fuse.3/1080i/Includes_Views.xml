@@ -329,18 +329,12 @@
             <param name="id">63</param>
             <onfocus>SetFocus(500)</onfocus>
         </include>
-        <include content="Object_Hidden_Button">
-            <param name="id">67</param>
-            <onfocus>SetFocus(500)</onfocus>
-            <onfocus>ActivateWindow(1171)</onfocus>
-        </include>
 
         <!-- Horizontal Scrollbar -->
         <include content="Object_Hidden_Button">
             <param name="id">610</param>
             <onup>62</onup>
             <ondown>500</ondown>
-            <ondown>ActivateWindow(1171)</ondown>
             <onback>62</onback>
             <onleft>SetFocus($VAR[Action_View_ContainerID])</onleft>
             <onleft>Action(PrevLetter)</onleft>
@@ -363,7 +357,6 @@
                 <include>Texture_Scrollbar_H</include>
                 <onup>62</onup>
                 <ondown>500</ondown>
-                <ondown>ActivateWindow(1171)</ondown>
                 <onback>62</onback>
                 <left>130</left>
             </control>
@@ -375,7 +368,6 @@
             <onleft>62</onleft>
             <onback>62</onback>
             <onright>500</onright>
-            <onright>ActivateWindow(1171)</onright>
             <onup>SetFocus($VAR[Action_View_ContainerID])</onup>
             <onup>Action(PrevLetter)</onup>
             <onup>SetFocus(611)</onup>
@@ -404,7 +396,6 @@
                 <include>Texture_Scrollbar_V</include>
                 <onleft>62</onleft>
                 <onright>500</onright>
-                <onright>ActivateWindow(1171)</onright>
                 <onback>62</onback>
                 <showonepage>true</showonepage>
             </control>
@@ -427,7 +418,6 @@
                 <include>Texture_Scrollbar_V</include>
                 <onleft>62</onleft>
                 <onright>500</onright>
-                <onright>ActivateWindow(1171)</onright>
                 <onback>62</onback>
                 <showonepage>true</showonepage>
             </control>
@@ -450,7 +440,6 @@
                 <include>Texture_Scrollbar_V</include>
                 <onleft>62</onleft>
                 <onright>500</onright>
-                <onright>ActivateWindow(1171)</onright>
                 <onback>62</onback>
                 <showonepage>true</showonepage>
             </control>
@@ -508,12 +497,6 @@
         <definition>
 
             <include condition="String.StartsWith(System.BuildVersion,21)">View_Main_Fast_Nav</include>
-
-            <include content="Object_Hidden_Button">
-                <param name="id">612</param>
-                <onfocus>SetFocus(500)</onfocus>
-                <onfocus>RunScript(script.skinvariables,set_listitem_to_menunode=homewidgets||1101widgets||1102widgets||1103widgets||1104widgets||homesubmenu||1101submenu||1102submenu||1103submenu||1104submenu||powermenu||powertray,skin=$VAR[Path_SkinVariables_SkinFolder],use_listitem=False,target=$VAR[Action_CurrentMediaWindow],path=$INFO[Container.FolderPath],label=$VAR[Label_Section_Main])</onfocus>
-            </include>
 
             <include>Background</include>
 
