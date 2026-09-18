@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="repository.bowserr" name="Bowserr Repo" version="1.2.16" provider-name="Bowserr">
+<addon id="repository.bowserr" name="Bowserr Repo" version="1.2.17" provider-name="Bowserr">
     <requires>
         <import addon="xbmc.addon" version="12.0.0"/>
     </requires>
     <extension point="xbmc.addon.repository" name="Bowserr Repository">
         <dir>
             <info compressed="false">https://raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml</info>
-            <checksum>https://raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml.md5</checksum>
+            <checksum verify="md5">https://raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/addons.xml.md5</checksum>
             <datadir zip="true">https://raw.githubusercontent.com/bowserrdev/Kodi-Repository/main/</datadir>
             <hashes>true</hashes>
         </dir>

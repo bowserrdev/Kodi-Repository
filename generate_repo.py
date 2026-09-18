@@ -3,6 +3,7 @@ import glob
 import hashlib
 import zipfile
 import re
+import shutil
 import xml.etree.ElementTree as ET
 from fnmatch import fnmatch
 
@@ -41,6 +42,11 @@ KEEP = {
         'media/flags/color/mpaa/espa*.png',
     ),
 }
+
+# Lo zip del repository si pubblica anche nella radice, dove lo linka index.html: e' il file che si
+# installa a mano su un dispositivo nuovo. Va tenuto uguale a quello dentro la cartella del repository.
+REPO_ID = 'repository.bowserr'
+INDEX_HTML = 'index.html'
 
 def _matches(rules, relpath):
     # Confronto insensibile al maiuscolo: i nomi reali su disco non sempre sono quelli che ci si
@@ -97,6 +103,26 @@ def create_zip(addon_id, version):
         hf.write(digest.hexdigest())
     print(f"  {zip_name}.md5 = {digest.hexdigest()}")
 
+def publish_repo_zip(addon_id, version):
+    zip_name = f"{addon_id}-{version}.zip"
+    # Le versioni vecchie nella radice si tolgono, cosi' il link della pagina non punta mai a un
+    # pacchetto superato.
+    for f in glob.glob(f"{addon_id}-*.zip"):
+        if f != zip_name:
+            os.remove(f)
+    shutil.copyfile(os.path.join(addon_id, zip_name), zip_name)
+
+    with open(INDEX_HTML, 'r', encoding='utf-8') as f:
+        html = f.read()
+    updated, count = re.subn(re.escape(addon_id) + r'-[0-9][0-9.]*\.zip', zip_name, html)
+    if count == 0:
+        print(f"  ATTENZIONE: nessun link a {addon_id} trovato in {INDEX_HTML}, pagina non aggiornata")
+        return
+    if updated != html:
+        with open(INDEX_HTML, 'w', encoding='utf-8') as f:
+            f.write(updated)
+    print(f"  {zip_name} copiato nella radice, {INDEX_HTML} aggiornato ({count} riferimenti)")
+
 def generate_repo():
     addons_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<addons>\n'
     
@@ -117,6 +143,8 @@ def generate_repo():
                         addons_xml += xml_content + "\n"
                     
                     create_zip(addon_id, version)
+                    if addon_id == REPO_ID:
+                        publish_repo_zip(addon_id, version)
                 except Exception as e:
                     print(f"Errore nell'elaborazione di {item}: {e}")
                     
