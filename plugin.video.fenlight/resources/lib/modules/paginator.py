@@ -6,7 +6,7 @@
 # refresh, so the already-loaded items keep their position and the focus is preserved.
 from hashlib import md5
 from re import compile as re_compile
-from modules.kodi_utils import parse_qsl, SEGNAPOSTO_PARAM
+from modules.kodi_utils import parse_qsl, urlencode, SEGNAPOSTO_PARAM
 # Interruttore unico della strumentazione: qui in testa perche' lo usano sia PG_DEBUG sia PERF,
 # e il primo dei due sta molto piu' su del secondo.
 from modules.perf import enabled as _perf_enabled
@@ -733,10 +733,12 @@ def make_key(params):
 def canonical_params(params):
 	# I parametri della lista in forma canonica: l'impronta e' il suo md5, e il testo serve a chi deve
 	# RIFARE la lista (riconvalida all'avvio), perche' da un md5 non si torna indietro.
+	# I valori vanno CODIFICATI: il testo viaggia fino al preparatore, che lo rilegge con parse_qsl. In chiaro,
+	# un valore con '&' o '=' dentro (l'url della ricerca avanzata) si spezzava in parametri spuri e la
+	# sorgente riceveva solo 'discover/movie?language=en-US': TMDb rispondeva col discover senza filtri.
 	if not isinstance(params, dict):
 		params = dict(parse_qsl(params, keep_blank_values=True))
-	items = sorted((k, v) for k, v in params.items() if k not in _VOLATILE_PARAMS)
-	return '&'.join('%s=%s' % (k, v) for k, v in items)
+	return urlencode(sorted((k, v) for k, v in params.items() if k not in _VOLATILE_PARAMS))
 
 def position_of(params):
 	"""(scope, id contenitore) letti dal path, o (None, None) se la skin non li ha messi.
@@ -753,19 +755,6 @@ def position_of(params):
 	if not cid.isdigit(): return None, None
 	if not scope.replace('_', '').isalnum(): return None, None
 	return scope, cid
-
-def posizione_invocazione():
-	"""(scope, id) della riga per cui gira QUESTA invocazione del plugin, letti dal suo URL.
-
-	Non dai parametri del costruttore: MDBList, "continua a guardare" e le liste casuali costruiscono
-	Movies/TVShows con un dizionario loro, senza 'pgctl' (18/09/2026, Firestick: "Ultime uscite" e'
-	una lista MDBList e la voce watchlist restava scritta). La riga di destinazione e' un fatto della
-	chiamata, e la chiamata e' una sola per invocazione. Fuori da un'invocazione (servizio) non c'e'
-	un URL: (None, None)."""
-	try:
-		import sys
-		return position_of(sys.argv[2].lstrip('?'))
-	except Exception: return None, None
 
 def widget_key(params):
 	"""IDENTITA' del widget. La posizione quando la skin la fornisce, altrimenti il contenuto.

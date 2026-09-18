@@ -15,16 +15,18 @@ rivaluta a ogni giro di rendering. Quindi la voce non scrive il proprio testo, l
 
     [B]$INFO[Window(Home).Property(fenlight.cm.watchlist)][/B]
 
-e la proprieta' la tiene giusta il watcher del servizio, che segue gia' l'elemento a fuoco nelle righe
-di home, hub e ricerca (e' lo stesso posto e lo stesso momento in cui pubblica l'intestazione del menu,
-base_label, lotto 217). Una proprieta' sola, non una per titolo: dice lo stato dell'elemento a fuoco,
-che e' l'unico su cui il menu si puo' aprire.
+e la proprieta' la tiene giusta il watcher del servizio. Una proprieta' sola, non una per titolo: dice
+lo stato dell'elemento a fuoco, che e' l'unico su cui il menu si puo' aprire.
 
-DOVE VALE. Solo nelle righe che portano `pgctl` nell'URL: sono esattamente quelle generate dai modelli
-della skin per home, hub e ricerca, cioe' quelle che il watcher segue (e' lo stesso parametro con cui le
-riconosce il paginatore). Le liste di Fen Light a schermo intero e le righe della scheda informazioni
-(finestra modale: il watcher li' si ferma) tengono l'etichetta scritta, come prima. E' la strada "a"
-concordata il 18/09; la "b" e' estendere il watcher alla scheda informazioni.
+DOVE VALE. Ovunque, per costruzione: ogni elemento film o serie di Fen Light porta l'etichetta viva, e
+il watcher legge `Container(<System.CurrentControlID>).ListItem.*`. Entrambe le infolabel si risolvono
+contro la finestra o il dialogo in primo piano, quindi riga di home, hub o ricerca, righe della scheda
+informazioni e cartelle di Fen Light sono lo stesso caso. NON `ListItem.*` senza contenitore: nella
+scheda informazioni (DialogVideoInfo) quello e' il titolo della scheda, non l'elemento a fuoco nelle sue
+righe -- misurato sul Mac il 18/09, il watcher ricalcolava sempre il film della scheda. Fino al 18/09
+sera il contenitore era quello della riga seguita dal paginatore, e la scheda, modale, restava fuori.
+L'unico momento in cui la proprieta' NON si tocca e' col menu contestuale aperto: deve restare quella
+dell'elemento su cui il menu si e' aperto (vedi service.py, CONTEXT_MENU_DIALOG).
 
 QUANDO SI RICALCOLA. Quando cambia l'elemento a fuoco, e quando cambia la watchlist. Il secondo segnale
 e' un file in addon_data scritto da trakt_api.rinnova_watchlist, che e' il punto da cui passa OGNI
@@ -82,20 +84,26 @@ class Tracker:
 		self.loader, self.stamp_reader, self.log = loader, stamp_reader, log
 		self.item, self.stamp, self.sets = None, None, {}
 
-	def update(self, item_label, widget_id, get_infolabel, window):
+	def update(self, control_id, get_infolabel, window):
 		"""Un giro del watcher. Torna l'etichetta scritta, o None se non c'era niente da fare.
 
-		`item_label` e' l'etichetta dell'elemento a fuoco che il watcher ha gia' letto per base_label:
-		serve a capire se l'elemento e' cambiato senza leggere altro. Solo quando qualcosa e' cambiato
-		si chiedono a Kodi tipo e tmdb_id -- due letture, non a ogni giro."""
-		if not item_label: return None
+		`control_id` e' System.CurrentControlID, gia' letto dal watcher. Una lettura a giro, il path
+		dell'elemento a fuoco in quel controllo: e' la chiave per capire se l'elemento e' cambiato, e a
+		differenza del tmdb_id distingue anche un film e una serie con lo stesso numero (le due
+		numerazioni TMDb sono indipendenti). Tipo e tmdb_id si chiedono solo quando qualcosa e' cambiato.
+		Un controllo che non e' un contenitore (pulsanti) e un elemento che non e' un film o una serie con
+		tmdb_id (episodi, cartelle, voci del menu) non toccano la proprieta'."""
+		if not control_id: return None
+		item = 'Container(%s).ListItem.' % control_id
+		path = get_infolabel(item + 'FolderPath')
+		if not path: return None
 		stamp = self.stamp_reader()
-		if item_label == self.item and stamp == self.stamp: return None
+		if path == self.item and stamp == self.stamp: return None
 		if stamp != self.stamp: self.sets.clear(); self.stamp = stamp
-		self.item = item_label
-		media_type = MEDIA_TYPES.get(get_infolabel('Container(%s).ListItem.DBType' % widget_id))
+		self.item = path
+		media_type = MEDIA_TYPES.get(get_infolabel(item + 'DBType'))
 		if not media_type: return None
-		tmdb_id = get_infolabel('Container(%s).ListItem.UniqueID(tmdb)' % widget_id)
+		tmdb_id = get_infolabel(item + 'UniqueID(tmdb)')
 		if not tmdb_id: return None
 		ids, copia = self.sets.get(media_type), 'memoria'
 		if ids is None:
@@ -104,8 +112,8 @@ class Tracker:
 			else: self.sets[media_type], copia = ids, 'cache'
 		label = LABEL_IN if str(tmdb_id) in ids else LABEL_OUT
 		if window.getProperty(PROP) != label: window.setProperty(PROP, label)
-		# Una riga per ogni scrittura, solo con la strumentazione accesa (il servizio passa paginator.log):
-		# si scrive a ogni cambio di elemento, e le righe di log sono sincrone sul thread che le scrive.
+		# Una riga per ogni ricalcolo, solo con la strumentazione accesa (il servizio passa paginator.log):
+		# succede a ogni cambio di elemento, e le righe di log sono sincrone sul thread che le scrive.
 		if self.log: self.log('watchlist_label %s %s -> %s | copia %s (%d titoli) | segnale %s'
 								% (media_type, tmdb_id, label, copia, len(ids), (self.stamp or '-')[:14]))
 		return label

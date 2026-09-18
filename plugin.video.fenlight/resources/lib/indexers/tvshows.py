@@ -49,11 +49,6 @@ class TVShows:
 	def __init__(self, params):
 		self.params = params
 		self.params_get = self.params.get
-		# Voce watchlist a etichetta viva solo nelle righe che il watcher segue: sono quelle con 'pgctl'
-		# nell'URL (home, hub, ricerca). L'URL dell'INVOCAZIONE, non questi parametri: chi costruisce
-		# per conto suo (MDBList, continua a guardare, liste casuali) passa un dizionario senza.
-		# Vedi modules/watchlist_label.py e paginator.posizione_invocazione.
-		self.watchlist_label_viva = bool(paginator.posizione_invocazione()[0])
 		self.category_name = self.params_get('category_name', None) or self.params_get('name', None) or 'TV Shows'
 		self.id_type, self.list, self.action = self.params_get('id_type', 'tmdb_id'), self.params_get('list', []), self.params_get('action', None)
 		self.items, self.new_page, self.total_pages, self.is_external, self.is_home = [], {}, None, external(), home()
@@ -271,9 +266,9 @@ class TVShows:
 				cm_append(('[B]Segna come non visto[/B]',
 							run_plugin % (URL_MARK_TVSHOW % ('mark_as_unwatched', tmdb_id, tvdb_id))))
 			in_watchlist = string(tmdb_id) in self.watchlist_ids
-			if self.watchlist_label_viva: watchlist_label = DYNAMIC_WATCHLIST_LABEL
-			else: watchlist_label = '[B]Rimuovi dalla watchlist[/B]' if in_watchlist else '[B]Aggiungi alla watchlist[/B]'
-			cm_append((watchlist_label,
+			# Etichetta viva ovunque: la tiene giusta il watcher (modules/watchlist_label.py). in_watchlist
+			# resta nell'URL come ripiego di watchlist_toggle quando la copia in cache manca.
+			cm_append((DYNAMIC_WATCHLIST_LABEL,
 						run_plugin % (URL_WATCHLIST_TOGGLE % (tmdb_id, 'true' if in_watchlist else 'false'))))
 			set_properties({'watchedepisodes': string(total_watched), 'unwatchedepisodes': string(total_unwatched)})
 			set_properties({'watchedprogress': visible_progress, 'totalepisodes': string(total_aired_eps), 'totalseasons': string(total_seasons)})
