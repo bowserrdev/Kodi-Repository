@@ -6,7 +6,7 @@
 # refresh, so the already-loaded items keep their position and the focus is preserved.
 from hashlib import md5
 from re import compile as re_compile
-from modules.kodi_utils import parse_qsl
+from modules.kodi_utils import parse_qsl, SEGNAPOSTO_PARAM
 # Interruttore unico della strumentazione: qui in testa perche' lo usano sia PG_DEBUG sia PERF,
 # e il primo dei due sta molto piu' su del secondo.
 from modules.perf import enabled as _perf_enabled
@@ -281,8 +281,9 @@ CTL_PARAM = 'pgctl'
 # Params that change between cumulative reloads of the SAME widget and must not affect its key.
 # 'pgctl' e' qui perche' make_key ora calcola l'impronta del CONTENUTO, che e' un'altra domanda:
 # "in questa posizione e' cambiata la lista?". La posizione non deve entrarci.
+# SEGNAPOSTO_PARAM e' come la sua riga si presenta da vuota, non quale lista contiene.
 _VOLATILE_PARAMS = ('new_page', 'paginate_start', 'refreshed', 'pages', 'reload', 'reload_property',
-					RELOAD_KIND_PARAM, CTL_PARAM)
+					RELOAD_KIND_PARAM, CTL_PARAM, SEGNAPOSTO_PARAM)
 
 # Text-search hub debounce + anti-stale. The skin rebuilds the search widgets on EVERY keystroke, so a
 # burst of typing (or deleting) launches many overlapping builds for the same container; because each

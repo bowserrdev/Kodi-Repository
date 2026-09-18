@@ -110,6 +110,7 @@
                     </include>
                     <include content="Defs_Widget_Content" condition="$PARAM[pggated]">
                         <param name="pgctl" />
+                        <param name="vuota" />
                         <param name="content">$PARAM[content]</param>
                         <param name="pgscope">$PARAM[pgscope]</param>
                         <param name="id">$PARAM[id]</param>
@@ -191,6 +192,7 @@
                 </include>
                 <include content="Defs_Widget_Content" condition="$PARAM[pggated]">
                     <param name="pgctl" />
+                    <param name="vuota" />
                     <param name="content">$PARAM[content]</param>
                     <param name="pgscope">$PARAM[pgscope]</param>
                     <param name="id">$PARAM[id]</param>
