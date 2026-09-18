@@ -166,42 +166,43 @@
         <onback condition="!Player.HasMedia">3184</onback>
     </include>
 
-    <!-- Gruppo 3190: tutto cio' che nell'intestazione puo' avere il fuoco (300 e le icone di destra).
-         Chi deve sapere "il fuoco e' sull'intestazione" chiede ControlGroup(3190).HasFocus(). -->
+    <!-- 300 e le icone di destra stanno al PRIMO livello della definizione, non dentro un gruppo: Kodi
+         cerca <nested /> solo li' o come figlio diretto (GUIIncludes.cpp, InsertNested). Dentro un gruppo il
+         contenuto passato da chi include (per la ricerca: SetFocus(3001) sull'intestazione) viene buttato via
+         in silenzio, e nella ricerca il fuoco restava su 300 con la barra nascosta.
+         Chi deve sapere "il fuoco e' sull'intestazione" usa $EXP[Exp_Header_HasFocus]. -->
     <include name="Home_Control">
         <param name="onclick_condition">true</param>
         <param name="header_icons">false</param>
         <definition>
             <include>Home_ControlList</include>
-            <control type="group" id="3190">
-                <control type="button" id="300">
-                    <top>-1000</top>
-                    <height>10</height>
-                    <texturenofocus />
-                    <texturefocus />
+            <control type="button" id="300">
+                <top>-1000</top>
+                <height>10</height>
+                <texturenofocus />
+                <texturefocus />
 
-                    <onleft>$INFO[Container(399).ListItem(-1).Property(action)]</onleft>
-                    <onright>$INFO[Container(399).ListItem(1).Property(action)]</onright>
-                    <!-- Navigazione numerica e non SetFocus: Kodi (CGUIWindow::OnMove) salta da solo le icone
-                         nascoste seguendo la loro catena, SetFocus su un controllo nascosto invece fallisce. -->
-                    <onright condition="String.IsEqual(Container(399).ListItem(1).Property(header_icons),true)">3180</onright>
+                <onleft>$INFO[Container(399).ListItem(-1).Property(action)]</onleft>
+                <onright>$INFO[Container(399).ListItem(1).Property(action)]</onright>
+                <!-- Navigazione numerica e non SetFocus: Kodi (CGUIWindow::OnMove) salta da solo le icone
+                     nascoste seguendo la loro catena, SetFocus su un controllo nascosto invece fallisce. -->
+                <onright condition="String.IsEqual(Container(399).ListItem(1).Property(header_icons),true)">3180</onright>
 
-                    <include content="Home_Header_Focus_Actions">
-                        <param name="overlay">$PARAM[overlay]</param>
-                    </include>
-                    <onclick condition="$PARAM[onclick_condition] + !String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">ActivateWindow($INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target)],$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)],return)</onclick>
-                    <onclick condition="$PARAM[onclick_condition] + String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)]</onclick>
-                    <onclick condition="Window.IsVisible(1105)">SetFocus(3001)</onclick>
-                    <onclick condition="Window.IsVisible(1105)">AlarmClock(reclick,Action(Select),00:00,silent)</onclick>
-
-                    <include>Home_Movement</include>
-
-                    <nested />
-                </control>
-                <include content="Home_Header_Icon_Buttons" condition="$PARAM[header_icons]">
+                <include content="Home_Header_Focus_Actions">
                     <param name="overlay">$PARAM[overlay]</param>
                 </include>
+                <onclick condition="$PARAM[onclick_condition] + !String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">ActivateWindow($INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target)],$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)],return)</onclick>
+                <onclick condition="$PARAM[onclick_condition] + String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)]</onclick>
+                <onclick condition="Window.IsVisible(1105)">SetFocus(3001)</onclick>
+                <onclick condition="Window.IsVisible(1105)">AlarmClock(reclick,Action(Select),00:00,silent)</onclick>
+
+                <include>Home_Movement</include>
+
+                <nested />
             </control>
+            <include content="Home_Header_Icon_Buttons" condition="$PARAM[header_icons]">
+                <param name="overlay">$PARAM[overlay]</param>
+            </include>
             <control type="image">
                 <include>Home_Fade_Animation</include>
                 <visible>!String.IsEmpty(Window(Home).Property(HomeSwitcher.IsVisible))</visible>

@@ -74,6 +74,8 @@
 
     <!-- Icone di destra dell'intestazione (Home_Header_Icons). Impostazioni e spegnimento ci sono sempre. -->
     <expression name="Exp_Header_Icons_HasFocus">[Integer.IsEqual(System.CurrentControlID,3180) | Integer.IsEqual(System.CurrentControlID,3181) | Integer.IsEqual(System.CurrentControlID,3182) | Integer.IsEqual(System.CurrentControlID,3183) | Integer.IsEqual(System.CurrentControlID,3184)]</expression>
+    <!-- "Il fuoco e' sull'intestazione": 300 (gli hub) o una delle icone di destra. -->
+    <expression name="Exp_Header_HasFocus">[Control.HasFocus(300) | Control.HasFocus(3180) | Control.HasFocus(3181) | Control.HasFocus(3182) | Control.HasFocus(3183) | Control.HasFocus(3184)]</expression>
     <expression name="Exp_Header_Profile_Enabled">[Skin.HasSetting(HeaderIcons.ShowProfile)]</expression>
     <expression name="Exp_Header_Slot1_Enabled">[!String.IsEmpty(Skin.String(HeaderIcons.Slot1.Path))]</expression>
     <expression name="Exp_Header_Slot2_Enabled">[!String.IsEmpty(Skin.String(HeaderIcons.Slot2.Path))]</expression>
