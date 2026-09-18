@@ -631,6 +631,9 @@ class WidgetPaginator:
 		last_current = {}  # key -> last observed focus index, so we load ahead on real downward movement only
 		last_log = None  # dedup: only log when the observed state actually changes
 		last_scope, census_tick = None, 0  # finestra censita e da quanti giri: vedi CENSUS_TICKS
+		# La voce watchlist del menu contestuale: vedi modules/watchlist_label.py.
+		from modules.watchlist_label import Tracker as WatchlistLabel
+		watchlist_label = WatchlistLabel()
 		def log_change(state):
 			nonlocal last_log
 			if state != last_log:
@@ -854,6 +857,11 @@ class WidgetPaginator:
 					window.setProperty('TMDbHelper.ListItem.base_label', base_label)
 					if base_poster: window.setProperty('TMDbHelper.ListItem.base_poster', base_poster)
 					else: window.clearProperty('TMDbHelper.ListItem.base_poster')
+				# Stesso posto e stesso momento di base_label, per lo stesso motivo: quando il menu si apre,
+				# il valore dell'ultimo giro utile e' quello dell'elemento giusto. Legge tipo e tmdb_id solo
+				# se l'elemento o la watchlist sono cambiati. Un errore qui non deve fermare il paginatore.
+				try: watchlist_label.update(base_label, widget_id, get_infolabel, window)
+				except Exception as e: log_change('watchlist_label: %s' % e)
 				key, first_url = paginator.container_head(widget_id, scope)
 				if not key:
 					# Contenitore VUOTO con un token residuo: e' la ricerca a casella vuota (vedi

@@ -783,9 +783,10 @@ def _refresh_watchlist(data):
 	# cambia niente a schermo (l'appartenenza alla watchlist non e' contrassegnata in nessun modo) e
 	# in cambio si ricostruivano righe da centinaia di elementi. Misurato il 16/09 alle 01:27:34:
 	# aggiungere un film ricostruiva 1101.501 (la watchlist, giusto) e 1101.502 (Horror, inutile).
-	# L'etichetta del menu resta quella vecchia fino alla prossima ricostruzione naturale di quella
-	# riga, ma l'AZIONE e' comunque giusta: watchlist_toggle non si fida piu' dell'URL e rilegge
-	# l'appartenenza al momento del clic.
+	# L'AZIONE e' comunque giusta: watchlist_toggle non si fida piu' dell'URL e rilegge l'appartenenza
+	# al momento del clic. Dal 18/09 anche l'ETICHETTA, nelle righe di home, hub e ricerca: non e' piu'
+	# scritta nell'elemento, la chiede a una proprieta' che il watcher tiene giusta (vedi
+	# modules/watchlist_label.py). Fuori da quelle righe resta quella della costruzione.
 	# coalesce=False: e' sempre un comando dell'utente. Vedi kodi_refresh in kodi_utils.
 	# L'azione e' QUALIFICATA per tipo di media (lotto 119): la watchlist sono due widget e i dati
 	# spediti a Trakt dicono gia' quale dei due e' stato toccato -- 'movies' e/o 'shows'. Aggiungere un
@@ -844,6 +845,11 @@ def rinnova_watchlist(media_type):
 	media_type: 'movie' | 'movies' | 'tvshow' | 'shows'.
 	"""
 	trakt_fetch_collection_watchlist('watchlist', 'movies' if media_type in ('movie', 'movies') else 'shows', rinnova=True)
+	# Dopo la sostituzione, non prima: il watcher rilegge la copia appena vede il segnale, e deve
+	# trovare quella nuova. E' cio' che tiene giusta la voce del menu nelle righe che non si
+	# ricostruiscono -- vedi modules/watchlist_label.py.
+	from modules.watchlist_label import bump
+	bump()
 
 def watchlist_tmdb_ids(media_type='movies'):
 	# Insieme dei tmdb_id gia' in watchlist, letto una volta sola per costruzione di lista (come

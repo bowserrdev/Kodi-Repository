@@ -3,6 +3,7 @@ import sys
 from time import perf_counter as _perf
 from modules import kodi_utils, settings
 from modules import paginator, sorgenti
+from modules.watchlist_label import DYNAMIC_LABEL as DYNAMIC_WATCHLIST_LABEL
 from modules.metadata import movie_meta, movieset_meta
 from modules.metadata import movie_meta_prefetch, meta_prefetch_key
 from modules.utils import get_datetime, make_thread_list, get_current_timestamp, paginate_list, jsondate_to_datetime
@@ -53,6 +54,9 @@ class Movies:
 	def __init__(self, params):
 		self.params = params
 		self.params_get = self.params.get
+		# Voce watchlist a etichetta viva solo nelle righe che il watcher segue: sono quelle con 'pgctl'
+		# nell'URL (home, hub, ricerca). Vedi modules/watchlist_label.py.
+		self.watchlist_label_viva = bool(self.params_get(paginator.CTL_PARAM))
 		self.category_name = self.params_get('category_name', None) or self.params_get('name', None) or 'Movies'
 		self.id_type, self.list, self.action = self.params_get('id_type', 'tmdb_id'), self.params_get('list', []), self.params_get('action', None)
 		self.items, self.new_page, self.total_pages, self.is_external, self.is_home = [], {}, None, external(), home()
@@ -273,7 +277,9 @@ class Movies:
 			elif not unaired:
 				cm_append(('[B]Segna come visto[/B]', run_plugin % (URL_MARK % ('mark_as_watched', tmdb_id))))
 			in_watchlist = str_tmdb_id in self.watchlist_ids
-			cm_append((('[B]Rimuovi dalla watchlist[/B]' if in_watchlist else '[B]Aggiungi alla watchlist[/B]'),
+			if self.watchlist_label_viva: watchlist_label = DYNAMIC_WATCHLIST_LABEL
+			else: watchlist_label = '[B]Rimuovi dalla watchlist[/B]' if in_watchlist else '[B]Aggiungi alla watchlist[/B]'
+			cm_append((watchlist_label,
 						run_plugin % (URL_WATCHLIST_TOGGLE % (tmdb_id, 'true' if in_watchlist else 'false'))))
 			if progress:
 				cm_append(('[B]Azzera avanzamento[/B]', run_plugin % (URL_ERASE_BOOKMARK % tmdb_id)))

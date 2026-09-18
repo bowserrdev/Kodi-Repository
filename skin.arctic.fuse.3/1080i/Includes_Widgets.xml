@@ -623,7 +623,22 @@
                 <param name="usewidgetlabel">$PARAM[usewidgetlabel]</param>
                 <param name="include">$PARAM[include]</param>
                 <param name="visible">$PARAM[visible]</param>
-                <param name="altvisible">$PARAM[altvisible]</param>
+                <!-- LA RIGA CON IL SEGNAPOSTO NON SI NASCONDE MAI PER VUOTEZZA (18/09/2026).
+                     Widget_Content nasconde il contenitore quando ha 0 elementi e non sta caricando. Con il
+                     segnaposto (Widget_NoResults, incluso da entrambi i modelli che usano Widget_Row) quella
+                     regola contraddice l'altra, "da vuoto mostra 'nessun risultato'", e nel passaggio da 1 a 0
+                     elementi vinceva lei per sempre:
+                     - CStaticListProvider valuta la <visible> del segnaposto DENTRO Update(), prima che
+                       UpdateListProvider faccia Fetch (GUIBaseContainer.cpp:1051-1059): in quel giro NumItems
+                       e' ancora 1 (il titolo appena tolto), quindi il segnaposto resta spento, e poi arriva 0;
+                     - al giro dopo NumItems=0 e IsUpdating e' falso: il contenitore si nasconde;
+                     - un contenitore nascosto e non focalizzabile non aggiorna piu' il provider
+                       (GUIBaseContainer.cpp:1027-1028), quindi il segnaposto non viene mai rivalutato.
+                     Riga sparita finche' qualcosa non la ricarica, e vista del grouplist sballata sotto.
+                     Il caso "vuoto fin dall'inizio" funzionava solo perche' li' NumItems era gia' 0 mentre il
+                     segnaposto veniva valutato. Stessa condizione dell'include del segnaposto: dove non c'e'
+                     (impostazione spenta, finestra 1105) la riga vuota torna a nascondersi come prima. -->
+                <param name="altvisible">[$PARAM[altvisible]] | [!Skin.HasSetting(Widgets.DisableNoResultsItem) + !Window.IsVisible(1105)]</param>
                 <param name="detailed">$PARAM[detailed]</param>
                 <param name="busy_isupdating">$PARAM[busy_isupdating]</param>
                 <param name="busy_visible">[Integer.IsEqual(Container($PARAM[id]).NumItems,0) | [Integer.IsEqual(Container($PARAM[id]).NumItems,1) + String.IsEqual(Container($PARAM[id]).ListItemAbsolute(0).Label,$LOCALIZE[31046]) + Container($PARAM[id]).IsUpdating]]</param>

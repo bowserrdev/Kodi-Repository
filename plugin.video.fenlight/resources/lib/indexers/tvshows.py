@@ -4,6 +4,7 @@ from time import perf_counter as _perf
 # modules.meta_lists non si importa piu' (lotto 110): questo file non ne usava un solo nome.
 from modules import kodi_utils, settings
 from modules import paginator, sorgenti
+from modules.watchlist_label import DYNAMIC_LABEL as DYNAMIC_WATCHLIST_LABEL
 from modules.metadata import tvshow_meta
 from modules.metadata import tvshow_meta_prefetch, meta_prefetch_key
 from modules.utils import get_datetime, make_thread_list, get_current_timestamp, paginate_list
@@ -48,6 +49,9 @@ class TVShows:
 	def __init__(self, params):
 		self.params = params
 		self.params_get = self.params.get
+		# Voce watchlist a etichetta viva solo nelle righe che il watcher segue: sono quelle con 'pgctl'
+		# nell'URL (home, hub, ricerca). Vedi modules/watchlist_label.py.
+		self.watchlist_label_viva = bool(self.params_get(paginator.CTL_PARAM))
 		self.category_name = self.params_get('category_name', None) or self.params_get('name', None) or 'TV Shows'
 		self.id_type, self.list, self.action = self.params_get('id_type', 'tmdb_id'), self.params_get('list', []), self.params_get('action', None)
 		self.items, self.new_page, self.total_pages, self.is_external, self.is_home = [], {}, None, external(), home()
@@ -265,7 +269,9 @@ class TVShows:
 				cm_append(('[B]Segna come non visto[/B]',
 							run_plugin % (URL_MARK_TVSHOW % ('mark_as_unwatched', tmdb_id, tvdb_id))))
 			in_watchlist = string(tmdb_id) in self.watchlist_ids
-			cm_append((('[B]Rimuovi dalla watchlist[/B]' if in_watchlist else '[B]Aggiungi alla watchlist[/B]'),
+			if self.watchlist_label_viva: watchlist_label = DYNAMIC_WATCHLIST_LABEL
+			else: watchlist_label = '[B]Rimuovi dalla watchlist[/B]' if in_watchlist else '[B]Aggiungi alla watchlist[/B]'
+			cm_append((watchlist_label,
 						run_plugin % (URL_WATCHLIST_TOGGLE % (tmdb_id, 'true' if in_watchlist else 'false'))))
 			set_properties({'watchedepisodes': string(total_watched), 'unwatchedepisodes': string(total_unwatched)})
 			set_properties({'watchedprogress': visible_progress, 'totalepisodes': string(total_aired_eps), 'totalseasons': string(total_seasons)})
