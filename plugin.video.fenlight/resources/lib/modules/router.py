@@ -52,7 +52,7 @@ def _search_debounce_abort(sys, params, action_filtered):
 	if paginator.is_loading(key) or get_property(paginator.PG_REFRESH_PROP) == 'true':
 		return False
 	if not paginator.search_should_abort(params.get('query', '')): return False
-	try: end_directory(int(sys.argv[1]), cacheToDisc=False)
+	try: end_directory(int(sys.argv[1]), cacheToDisc=False, segnaposto=False)
 	except: pass
 	return True
 
@@ -67,7 +67,7 @@ def _stale_token_abort(sys, params):
 	from modules import paginator
 	if not paginator.token_is_stale(params): return False
 	from modules.kodi_utils import end_directory
-	try: end_directory(int(sys.argv[1]), cacheToDisc=False)
+	try: end_directory(int(sys.argv[1]), cacheToDisc=False, segnaposto=False)
 	except: pass
 	return True
 
@@ -105,6 +105,8 @@ def routing(sys):
 	params = dict(parse_qsl(sys.argv[2][1:], keep_blank_values=True))
 	_get = params.get
 	mode = _get('mode', 'navigator.main')
+	# Il clic sul segnaposto "nessun risultato" di una riga vuota (kodi_utils.end_directory): niente da fare.
+	if mode == 'segnaposto': return
 	# LOTTO 261 -- L'INVOCAZIONE SI PRESENTA. Kodi crea un thread `LanguageInvoker` per ogni
 	# invocazione del plugin, ma su Android non lo NOMINA (pthread_setname_np e' compilato solo per
 	# glibc, vedi modules/diagnostica.battezza), quindi in /proc tutte le nostre invocazioni portano

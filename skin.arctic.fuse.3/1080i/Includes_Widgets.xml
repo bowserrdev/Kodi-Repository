@@ -623,25 +623,10 @@
                 <param name="usewidgetlabel">$PARAM[usewidgetlabel]</param>
                 <param name="include">$PARAM[include]</param>
                 <param name="visible">$PARAM[visible]</param>
-                <!-- LA RIGA CON IL SEGNAPOSTO NON SI NASCONDE MAI PER VUOTEZZA (18/09/2026).
-                     Widget_Content nasconde il contenitore quando ha 0 elementi e non sta caricando. Con il
-                     segnaposto (Widget_NoResults, incluso da entrambi i modelli che usano Widget_Row) quella
-                     regola contraddice l'altra, "da vuoto mostra 'nessun risultato'", e nel passaggio da 1 a 0
-                     elementi vinceva lei per sempre:
-                     - CStaticListProvider valuta la <visible> del segnaposto DENTRO Update(), prima che
-                       UpdateListProvider faccia Fetch (GUIBaseContainer.cpp:1051-1059): in quel giro NumItems
-                       e' ancora 1 (il titolo appena tolto), quindi il segnaposto resta spento, e poi arriva 0;
-                     - al giro dopo NumItems=0 e IsUpdating e' falso: il contenitore si nasconde;
-                     - un contenitore nascosto e non focalizzabile non aggiorna piu' il provider
-                       (GUIBaseContainer.cpp:1027-1028), quindi il segnaposto non viene mai rivalutato.
-                     Riga sparita finche' qualcosa non la ricarica, e vista del grouplist sballata sotto.
-                     Il caso "vuoto fin dall'inizio" funzionava solo perche' li' NumItems era gia' 0 mentre il
-                     segnaposto veniva valutato. Stessa condizione dell'include del segnaposto: dove non c'e'
-                     (impostazione spenta, finestra 1105) la riga vuota torna a nascondersi come prima. -->
-                <param name="altvisible">[$PARAM[altvisible]] | [!Skin.HasSetting(Widgets.DisableNoResultsItem) + !Window.IsVisible(1105)]</param>
+                <param name="altvisible">$PARAM[altvisible]</param>
                 <param name="detailed">$PARAM[detailed]</param>
                 <param name="busy_isupdating">$PARAM[busy_isupdating]</param>
-                <param name="busy_visible">[Integer.IsEqual(Container($PARAM[id]).NumItems,0) | [Integer.IsEqual(Container($PARAM[id]).NumItems,1) + String.IsEqual(Container($PARAM[id]).ListItemAbsolute(0).Label,$LOCALIZE[31046]) + Container($PARAM[id]).IsUpdating]]</param>
+                <param name="busy_visible">[Integer.IsEqual(Container($PARAM[id]).NumItems,0) | [Integer.IsEqual(Container($PARAM[id]).NumItems,1) + String.IsEqual(Container($PARAM[id]).ListItemAbsolute(0).Property(fenlight.segnaposto),true) + Container($PARAM[id]).IsUpdating]]</param>
                 <param name="widgetfade_include">$PARAM[widgetfade_include]</param>
                 <param name="widgetfade_disable">$PARAM[widgetfade_disable]</param>
                 <param name="widget_hideartwork">$PARAM[widget_hideartwork]</param>
@@ -721,6 +706,13 @@
          condizionale lascia pgctl vuoto e lo scrive nel SUFFISSO del proprio $VAR/$INFO, dove
          sparisce insieme al path.
 
+         vuota    come la riga si presenta quando resta SENZA ELEMENTI (18/09/2026): con
+                  'segnaposto' Fen Light consegna l'elemento "nessun risultato" al posto della
+                  cartella vuota (kodi_utils.end_directory), cosi' il contenitore non scende mai a 0
+                  elementi, non perde il fuoco e il grouplist non salta. E' il default. Lo spengono
+                  le righe della ricerca, che da vuote si nascondono apposta, e che sono anche le
+                  sole con il path condizionale: li' il segmento resterebbe da solo come pgctl.
+
          LOTTO 176, PASSO 1.1. Perche' sortby vale 'programcount' e non piu' $PARAM[sortby].
          CDirectoryProvider::Announce butta via il contenuto di un widget a ogni OnPlay/OnResume/
          OnStop, ma SOLO se il suo ordinamento e' uno di quattro:
@@ -757,26 +749,10 @@
          serie (cartelle) nello stesso elenco. Se ne salta fuori uno si vede subito, le serie
          vanno tutte in cima, e si torna indietro cambiando questa sola parola. -->->
     <include name="Defs_Widget_Content">
+        <param name="vuota">&amp;vuota=segnaposto</param>
         <definition>
-            <content sortby="programcount" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]$PARAM[pgctl]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
+            <content sortby="programcount" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]$PARAM[pgctl]$PARAM[vuota]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
         </definition>
     </include>
 
-    <include name="_Widget_NoResults">
-        <content>
-            <item>
-                <label>$LOCALIZE[31046]</label>
-                <property name="override_square">fallback/no-results-square.png</property>
-                <property name="override_poster">fallback/no-results-poster.png</property>
-                <property name="override_landscape">fallback/no-results-landscape.png</property>
-                <visible>Integer.IsEqual(Container($PARAM[id]).NumItems,0) | [Integer.IsEqual(Container($PARAM[id]).NumItems,1) + String.IsEqual(Container($PARAM[id]).ListItemAbsolute(0).Label,$LOCALIZE[31046])]</visible>
-            </item>
-        </content>
-    </include>
-
-    <include name="Widget_NoResults">
-        <include content="_Widget_NoResults" condition="!Skin.HasSetting(Widgets.DisableNoResultsItem) + !Window.IsVisible(1105)">
-            <param name="id">$PARAM[id]</param>
-        </include>
-    </include>
 </includes>

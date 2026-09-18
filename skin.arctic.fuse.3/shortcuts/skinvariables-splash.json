@@ -4,7 +4,7 @@
             {
                 "rules": [
                     "Container(301).IsUpdating",
-                    "[Integer.IsEqual(Container(301).NumItems,0) | [Integer.IsEqual(Container(301).NumItems,1) + String.IsEqual(Container(301).ListItemAbsolute(0).Label,$LOCALIZE[31046])]]"
+                    "[Integer.IsEqual(Container(301).NumItems,0) | [Integer.IsEqual(Container(301).NumItems,1) + String.IsEqual(Container(301).ListItemAbsolute(0).Property(fenlight.segnaposto),true)]]"
                 ],
                 "value": "True"
             },
@@ -14,7 +14,7 @@
             {
                 "rules": [
                     "Container(501).IsUpdating",
-                    "[Integer.IsEqual(Container(501).NumItems,0) | [Integer.IsEqual(Container(501).NumItems,1) + String.IsEqual(Container(501).ListItemAbsolute(0).Label,$LOCALIZE[31046])]]"
+                    "[Integer.IsEqual(Container(501).NumItems,0) | [Integer.IsEqual(Container(501).NumItems,1) + String.IsEqual(Container(501).ListItemAbsolute(0).Property(fenlight.segnaposto),true)]]"
                 ],
                 "value": "True"
             },

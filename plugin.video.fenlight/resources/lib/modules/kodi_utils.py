@@ -189,6 +189,41 @@ def make_listitem():
 
 def add_item(handle, url, listitem, isFolder):
 	addDirectoryItem(handle, url, listitem, isFolder)
+	_CONSEGNATI[0] += 1
+
+# IL SEGNAPOSTO "NESSUN RISULTATO" LO CONSEGNA FEN LIGHT, NON LA SKIN (18/09/2026).
+# Una riga dei widget che resta senza elementi deve restare visibile e tenere il fuoco: un contenitore
+# che scende a 0 elementi perde il fuoco, Kodi lo porta al defaultcontrol della finestra e il grouplist
+# salta (vedi PR.md). Prima il segnaposto era un <item> statico della skin, cioe' una SECONDA fonte del
+# contenuto della riga, e nel passaggio da 1 a 0 elementi arrivava sempre tardi: Kodi valuta la sua
+# <visible> dentro Update(), prima del Fetch che porta la cartella nuova (GUIBaseContainer.cpp:1051-1059).
+# Con il segnaposto dentro la cartella la riga passa da "1 titolo" a "segnaposto" nello stesso Fetch.
+# Lo chiede la skin, con `vuota=segnaposto` nel path: solo lei sa quali righe da vuote devono restare (le
+# righe della ricerca invece si nascondono, ed e' voluto). Il segnaposto non entra in nessun conto:
+# set_head, gli id e widgets.db lo vedono come la riga vuota che e'.
+SEGNAPOSTO_PARAM, SEGNAPOSTO_VALORE = 'vuota', 'segnaposto'
+SEGNAPOSTO_MODE = 'segnaposto'
+SEGNAPOSTO_PROP = 'fenlight.segnaposto'
+SEGNAPOSTO_LABEL = 'Nessun risultato'
+# Elementi consegnati da QUESTA invocazione (una invocazione = un processo Python = una cartella).
+_CONSEGNATI = [0]
+
+def vuole_segnaposto(query):
+	"""La riga per cui gira questa invocazione ha chiesto il segnaposto? `query` e' sys.argv[2]."""
+	return dict(parse_qsl((query or '').lstrip('?'))).get(SEGNAPOSTO_PARAM) == SEGNAPOSTO_VALORE
+
+def _aggiungi_segnaposto(handle):
+	import sys
+	if len(sys.argv) < 3 or not vuole_segnaposto(sys.argv[2]): return
+	listitem = make_listitem()
+	listitem.setLabel(SEGNAPOSTO_LABEL)
+	listitem.setProperties({SEGNAPOSTO_PROP: 'true',
+							'override_square': 'fallback/no-results-square.png',
+							'override_poster': 'fallback/no-results-poster.png',
+							'override_landscape': 'fallback/no-results-landscape.png'})
+	# Non cartella e non riproducibile: il clic invoca il plugin con un modo che il router lascia cadere.
+	# Diretto e non add_item: non e' un elemento consegnato.
+	addDirectoryItem(handle, build_url({'mode': SEGNAPOSTO_MODE}), listitem, False)
 
 # PERF (lotto 48): la CONSEGNA a Kodi, cioe' l'unico pezzo grosso mai misurato. Tutta la
 # strumentazione finora si fermava a log_build, che scatta PRIMA di add_items; ma nel log della stick
@@ -370,6 +405,7 @@ def add_items(handle, item_list):
 	if _c is not None: _PHASE_CPU['add_start'] = _c
 	_TAPPE.append(('add_start', _t, _c, _tid()))
 	addDirectoryItems(handle, item_list)
+	_CONSEGNATI[0] += len(item_list) if item_list else 0
 	_DELIVERY[0] = (_pc() - _t) * 1000
 	_DELIVERY[1] = len(item_list) if item_list else 0
 	tappa('add_end')
@@ -407,9 +443,14 @@ BUILD_LOG_PROP = 'fenlight.lastbuild.log'
 # cinque widget insieme) restando una stringa corta da rileggere a ogni costruzione.
 BUILD_LOG_CAP = 8
 
-def end_directory(handle, cacheToDisc=True):
+def end_directory(handle, cacheToDisc=True, segnaposto=True):
 	# La misura avvolge la chiamata, non la duplica: endOfDirectory resta una sola, fuori da qualunque
 	# try, cosi' nessun errore della diagnostica puo' impedirla o farla eseguire due volte.
+	# `segnaposto=False` lo passa solo chi chiude a vuoto SAPENDO che la cartella giusta arriva subito
+	# (router: query superata, token scaduto): li' un "nessun risultato" lampeggerebbe e basta.
+	if segnaposto and not _CONSEGNATI[0]:
+		try: _aggiungi_segnaposto(handle)
+		except Exception: pass
 	from time import perf_counter as _pc
 	_t = _pc()
 	endOfDirectory(handle, cacheToDisc=cacheToDisc)

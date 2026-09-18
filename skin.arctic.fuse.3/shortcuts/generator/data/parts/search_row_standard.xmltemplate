@@ -27,16 +27,13 @@
 
     <description>{description}</description>
 
-    <include content="Widget_NoResults">
-        <param name="id">{widget_id}</param>
-    </include>
-
     <!-- Il <content> non si scrive piu' qui: vedi Defs_Widget_Content in Includes_Widgets.xml.
          Qui il path di base e' vuoto a casella vuota, quindi pgctl resta vuoto e il segmento va
          nel SUFFISSO del $VAR, dove sparisce insieme al path. -->
     <include content="Defs_Widget_Content">
         <param name="content">$VAR[{widget_search_variable},{widget_path},{widget_path_end}&amp;pgctl=1105.{widget_id}]</param>
         <param name="pgctl" />
+        <param name="vuota" />
         <param name="pgscope">1105</param>
         <param name="id">{widget_id}</param>
         <param name="sortby">{widget_sortby}</param>

@@ -27,10 +27,6 @@
 
     <description>{description}</description>
 
-    <include content="Widget_NoResults">
-        <param name="id">{widget_id}</param>
-    </include>
-
     <!-- Il <content> non si scrive piu' qui: una definizione sola, Defs_Widget_Content in
          Includes_Widgets.xml. Il path e' un URL letterale e non puo' essere vuoto, quindi pgctl
          si accoda normalmente. -->

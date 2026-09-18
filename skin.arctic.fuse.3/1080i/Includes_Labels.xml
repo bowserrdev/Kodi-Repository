@@ -72,11 +72,6 @@
         <value>$LOCALIZE[31281]</value>
     </variable>
 
-    <variable name="Label_Settings_WidgetNoResults">
-        <value condition="Skin.HasSetting(Widgets.DisableNoResultsItem)">$LOCALIZE[19022]</value>
-        <value>$LOCALIZE[19218]</value>
-    </variable>
-
     <variable name="Label_ColorPicker_Type">
         <value condition="String.IsEqual(Window(Home).Property(ColorPicker_Type),Highlight)">$LOCALIZE[31250]</value>
         <value condition="String.IsEqual(Window(Home).Property(ColorPicker_Type),Gradient)">$LOCALIZE[31232]</value>
