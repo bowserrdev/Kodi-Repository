@@ -54,11 +54,6 @@ class Movies:
 	def __init__(self, params):
 		self.params = params
 		self.params_get = self.params.get
-		# Voce watchlist a etichetta viva solo nelle righe che il watcher segue: sono quelle con 'pgctl'
-		# nell'URL (home, hub, ricerca). L'URL dell'INVOCAZIONE, non questi parametri: chi costruisce
-		# per conto suo (MDBList, continua a guardare, liste casuali) passa un dizionario senza.
-		# Vedi modules/watchlist_label.py e paginator.posizione_invocazione.
-		self.watchlist_label_viva = bool(paginator.posizione_invocazione()[0])
 		self.category_name = self.params_get('category_name', None) or self.params_get('name', None) or 'Movies'
 		self.id_type, self.list, self.action = self.params_get('id_type', 'tmdb_id'), self.params_get('list', []), self.params_get('action', None)
 		self.items, self.new_page, self.total_pages, self.is_external, self.is_home = [], {}, None, external(), home()
@@ -279,9 +274,9 @@ class Movies:
 			elif not unaired:
 				cm_append(('[B]Segna come visto[/B]', run_plugin % (URL_MARK % ('mark_as_watched', tmdb_id))))
 			in_watchlist = str_tmdb_id in self.watchlist_ids
-			if self.watchlist_label_viva: watchlist_label = DYNAMIC_WATCHLIST_LABEL
-			else: watchlist_label = '[B]Rimuovi dalla watchlist[/B]' if in_watchlist else '[B]Aggiungi alla watchlist[/B]'
-			cm_append((watchlist_label,
+			# Etichetta viva ovunque: la tiene giusta il watcher (modules/watchlist_label.py). in_watchlist
+			# resta nell'URL come ripiego di watchlist_toggle quando la copia in cache manca.
+			cm_append((DYNAMIC_WATCHLIST_LABEL,
 						run_plugin % (URL_WATCHLIST_TOGGLE % (tmdb_id, 'true' if in_watchlist else 'false'))))
 			if progress:
 				cm_append(('[B]Azzera avanzamento[/B]', run_plugin % (URL_ERASE_BOOKMARK % tmdb_id)))

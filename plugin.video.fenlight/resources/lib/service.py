@@ -160,6 +160,9 @@ def refresh_ids_inproc(ids, actions, coalesce=True):
 # finestra che di widget Fen Light non ne ha. registry_add e' idempotente, quindi ripassare non
 # duplica nulla: aggiunge solo cio' che nel frattempo e' comparso.
 CENSUS_TICKS = frozenset((0, 5, 10, 20, 35, 55))
+# xbmcgui.getCurrentWindowDialogId(): 9999 (WINDOW_INVALID) quando non c'e' nessun dialogo modale (vedi
+# kodi_utils.modal_dialog_present), 10106 il menu contestuale (WINDOW_DIALOG_CONTEXT_MENU).
+NO_DIALOG, CONTEXT_MENU_DIALOG = 9999, 10106
 
 def logger(heading, function):
 	xbmc.log('###%s###: %s' % (heading, function), 1)
@@ -656,13 +659,29 @@ class WidgetPaginator:
 				# the intended browsing contexts, all live in non-modal windows, so this never gates them.
 				# LOTTO 286 -- modal_dialog_present e non modal_dialog_open: questo giro e' periodico, e
 				# getCondVisibility farebbe dormire il ciclo della GUI a ogni passaggio. Vedi kodi_utils.
-				if modal_dialog_present():
+				# La stessa lettura (getCurrentWindowDialogId, solo il lock grafico) serve anche alla voce
+				# watchlist qui sotto, quindi si fa una volta.
+				dialogo = xbmcgui.getCurrentWindowDialogId()
+				# La voce watchlist del menu contestuale (modules/watchlist_label.py) segue l'elemento a fuoco
+				# OVUNQUE, dialoghi compresi: per questo sta prima del cancello dei modali, che vale per la
+				# paginazione e non per lei. System.CurrentControlID e Container(N) si risolvono entrambi
+				# contro la finestra o il dialogo in primo piano (PR.md, voce 12), quindi home, hub, ricerca,
+				# righe della scheda informazioni e cartelle di Fen Light sono lo stesso caso. Col menu
+				# contestuale aperto no: la proprieta' deve restare quella dell'elemento su cui si e' aperto.
+				# Il controllo a fuoco si leggeva comunque qui sotto per la paginazione: e' la stessa lettura,
+				# anticipata. Un errore qui non deve fermare il paginatore.
+				cur_ctrl = ''
+				if dialogo != CONTEXT_MENU_DIALOG:
+					cur_ctrl = get_infolabel('System.CurrentControlID')
+					try: watchlist_label.update(cur_ctrl, get_infolabel, window)
+					except Exception as e: logger('Fen Light', 'watchlist_label: errore %s' % e)
+				if dialogo != NO_DIALOG:
 					log_change('idle (modal dialog open)')
 					wait_for_abort(0.5); continue
 				# Identify the focused Fen Light widget by container id (skin sets fenlight.active_widget on focus
 				# for every widget) and resolve its key via the universal first-item bridge: the plugin published
-				# first-item-path -> key, and we read that same path from the container here.
-				cur_ctrl = get_infolabel('System.CurrentControlID')
+				# first-item-path -> key, and we read that same path from the container here. cur_ctrl e' gia'
+				# stato letto sopra, per la voce watchlist: senza dialoghi il ramo che lo legge e' sempre preso.
 				# Gli id dei contenitori si ripetono fra finestre (il generatore riparte da 501 per
 				# ognuna), quindi ogni token va indicizzato anche per finestra: vedi paginator.ctl_scope.
 				scope = paginator.ctl_scope()
@@ -857,11 +876,6 @@ class WidgetPaginator:
 					window.setProperty('TMDbHelper.ListItem.base_label', base_label)
 					if base_poster: window.setProperty('TMDbHelper.ListItem.base_poster', base_poster)
 					else: window.clearProperty('TMDbHelper.ListItem.base_poster')
-				# Stesso posto e stesso momento di base_label, per lo stesso motivo: quando il menu si apre,
-				# il valore dell'ultimo giro utile e' quello dell'elemento giusto. Legge tipo e tmdb_id solo
-				# se l'elemento o la watchlist sono cambiati. Un errore qui non deve fermare il paginatore.
-				try: watchlist_label.update(base_label, widget_id, get_infolabel, window)
-				except Exception as e: logger('Fen Light', 'watchlist_label: errore %s' % e)
 				key, first_url = paginator.container_head(widget_id, scope)
 				if not key:
 					# Contenitore VUOTO con un token residuo: e' la ricerca a casella vuota (vedi
