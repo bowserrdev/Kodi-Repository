@@ -55,8 +55,10 @@ class Movies:
 		self.params = params
 		self.params_get = self.params.get
 		# Voce watchlist a etichetta viva solo nelle righe che il watcher segue: sono quelle con 'pgctl'
-		# nell'URL (home, hub, ricerca). Vedi modules/watchlist_label.py.
-		self.watchlist_label_viva = bool(self.params_get(paginator.CTL_PARAM))
+		# nell'URL (home, hub, ricerca). L'URL dell'INVOCAZIONE, non questi parametri: chi costruisce
+		# per conto suo (MDBList, continua a guardare, liste casuali) passa un dizionario senza.
+		# Vedi modules/watchlist_label.py e paginator.posizione_invocazione.
+		self.watchlist_label_viva = bool(paginator.posizione_invocazione()[0])
 		self.category_name = self.params_get('category_name', None) or self.params_get('name', None) or 'Movies'
 		self.id_type, self.list, self.action = self.params_get('id_type', 'tmdb_id'), self.params_get('list', []), self.params_get('action', None)
 		self.items, self.new_page, self.total_pages, self.is_external, self.is_home = [], {}, None, external(), home()

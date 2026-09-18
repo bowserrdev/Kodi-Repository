@@ -633,7 +633,7 @@ class WidgetPaginator:
 		last_scope, census_tick = None, 0  # finestra censita e da quanti giri: vedi CENSUS_TICKS
 		# La voce watchlist del menu contestuale: vedi modules/watchlist_label.py.
 		from modules.watchlist_label import Tracker as WatchlistLabel
-		watchlist_label = WatchlistLabel()
+		watchlist_label = WatchlistLabel(log=paginator.log)
 		def log_change(state):
 			nonlocal last_log
 			if state != last_log:
@@ -861,7 +861,7 @@ class WidgetPaginator:
 				# il valore dell'ultimo giro utile e' quello dell'elemento giusto. Legge tipo e tmdb_id solo
 				# se l'elemento o la watchlist sono cambiati. Un errore qui non deve fermare il paginatore.
 				try: watchlist_label.update(base_label, widget_id, get_infolabel, window)
-				except Exception as e: log_change('watchlist_label: %s' % e)
+				except Exception as e: logger('Fen Light', 'watchlist_label: errore %s' % e)
 				key, first_url = paginator.container_head(widget_id, scope)
 				if not key:
 					# Contenitore VUOTO con un token residuo: e' la ricerca a casella vuota (vedi

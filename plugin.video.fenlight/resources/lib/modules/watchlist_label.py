@@ -78,8 +78,8 @@ def cached_ids(media_type):
 class Tracker:
 	"""Stato del watcher: quale elemento ha gia' servito e con quale versione della watchlist."""
 
-	def __init__(self, loader=cached_ids, stamp_reader=read_stamp):
-		self.loader, self.stamp_reader = loader, stamp_reader
+	def __init__(self, loader=cached_ids, stamp_reader=read_stamp, log=None):
+		self.loader, self.stamp_reader, self.log = loader, stamp_reader, log
 		self.item, self.stamp, self.sets = None, None, {}
 
 	def update(self, item_label, widget_id, get_infolabel, window):
@@ -97,11 +97,15 @@ class Tracker:
 		if not media_type: return None
 		tmdb_id = get_infolabel('Container(%s).ListItem.UniqueID(tmdb)' % widget_id)
 		if not tmdb_id: return None
-		ids = self.sets.get(media_type)
+		ids, copia = self.sets.get(media_type), 'memoria'
 		if ids is None:
 			ids = self.loader(media_type)
-			if ids is None: ids = set()
-			else: self.sets[media_type] = ids
+			if ids is None: ids, copia = set(), 'ASSENTE'
+			else: self.sets[media_type], copia = ids, 'cache'
 		label = LABEL_IN if str(tmdb_id) in ids else LABEL_OUT
 		if window.getProperty(PROP) != label: window.setProperty(PROP, label)
+		# Una riga per ogni scrittura, solo con la strumentazione accesa (il servizio passa paginator.log):
+		# si scrive a ogni cambio di elemento, e le righe di log sono sincrone sul thread che le scrive.
+		if self.log: self.log('watchlist_label %s %s -> %s | copia %s (%d titoli) | segnale %s'
+								% (media_type, tmdb_id, label, copia, len(ids), (self.stamp or '-')[:14]))
 		return label

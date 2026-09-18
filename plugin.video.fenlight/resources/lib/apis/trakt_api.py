@@ -875,10 +875,15 @@ def watchlist_toggle(params):
 	# porta lo stato di quando la riga e' stata costruita, e dal lotto 312 quella riga non viene piu'
 	# ricostruita a ogni aggiunta. Se la lettura non riesce si ricade sul valore dell'URL, cioe' sul
 	# comportamento di prima.
+	# Watchlist VUOTA e' un dato vero (un account nuovo), non un "non so": prima `if attuali:` la
+	# scambiava per una lettura fallita e ricadeva sull'URL, che con l'etichetta viva non viene piu'
+	# aggiornato. Si ricade sull'URL solo se la copia locale non c'e' e nemmeno Trakt risponde.
 	dentro = params.get('in_watchlist') == 'true'
 	try:
-		attuali = watchlist_tmdb_ids(key)
-		if attuali: dentro = str(media_id) in attuali
+		from modules.watchlist_label import cached_ids
+		attuali = cached_ids('movie' if key == 'movies' else 'tvshow')
+		if attuali is None: attuali = watchlist_tmdb_ids(key) or None
+		if attuali is not None: dentro = str(media_id) in attuali
 	except: pass
 	if dentro: remove_from_watchlist(data, refresh=False)
 	else: add_to_watchlist(data, refresh=False)
