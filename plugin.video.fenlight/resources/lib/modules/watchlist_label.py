@@ -41,8 +41,8 @@ cosi' il primo giro dopo che una costruzione l'ha riempita la ritrova.
 import os
 
 PROP = 'fenlight.cm.watchlist'
-LABEL_IN = 'Rimuovi dalla watchlist'
-LABEL_OUT = 'Aggiungi alla watchlist'
+LABEL_IN = 'Rimuovi dalla mia lista'
+LABEL_OUT = 'Aggiungi alla mia lista'
 DYNAMIC_LABEL = '[B]$INFO[Window(Home).Property(%s)][/B]' % PROP
 STAMP_FILE = 'watchlist.stamp'
 MEDIA_TYPES = {'movie': 'movie', 'tvshow': 'tvshow'}
