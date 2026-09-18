@@ -369,7 +369,13 @@ class SkinUpdater:
 				target = os.path.join(staged, os.path.relpath(source, installed))
 				directory = os.path.dirname(target)
 				if not os.path.exists(directory): os.makedirs(directory)
-				shutil.copy2(source, target)
+				# copyfile e NON copy2. copy2 copia anche gli xattr, fra cui l'etichetta SELinux
+				# `security.selinux`: su Android 11+ (FUSE, Fire OS 8) cambiarla richiede
+				# `relabelfrom`, negato alle app -> EACCES e giro fallito (Firestick, 18/09 04:45:03,
+				# avc denied su script-skinvariables-generator-includes-.xml). Sulla Mi Stick, Android 9
+				# con sdcardfs, gli xattr non si vedono e il difetto non si manifestava. Serve il
+				# contenuto, non i metadati.
+				shutil.copyfile(source, target)
 				logger('Fen Light', 'SkinUpdater: conservato %s' % os.path.relpath(source, installed))
 
 	def _sanity(self, staged, expected):

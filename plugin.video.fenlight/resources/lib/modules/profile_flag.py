@@ -132,7 +132,9 @@ def write_flag(value):
 	backup = path + BACKUP_SUFFIX
 	if not os.path.exists(backup):
 		import shutil
-		shutil.copy2(path, backup)
+		# copyfile, non copy2: vedi skin_updater._carry_over -- su Android 11+ la copia degli xattr
+		# SELinux fallisce con EACCES e la scrittura del flag non avverrebbe mai.
+		shutil.copyfile(path, backup)
 	try: ET.indent(root, space='    ')
 	except Exception: pass
 	# Scrittura in due tempi: se il processo muore a meta' -- e qui si scrive proprio mentre Kodi
