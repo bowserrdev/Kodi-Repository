@@ -753,6 +753,19 @@ def position_of(params):
 	if not scope.replace('_', '').isalnum(): return None, None
 	return scope, cid
 
+def posizione_invocazione():
+	"""(scope, id) della riga per cui gira QUESTA invocazione del plugin, letti dal suo URL.
+
+	Non dai parametri del costruttore: MDBList, "continua a guardare" e le liste casuali costruiscono
+	Movies/TVShows con un dizionario loro, senza 'pgctl' (18/09/2026, Firestick: "Ultime uscite" e'
+	una lista MDBList e la voce watchlist restava scritta). La riga di destinazione e' un fatto della
+	chiamata, e la chiamata e' una sola per invocazione. Fuori da un'invocazione (servizio) non c'e'
+	un URL: (None, None)."""
+	try:
+		import sys
+		return position_of(sys.argv[2].lstrip('?'))
+	except Exception: return None, None
+
 def widget_key(params):
 	"""IDENTITA' del widget. La posizione quando la skin la fornisce, altrimenti il contenuto.
 
