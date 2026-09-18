@@ -430,7 +430,7 @@
             <top>280</top>
             <visible>!$EXP[Exp_InfoDialogs]</visible>
             <visible>$EXP[Hub_Spotlight_Visible_Expression]</visible>
-            <animation effect="slide" end="0" start="0,-200" time="400" tween="cubic" easing="out" reversible="false" condition="!ControlGroup(3190).HasFocus()">Visible</animation>
+            <animation effect="slide" end="0" start="0,-200" time="400" tween="cubic" easing="out" reversible="false" condition="!$EXP[Exp_Header_HasFocus]">Visible</animation>
             <animation effect="slide" start="0" end="0,-200" time="400" tween="cubic" easing="out" reversible="false">Hidden</animation>
             <include>Info_Panel_Dimensions</include>
             <include content="Info_Panel">
