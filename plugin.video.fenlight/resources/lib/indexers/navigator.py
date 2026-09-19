@@ -209,11 +209,6 @@ class Navigator:
 		self.end_directory()
 
 	def advanced_cache(self):
-		self.add({'mode': 'advancedsettings.network_test', 'isFolder': 'false'}, 'Test di Rete e Ottimizza (consigliato)', 'settings')
-		self.add({'mode': 'advancedsettings.apply', 'preset': 'slow', 'isFolder': 'false'}, 'Preset: Lenta / Mobile (< 10 Mbps)', 'settings')
-		self.add({'mode': 'advancedsettings.apply', 'preset': 'medium', 'isFolder': 'false'}, 'Preset: ADSL / Media (10-30 Mbps)', 'settings')
-		self.add({'mode': 'advancedsettings.apply', 'preset': 'fast', 'isFolder': 'false'}, 'Preset: Fibra / Veloce (30-100 Mbps)', 'settings')
-		self.add({'mode': 'advancedsettings.apply', 'preset': 'ultra', 'isFolder': 'false'}, 'Preset: Gigabit / Ultraveloce (> 100 Mbps)', 'settings')
 		self.add({'mode': 'advancedsettings.hide_parent', 'isFolder': 'false'}, 'Nascondi cartella superiore (..) nelle liste', 'settings')
 		# L'etichetta dice lo stato perche' l'azione e' un interruttore: senza il valore attuale si
 		# clicca alla cieca. Una lettura di ~1 KB, e solo all'apertura di questo menu.
@@ -223,8 +218,12 @@ class Navigator:
 		except Exception: stato = 'sconosciuta'
 		self.add({'mode': 'advancedsettings.playback_state', 'isFolder': 'false'},
 				'Scrittura stato di riproduzione da parte di Kodi: %s' % stato, 'settings')
+		try:
+			from modules.advanced_settings import image_res_label
+			etichetta = image_res_label()
+		except Exception: etichetta = 'Risoluzione immagini'
+		self.add({'mode': 'advancedsettings.image_res', 'isFolder': 'false'}, etichetta, 'settings')
 		self.add({'mode': 'advancedsettings.show', 'isFolder': 'false'}, 'Mostra advancedsettings.xml attuale', 'settings')
-		self.add({'mode': 'advancedsettings.reset', 'isFolder': 'false'}, 'Rimuovi ottimizzazione cache', 'settings')
 		self.end_directory()
 
 	def maintenance(self):

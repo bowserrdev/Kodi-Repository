@@ -3,6 +3,7 @@ import sys
 from time import perf_counter as _perf
 from modules import kodi_utils, settings, paginator
 from modules.metadata import tvshow_meta
+from modules.tmdb_art import poster_token
 from modules.utils import get_datetime, adjust_premiered_date, make_thread_list
 from modules.watched_status import get_database, watched_info_season, get_watched_status_season, get_progress_status_season
 # logger = kodi_utils.logger
@@ -11,7 +12,7 @@ poster_empty, cast_label, set_category = kodi_utils.empty_poster, kodi_utils.cas
 add_items, set_content, end_directory, set_view_mode = kodi_utils.add_items, kodi_utils.set_content, kodi_utils.end_directory, kodi_utils.set_view_mode
 make_listitem, build_url, external, date_offset_info, tmdb_api_key = kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.external, settings.date_offset, settings.tmdb_api_key
 watched_indicators_info, show_specials, mpaa_region = settings.watched_indicators, settings.show_specials, settings.mpaa_region
-string, run_plugin, unaired_label, tmdb_poster = str, 'RunPlugin(%s)', '[COLOR red][I]%s[/I][/COLOR]', 'https://image.tmdb.org/t/p/w780%s'
+string, run_plugin, unaired_label, tmdb_poster = str, 'RunPlugin(%s)', '[COLOR red][I]%s[/I][/COLOR]', 'https://image.tmdb.org/t/p/%s%s'
 # Vedi il commento in movies.py: URL per formattazione diretta invece che con build_url/urlencode.
 # Il poster non viaggia piu' in options_params -- options_menu_choice lo rilegge dai metadati, che
 # ha gia' in mano: era un URL da percent-encodare per ogni stagione, per un'icona che si vede solo
@@ -43,7 +44,7 @@ def build_season_list(params):
 				season_special = season_number == 0
 				title = item_get('name', None) or season_name_str % season_number
 				if custom_order is not None: title = '%s - %s' % (show_title, title)
-				poster = (poster_path if poster_path.startswith('http') else tmdb_poster % poster_path) if poster_path is not None else show_poster
+				poster = (poster_path if poster_path.startswith('http') else tmdb_poster % (poster_token(), poster_path)) if poster_path is not None else show_poster
 				thumb = poster or show_landscape or show_fanart
 				try: year = air_date.split('-')[0]
 				except: year = show_year or '2050'

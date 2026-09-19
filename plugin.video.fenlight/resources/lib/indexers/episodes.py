@@ -8,6 +8,7 @@ from time import perf_counter as _perf
 # strada verso 'requests', che nei log del 25/08 si importa in 7,2-8,0 s sotto contesa. Ora stanno
 # nei due rami che le usano davvero.
 from modules import kodi_utils, settings, watched_status as ws, paginator
+from modules.tmdb_art import poster_token
 from modules.metadata import tvshow_meta, episodes_meta, all_episodes_meta, tvshow_meta_prefetch, meta_prefetch_key, episodes_meta_prefetch
 from modules.utils import jsondate_to_datetime, adjust_premiered_date, make_day, get_datetime, title_key, date_difference, make_thread_list, get_current_timestamp
 # logger = kodi_utils.logger
@@ -47,7 +48,7 @@ URL_SEASON_LIST = _BASE + 'mode=build_season_list&tmdb_id=%s'
 URL_ALL_EPISODES = _BASE + 'mode=build_episode_list&tmdb_id=%s&season=all'
 URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets&user=true'
 poster_empty = kodi_utils.empty_poster
-run_plugin, unaired_label, tmdb_poster = 'RunPlugin(%s)', '[COLOR red][I]%s[/I][/COLOR]', 'https://image.tmdb.org/t/p/w780%s'
+run_plugin, unaired_label, tmdb_poster = 'RunPlugin(%s)', '[COLOR red][I]%s[/I][/COLOR]', 'https://image.tmdb.org/t/p/%s%s'
 upper = string.upper
 content_type = 'episodes'
 list_view, single_view = 'view.episodes', 'view.episodes_single'
@@ -163,7 +164,7 @@ def build_episode_list(params):
 		bookmarks = get_bookmarks_episode(tmdb_id, season, watched_db)
 		try:
 			poster_path = next((i['poster_path'] for i in meta_get('season_data') if i['season_number'] == int(season)), None)
-			season_poster = (poster_path if poster_path.startswith('http') else tmdb_poster % poster_path) if poster_path is not None else show_poster
+			season_poster = (poster_path if poster_path.startswith('http') else tmdb_poster % (poster_token(), poster_path)) if poster_path is not None else show_poster
 		except: season_poster = show_poster
 		category_name = 'Season %s' % season
 	# DIAGNOSTICA DEI SEGNALIBRI (lotto 123). Serve a rispondere a una domanda che dal log non si
@@ -311,7 +312,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			except: year = show_year or '2050'
 			try:
 				poster_path = next((i['poster_path'] for i in season_data if i['season_number'] == int(season)), None)
-				season_poster = tmdb_poster % poster_path if poster_path is not None else show_poster
+				season_poster = tmdb_poster % (poster_token(), poster_path) if poster_path is not None else show_poster
 			except: season_poster = show_poster
 			str_season_zfill2, str_episode_zfill2 = string(season).zfill(2), string(episode).zfill(2)
 			if display_format == 0: title_string = '%s: ' % title

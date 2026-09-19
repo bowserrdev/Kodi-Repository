@@ -8,6 +8,7 @@ from time import perf_counter as _perf
 from caches.meta_cache import meta_cache
 from modules.settings import meta_language
 from modules import paginator
+from modules.tmdb_art import poster_token, fanart_token, landscape_token, logo_token
 from modules.utils import jsondate_to_datetime, subtract_dates
 
 # apis.tmdb_api NON si importa piu' qui (lotto 110). Era un import a livello di modulo per NOVE
@@ -33,18 +34,19 @@ metacache_get, metacache_set, metacache_get_season, metacache_set_season = meta_
 writer_credits = ('Author', 'Writer', 'Screenplay', 'Characters')
 alt_titles_check, finished_show_check, empty_value_check = ('US', 'GB', 'UK', ''), ('Ended', 'Canceled'), ('', 'None', None)
 tmdb_image_url, youtube_url, date_format = 'https://image.tmdb.org/t/p/%s%s', 'plugin://plugin.video.youtube/play/?video_id=%s', '%Y-%m-%d'
-# Dimensioni richieste a TMDb. Il token nell'URL sceglie una variante gia' ridimensionata sul CDN:
-# non si scarica il grande per rimpicciolirlo, si scarica direttamente il piccolo. Risparmia banda,
-# decodifica (che sul Mi Stick e' swscale in C puro, senza NEON) e spazio nella cache miniature.
+# Dimensioni richieste a TMDb: le sceglie modules/tmdb_art.py, dalla dimensione massima a schermo di
+# ogni tipo di immagine nella skin, scalata sull'altezza della GUI. Il token nell'URL sceglie una
+# variante gia' ridimensionata sul CDN: non si scarica il grande per rimpicciolirlo, si scarica
+# direttamente la misura giusta. Risparmia banda, decodifica (che sul Mi Stick e' swscale in C puro,
+# senza NEON) e spazio nella cache miniature.
 # Misurato il 31/08/2026 sugli stessi file:
 #   clearlogo  original 1541x804 = 1 618 KB  ->  w500 500x261 = 201 KB   (8x)
 #   still      original 1920x1080 = 382 KB   ->  w780 780x439 =  57 KB   (6,7x)
 # Il clearlogo e' PNG (serve l'alpha) e il PNG costa piu' per pixel del JPEG: nel log delle 17:08
-# un clearlogo 'original' pesava 116 ms di decodifica da solo. Il still e' una miniatura landscape,
-# 780x439 la copre con margine su una GUI a 720p.
-# NON toccati: poster (w780) e fanart/landscape (w1280). w1280 e' esattamente la GUI a 720p della
-# stick, ridurli peggiorerebbe cio' che si vede a schermo intero senza un guadagno proporzionato.
-CLEARLOGO_SIZE, STILL_SIZE = 'w500', 'w780'
+# un clearlogo 'original' pesava 116 ms di decodifica da solo.
+# Fino al 19/09 le misure erano fisse (poster w780, sfondi w1280, logo w500, still w780), tarate su una
+# GUI a 720p. Gli URL costruiti qui finiscono in metacache con la misura del momento, ma non importa:
+# la lettura dalla cache la riscrive (tmdb_art.size_meta), quindi il database non dipende dalla GUI.
 EXPIRES_1_DAYS, EXPIRES_4_DAYS, EXPIRES_7_DAYS, EXPIRES_14_DAYS, EXPIRES_30_DAYS, EXPIRES_182_DAYS = 24, 96, 168, 336, 720, 4368
 invalid_error_codes = (6, 34, 37)
 
@@ -405,10 +407,10 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 		tagline, premiered = data_get('tagline', ''), data_get('release_date', '')
 		plot = imdb_data_result.get('plot') or data_get('overview', '')
 		poster_path = data_get('poster_path', '')
-		if poster_path: poster = tmdb_image_url % ('w780', poster_path)
+		if poster_path: poster = tmdb_image_url % (poster_token(), poster_path)
 		else: poster = ''
 		backdrop_path = data_get('backdrop_path', '')
-		if backdrop_path: fanart = tmdb_image_url % ('w1280', backdrop_path)
+		if backdrop_path: fanart = tmdb_image_url % (fanart_token(), backdrop_path)
 		else: fanart = ''
 		images = data_get('images', {})
 		if images:
@@ -419,8 +421,8 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 						   next((i for i in logos if i.get('iso_639_1') == 'en'), None) or \
 						   logos[0]
 					logo_path = logo.get('file_path')
-					if logo_path.endswith('png'): clearlogo = tmdb_image_url % (CLEARLOGO_SIZE, logo_path)
-					else: clearlogo = tmdb_image_url % (CLEARLOGO_SIZE, logo_path.replace(logo_path.split('.')[-1], 'png'))
+					if logo_path.endswith('png'): clearlogo = tmdb_image_url % (logo_token(), logo_path)
+					else: clearlogo = tmdb_image_url % (logo_token(), logo_path.replace(logo_path.split('.')[-1], 'png'))
 				else: clearlogo = ''
 			except: clearlogo = ''
 			try:
@@ -431,7 +433,7 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 									 next((i for i in backdrops if i.get('iso_639_1') is None), None) or \
 									 backdrops[0]
 					landscape_path = landscape_item.get('file_path')
-					landscape = tmdb_image_url % ('w1280', landscape_path)
+					landscape = tmdb_image_url % (landscape_token(), landscape_path)
 				else: landscape = ''
 			except: landscape = ''
 		else: clearlogo, landscape = '', ''
@@ -678,10 +680,10 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 		plot = imdb_data_result.get('plot') or data_get('overview', '')
 		season_data, total_seasons = data_get('seasons'), data_get('number_of_seasons')
 		poster_path = data_get('poster_path', '')
-		if poster_path: poster = tmdb_image_url % ('w780', poster_path)
+		if poster_path: poster = tmdb_image_url % (poster_token(), poster_path)
 		else: poster = ''
 		backdrop_path = data_get('backdrop_path', '')
-		if backdrop_path: fanart = tmdb_image_url % ('w1280', backdrop_path)
+		if backdrop_path: fanart = tmdb_image_url % (fanart_token(), backdrop_path)
 		else: fanart = ''
 		images = data_get('images', {})
 		if images:
@@ -692,8 +694,8 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 						   next((i for i in logos if i.get('iso_639_1') == 'en'), None) or \
 						   logos[0]
 					logo_path = logo.get('file_path')
-					if logo_path.endswith('png'): clearlogo = tmdb_image_url % (CLEARLOGO_SIZE, logo_path)
-					else: clearlogo = tmdb_image_url % (CLEARLOGO_SIZE, logo_path.replace(logo_path.split('.')[-1], 'png'))
+					if logo_path.endswith('png'): clearlogo = tmdb_image_url % (logo_token(), logo_path)
+					else: clearlogo = tmdb_image_url % (logo_token(), logo_path.replace(logo_path.split('.')[-1], 'png'))
 				else: clearlogo = ''
 			except: clearlogo = ''
 			try:
@@ -704,7 +706,7 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 									 next((i for i in backdrops if i.get('iso_639_1') is None), None) or \
 									 backdrops[0]
 					landscape_path = landscape_item.get('file_path')
-					landscape = tmdb_image_url % ('w1280', landscape_path)
+					landscape = tmdb_image_url % (landscape_token(), landscape_path)
 				else: landscape = ''
 			except: landscape = ''
 		else: clearlogo, landscape = '', ''
@@ -872,10 +874,10 @@ def movieset_meta(media_id, api_key, current_time=None):
 		data_get = data.get
 		title, tmdb_id, plot = data_get('name'), data_get('id'), data_get('overview', '')
 		poster_path = data_get('poster_path', None)
-		if poster_path: poster = tmdb_image_url % ('w780', poster_path)
+		if poster_path: poster = tmdb_image_url % (poster_token(), poster_path)
 		else: poster = ''
 		backdrop_path = data_get('backdrop_path', None)
-		if backdrop_path: fanart = tmdb_image_url % ('w1280', backdrop_path)
+		if backdrop_path: fanart = tmdb_image_url % (fanart_token(), backdrop_path)
 		else: fanart = ''
 		parts = data_get('parts')
 		meta = {'tmdb_id': tmdb_id, 'title': title, 'plot': plot, 'poster': poster, 'fanart': fanart, 'parts': parts, 'imdb_id': 'None', 'tvdb_id': 'None'}
@@ -949,7 +951,7 @@ def episodes_meta(season, meta, prefetch=None):
 			try: duration = ep_data_get('runtime')*60
 			except: duration = 30*60
 			rating, votes, still_path = ep_data_get('vote_average'), ep_data_get('vote_count'), ep_data_get('still_path', None)
-			if still_path: thumb = tmdb_image_url % (STILL_SIZE, still_path)
+			if still_path: thumb = tmdb_image_url % (landscape_token(), still_path)
 			else: thumb = None
 			cast = ep_data_get('guest_stars', [])
 			if cast:
@@ -1015,7 +1017,7 @@ def episodes_meta(season, meta, prefetch=None):
 				_tmdb_s, _tmdb_e = _ep_map.get((_ep['season'], _ep['episode']), (_ep['season'], _ep['episode']))
 				_te = _tmdb_ep_data.get((_tmdb_s, _tmdb_e))
 				if _te:
-					if _te.get('still_path'): _ep['thumb'] = tmdb_image_url % (STILL_SIZE, _te['still_path'])
+					if _te.get('still_path'): _ep['thumb'] = tmdb_image_url % (landscape_token(), _te['still_path'])
 					if _te.get('name'): _ep['title'] = _te['name']
 					if _te.get('overview'): _ep['plot'] = _te['overview']
 					# CAST TECNICO E VOTI (lotto 150). Skyhook non li ha: get_skyhook_episodes torna

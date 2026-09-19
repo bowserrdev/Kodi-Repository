@@ -1,92 +1,24 @@
 # -*- coding: utf-8 -*-
-# Generatore di advancedsettings.xml ottimizzato per cache di rete / streaming.
-# Tiene conto della RAM del dispositivo e (opzionale) di un test di velocita' reale.
+# Voci di Tools -> Cache & Streaming Optimization: le poche manopole che scrivono nei file di Kodi
+# (advancedsettings.xml, profiles.xml) invece che nei nostri.
 import os
-import time
 import xml.etree.ElementTree as ET
-from modules.kodi_utils import (translate_path, get_infolabel, confirm_dialog, ok_dialog,
+from modules.kodi_utils import (translate_path, confirm_dialog, ok_dialog,
 								notification, show_text, execute_builtin, progressDialogBG)
 # logger = __import__('modules.kodi_utils', fromlist=['logger']).logger
 
 SETTINGS_PATH = 'special://userdata/advancedsettings.xml'
 
-# Endpoint per la misura della banda (in ordine di preferenza, con fallback).
-SPEEDTEST_URLS = (
-	'https://speed.cloudflare.com/__down?bytes=25000000',
-	'https://speed.hetzner.de/100MB.bin',
-	'https://proof.ovh.net/files/100Mb.dat')
-SPEEDTEST_TARGET_BYTES = 25 * 1024 * 1024  # ~25 MB scaricati
-SPEEDTEST_MAX_SECONDS = 12				   # tetto di durata del test
-
-# Preset: memorysize in MB (Kodi alloca ~3x in RAM), readfactor, buffermode.
-# buffermode 1 = bufferizza TUTTI gli stream di rete (consigliato per streaming).
-PRESETS = {
-	'slow':   {'name': 'Lenta / Mobile',        'memorysize_mb': 50,  'readfactor': 4,  'buffermode': 1},
-	'medium': {'name': 'ADSL / Media',          'memorysize_mb': 100, 'readfactor': 8,  'buffermode': 1},
-	'fast':   {'name': 'Fibra / Veloce',        'memorysize_mb': 150, 'readfactor': 20, 'buffermode': 1},
-	'ultra':  {'name': 'Gigabit / Ultraveloce', 'memorysize_mb': 200, 'readfactor': 30, 'buffermode': 1}}
-PRESET_ORDER = ('slow', 'medium', 'fast', 'ultra')
-
 # -------------------------------------------------------------------------- #
-# Rilevamento dispositivo
-# -------------------------------------------------------------------------- #
-def _total_ram_mb():
-	# System.Memory(total) restituisce qualcosa tipo "16384 MB".
-	try:
-		raw = get_infolabel('System.Memory(total)') or ''
-		digits = ''.join(c for c in raw if c.isdigit())
-		return int(digits) if digits else 0
-	except Exception:
-		return 0
-
-def _ram_capped_memorysize_mb(desired_mb, total_ram_mb):
-	# Kodi usa ~3x memorysize. Non superare il 25% della RAM totale.
-	if total_ram_mb <= 0:
-		return desired_mb
-	cap_mb = int(total_ram_mb * 0.25 / 3)
-	return max(20, min(desired_mb, cap_mb))
-
-# -------------------------------------------------------------------------- #
-# Test di rete
-# -------------------------------------------------------------------------- #
-def _speed_test_mbps():
-	# UNICO punto che vuole ancora requests: iter_content, cioe' la lettura a blocchi senza tenere in
-	# memoria l'intero file. Il nostro client legge la risposta tutta in una volta e qui non va bene --
-	# il test di velocita' scarica decine di MB. E' un'azione manuale, si paga solo se la si chiede.
-	from modules.kodi_utils import import_requests_real
-	requests = import_requests_real('_speed_test_mbps')
-	for url in SPEEDTEST_URLS:
-		try:
-			start = time.time()
-			downloaded = 0
-			with requests.get(url, stream=True, timeout=15) as r:
-				r.raise_for_status()
-				for chunk in r.iter_content(chunk_size=65536):
-					downloaded += len(chunk)
-					elapsed = time.time() - start
-					if downloaded >= SPEEDTEST_TARGET_BYTES or elapsed > SPEEDTEST_MAX_SECONDS:
-						break
-			elapsed = time.time() - start
-			if elapsed > 0 and downloaded > 1024 * 1024:
-				return round((downloaded * 8) / elapsed / 1_000_000, 1)
-		except Exception:
-			continue
-	return None
-
-def _preset_for_speed(mbps):
-	if mbps is None: return 'medium'
-	if mbps < 10:    return 'slow'
-	if mbps < 30:    return 'medium'
-	if mbps < 100:   return 'fast'
-	return 'ultra'
-
-# -------------------------------------------------------------------------- #
-# Scrittura del file (preservando le altre impostazioni gia' presenti)
+# Lettura e scrittura del file (preservando le altre impostazioni gia' presenti)
 # -------------------------------------------------------------------------- #
 def _load_root(path):
+	# insert_comments: il file sulla stick e' documentato con commenti, e il parser di default li
+	# butta via -- ogni scrittura da questo menu li cancellava tutti.
 	if os.path.exists(path):
 		try:
-			root = ET.parse(path).getroot()
+			parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+			root = ET.parse(path, parser=parser).getroot()
 			if root.tag == 'advancedsettings':
 				return root
 		except Exception:
@@ -115,85 +47,185 @@ def _set_child_text(parent, tag, text):
 	node.text = text
 	return node
 
-def _write_cache_block(memorysize_mb, readfactor, buffermode):
+# -------------------------------------------------------------------------- #
+# Risoluzione delle immagini in cache (imageres / fanartres) per la GUI attuale
+# -------------------------------------------------------------------------- #
+# Come le usa Kodi (CPicture::CacheTexture, Picture.cpp:219-232, ramo Omega): ogni immagine viene
+# salvata in cache ridotta a stare dentro max_height = imageres e max_width = imageres * 16/9,
+# mantenendo le proporzioni. fanartres prende il posto di imageres SOLO se e' maggiore, e solo per le
+# immagini 16:9 (tolleranza 1% sul rapporto). Default di Kodi: 720 e 1080.
+#
+# La regola la decide modules/tmdb_art.py (kodi_limits): imageres all'altezza del poster piu' grande
+# che la skin mostra (820 su base 1080), fanartres all'altezza della GUI. Nessuna immagine arriva a
+# schermo ingrandita, e la cache non tiene piu' di quanto si vede. La misura scaricata da TMDb la
+# sceglie lo stesso modulo; cambiando GUI cambiano gli URL, e le voci in cache con la misura vecchia
+# non verranno piu' chieste: la pulizia toglie anche quelle.
+#
+#   GUI  720 -> imageres 547,  fanartres 720
+#   GUI 1080 -> imageres 820,  fanartres 1080
+#   GUI 2160 -> imageres 1640, fanartres 2160
+KODI_DEFAULT_IMAGERES, KODI_DEFAULT_FANARTRES = 720, 1080
+TEXTURES_DB = 'special://database/Textures13.db'
+
+def _gui_size():
+	# I pixel in cui Kodi disegna la GUI. Non l'infolabel System.ScreenHeight, che e' lo schermo (sul Mac
+	# Retina in punti): il perche' sta in modules/tmdb_art.py, che e' l'unica fonte di questo valore.
+	from modules.tmdb_art import gui_size
+	return gui_size()
+
+def _target_res(gui_height):
+	from modules.tmdb_art import kodi_limits
+	return kodi_limits(gui_height)
+
+def _read_int(root, tag, default):
+	node = root.find(tag)
+	try: return int(node.text.strip())
+	except Exception: return default
+
+def _current_res(root):
+	return _read_int(root, 'imageres', KODI_DEFAULT_IMAGERES), _read_int(root, 'fanartres', KODI_DEFAULT_FANARTRES)
+
+def _bounds(width, height, imageres, fanartres):
+	# Il limite che Kodi applica a un'immagine di queste proporzioni. Calcolato sulle dimensioni in
+	# cache invece che sull'originale, che non e' conservato: le proporzioni sono le stesse.
+	max_h = imageres
+	if fanartres > imageres and abs(width / height / (16.0 / 9.0) - 1.0) <= 0.01:
+		max_h = fanartres
+	return max_h * 16 // 9, max_h
+
+def _stale_textures(new_res, old_res, new_tokens):
+	"""Le voci in cache con una dimensione diversa da quella che Kodi darebbe coi valori nuovi.
+
+	Kodi non ricalcola mai una texture gia' in cache al cambio di imageres: senza questa pulizia i
+	valori nuovi valgono solo per le immagini mai viste. Due casi:
+	  - troppo grande per i limiti nuovi;
+	  - tagliata dal limite vecchio (un lato uguale al tetto vecchio) quando il nuovo e' piu' largo,
+	    quindi l'originale potrebbe dare di piu'. Un'immagine nativamente grande quanto il tetto
+	    vecchio viene rifatta per niente: costa un download, non un errore.
+	E un terzo: un'immagine TMDb con una misura che tmdb_art puo' scegliere ma che coi valori nuovi non
+	scegliera' -- il suo URL non verra' piu' chiesto (tmdb_art.MANAGED_TOKENS dice quali). La misura
+	da sola non basta: w500 puo' essere il poster nuovo e il logo vecchio. Il tipo lo dice
+	l'estensione, perche' metadata.py chiede i loghi sempre in PNG e poster e sfondi sono JPG."""
+	import sqlite3
+	dbcon = sqlite3.connect(translate_path(TEXTURES_DB), timeout=40.0)
+	try:
+		rows = dbcon.execute('SELECT t.id, t.cachedurl, t.url, s.width, s.height FROM texture t JOIN sizes s ON s.idtexture = t.id').fetchall()
+	finally:
+		dbcon.close()
+	from modules.tmdb_art import TMDB_PREFIX, MANAGED_TOKENS
+	wanted_png, wanted_jpg = {new_tokens['logo']}, {new_tokens['poster'], new_tokens['fanart'], new_tokens['landscape']}
+	stale = []
+	for texture_id, cachedurl, url, width, height in rows:
+		if url and url.startswith(TMDB_PREFIX):
+			token = url[len(TMDB_PREFIX):].split('/', 1)[0]
+			if token in MANAGED_TOKENS and token not in (wanted_png if url.endswith('.png') else wanted_jpg):
+				stale.append((texture_id, cachedurl))
+				continue
+		if not width or not height: continue
+		new_w, new_h = _bounds(width, height, *new_res)
+		if width > new_w or height > new_h:
+			stale.append((texture_id, cachedurl))
+			continue
+		old_w, old_h = _bounds(width, height, *old_res)
+		if (height == old_h or width == old_w) and (new_h > height and new_w > width):
+			stale.append((texture_id, cachedurl))
+	return stale
+
+def _purge_textures(stale):
+	# Riga e file insieme. Il trigger textureDelete dello schema toglie anche la riga di sizes.
+	# Si fa solo subito prima di RestartApp: a sessione in corso Kodi rigenererebbe le voci con i
+	# valori VECCHI, che restano in memoria fino al riavvio.
+	import sqlite3
+	thumbnails = translate_path('special://thumbnails/')
+	progress = progressDialogBG()
+	progress.create('Fen Light', 'Pulizia cache immagini...')
+	try:
+		for count, (texture_id, cachedurl) in enumerate(stale, 1):
+			try: os.remove(os.path.join(thumbnails, cachedurl))
+			except Exception: pass
+			if count % 200 == 0:
+				progress.update(int(count * 100 / len(stale)), 'Pulizia cache immagini...')
+		dbcon = sqlite3.connect(translate_path(TEXTURES_DB), timeout=40.0)
+		try:
+			dbcon.executemany('DELETE FROM texture WHERE id = ?', [(i[0],) for i in stale])
+			dbcon.commit()
+		finally:
+			dbcon.close()
+	finally:
+		try: progress.close()
+		except Exception: pass
+
+def image_res_label():
+	# Per l'etichetta del menu: lo stato va detto, altrimenti si clicca alla cieca.
+	width, height = _gui_size()
+	current = _current_res(_load_root(translate_path(SETTINGS_PATH)))
+	if not height: return 'Risoluzione immagini: %s/%s' % current
+	target = _target_res(height)
+	return 'Risoluzione immagini per la GUI %sp: %s/%s%s' % ((height,) + current +
+			('' if current == target else ' (consigliato %s/%s)' % target,))
+
+def image_res(params):
+	width, height = _gui_size()
+	if not height:
+		return ok_dialog(heading='Risoluzione immagini', text='Impossibile leggere la risoluzione della GUI.')
 	path = translate_path(SETTINGS_PATH)
 	root = _load_root(path)
-	_backup(path)
-	for existing in root.findall('cache'):
-		root.remove(existing)
-	cache = ET.SubElement(root, 'cache')
-	ET.SubElement(cache, 'buffermode').text = str(buffermode)
-	ET.SubElement(cache, 'memorysize').text = str(int(memorysize_mb) * 1024 * 1024)
-	ET.SubElement(cache, 'readfactor').text = str(readfactor)
-	_save_root(root, path)
-	return path
-
-# -------------------------------------------------------------------------- #
-# Flusso comune di applicazione
-# -------------------------------------------------------------------------- #
-def _apply_preset(preset_key, mbps=None):
-	preset = PRESETS[preset_key]
-	total_ram = _total_ram_mb()
-	memorysize_mb = _ram_capped_memorysize_mb(preset['memorysize_mb'], total_ram)
-	capped = memorysize_mb < preset['memorysize_mb']
-
-	lines = []
-	if mbps is not None:
-		lines.append('Connessione misurata: [B]%s Mbps[/B]' % mbps)
-	lines.append('Preset: [B]%s[/B]' % preset['name'])
-	lines.append('RAM totale rilevata: %s' % ('%s MB' % total_ram if total_ram else 'sconosciuta'))
-	lines.append('')
-	lines.append('Cache (memorysize): [B]%s MB[/B] (~%s MB di RAM usata)' % (memorysize_mb, memorysize_mb * 3))
-	if capped:
-		lines.append('[COLOR orange](ridotta da %s MB per limite RAM)[/COLOR]' % preset['memorysize_mb'])
-	lines.append('readfactor: [B]%s[/B]   buffermode: [B]%s[/B]' % (preset['readfactor'], preset['buffermode']))
-	lines.append('')
-	lines.append('Scrivere advancedsettings.xml? (le altre impostazioni verranno mantenute)')
-
-	confirm = confirm_dialog(heading='Ottimizza Cache & Streaming', text='[CR]'.join(lines),
-							ok_label='Applica', cancel_label='Annulla')
-	if not confirm:
-		return
-	try:
-		path = _write_cache_block(memorysize_mb, preset['readfactor'], preset['buffermode'])
+	old_res = _current_res(root)
+	new_res = _target_res(height)
+	from modules.tmdb_art import compute_tokens
+	new_tokens = compute_tokens(height)
+	try: stale = _stale_textures(new_res, old_res, new_tokens)
 	except Exception as e:
-		return ok_dialog(heading='Errore', text='Impossibile scrivere il file:[CR]%s' % e)
+		return ok_dialog(heading='Errore', text='Impossibile leggere la cache immagini:[CR]%s' % e)
+	if old_res == new_res and not stale:
+		return ok_dialog(heading='Risoluzione immagini',
+						text='GUI %sx%s: imageres e fanartres sono gia\' a [B]%s/%s[/B] e la cache e\' allineata.' % ((width, height) + new_res))
+	lines = ['GUI attuale: [B]%sx%s[/B]' % (width, height),
+			'imageres  %s  ->  [B]%s[/B]' % (old_res[0], new_res[0]),
+			'fanartres %s  ->  [B]%s[/B]' % (old_res[1], new_res[1]),
+			'Ogni immagine alla piena risoluzione della GUI, nella misura piu\' leggera che la copre.',
+			'Da TMDb: poster %s, sfondi %s, landscape %s, loghi %s.' % (new_tokens['poster'], new_tokens['fanart'], new_tokens['landscape'], new_tokens['logo']),
+			'',
+			'Immagini in cache da rifare: [B]%s[/B] (verranno riscaricate quando servono).' % len(stale),
+			'',
+			'Kodi legge questi valori solo all\'avvio: si applica e si riavvia subito.']
+	if not confirm_dialog(heading='Risoluzione immagini', text='[CR]'.join(lines),
+						ok_label='Applica e riavvia', cancel_label='Annulla'): return
+	try:
+		if old_res != new_res:
+			_backup(path)
+			_write_image_res(root, new_res, width, height)
+			_save_root(root, path)
+		_purge_textures(stale)
+	except Exception as e:
+		return ok_dialog(heading='Errore', text='Impossibile completare:[CR]%s' % e)
+	execute_builtin('RestartApp')
 
-	notification('advancedsettings.xml aggiornato')
-	restart = confirm_dialog(heading='Riavvio richiesto',
-							text='Le impostazioni cache hanno effetto solo dopo il riavvio di Kodi.[CR]Riavviare ora?',
-							ok_label='Riavvia', cancel_label='Piu\' tardi')
-	if restart:
-		execute_builtin('RestartApp')
+def _write_image_res(root, new_res, width, height):
+	# Il commento subito sopra <imageres>, se c'e', parla dei valori vecchi: lo si sostituisce con uno
+	# che dice da dove vengono questi.
+	children = list(root)
+	for index, child in enumerate(children):
+		if child.tag == 'imageres':
+			if index and children[index - 1].tag is ET.Comment:
+				root.remove(children[index - 1])
+			break
+	for tag in ('imageres', 'fanartres'):
+		for existing in root.findall(tag):
+			root.remove(existing)
+	comment = ET.Comment(' Scritti da Fen Light (Tools -> Cache & Streaming Optimization) per la GUI %sx%s: '
+						'poster piu\' grande della skin e altezza della GUI. Vedi modules/tmdb_art.py. ' % (width, height))
+	for element in (comment, _text_element('imageres', new_res[0]), _text_element('fanartres', new_res[1])):
+		root.append(element)
+
+def _text_element(tag, value):
+	element = ET.Element(tag)
+	element.text = str(value)
+	return element
 
 # -------------------------------------------------------------------------- #
 # Voci richiamate dal router (navigator -> advancedsettings.<func>)
 # -------------------------------------------------------------------------- #
-def network_test(params):
-	progress = progressDialogBG()
-	progress.create('Fen Light', 'Test di velocita\' in corso...')
-	try:
-		mbps = _speed_test_mbps()
-	finally:
-		try: progress.close()
-		except Exception: pass
-	if mbps is None:
-		return ok_dialog(heading='Test di Rete',
-						text='Impossibile completare il test di rete.[CR]Scegli un preset manualmente.')
-	preset_key = _preset_for_speed(mbps)
-	preset = PRESETS[preset_key]
-	notification('Velocita\': %s Mbps - consigliato: %s' % (mbps, preset['name']))
-	return _apply_preset(preset_key, mbps=mbps)
-
-def auto(params):
-	return network_test(params)
-
-def apply(params):
-	preset_key = params.get('preset', 'medium')
-	if preset_key not in PRESETS:
-		return
-	return _apply_preset(preset_key)
-
 def hide_parent(params):
 	confirm = confirm_dialog(heading='Nascondi cartella superiore (..)',
 							text='Scrivere <filelists><showparentdiritems>false in advancedsettings.xml?[CR]'
@@ -272,24 +304,3 @@ def show(params):
 	if not os.path.exists(path):
 		return ok_dialog(heading='advancedsettings.xml', text='Il file non esiste ancora.')
 	return show_text('advancedsettings.xml', file=path, font_size='small')
-
-def reset(params):
-	confirm = confirm_dialog(heading='Rimuovi ottimizzazione cache',
-							text='Rimuovere il blocco <cache> da advancedsettings.xml?[CR]Le altre impostazioni restano invariate.',
-							ok_label='Rimuovi', cancel_label='Annulla')
-	if not confirm:
-		return
-	path = translate_path(SETTINGS_PATH)
-	if not os.path.exists(path):
-		return notification('Nessun file da modificare')
-	root = _load_root(path)
-	removed = False
-	for existing in root.findall('cache'):
-		root.remove(existing)
-		removed = True
-	if not removed:
-		return notification('Nessun blocco cache presente')
-	_backup(path)
-	_save_root(root, path)
-	notification('Ottimizzazione cache rimossa')
-	ok_dialog(heading='Fatto', text='Riavvia Kodi per applicare la modifica.')

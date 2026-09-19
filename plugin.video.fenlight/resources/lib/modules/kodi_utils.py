@@ -888,7 +888,7 @@ def import_requests(who=''):
 
 def import_requests_real(who=''):
 	# La libreria vera, per i pochi usi che il nostro client non copre: al momento solo il download
-	# in streaming di advanced_settings (iter_content). Tenuta separata cosi' che si veda subito, in
+	# a blocchi di skin_updater (iter_content). Tenuta separata cosi' che si veda subito, in
 	# un log, se qualcuno la risveglia senza accorgersene.
 	from time import perf_counter as _pc
 	_t = _pc()
