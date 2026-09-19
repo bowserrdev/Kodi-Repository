@@ -335,8 +335,8 @@ class SkinUpdater:
 		attribute 'iter_content')`, log 20:21:21, con uno zip da 0 byte lasciato in temp). Dal lotto
 		84 `make_session` non torna piu' requests ma `modules.http_client`, che legge la risposta
 		**tutta in una volta**: ottimo per i 10 KB di `addons.xml`, inutilizzabile per 5,9 MB che si
-		vogliono leggere a blocchi. E' lo stesso motivo per cui `advanced_settings._speed_test_mbps`
-		usa `import_requests_real`, ed e' l'unico altro punto del progetto che lo fa.
+		vogliono leggere a blocchi. E' l'unico punto del progetto che usa `import_requests_real`
+		(il test di velocita' di `advanced_settings`, l'altro, e' stato tolto il 19/09).
 
 		Il prezzo (337 moduli contro 66) si paga solo quando c'e' davvero un aggiornamento da
 		prendere, cioe' quasi mai, e comunque almeno 90 s dopo l'avvio."""

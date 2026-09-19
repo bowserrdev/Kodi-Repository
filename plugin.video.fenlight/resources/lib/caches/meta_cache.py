@@ -2,6 +2,9 @@
 import json
 from caches.base_cache import connect_database, get_timestamp
 from modules.kodi_utils import clear_property
+# Ogni riga letta passa da size_meta dopo il json.loads: la misura delle immagini TMDb si decide
+# all'uscita, non nel database (modules/tmdb_art.py).
+from modules.tmdb_art import size_meta
 
 all_tables = ('metadata', 'season_metadata', 'function_cache')
 id_types = ('tmdb_id', 'imdb_id', 'tvdb_id')
@@ -40,7 +43,7 @@ class MetaCache:
 			dbcon = connect_database('metacache_db')
 			row = dbcon.execute(GET_MOVIE_SHOW % id_type, (media_type, media_id)).fetchone()
 			if row:
-				meta, expiry = json.loads(row[0]), row[1]
+				meta, expiry = size_meta(json.loads(row[0])), row[1]
 				if expiry < current_time:
 					# Marcatore diagnostico (lotto 53): distingue "mai scritto in cache" da "scritto e scaduto".
 					try:
@@ -88,7 +91,7 @@ class MetaCache:
 						if scadute is None: continue
 						scadute.append(string(row[0]))
 					_td = _pc()
-					try: results[string(row[0])] = json.loads(row[1])
+					try: results[string(row[0])] = size_meta(json.loads(row[1]))
 					except: pass
 					_dec_s += _pc() - _td
 					_dec_byte += len(row[1]) if row[1] else 0
@@ -109,7 +112,7 @@ class MetaCache:
 			dbcon = connect_database('metacache_db')
 			row = dbcon.execute(GET_SEASON, (prop_string,)).fetchone()
 			if row:
-				meta, expiry = json.loads(row[0]), row[1]
+				meta, expiry = size_meta(json.loads(row[0])), row[1]
 				if expiry < current_time:
 					self.delete_season(prop_string)
 					meta = None
@@ -134,7 +137,7 @@ class MetaCache:
 				query = GET_SEASON_MANY % ', '.join('?' for _ in chunk)
 				for row in dbcon.execute(query, chunk):
 					if row[2] < current_time: continue
-					try: results[string(row[0])] = json.loads(row[1])
+					try: results[string(row[0])] = size_meta(json.loads(row[1]))
 					except: pass
 		except: pass
 		return results
