@@ -9,6 +9,17 @@
         <value>main_fg_30</value>
     </variable>
 
+    <!-- Path della riga Discover (505), CON identita' e token dentro: esistono solo se esiste il path.
+         Il path Discover si svuota in undici punti (uscita dai filtri, Indietro, reset nel plugin), e il
+         token restava: all'apertura successiva della finestra Kodi caricava il solo '&amp;pages=N'. Qui la
+         condizione e' una, quella del path. Il token deve stare nel VALORE di una variabile: nel suffisso di
+         un $INFO sarebbe testo letterale (GUIInfoLabel.cpp:339-373). Il nome della proprieta' coincide con
+         paginator.CTL_PAGES_PROP % ('1105', '505'): lo verifica tests/test_162.py. -->
+    <variable name="Search_Discover_Path">
+        <value condition="!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]&amp;pgctl=1105.505$INFO[Window(Home).Property(fenlight.pg.w1105.ctl505.pages),&amp;pages=,]</value>
+    </variable>
+
+
 
     <include name="Search">
         <param name="window">1105</param>
@@ -64,11 +75,12 @@
                                          'home', cioe' un token che nessuno scrive mai, e il row non paginerebbe. -->
                                     <param name="pgscope">1105</param>
                                     <param name="pggated">true</param>
-                                    <!-- Il path esiste solo dopo che Discover e' stato usato almeno una volta.
-                                         Il segmento di identita' sta nel SUFFISSO di questo $INFO, non accodato
-                                         dopo: cosi' quando la proprieta' e' vuota sparisce anche lui e il
-                                         contenitore resta senza path invece che con il solo token. -->
-                                    <param name="content">$INFO[Window(Home).Property(FenLight.Discover.ContentPath),,&amp;pgctl=1105.505]</param>
+                                    <!-- Il path esiste solo dopo che Discover e' stato usato almeno una volta, e
+                                         torna vuoto a ogni uscita da Discover. Identita' e token stanno DENTRO
+                                         Search_Discover_Path (pagine=false): quando il path sparisce spariscono con
+                                         lui, e il contenitore resta senza path invece che con il solo '&amp;pages=N'. -->
+                                    <param name="content">$VAR[Search_Discover_Path]</param>
+                                    <param name="pagine">false</param>
                                     <param name="include">List_Poster_Row</param>
                                     <param name="target">videos</param>
                                     <!-- LOTTO 167. Il terzo termine e' il gate del lotto 165, che li' era finito
@@ -201,16 +213,13 @@
          Il tentativo del 169 di metterne una PER linguetta e' stato abbandonato proprio qui: richiedeva
          di confrontare ListItem.Property(widget_id), che il generatore scrive come '$NUMBER[502]', e
          quel confronto non e' mai risultato vero.
-         LOTTO 212. La rotellina vale SOLO per le pagine caricate dopo la prima. Il secondo termine e' quel
-         cancello: Settled e' la query i cui risultati sono a schermo ADESSO (router._text_search_done),
-         quindi Settled == testo vivo vuol dire "c'e' gia' una lista di questa ricerca, quello che sta
-         costruendo e' una pagina in piu'". Durante la PRIMA pagina di una query nuova Settled e'
-         ancora quella precedente (o vuota) e la rotellina non compare: li' a informare l'utente c'e'
-         gia' 'Ricerca in corso / Attendi il caricamento dei risultati', e la rotellina accanto a una
-         riga di linguette ancora vuota diceva solo che qualcosa girava, non cosa. E' lo stesso
-         cancello che i row usano per decidere se il loro contenuto appartiene al testo vivo, quindi
-         non aggiunge stato: legge quello che c'e' gia'. -->
-    <expression name="Exp_Search_Row_Spinner">[Container(502).IsUpdating | Container(503).IsUpdating | Container(504).IsUpdating | Container(505).IsUpdating | Container(506).IsUpdating] + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Settled),Control.GetLabel(3000).index(1))</expression>
+         LOTTO 212. La rotellina vale SOLO per le pagine caricate dopo la prima: una riga che costruisce
+         MENTRE i suoi elementi sono gia' della query scritta adesso sta caricando una pagina in piu'.
+         Durante la PRIMA pagina di una query nuova i suoi elementi sono ancora della query precedente e
+         la rotellina non compare: li' a informare l'utente c'e' 'Ricerca in corso / Attendi il
+         caricamento dei risultati'. E' lo stesso cancello dei row e delle linguette, riga per riga
+         (lotto 338: il primo elemento porta la query che lo ha prodotto, kodi_utils.QUERY_PROP). -->
+    <expression name="Exp_Search_Row_Spinner">[Container(502).IsUpdating + String.IsEqual(Container(502).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(503).IsUpdating + String.IsEqual(Container(503).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(504).IsUpdating + String.IsEqual(Container(504).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(505).IsUpdating + String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(506).IsUpdating + String.IsEqual(Container(506).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))]</expression>
 
     <!-- LOTTO 212. "La ricerca testuale ha risultati a schermo": finestra 1105 (id reale 11105) con testo nel box.
          Serve ai consumatori che devono sapere QUALE contenitore mostra i risultati senza dipendere dal
@@ -309,14 +318,6 @@
             <param name="id">320</param>
             <content>plugin://script.skinvariables/?info=get_encoded_string&amp;unencoded_paths=true&amp;&amp;$INFO[Container(310).ListItem.Label]</content>
         </include>
-        <!-- Rilevatore auto-chiusura: su Mac i tasti fisici vanno all'edit control SENZA spostare il focus,
-             quindi nessun onfocus scatta. Questo container nascosto diventa visibile (e carica il plugin che
-             chiude il pannello) appena la label cambia rispetto a quella memorizzata all'apertura del pannello. -->
-        <include content="Object_Hidden_List">
-            <param name="id">330</param>
-            <visible>!String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEqual(Control.GetLabel(3000).index(1),Window.Property(Search.LabelAtOpen))</visible>
-            <content>plugin://plugin.video.fenlight/?mode=search.close_panel&amp;source=typing&amp;q=$INFO[Control.GetLabel(3000).index(1)]</content>
-        </include>
     </include>
 
     <include name="Search_Bar_Edit">
@@ -366,7 +367,6 @@
 	                 puo' partire: i container risultati sono nascosti se ActivePanel e' valorizzato. -->
 	            <onfocus condition="!String.IsEmpty(Window.Property(Search.ActivePanel))">ClearProperty(Search.ActivePanel)</onfocus>
 	            <onfocus condition="!String.IsEmpty(Window.Property(Search.ActivePanel))">ClearProperty(Background.HideArtwork)</onfocus>
-	            <onfocus condition="!String.IsEmpty(Window.Property(Search.ActivePanel))">ClearProperty(Search.LabelAtOpen)</onfocus>
 	            <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onfocus>
 	            <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(Background.HideArtwork)</onfocus>
 	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(TMDbHelper.WidgetContainer)</onunfocus>
@@ -393,6 +393,17 @@
 	                 con paginator.CTL_PAGES_PROP. -->
 	            <ontextchange>ClearProperty(fenlight.pg.w1105.ctl502.pages,Home)</ontextchange>
 	            <ontextchange>ClearProperty(fenlight.pg.w1105.ctl503.pages,Home)</ontextchange>
+	            <!-- Scrivere nel box chiude il pannello filtri: i risultati sono nascosti finche' ActivePanel
+	                 e' valorizzato. L'onfocus qui sopra non basta: su Mac i tasti fisici arrivano all'edit senza
+	                 spostare il fuoco. <ontextchange> e' l'evento esatto: Kodi lo esegue a ogni cambio del
+	                 testo (tasto, cancellazione, conferma della tastiera o Input.SendText, GUIEditControl.cpp
+	                 UpdateText), a testo gia' aggiornato. Prima lo si DEDUCEVA: un contenitore nascosto (330)
+	                 confrontava il testo con quello all'apertura del pannello e invocava il plugin per chiudere
+	                 (circa 1 s di Python sulla stick). All'apertura della finestra Kodi caricava quel provider
+	                 anche a pannello chiuso (AllocResources non guarda la visibilita'): ad avvio a freddo il
+	                 plugin arrivava in coda dopo che l'utente aveva aperto i filtri, e li chiudeva (19/09). -->
+	            <ontextchange condition="!String.IsEmpty(Window.Property(Search.ActivePanel))">ClearProperty(Search.ActivePanel)</ontextchange>
+	            <ontextchange condition="!String.IsEmpty(Window.Property(Search.ActivePanel))">ClearProperty(Background.HideArtwork)</ontextchange>
 
 
 
@@ -469,7 +480,6 @@
                      la X si auto-nasconde e il focus torna sull'edit. -->
                 <onclick>ClearProperty(FenLight.Discover.ContentPath,Home)</onclick>
                 <onclick>ClearProperty(FenLight.TextSearch.Query,Home)</onclick>
-                <onclick>ClearProperty(FenLight.TextSearch.Settled,Home)</onclick>
                 <onclick>ClearProperty(FenLight.TextSearch.State,Home)</onclick>
                 <onclick>ClearProperty(FenLight.TextSearch.Scope,Home)</onclick>
                 <onclick>ClearProperty(FenLight.TextSearch.Movie.State,Home)</onclick>
@@ -526,7 +536,6 @@
             <!-- Andare sulla tastiera per digitare chiude il pannello avanzate se aperto. -->
             <onfocus condition="!String.IsEmpty(Window.Property(Search.ActivePanel))">ClearProperty(Search.ActivePanel)</onfocus>
             <onfocus condition="!String.IsEmpty(Window.Property(Search.ActivePanel))">ClearProperty(Background.HideArtwork)</onfocus>
-            <onfocus condition="!String.IsEmpty(Window.Property(Search.ActivePanel))">ClearProperty(Search.LabelAtOpen)</onfocus>
             <!-- <onup>3000</onup> -->
             <onup>ClearProperty(RefocusMenu)</onup>
             <onup>3001</onup>
@@ -799,7 +808,6 @@
                 <onback condition="String.IsEmpty(Window.Property(Search.ActivePanel))">3001</onback>
                 <!-- Toggle: apre il pannello se chiuso, lo chiude se e' gia' aperto -->
                 <onclick condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">SetProperty(Background.HideArtwork,True)</onclick>
-                <onclick condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">SetProperty(Search.LabelAtOpen,$INFO[Control.GetLabel(3000).index(1)])</onclick>
                 <onclick condition="!String.IsEqual(Window.Property(Search.ActivePanel),advanced)">SetProperty(Search.ActivePanel,advanced)</onclick>
                 <onclick condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">ClearProperty(Search.ActivePanel)</onclick>
                 <onclick condition="String.IsEqual(Window.Property(Search.ActivePanel),advanced)">ClearProperty(Background.HideArtwork)</onclick>

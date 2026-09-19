@@ -100,10 +100,11 @@
                 <top>$PARAM[widgettop]</top>
                 <height>$PARAM[widgetheight]</height>
                 <animation effect="fade" start="100" end="0" time="0" condition="[Container($PARAM[id]).IsUpdating | $PARAM[busy_isupdating]] + $PARAM[busy_visible]">Conditional</animation>
-                <visible>$PARAM[visible] + [Container($PARAM[id]).IsUpdating | !Integer.IsEqual(Container($PARAM[id]).NumItems,0) | $PARAM[altvisible]]</visible>
-                <include content="Widget_Congela_Contenitore" condition="$PARAM[congela]">
-                    <param name="id">$PARAM[id]</param>
+                <include content="Widget_Row_Visibile">
+                    <param name="accesa">$PARAM[visible] + [Container($PARAM[id]).IsUpdating | !Integer.IsEqual(Container($PARAM[id]).NumItems,0) | $PARAM[altvisible]]</param>
+                    <param name="congela">$PARAM[congela]</param>
                     <param name="congelata">$PARAM[congelata]</param>
+                    <param name="id">$PARAM[id]</param>
                 </include>
 
                 <onfocus condition="!$EXP[Exp_InfoDialogs] + $PARAM[widget_hideartwork]">SetProperty(Background.HideArtwork,True)</onfocus>
@@ -152,18 +153,38 @@
            altrove (dialoghi sopra l'hub) e riga lontana dall'ultima che aveva il fuoco.
          Gli id dei vicini li calcola il generatore (setup/widgets_row.xml): la skin non sa fare somme.
 
-         allowhiddenfocus = congelata, SCRITTO PER ESTESO. Il grouplist scorre in cima se la riga che riceve il
-         fuoco e' la prima focalizzabile (GUIControlGroupList.cpp:181); con le righe sopra congelate e non
-         focalizzabili, risalendo la vista tornava in cima mostrando una riga congelata (prova 5). Il raggio
+         Una riga congelata deve restare focalizzabile da nascosta. Il grouplist scorre in cima se la riga che
+         riceve il fuoco e' la prima focalizzabile (GUIControlGroupList.cpp:181); con le righe sopra congelate e
+         non focalizzabili, risalendo la vista tornava in cima mostrando una riga congelata (prova 5). Il raggio
          da solo non basta appena una riga in mezzo e' vuota o nascosta e Kodi la salta.
-         $EXP NON FUNZIONA in questo attributo: Kodi risolve $EXP solo nel testo di visible/enable e
-         nell'attributo condition (GUIIncludes.cpp:79-84, 377-398), l'attributo restava letterale e quindi
-         falso (prove 4 e 5). $PARAM invece si risolve in ogni attributo (GUIIncludes.cpp:581-604).
+         allowhiddenfocus = ACCESA, non congelata. L'attributo conta solo a controllo nascosto, e la riga e'
+         nascosta o perche' congelata o perche' spenta (accesa falsa: vuota, disattivata): "focalizzabile da
+         nascosta" e' quindi esattamente "sarebbe accesa se non fosse congelata". Stesso effetto di prima, e in
+         piu' una riga spenta non prende mai il fuoco.
+         $EXP NON FUNZIONA in questo attributo: Kodi risolve $EXP solo nel testo di visible/enable/usealttexture/
+         selected e nell'attributo condition (GUIIncludes.cpp:79-84, 377-398); resta letterale, il parser logga
+         "Misplaced [" / "Error parsing boolean expression" e mette false (InfoExpression.cpp:37-41). Cosi' e'
+         successo dal 18/09 al 19/09: congelata conteneva $EXP[Exp_Header_HasFocus] e l'attributo valeva
+         sempre false. Accesa non dipende dall'intestazione e non contiene $EXP. $PARAM invece si risolve
+         in ogni attributo (GUIIncludes.cpp:581-604).
          Il segnaposto DEVE avere un id: il grouplist collega su/giu' per id (GUIControlGroupList.cpp:257-297)
          e con id 0 la catena si interrompe. -->
+    <!-- La visibilita' della riga, scritta una volta: accesa e' sia la <visible> sia l'allowhiddenfocus
+         del congelamento. Kodi mette in AND piu' <visible> sullo stesso controllo (GUIControlFactory.cpp:478-505). -->
+    <include name="Widget_Row_Visibile">
+        <definition>
+            <visible>$PARAM[accesa]</visible>
+            <include content="Widget_Congela_Contenitore" condition="$PARAM[congela]">
+                <param name="id">$PARAM[id]</param>
+                <param name="congelata">$PARAM[congelata]</param>
+                <param name="accesa">$PARAM[accesa]</param>
+            </include>
+        </definition>
+    </include>
+
     <include name="Widget_Congela_Contenitore">
         <definition>
-            <visible allowhiddenfocus="$PARAM[congelata]">![$PARAM[congelata]]</visible>
+            <visible allowhiddenfocus="$PARAM[accesa]">![$PARAM[congelata]]</visible>
             <onfocus>SetProperty(fenlight.congela.riga,$PARAM[id])</onfocus>
             <onfocus>SetProperty(fenlight.congela.muovendo,1,Home)</onfocus>
             <onfocus>AlarmClock(fenlight_congela_fermo,ClearProperty(fenlight.congela.muovendo,Home),00:01,silent)</onfocus>
@@ -706,6 +727,14 @@
          condizionale lascia pgctl vuoto e lo scrive nel SUFFISSO del proprio $VAR/$INFO, dove
          sparisce insieme al path.
 
+         pagine   lo stesso problema per il token, con una differenza: il suffisso di un $VAR/$INFO
+                  e' testo letterale (GUIInfoLabel.cpp:339-373) e il token e' un $INFO, quindi li'
+                  non puo' stare. Deve stare nel VALORE di una <variable> con la condizione del path,
+                  e chi lo fa passa pagine=false (Search_Discover_Path, Includes_Search.xml). Le righe
+                  della ricerca testuale lo tengono fuori: il loro token lo cancella <ontextchange> a
+                  ogni cambio di testo. Il solo '&amp;pages=N' Kodi lo caricherebbe anche a riga
+                  nascosta, all'apertura della finestra (AllocResources non guarda la visibilita').
+
          vuota    come la riga si presenta quando resta SENZA ELEMENTI (18/09/2026): con
                   'segnaposto' Fen Light consegna l'elemento "nessun risultato" al posto della
                   cartella vuota (kodi_utils.end_directory), cosi' il contenitore non scende mai a 0
@@ -747,11 +776,29 @@
          L'UNICO caso in cui questo riordina: preliminarySort mette le cartelle prima dei file
          quando handleFolder e' attivo. Vale solo per un widget che MESCOLA film (non cartelle) e
          serie (cartelle) nello stesso elenco. Se ne salta fuori uno si vede subito, le serie
-         vanno tutte in cima, e si torna indietro cambiando questa sola parola. -->->
+         vanno tutte in cima, e si torna indietro cambiando questa sola parola. -->
     <include name="Defs_Widget_Content">
         <param name="vuota">&amp;vuota=segnaposto</param>
+        <param name="pagine">true</param>
         <definition>
-            <content sortby="programcount" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[content]$PARAM[pgctl]$PARAM[vuota]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</content>
+            <include content="Defs_Widget_Content_Path" condition="$PARAM[pagine]">
+                <param name="path">$PARAM[content]$PARAM[pgctl]$PARAM[vuota]$INFO[Window(Home).Property(fenlight.pg.w$PARAM[pgscope].ctl$PARAM[id].pages),&amp;pages=,]</param>
+                <param name="sortorder">$PARAM[sortorder]</param>
+                <param name="target">$PARAM[target]</param>
+                <param name="limit">$PARAM[limit]</param>
+            </include>
+            <include content="Defs_Widget_Content_Path" condition="![$PARAM[pagine]]">
+                <param name="path">$PARAM[content]$PARAM[pgctl]$PARAM[vuota]</param>
+                <param name="sortorder">$PARAM[sortorder]</param>
+                <param name="target">$PARAM[target]</param>
+                <param name="limit">$PARAM[limit]</param>
+            </include>
+        </definition>
+    </include>
+
+    <include name="Defs_Widget_Content_Path">
+        <definition>
+            <content sortby="programcount" sortorder="$PARAM[sortorder]" target="$PARAM[target]" limit="$PARAM[limit]" browse="$VAR[Defs_BrowseLimitedLists]">$PARAM[path]</content>
         </definition>
     </include>
 

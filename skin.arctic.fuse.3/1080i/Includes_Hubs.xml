@@ -139,6 +139,8 @@
     <include name="Hub_Combined_Widget">
         <param name="pgscope">home</param>
         <param name="pggated">false</param>
+        <!-- pagine=false: il token e' gia' dentro content, vedi Defs_Widget_Content. Vale solo con pggated. -->
+        <param name="pagine">true</param>
         <param name="target">videos</param>
         <param name="include">List_Poster_Row</param>
         <param name="visible">true</param>
@@ -193,6 +195,7 @@
                 <include content="Defs_Widget_Content" condition="$PARAM[pggated]">
                     <param name="pgctl" />
                     <param name="vuota" />
+                    <param name="pagine">$PARAM[pagine]</param>
                     <param name="content">$PARAM[content]</param>
                     <param name="pgscope">$PARAM[pgscope]</param>
                     <param name="id">$PARAM[id]</param>

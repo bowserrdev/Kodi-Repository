@@ -5,6 +5,11 @@
     <property name="widget_id">$NUMBER[{widget_id}]</property>
     <property name="show_artwork">true</property>
     <property name="widget_numitems">$INFO[Container({widget_id}).NumItems]</property>
-    <visible>!Integer.IsEqual(Container({widget_id}).NumItems,0)</visible>
     <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
+    <!-- Stesso cancello della riga (search_row.xmltemplate): la linguetta esiste solo se il primo elemento
+         della SUA riga porta la query scritta adesso, il che implica anche che la riga ha elementi. Con il
+         solo NumItems restava accesa, al cambio di query, con il nome dei risultati vecchi (19/09). Da
+         questa visible dipendono anche la linea sotto le linguette e la freccia giu' verso 601: leggono
+         Container(601).NumItems. -->
+    <visible>String.IsEqual(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</visible>
 </item>
