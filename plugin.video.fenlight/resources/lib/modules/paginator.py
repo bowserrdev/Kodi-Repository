@@ -1883,31 +1883,6 @@ def _passi_legacy(key, default):
 	log('passi_da_caricare key=%s loading=%s soft_refresh=%s -> pages_to_load=%s (default=%s)' % (short(key), loading, soft_refresh, result, default))
 	return result
 
-CONFERME_VUOTO = 2
-
-def azzerare_token(numitems, dialogo, conferme=0, richieste=CONFERME_VUOTO):
-	"""Va azzerato il token delle pagine di questo contenitore? Torna (azzera, conferme).
-
-	Il token si azzera in UN solo caso legittimo: la ricerca a casella vuota, dove il contenitore
-	resta senza path di base e resterebbe il solo '&pages=N', che Kodi non sa risolvere.
-
-	Due condizioni, e sono entrambe cicatrici di letture che NON descrivevano il contenitore:
-
-	  dialogo   con un dialogo in cima, Container(N) si risolve contro il DIALOGO (vedi PR.md, voce
-	            12): il contenitore sembra vuoto anche quando ha 239 elementi. Misurato sulla stick il
-	            16/09 alle 01:26:01: menu contestuale aperto al fotogramma prima della lettura, token
-	            azzerato, riga Horror tornata da 239 a 25 elementi.
-	  conferme  una lettura vuota isolata non basta: la si vuole vedere due giri di fila (0,6 s). Una
-	            casella di ricerca vuota resta vuota, quindi il caso buono passa comunque; un vuoto di
-	            passaggio -- ricostruzione, dialogo che si apre, finestra che cambia -- no.
-
-	La cura definitiva e' la fase 4: lo stato dentro il primo elemento, e nessuna proprieta' da
-	azzerare.
-	"""
-	if dialogo or numitems: return False, 0
-	conferme += 1
-	return conferme >= richieste, conferme
-
 def set_state(key, passi, finita):
 	# I passi che la lista sta mostrando e se ce ne saranno altri. Stanno in proprieta' di finestra perche'
 	# li legge il watcher: `passi` e' cio' che incrementa di uno. Li scrive la costruzione, che e' chi

@@ -598,14 +598,12 @@ class WidgetPaginator:
 		logger('Fen Light', 'WidgetPaginator Service Starting')
 		from time import time
 		from modules import paginator, cw_head
-		from modules.kodi_utils import modal_dialog_present, search_running
+		from modules.kodi_utils import search_running
 		monitor, player = xbmc.Monitor(), xbmc.Player()
 		wait_for_abort, is_playing = monitor.waitForAbort, player.isPlayingVideo
 		window = xbmcgui.Window(10000)
 		get_infolabel = xbmc.getInfoLabel
 		pending = {}  # key -> time the loading flag was set, to self-heal a build that never finishes
-		# LOTTO 312 -- quante letture vuote di fila ha dato ogni contenitore: vedi paginator.azzerare_token.
-		conferme_vuoto = {}
 		# Timeout di autoguarigione per una build che non finisce mai. NON abbassarlo senza misurare:
 		# se scade MENTRE la build sta ancora lavorando, il flag LOADING viene tolto sotto i piedi e
 		# passi_da_caricare() -- che lo legge per decidere se ricostruire N pagine o solo il lotto iniziale --
@@ -878,21 +876,18 @@ class WidgetPaginator:
 					else: window.clearProperty('TMDbHelper.ListItem.base_poster')
 				key, first_url = paginator.container_head(widget_id, scope)
 				if not key:
-					# Contenitore VUOTO con un token residuo: e' la ricerca a casella vuota (vedi
-					# paginator.azzerare_token, che tiene la regola e il perche' delle sue due condizioni).
-					# La domanda sul dialogo si rifa' QUI, subito prima di decidere: fra il controllo in
-					# cima al giro e questa lettura un menu contestuale fa in tempo ad aprirsi.
-					numitems = int(get_infolabel('Container(%s).NumItems' % widget_id) or 0)
-					azzera, conferme_vuoto[widget_id] = paginator.azzerare_token(
-						numitems, modal_dialog_present(), conferme_vuoto.get(widget_id, 0))
-					if azzera:
-						window.clearProperty(paginator.CTL_PAGES_PROP % (scope, widget_id))
-						conferme_vuoto[widget_id] = 0
-					log_change('idle id=%s no-head first=%s numitems=%s conferme=%s azzerato=%s'
-								% (widget_id, (first_url[:50] if first_url else '-'), numitems,
-									conferme_vuoto.get(widget_id, 0), azzera))
+					# Riga a fuoco senza testa: sta caricando, o non e' di Fen Light. Non c'e' niente da
+					# paginare e NIENTE DA DEDURRE: il token non si tocca.
+					# LOTTO 337 -- qui il watcher azzerava il token dopo due letture vuote di fila, per
+					# la ricerca a casella vuota (path di base sparito, resterebbe il solo '&pages=N').
+					# Ma quelle righe a casella vuota sono NASCOSTE, e il watcher arriva qui solo sulla
+					# riga che ha il fuoco: il caso per cui era nato non poteva mai toccarlo. Toccava
+					# invece righe vere lette vuote -- un dialogo in cima (lotto 312, Horror da 16 passi a
+					# 2) o una riga dell'hub al primo caricamento (19/09, 1101.504 azzerata ogni 0,6 s
+					# per 4 secondi). Il token vuoto senza path lo impedisce adesso la skin, dove il path
+					# si svuota: <ontextchange> per la ricerca testuale, Search_Discover_Path per Discover.
+					log_change('idle id=%s no-head first=%s' % (widget_id, (first_url[:50] if first_url else '-')))
 					wait_for_abort(0.3); continue
-				conferme_vuoto[widget_id] = 0
 				# LOTTO 92: qui stava la seconda copia del controllo di cambio inquilino, tolta per la
 				# stessa ragione dell'altra -- la riconciliazione appartiene alla build, che SA quale lista
 				# sta costruendo, non al watcher, che poteva solo dedurlo dal contenuto a schermo.

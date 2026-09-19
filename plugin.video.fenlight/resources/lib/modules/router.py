@@ -10,6 +10,10 @@ def _text_search_start(params, media_type):
 	if search_scope == 'true': search_scope = 'standard'
 	query = params.get('query', '')
 	if not query: return None
+	# La riga dichiara di quale query sono i suoi elementi: vedi kodi_utils.QUERY_PROP. Anche per le
+	# ricostruzioni di paginazione, che consegnano di nuovo la stessa query.
+	from modules.kodi_utils import timbra_primo_elemento, QUERY_PROP
+	timbra_primo_elemento(QUERY_PROP, query)
 	from xbmcgui import Window
 	win = Window(10000)
 	if win.getProperty('FenLight.TextSearch.Query') != query:
@@ -75,12 +79,9 @@ def _text_search_done(win, query, media_type, num_items):
 	if not win or win.getProperty('FenLight.TextSearch.Query') != query: return
 	win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'done')
 	win.setProperty('FenLight.TextSearch.%s.HasResults' % media_type, 'true' if num_items else 'false')
-	# Settled = the query whose results are actually on screen now. The skin shows the result rows only
-	# while Settled matches the live search box, so a query change hides the (stale-positioned) row and
-	# lets it rebuild fresh at item 0; a pagination refresh keeps Settled == query, so scrolling is
-	# untouched. Set here (build done & current) rather than at _text_search_start, which also fires for
-	# in-place pagination refreshes.
-	win.setProperty('FenLight.TextSearch.Settled', query)
+	# LOTTO 338: qui si scriveva FenLight.TextSearch.Settled, "la query dei risultati a schermo". Era uno
+	# per tutte le righe e lo scriveva la prima che finiva. Ogni riga ora lo porta da se' nel primo
+	# elemento (kodi_utils.QUERY_PROP, timbrato in _text_search_start).
 	if win.getProperty('FenLight.TextSearch.Scope') == 'combined':
 		win.setProperty('FenLight.TextSearch.State', 'done')
 		return
@@ -295,15 +296,6 @@ def routing(sys):
 		if mode == 'search.clear_search':
 			from modules.search import clear_search
 			return clear_search()
-		if mode == 'search.close_panel':
-			from modules.search import close_search_panel
-			close_search_panel(params.get('source', '?'))
-			# Invocato come content-directory dal container rilevatore: chiudo la directory (vuota).
-			try:
-				import xbmcplugin
-				xbmcplugin.endOfDirectory(int(sys.argv[1]), succeeded=True, cacheToDisc=False)
-			except: pass
-			return
 		if mode == 'search.remove':
 			from modules.search import remove_from_search
 			return remove_from_search(params)

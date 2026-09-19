@@ -7,11 +7,6 @@ from indexers.easynews import search_easynews_image
 from modules import kodi_utils
 logger = kodi_utils.logger
 
-def _slog(msg):
-	# Log verboso dell'hub di ricerca (grep 'FenLight Ricerca' nel kodi.log).
-	try: logger('FenLight Ricerca', msg)
-	except: pass
-
 close_all_dialog, external = kodi_utils.close_all_dialog, kodi_utils.external
 build_url, kodi_dialog, execute_builtin, select_dialog = kodi_utils.build_url, kodi_utils.kodi_dialog, kodi_utils.execute_builtin, kodi_utils.select_dialog
 notification, kodi_refresh = kodi_utils.notification, kodi_utils.kodi_refresh
@@ -87,28 +82,6 @@ def clear_all(setting_id, refresh='false'):
 	main_cache.set(setting_id, '', expiration=365)
 	notification('Success', 2500)
 	if refresh == 'true': kodi_refresh(coalesce=False)
-
-def close_search_panel(source='?'):
-	# Regola generale: appena l'utente va a digitare una nuova ricerca, il pannello 'avanzate'
-	# se aperto va chiuso (i container risultati sono nascosti finche'
-	# Search.ActivePanel e' valorizzato). Le proprieta' vivono sulla finestra attiva (l'hub di
-	# ricerca 1105): la finestra custom dello skin non e' istanziabile via xbmcgui.Window() dal
-	# processo del plugin, quindi agiamo sulla finestra attiva via executebuiltin + getCurrentWindowId.
-	# Log sempre (anche wid e valore letto) per diagnosticare comportamenti insoliti.
-	try:
-		import xbmc, xbmcgui
-		wid = xbmcgui.getCurrentWindowId()
-		panel = xbmc.getInfoLabel('Window(%s).Property(Search.ActivePanel)' % wid)
-		_slog('close_search_panel: source=%s wid=%s ActivePanel_letto="%s"' % (source, wid, panel))
-		# Chiudo comunque su piu' scope per robustezza: finestra attiva (no id) e wid esplicito.
-		xbmc.executebuiltin('ClearProperty(Search.ActivePanel)')
-		xbmc.executebuiltin('ClearProperty(Background.HideArtwork)')
-		xbmc.executebuiltin('ClearProperty(Search.LabelAtOpen)')
-		xbmc.executebuiltin('ClearProperty(Search.ActivePanel,%s)' % wid)
-		xbmc.executebuiltin('ClearProperty(Background.HideArtwork,%s)' % wid)
-		xbmc.executebuiltin('ClearProperty(Search.LabelAtOpen,%s)' % wid)
-	except Exception as e:
-		_slog('close_search_panel: ECCEZIONE %s' % e)
 
 def select_discover_filter(params):
     import json, xbmcgui

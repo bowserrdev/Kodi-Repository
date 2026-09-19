@@ -207,6 +207,19 @@ SEGNAPOSTO_PROP = 'fenlight.segnaposto'
 SEGNAPOSTO_LABEL = 'Nessun risultato'
 # Elementi consegnati da QUESTA invocazione (una invocazione = un processo Python = una cartella).
 _CONSEGNATI = [0]
+# LOTTO 338 -- lo stato di una consegna sta nel PRIMO ELEMENTO che consegna (specifica del 15/09,
+# punto 4): la skin lo legge con Container(N).ListItemAbsolute(0).Property(...), e il dato arriva nello
+# stesso Fetch degli elementi che descrive, quindi non puo' ne' anticiparli ne' sopravvivergli. Chi
+# costruisce annota qui (timbra_primo_elemento), add_items lo scrive sul primo elemento dell'invocazione.
+# QUERY_PROP: la query di ricerca che ha prodotto la riga. Prima c'era una proprieta' globale,
+# FenLight.TextSearch.Settled, scritta dalla PRIMA riga che finiva: da li' in poi anche l'altra, ancora
+# in costruzione, passava per aggiornata e mostrava i risultati della query precedente (19/09).
+QUERY_PROP = 'fenlight.query'
+_PRIMO_ELEMENTO = {}
+
+def timbra_primo_elemento(nome, valore):
+	"""Annota una proprieta' da scrivere sul primo elemento che questa invocazione consegnera'."""
+	_PRIMO_ELEMENTO[nome] = valore
 
 def vuole_segnaposto(query):
 	"""La riga per cui gira questa invocazione ha chiesto il segnaposto? `query` e' sys.argv[2]."""
@@ -404,6 +417,8 @@ def add_items(handle, item_list):
 	_c = _thread_cpu()
 	if _c is not None: _PHASE_CPU['add_start'] = _c
 	_TAPPE.append(('add_start', _t, _c, _tid()))
+	if _PRIMO_ELEMENTO and item_list and not _CONSEGNATI[0]:
+		item_list[0][1].setProperties(_PRIMO_ELEMENTO)
 	addDirectoryItems(handle, item_list)
 	_CONSEGNATI[0] += len(item_list) if item_list else 0
 	_DELIVERY[0] = (_pc() - _t) * 1000
