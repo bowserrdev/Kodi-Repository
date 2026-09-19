@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from caches.main_cache import cache_object
 from caches.lists_cache import lists_cache_object
 from modules.settings import mdblist_api_key
 from modules.kodi_utils import notification
@@ -29,17 +28,17 @@ def call_mdblist(endpoint, params=None):
 		return resp.json()
 	except: return None
 
+# L'ELENCO delle liste (mie e piaciute) si scarica a ogni apertura, senza cache. Stava in main_cache per
+# un'ora come i contenuti, ma a differenza di Trakt MDBList non ha un segnale di attivita' che la
+# invalidi: una lista appena piaciuta sul sito restava invisibile fino alla scadenza. E' una chiamata
+# sola, fatta solo quando l'utente apre la cartella; la cache resta sui contenuti delle liste.
 def mdblist_get_my_lists():
-	def _fetch(dummy):
-		return call_mdblist('lists/user/')
-	return cache_object(_fetch, 'mdblist_my_lists', 'x', False, 1)
+	return call_mdblist('lists/user/') or []
 
 def mdblist_get_liked_lists():
-	def _fetch(dummy):
-		data = call_mdblist('lists/liked/')
-		if isinstance(data, dict): return data.get('lists') or []
-		return data or []
-	return cache_object(_fetch, 'mdblist_liked_lists', 'x', False, 1)
+	data = call_mdblist('lists/liked/')
+	if isinstance(data, dict): return data.get('lists') or []
+	return data or []
 
 # Liste che vanno ordinate per data di aggiunta (date added, dal piu' recente) invece che per rank
 MDBLIST_DATE_ADDED_LISTS = {'91378'}  # amything/latest-releases-gary
