@@ -37,7 +37,7 @@ def _build_mdblist_lists(params, lists):
 	except: pass
 	set_content(handle, 'files')
 	set_category(handle, params.get('category_name', 'MDBList'))
-	end_directory(handle)
+	end_directory(handle, cacheToDisc=False)
 	set_view_mode('view.main')
 
 def get_mdblist_lists(params):
