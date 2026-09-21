@@ -117,9 +117,47 @@
         </definition>
     </include>
 
+    <!-- LA rotellina: un solo controllo, definito una volta sola. Chi la vuole la include e dice
+         soltanto QUANDO accenderla; dove metterla lo decide il chiamante, che e' sempre un
+         grouplist, cosi' la distanza dal testo non si calcola mai a mano (vedi i due soli
+         chiamanti: View_Line_Spinner qui sotto e Categories_Selector_FakeList). -->
+    <include name="View_Spinner_Icon">
+        <!-- left: serve solo a chi la mette in un grouplist con un itemgap proprio, per riportare la
+             distanza dal testo a view_spinner_gap. Dentro un grouplist la posizione la decide il
+             grouplist, quindi qui 0 vuol dire "dove mi metti". -->
+        <param name="left">0</param>
+        <definition>
+        <control type="image">
+            <width>32</width>
+            <height>32</height>
+            <aspectratio>keep</aspectratio>
+            <centertop>42</centertop>
+            <bordersize>-16</bordersize>
+            <left>$PARAM[left]</left>
+            <texture colordiffuse="$PARAM[textcolor]">resource://resource.images.arcticfuse/icons/update.png</texture>
+            <!-- LOTTO 291: la condizione era "true", quindi l'animazione in CICLO non finiva mai. Kodi la fa avanzare
+                 anche quando il controllo e' NASCOSTO (CGUIControl::DoProcess chiama Animate prima di guardare la
+                 visibilita') e a ogni giro segna lo schermo sporco, perche' un'animazione in corso non arriva mai
+                 allo stato APPLIED che la spegnerebbe (VisibleEffect.cpp, CAnimation::Animate e RenderAnimation).
+                 Con algorithmdirtyregions=3 una zona sporca fa ridisegnare TUTTO: bastava che la rotellina fosse
+                 comparsa una volta (un widget ricostruito) e la stick restava a ridisegnare a vuoto per sempre.
+                 Ora la rotazione e' legata alla stessa condizione che mostra la rotellina. -->
+            <animation effect="rotate" start="0" end="-180" time="1200" delay="1200" loop="true" center="auto" tween="back" condition="$PARAM[visible]">Conditional</animation>
+            <animation effect="fade" start="0" end="100" delay="1600" time="1" reversible="true">Visible</animation>
+            <animation effect="fade" start="100" end="0" delay="400" time="1" reversible="true">Hidden</animation>
+            <visible>$PARAM[visible]</visible>
+        </control>
+        </definition>
+    </include>
+
+    <!-- La rotellina appoggiata alla FINE di un testo noto: la copia trasparente dell'etichetta
+         occupa esattamente la larghezza del testo e il grouplist mette la rotellina subito dopo,
+         a view_spinner_gap. Serve dove il testo e' un controllo solo (il titolo di una riga
+         widget). Dove i testi sono piu' d'uno e cambiano di numero - la striscia dei nomi della
+         ricerca - la rotellina entra invece direttamente nel grouplist di quei testi. -->
     <include name="View_Line_Spinner">
         <control type="grouplist">
-            <itemgap>20</itemgap>
+            <itemgap>view_spinner_gap</itemgap>
             <orientation>horizontal</orientation>
             <height>80</height>
             <control type="label">
@@ -130,25 +168,10 @@
                 <font>font_main_bold</font>
                 <animation effect="fade" start="0" end="0" condition="true">Conditional</animation>
             </control>
-            <control type="image">
-                <width>32</width>
-                <height>32</height>
-                <aspectratio>keep</aspectratio>
-                <centertop>42</centertop>
-                <bordersize>-16</bordersize>
-                <texture colordiffuse="$PARAM[textcolor]">resource://resource.images.arcticfuse/icons/update.png</texture>
-                <!-- LOTTO 291: la condizione era "true", quindi l'animazione in CICLO non finiva mai. Kodi la fa avanzare
-                     anche quando il controllo e' NASCOSTO (CGUIControl::DoProcess chiama Animate prima di guardare la
-                     visibilita') e a ogni giro segna lo schermo sporco, perche' un'animazione in corso non arriva mai
-                     allo stato APPLIED che la spegnerebbe (VisibleEffect.cpp, CAnimation::Animate e RenderAnimation).
-                     Con algorithmdirtyregions=3 una zona sporca fa ridisegnare TUTTO: bastava che la rotellina fosse
-                     comparsa una volta (un widget ricostruito) e la stick restava a ridisegnare a vuoto per sempre.
-                     Ora la rotazione e' legata alla stessa condizione che mostra la rotellina. -->
-                <animation effect="rotate" start="0" end="-180" time="1200" delay="1200" loop="true" center="auto" tween="back" condition="$PARAM[visible]">Conditional</animation>
-                <animation effect="fade" start="0" end="100" delay="1600" time="1" reversible="true">Visible</animation>
-                <animation effect="fade" start="100" end="0" delay="400" time="1" reversible="true">Hidden</animation>
-                <visible>$PARAM[visible]</visible>
-            </control>
+            <include content="View_Spinner_Icon">
+                <param name="textcolor">$PARAM[textcolor]</param>
+                <param name="visible">$PARAM[visible]</param>
+            </include>
         </control>
     </include>
 

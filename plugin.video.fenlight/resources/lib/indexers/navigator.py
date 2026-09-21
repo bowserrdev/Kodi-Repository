@@ -177,12 +177,15 @@ class Navigator:
 		self.end_directory()
 
 	def search(self):
-		self.add({'mode': 'navigator.search_history', 'action': 'movie', 'name': 'Search History Movies'}, 'Movies', 'search_movie')
-		self.add({'mode': 'navigator.search_history', 'action': 'tvshow', 'name': 'Search History TV Shows'}, 'TV Shows', 'search_tv')
-		self.add({'mode': 'navigator.search_history', 'action': 'anime', 'name': 'Search History Anime'}, 'Anime', 'search_anime')
-		self.add({'mode': 'navigator.search_history', 'action': 'people', 'name': 'Search History People'}, 'People', 'search_people')
-		self.add({'mode': 'navigator.search_history', 'action': 'tmdb_keyword_movie', 'name': 'Search History Keywords (Movies)'}, 'Keywords (Movies)', 'search_tmdb')
-		self.add({'mode': 'navigator.search_history', 'action': 'tmdb_keyword_tvshow', 'name': 'Search History Keywords (TV Shows)'}, 'Keywords (TV Shows)', 'search_tmdb')
+		# Queste due voci sono PERCORSI, non liste da sfogliare: stanno qui perche' il percorso della
+		# ricerca si possa pescare dal browse dei widget invece di scriverlo a mano. Per questo l'URL
+		# deve restare identico a quello che la skin compone (Includes_Search / il generatore di
+		# skinvariables): finisce su 'query=', che e' il punto dove il termine cercato viene appeso.
+		# 'exact_url' e' cio' che tiene fuori la coda iconImage che add() appende a tutte le altre voci.
+		self.add({'mode': 'build_movie_list', 'action': 'tmdb_movies_search_filtered', 'search_hub': 'combined', 'query': '', 'exact_url': 'true'},
+					'Movies', 'search_movie')
+		self.add({'mode': 'build_tvshow_list', 'action': 'tmdb_tv_search_filtered', 'search_hub': 'combined', 'query': '', 'exact_url': 'true'},
+					'TV Shows', 'search_tv')
 		self.end_directory()
 
 	def downloads(self):
@@ -488,7 +491,14 @@ class Navigator:
 		isFolder = url_params.get('isFolder', 'true') == 'true'
 		if original_image: icon = iconImage
 		else: icon = get_icon(iconImage)
-		url_params['iconImage'] = icon
+		# 'exact_url': l'URL porta i soli parametri del mode, senza le chiavi di presentazione della
+		# voce (name, iconImage). Serve alle voci che esistono per essere COPIATE -- il browse dei
+		# percorsi quando si configura un widget della skin -- perche' il percorso pescato li' sia
+		# identico a quello scritto a mano. Nessun mode legge iconImage dall'URL, e chi lo marca ha
+		# la propria intestazione (build_continue_watching la scrive da se').
+		if url_params.get('exact_url') == 'true':
+			url_params = {k: v for k, v in url_params.items() if k not in ('exact_url', 'name', 'iconImage')}
+		else: url_params = dict(url_params, iconImage=icon)
 		url = build_url(url_params)
 		listitem = make_listitem()
 		listitem.setLabel(list_name)
