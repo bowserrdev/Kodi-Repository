@@ -375,16 +375,25 @@ def search_should_abort(query):
 	# a non-search build (query is None) never debounces; an empty/unreadable live label never aborts.
 	from modules.kodi_utils import sleep
 	if not query: return False
-	live = _search_live_query()
-	if _live_supersedes(query, live):
-		log('search_should_abort: superseded before wait query="%s" live="%s"' % (query, live))
+	if search_superseded(query):
+		log('search_should_abort: superseded before wait query="%s" live="%s"' % (query, _search_live_query()))
 		return True
 	sleep(SEARCH_DEBOUNCE_MS)
-	live = _search_live_query()
-	if _live_supersedes(query, live):
-		log('search_should_abort: superseded after %sms query="%s" live="%s"' % (SEARCH_DEBOUNCE_MS, query, live))
+	if search_superseded(query):
+		log('search_should_abort: superseded after %sms query="%s" live="%s"' % (SEARCH_DEBOUNCE_MS, query, _search_live_query()))
 		return True
 	return False
+
+def search_superseded(query):
+	"""La casella di ricerca ha gia' lasciato questa query?
+
+	Predicato unico di "questa costruzione non parla piu' per l'hub di ricerca": lo leggono il
+	cancello del debounce (prima del lavoro), la guardia di pubblicazione (prima di consegnare gli
+	elementi) e lo stato dell'hub in router._text_search_start (prima di annunciare la query). Erano
+	tre letture della stessa domanda e due di loro non se la ponevano affatto.
+	"""
+	if not query: return False
+	return _live_supersedes(query, _search_live_query())
 
 def search_is_stale(query):
 	# Post-build guard, called right before publishing (add_items/set_head). The build itself takes ~1s,
@@ -393,12 +402,9 @@ def search_is_stale(query):
 	# jumping the widget to "item N". An empty/unreadable live label is NOT a supersede (see
 	# _live_supersedes) -- otherwise a pagination refresh that completes while a modal dialog is open
 	# would skip publishing and blank the widget.
-	if not query: return False
-	live = _search_live_query()
-	if _live_supersedes(query, live):
-		log('search_is_stale: skip publish query="%s" live="%s"' % (query, live))
-		return True
-	return False
+	if not search_superseded(query): return False
+	log('search_is_stale: skip publish query="%s" live="%s"' % (query, _search_live_query()))
+	return True
 
 # --- Strumentazione temporanea per le misure di prestazione (lotto ottimizzazioni) ---
 # Una riga di log per costruzione di lista. Volume basso (una per widget per ricostruzione) e ci

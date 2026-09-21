@@ -205,6 +205,9 @@
         <param name="id">302</param>
         <param name="color_fo">main_fg_30</param>
         <param name="color_nf">main_fg_30</param>
+        <!-- Quando accendere la rotellina in coda alla striscia dei nomi. Spenta di default: le
+             strisce che non hanno niente da caricare non la vedono mai. -->
+        <param name="spinner_condition">false</param>
         <definition>
             <control type="group">
 
@@ -249,6 +252,32 @@
                                 <param name="altfocusid">$PARAM[altfocusid]</param>
                                 <param name="extended">$PARAM[extended]</param>
                             </include>
+                            <!-- La rotellina sta DENTRO il grouplist dei nomi, come ultima voce: e' l'unico
+                                 modo perche' resti sempre alla stessa distanza dall'ultimo nome a destra.
+                                 Prima era un gruppo a coordinate fisse accanto alla striscia, con il left
+                                 di partenza e quattro animazioni di scostamento scelte sul numero di voci
+                                 (Hub_Widget_Switcher, lotto 170): presupponeva che ogni nome occupasse i
+                                 200 px della cella del fixedlist, mentre a schermo i nomi li dispone
+                                 QUESTO grouplist, a larghezza automatica. Da cui i due difetti: con nomi
+                                 lunghi la rotellina finiva sopra il testo, con nomi corti restava lontana.
+                                 Nella ricerca conta anche il tempo: le linguette compaiono una alla volta,
+                                 man mano che i rispettivi widget finiscono di caricare. Da qui dentro la
+                                 rotellina si sposta da sola a ogni linguetta che arriva, senza che nessuno
+                                 debba contarle.
+                                 Il gruppo esiste solo per la distanza: il grouplist stacca le voci di 40
+                                 (itemgap, la distanza fra un nome e l'altro), la rotellina invece deve
+                                 stare a view_spinner_gap dal testo come ovunque, quindi l'icona rientra
+                                 della differenza. La larghezza del gruppo non sposta nulla: e' l'ultima
+                                 voce e dopo non c'e' niente. -->
+                            <control type="group">
+                                <width>32</width>
+                                <height>80</height>
+                                <include content="View_Spinner_Icon">
+                                    <param name="left">-20</param>
+                                    <param name="textcolor">main_fg_100</param>
+                                    <param name="visible">$PARAM[spinner_condition]</param>
+                                </include>
+                            </control>
                         </control>
                     </control>
                 </control>
@@ -269,6 +298,7 @@
         <param name="itemlayout_w">240</param>
         <param name="scrolltime">400</param>
         <param name="extended">false</param>
+        <param name="spinner_condition">false</param>
         <definition>
             <include content="List_ButtonMenu_Row">
                 <param name="id">$PARAM[id]</param>
@@ -313,6 +343,7 @@
                 <param name="color_fo">$PARAM[color_fo]</param>
                 <param name="color_nf">$PARAM[color_nf]</param>
                 <param name="extended">$PARAM[extended]</param>
+                <param name="spinner_condition">$PARAM[spinner_condition]</param>
                 <nested />
             </include>
 

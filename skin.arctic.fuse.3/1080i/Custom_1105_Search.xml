@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <window type="window" id="1105">
 
+    <!-- Dove va il fuoco quando resta senza casa. Serve perche' in questa finestra capita per
+         costruzione: la X di clear (3005) cancella il testo, e il testo e' la condizione di
+         visibilita' della X stessa. Finche' qui non c'era un defaultcontrol, quel fuoco lo
+         raccoglieva il primo controllo focalizzabile dell'albero - il 300, l'intestazione - e da
+         li' un Select fa ActivateWindow della scorciatoia della finestra, cioe' esce dalla ricerca
+         (log del 21/09, 00:51:35 fuoco 3005 -> 300, 00:51:38 finestra 11105 -> 10000).
+         3001 non e' un controllo vero, e' lo smistatore di questa finestra: manda sull'edit, o
+         sull'intestazione se e' l'intestazione che si sta chiedendo (RefocusMenu). Senza
+         always="true" Kodi continua a preferire l'ultimo controllo a fuoco quando la finestra
+         torna, che e' quello che il rientro dal player deve poter ripristinare (vedi sotto). -->
+    <defaultcontrol>3001</defaultcontrol>
+
     <onload>ClearProperty(Background.ShowOverlay,Home)</onload>
     <!-- Forza il focus sull'edit di ricerca all'apertura, evitando che Kodi atterri sulla X di clear (3005)
          quando c'e' testo nel box e 3005 e' il primo controllo focusabile trovato spazialmente.

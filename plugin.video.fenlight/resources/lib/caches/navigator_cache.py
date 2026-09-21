@@ -20,6 +20,7 @@ root_list = [
 {'name': 'Movies', 'mode': 'navigator.main', 'action': 'MovieList', 'iconImage': 'movies'},
 {'name': 'TV Shows', 'mode': 'navigator.main', 'action': 'TVShowList', 'iconImage': 'tv'},
 {'name': 'Anime', 'mode': 'navigator.main', 'action': 'AnimeList', 'iconImage': 'anime'},
+{'name': 'Continue Watching', 'mode': 'build_continue_watching', 'iconImage': 'player', 'exact_url': 'true'},
 {'name': 'People', 'mode': 'navigator.people', 'iconImage': 'genre_family'},
 {'name': 'Search', 'mode': 'navigator.search', 'iconImage': 'search'},
 {'name': 'Discover', 'mode': 'navigator.discover', 'iconImage': 'discover'},

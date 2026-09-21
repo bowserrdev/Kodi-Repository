@@ -17,10 +17,24 @@ def _text_search_start(params, media_type):
 	from xbmcgui import Window
 	win = Window(10000)
 	if win.getProperty('FenLight.TextSearch.Query') != query:
+		# La query annunciata all'hub e' un'altra: o questa build e' la prima della ricerca nuova, o
+		# e' un residuo della vecchia. La differenza non si deduce dal confronto qui sopra, si legge
+		# nella casella: paginator.search_superseded.
+		# Il residuo esiste per costruzione. Una ricostruzione di PAGINAZIONE non viene mai messa in
+		# debounce (_search_debounce_abort esce subito su is_loading: sospendere un passo della
+		# cascata farebbe singhiozzare l'infinite-scroll), e la cascata continua a emettere passi
+		# anche dopo che l'utente ha scritto una query nuova. Quei passi portano nel path la query
+		# VECCHIA, arrivavano qui DOPO la build della query nuova - che aveva gia' annunciato la
+		# sua - e riportavano indietro tutto lo stato dell'hub: Query alla query vecchia e State a
+		# 'loading'. Da cui i due sintomi visti insieme: 'Ricerca in corso' che RICOMPARE sopra
+		# risultati validi, e la rotellina accesa sotto quella scritta, che per definizione si
+		# escludono (skin, Exp_Search_Loading / Exp_Search_Row_Spinner).
+		# _text_search_done la sua guardia ce l'aveva gia'; a mancare era quella in apertura, cioe'
+		# proprio dove lo stato si scrive.
+		from modules import paginator
+		if paginator.search_superseded(query): return None
 		win.setProperty('FenLight.TextSearch.Query', query)
 		win.setProperty('FenLight.TextSearch.Scope', search_scope)
-		win.setProperty('FenLight.TextSearch.Movie.HasResults', 'false')
-		win.setProperty('FenLight.TextSearch.TV.HasResults', 'false')
 		win.clearProperty('FenLight.TextSearch.Movie.State')
 		win.clearProperty('FenLight.TextSearch.TV.State')
 		if search_scope == 'standard':
@@ -75,10 +89,20 @@ def _stale_token_abort(sys, params):
 	except: pass
 	return True
 
-def _text_search_done(win, query, media_type, num_items):
+def _text_search_done(win, query, media_type):
 	if not win or win.getProperty('FenLight.TextSearch.Query') != query: return
 	win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'done')
-	win.setProperty('FenLight.TextSearch.%s.HasResults' % media_type, 'true' if num_items else 'false')
+	# Qui si scriveva anche FenLight.TextSearch.<tipo>.HasResults, che nessuno legge piu'. Diceva
+	# 'false' sia per "questa riga ha risposto zero" sia per "questa riga non ha ancora risposto" --
+	# _text_search_start la azzerava a 'false' a ogni query nuova -- e in modalita' combinata lo State
+	# passa a 'done' alla PRIMA riga che finisce: bastava che la piu' veloce tornasse a vuoto perche'
+	# la skin credesse la ricerca finita e senza risultati mentre l'altra stava ancora lavorando
+	# (log del 21/09, 1,73 s di "Nessun risultato" sopra una ricerca da 16 titoli).
+	# La distinzione mancante non si poteva aggiungere: la proprieta' e' per TIPO DI MEDIA, mentre le
+	# righe le configura l'utente e possono essere una o dieci, anche tutte dello stesso tipo. Ora a
+	# rispondere e' la skin, per riga, come gia' per il resto dal lotto 338: zero linguette vuol dire
+	# nessuna riga con risultati, e una linguetta esiste solo se la sua riga porta questa query
+	# (Exp_Search_NoResults in Includes_Search.xml).
 	# LOTTO 338: qui si scriveva FenLight.TextSearch.Settled, "la query dei risultati a schermo". Era uno
 	# per tutte le righe e lo scriveva la prima che finiva. Ogni riga ora lo porta da se' nel primo
 	# elemento (kodi_utils.QUERY_PROP, timbrato in _text_search_start).
@@ -222,7 +246,7 @@ def routing(sys):
 			mark_phase('indexer_in')
 			movies = Movies(params)
 			result = movies.fetch_list()
-			_text_search_done(search_win, _get('query', ''), 'Movie', len(movies.list))
+			_text_search_done(search_win, _get('query', ''), 'Movie')
 			return result
 		if mode == 'build_tvshow_list':
 			if _get('action') == 'tmdb_tv_search' and _get('search_hub'): params['action'] = 'tmdb_tv_search_filtered'
@@ -235,7 +259,7 @@ def routing(sys):
 			mark_phase('indexer_in')
 			tvshows = TVShows(params)
 			result = tvshows.fetch_list()
-			_text_search_done(search_win, _get('query', ''), 'TV', len(tvshows.list))
+			_text_search_done(search_win, _get('query', ''), 'TV')
 			return result
 		if mode == 'build_season_list':
 			from indexers.seasons import build_season_list

@@ -205,21 +205,65 @@
         </definition>
     </include>
 
-    <!-- LOTTO 170. Quando mostrare la rotellina in fondo alla riga dei nomi dei percorsi: quando
-         UNO QUALUNQUE dei row della ricerca sta costruendo. Non serve sapere quale: la rotellina e'
-         una sola e sta in fondo alla riga, non su una linguetta.
-         Gli id sono letterali perche' Kodi non risolve Container($INFO[...]): l'intervallo 502-506
-         copre i percorsi di ricerca configurabili (il generatore li numera da 502) con margine.
-         Il tentativo del 169 di metterne una PER linguetta e' stato abbandonato proprio qui: richiedeva
-         di confrontare ListItem.Property(widget_id), che il generatore scrive come '$NUMBER[502]', e
-         quel confronto non e' mai risultato vero.
-         LOTTO 212. La rotellina vale SOLO per le pagine caricate dopo la prima: una riga che costruisce
-         MENTRE i suoi elementi sono gia' della query scritta adesso sta caricando una pagina in piu'.
-         Durante la PRIMA pagina di una query nuova i suoi elementi sono ancora della query precedente e
-         la rotellina non compare: li' a informare l'utente c'e' 'Ricerca in corso / Attendi il
-         caricamento dei risultati'. E' lo stesso cancello dei row e delle linguette, riga per riga
-         (lotto 338: il primo elemento porta la query che lo ha prodotto, kodi_utils.QUERY_PROP). -->
-    <expression name="Exp_Search_Row_Spinner">[Container(502).IsUpdating + String.IsEqual(Container(502).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(503).IsUpdating + String.IsEqual(Container(503).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(504).IsUpdating + String.IsEqual(Container(504).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(505).IsUpdating + String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(506).IsUpdating + String.IsEqual(Container(506).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))]</expression>
+    <!-- "La ricerca sta ancora cercando": la casella ha del testo e i risultati a schermo non sono
+         ancora i suoi - o perche' l'ultima query annunciata dal plugin e' un'altra, o perche' e'
+         quella ma la sta ancora costruendo. E' la condizione delle due scritte 'Ricerca in corso' /
+         'Attendi il caricamento dei risultati', scritta qui una volta sola perche' ha un secondo
+         lettore che deve dire esattamente il contrario: la rotellina. -->
+    <expression name="Exp_Search_Loading">[!String.IsEmpty(Control.GetLabel(3000).index(1)) + [!String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) | String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),loading)]]</expression>
+
+    <!-- "Sta ancora costruendo una riga qualunque della ricerca". Grezzo di proposito: non chiede
+         di quale query siano gli elementi, chiede solo se il contenitore ha un lavoro in corso.
+         E' la domanda giusta per sapere se vale la pena dire "nessun risultato", e l'unica che
+         valga anche per una riga che non ha ancora consegnato niente. Stesso intervallo di id
+         letterali di Exp_Search_Row_Spinner, per la stessa ragione. -->
+    <expression name="Exp_Search_Row_Building">[Container(502).IsUpdating | Container(503).IsUpdating | Container(504).IsUpdating | Container(505).IsUpdating | Container(506).IsUpdating]</expression>
+
+    <!-- "La ricerca e' finita e non ha prodotto niente". Lo dice il numero delle LINGUETTE: una
+         linguetta esiste se e solo se la sua riga ha elementi di questa query (vedi
+         search_item.xmltemplate), quindi zero linguette e' esattamente "nessuna riga ha risultati".
+         E' la stessa cosa che il testo dell'etichetta gia' assumeva (Label_Search_NoResults legge
+         Container(601).NumItems): qui si allinea la condizione che decide se mostrarla.
+         PRIMA leggeva FenLight.TextSearch.Movie.HasResults e .TV.HasResults, e la scritta lampeggiava
+         per un paio di secondi prima dei risultati. Quelle due proprieta' valevano 'false' sia per
+         "ha risposto zero" sia per "non ha ancora risposto": _text_search_start le azzerava a ogni
+         query nuova, e in modalita' combinata _text_search_done dichiara lo State 'done' alla PRIMA
+         riga che finisce. Bastava quindi che la riga piu' veloce tornasse a vuoto perche' le due
+         dicessero 'false' insieme mentre l'altra stava ancora lavorando. Nel log del 21/09:
+             01:24:12.712  tvshows BUILD
+             01:24:15.103  tvshows  0 elementi   -> TV.HasResults=false, State=done
+             01:24:16.831  movies  16 elementi
+         1,73 s di "Nessun risultato per ..." sopra una ricerca che ne aveva sedici.
+         La distinzione mancante non si poteva aggiungere a quelle due proprieta': sono per tipo di
+         media, mentre le righe le configura l'utente e possono essere una o dieci, tutte dello
+         stesso tipo (sulla stick ce n'e' una sola: con "non ha ancora risposto" distinto da "zero",
+         la riga TV non avrebbe risposto MAI e la scritta non sarebbe mai comparsa). La risposta che
+         scala e' per riga, ed e' la stessa a cui era gia' arrivato il lotto 338.
+         Il terzo termine e' quello che chiude la finestra: finche' una riga qualunque sta ancora
+         costruendo, non si sa se il risultato sia zero. -->
+    <expression name="Exp_Search_NoResults">[!String.IsEmpty(Control.GetLabel(3000).index(1)) + ![$EXP[Exp_Search_Loading]] + ![$EXP[Exp_Search_Row_Building]] + Integer.IsEqual(Container(601).NumItems,0)]</expression>
+
+    <!-- Quando accendere la rotellina della ricerca. DOVE finisca non si decide piu' qui: la
+         rotellina e' l'ultima voce del grouplist che dispone i nomi, quindi sta sempre a
+         view_spinner_gap dal nome piu' a destra, anche quando quel nome cambia perche' una
+         linguetta in piu' e' comparsa a caricamento finito (Categories_Selector_FakeList).
+         La rotellina resta una sola: qui basta sapere SE una qualunque riga sta caricando altre
+         pagine, non quale. Gli id sono letterali perche' Kodi non risolve Container($INFO[...]):
+         l'intervallo 502-506 copre i percorsi di ricerca configurabili (il generatore li numera da
+         502) con margine. Il tentativo del 169 di metterne una PER linguetta e' stato abbandonato
+         proprio qui: richiedeva di confrontare ListItem.Property(widget_id), che il generatore
+         scrive come '$NUMBER[502]', e quel confronto non e' mai risultato vero.
+         PRIMO TERMINE. Nella ricerca la rotellina significa SOLO "sto caricando altre pagine", mai
+         "sto caricando i widget" come negli altri hub: li' a dirlo c'e' la scritta 'Ricerca in
+         corso', e le due non devono mai comparire insieme. Sono l'una la negazione dell'altra e
+         leggono la STESSA espressione, non una sua copia: cosi' la regola non puo' piu' scollarsi
+         da sola, qualunque corsa la produca.
+         SECONDO TERMINE (lotto 212). Una riga che costruisce MENTRE i suoi elementi sono gia' della
+         query scritta adesso sta caricando una pagina in piu'; durante la PRIMA pagina di una query
+         nuova i suoi elementi sono ancora della query precedente. E' lo stesso cancello dei row e
+         delle linguette, riga per riga (lotto 338: il primo elemento porta la query che lo ha
+         prodotto, kodi_utils.QUERY_PROP). -->
+    <expression name="Exp_Search_Row_Spinner">![$EXP[Exp_Search_Loading]] + [[Container(502).IsUpdating + String.IsEqual(Container(502).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(503).IsUpdating + String.IsEqual(Container(503).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(504).IsUpdating + String.IsEqual(Container(504).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(505).IsUpdating + String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(506).IsUpdating + String.IsEqual(Container(506).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))]]</expression>
 
     <!-- LOTTO 212. "La ricerca testuale ha risultati a schermo": finestra 1105 (id reale 11105) con testo nel box.
          Serve ai consumatori che devono sapere QUALE contenitore mostra i risultati senza dipendere dal
@@ -254,7 +298,7 @@
                 <include>Home_Animation</include>
                 <left>view_pad</left>
                 <top>280</top>
-	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + [String.IsEmpty(Control.GetLabel(3000).index(1)) | [!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),done) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Movie.HasResults),false) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.TV.HasResults),false)]]</visible>
+	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + [String.IsEmpty(Control.GetLabel(3000).index(1)) | $EXP[Exp_Search_NoResults]]</visible>
                 <!-- <visible>Skin.HasSetting(HomeSwitcher.DisableHeader)</visible> -->
             </control>
             <control type="label">
@@ -268,7 +312,7 @@
                 <include>Home_Animation</include>
                 <left>view_pad</left>
                 <top>360</top>
-	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + [String.IsEmpty(Control.GetLabel(3000).index(1)) | [!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),done) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Movie.HasResults),false) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.TV.HasResults),false)]]</visible>
+	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + [String.IsEmpty(Control.GetLabel(3000).index(1)) | $EXP[Exp_Search_NoResults]]</visible>
 	            </control>
 	            <control type="label">
 	                <font>font_head_bold</font>
@@ -280,7 +324,7 @@
 	                <include>Home_Animation</include>
 	                <left>view_pad</left>
 	                <top>280</top>
-		                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + [!String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) | String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),loading)]</visible>
+		                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + $EXP[Exp_Search_Loading]</visible>
 	            </control>
 	            <control type="label">
 	                <wrapmultiline>true</wrapmultiline>
@@ -293,7 +337,7 @@
 	                <include>Home_Animation</include>
 	                <left>view_pad</left>
 	                <top>360</top>
-		                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEmpty(Control.GetLabel(3000).index(1)) + [!String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) | String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),loading)]</visible>
+		                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + $EXP[Exp_Search_Loading]</visible>
 	            </control>
 	        </control>
 	    </include>
@@ -451,7 +495,12 @@
         <!-- X di clear dentro la pill: visibile solo con testo presente. Cerchio grigio (idle) / nero (focus),
              X scura (idle) / bianca (focus). Eredita la geometria della pill (width 800, height 80). -->
         <control type="group">
-            <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
+            <!-- Il secondo termine: finche' la X ha il fuoco resta viva anche a casella vuota. Senza,
+                 il controllo che ha il fuoco spariva come conseguenza del PROPRIO clic - la X cancella
+                 il testo, e il testo e' la sua condizione di visibilita' - e il fuoco restava senza
+                 casa: a deciderne la sorte era Kodi, non la skin. Il fuoco torna sull'edit un istante
+                 dopo (l'onclick e lo setfocus dello script), e a quel punto la X si nasconde da se'. -->
+            <visible>!String.IsEmpty(Control.GetLabel(3000).index(1)) | Control.HasFocus(3005)</visible>
             <!-- Ancorata a destra dentro la pill da 730px: 730 - 68 (larghezza) - 16 (margine) = 646 -->
             <left>646</left>
             <width>68</width>
@@ -483,13 +532,25 @@
                 <onclick>ClearProperty(FenLight.TextSearch.State,Home)</onclick>
                 <onclick>ClearProperty(FenLight.TextSearch.Scope,Home)</onclick>
                 <onclick>ClearProperty(FenLight.TextSearch.Movie.State,Home)</onclick>
-                <onclick>ClearProperty(FenLight.TextSearch.Movie.HasResults,Home)</onclick>
                 <onclick>ClearProperty(FenLight.TextSearch.TV.State,Home)</onclick>
-                <onclick>ClearProperty(FenLight.TextSearch.TV.HasResults,Home)</onclick>
                 <onclick>ClearProperty(TMDbHelper.WidgetContainer)</onclick>
                 <onclick>SetProperty(Background.HideArtwork,True)</onclick>
                 <onclick>SetFocus(3000)</onclick>
-                <onclick>RunScript(script.skinvariables,set_editcontrol=3000,window_id=1105,text=)</onclick>
+                <!-- setfocus=3000 non e' un doppione del SetFocus qui sopra: e' l'unico che arriva DOPO
+                     che il testo e' stato davvero svuotato. Lo svuotamento lo fa uno script esterno
+                     (script.skinvariables, method.set_editcontrol) e passa per Input.SendText con
+                     done=True, che a testo impostato manda un CLICKED al controllo che in QUEL momento
+                     ha il fuoco. Lo script si porta il fuoco sull'edit da se', ma con una executebuiltin
+                     asincrona: se la SendText la precede, il CLICKED torna sulla X - che intanto si e'
+                     nascosta, perche' la sua visible dipende dal testo che lo script ha appena
+                     cancellato - e il fuoco finisce dove capita. Nel log del 21/09 alle 00:51:35 e'
+                     finito sul 300, l'intestazione: da li' il Select successivo dell'utente ha fatto
+                     ActivateWindow della scorciatoia, cioe' la Home (00:51:38.193, finestra 11105 ->
+                     10000). Quattro clic sulla X nella stessa sessione sono invece tornati sull'edit:
+                     e' una corsa, e questa riga la chiude dal lato che possiamo toccare.
+                     La X che sopravvive al proprio clic (vedi la visible del gruppo) chiude l'altro
+                     lato, e il defaultcontrol della 1105 chiude il caso generale. -->
+                <onclick>RunScript(script.skinvariables,set_editcontrol=3000,window_id=1105,text=,setfocus=3000)</onclick>
             </control>
 
             <!-- Cerchio di sfondo (maschera bianca tinta via colordiffuse).

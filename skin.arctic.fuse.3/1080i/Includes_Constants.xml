@@ -23,6 +23,11 @@
 
     <constant name="view_line_top">0</constant>
 
+    <!-- Distanza fra la fine di un testo e la rotellina che ne segnala il caricamento. Una sola,
+         ovunque compaia: accanto al titolo di una riga widget (View_Line_Spinner) e in coda alla
+         striscia dei nomi della ricerca (Categories_Selector_FakeList). -->
+    <constant name="view_spinner_gap">20</constant>
+
     <constant name="view_offx">80</constant>
     <constant name="-view_offx">-80</constant>
     <constant name="view_bar">40</constant>

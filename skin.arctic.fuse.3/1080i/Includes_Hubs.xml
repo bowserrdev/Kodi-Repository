@@ -233,8 +233,10 @@
         <param name="onup">300</param>
         <param name="home_switcher">false</param>
         <param name="line_visible">true</param>
-        <!-- Vedi lotto 169: nella ricerca ogni linguetta e' il nome di un percorso dell'utente e
-             mostra la propria rotellina mentre quel widget carica, come i widget della home. -->
+        <!-- Quando accendere la rotellina della striscia dei nomi. La posizione non si dichiara:
+             la rotellina entra come ultima voce del grouplist che dispone i nomi
+             (Categories_Selector_FakeList), quindi sta sempre a view_spinner_gap dall'ultimo nome
+             a destra, qualunque siano i nomi e quanti siano. -->
         <param name="spinner_condition">false</param>
         <definition>
             <control type="group">
@@ -248,6 +250,7 @@
                 </control>
                 <include content="Categories_Selector">
                     <param name="id">601</param>
+                    <param name="spinner_condition">$PARAM[spinner_condition]</param>
                     <param name="detailed">true</param>
                     <param name="hidden_button">List_ButtonMenu_Row_HiddenButton_ERow</param>
                     <param name="hidden_button_enabled">true</param>
@@ -270,38 +273,6 @@
                         <include>$PARAM[include_content]</include>
                     </content>
                 </include>
-                <!-- LOTTO 170. La rotellina in fondo alla riga dei nomi, subito a destra dell'ultima
-                     linguetta: e' quella che i widget della home mostrano accanto al proprio nome
-                     (stesso include View_Line_Spinner), portata dove nella ricerca il nome esiste.
-                     La posizione va calcolata perche' le linguette sono un contenitore e non un
-                     grouplist: il selettore parte a left 40 e ogni voce e' larga 200 (Categories_Selector
-                     passa itemlayout_w 200), quindi la fine della striscia e' 40 + 200*N. N non e' noto
-                     a priori (sul Mac due percorsi, sulla stick uno) e Kodi non accetta un $INFO dentro
-                     un left, che e' statico: si parte dalla posizione per UNA linguetta e si scosta con
-                     animazioni condizionate al numero di voci. Le condizioni sono esclusive fra loro,
-                     quindi non si sommano.
-                     Il left di partenza e' 140 e non 240: la cella e' larga 200 ma il nome quasi
-                     mai, quindi appoggiare la rotellina al bordo della cella lasciava un vuoto
-                     grande il doppio del necessario. Gli scostamenti restano di 200, perche'
-                     quella e' la larghezza vera di una voce.
-                     L'etichetta passata vuota fa collassare il distanziatore trasparente di
-                     View_Line_Spinner, che li' serve solo ad allinearsi dopo un testo. -->
-                <control type="group">
-                    <left>165</left>
-                    <centertop>0</centertop>
-                    <height>80</height>
-                    <animation effect="slide" end="200,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,2)">Conditional</animation>
-                    <animation effect="slide" end="400,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,3)">Conditional</animation>
-                    <animation effect="slide" end="600,0" time="0" condition="Integer.IsEqual(Container(601).NumItems,4)">Conditional</animation>
-                    <animation effect="slide" end="800,0" time="0" condition="Integer.IsGreater(Container(601).NumItems,4)">Conditional</animation>
-                    <include content="View_Line_Spinner">
-                        <param name="label" />
-                        <param name="label_fallback" />
-                        <param name="haspath">false</param>
-                        <param name="textcolor">main_fg_100</param>
-                        <param name="visible">$PARAM[spinner_condition]</param>
-                    </include>
-                </control>
             </control>
         </definition>
     </include>
@@ -340,7 +311,17 @@
          scrive come '$NUMBER[502]' e quel confronto non risulta mai vero (vedi lotto 170 in
          Includes_Search.xml).
          Fuori dalla 1105, o a casella vuota, Exp_Search_Window_Text e' falsa e qui non cambia niente:
-         il row Discover (505) e' visibile solo a casella vuota, quindi non entra mai da questa porta. -->
+         il row Discover (505) e' visibile solo a casella vuota, quindi non entra mai da questa porta.
+
+         I DUE RAMI SI ESCLUDONO, e devono. In OR erano due risposte concorrenti alla stessa
+         domanda e nella ricerca testuale rispondevano spesso cose diverse: TMDbHelper.WidgetContainer
+         lo scrive l'onfocus di una riga e ci RESTA, quindi basta scendere nei risultati di una
+         linguetta e poi cambiare linguetta perche' siano visibili due pannelli insieme: quello
+         della riga a schermo e quello della riga guardata prima, con i suoi elementi vecchi. Sono
+         sovrapposti nello stesso punto: si vedono due clearlogo l'uno sull'altro, e quello di sotto
+         e' di una ricerca precedente. Ora la domanda ha una risposta sola, e chi la da' dipende da
+         dove siamo: nella ricerca testuale e' la riga VISIBILE (una sola per costruzione, il suo
+         visible confronta il guid della linguetta), altrove e' il fuoco. -->
     <include name="Hub_Combined_Info">
         <control type="group">
             <!-- Lotto 287: rilevatore della navigazione veloce di questa riga (vedi Fast_Nav_Detector), solo Kodi 21 -->
@@ -370,7 +351,7 @@
                 <control type="group">
                     <!-- LOTTO 297: era top 200 con l'animazione a -200; ora top 0 e animazione a +200. -->
                     <include content="Info_Panel">
-                        <param name="visible">[!$EXP[Exp_InfoDialogs] + [Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id]) | [$EXP[Exp_Search_Window_Text] + Control.IsVisible($PARAM[id])]]]</param>
+                        <param name="visible">[!$EXP[Exp_InfoDialogs] + [[$EXP[Exp_Search_Window_Text] + Control.IsVisible($PARAM[id])] | [!$EXP[Exp_Search_Window_Text] + Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id])]]]</param>
                         <param name="visible_line">false</param>
                         <param name="visible_plot">false</param>
                         <param name="visible_meta">false</param>
@@ -387,7 +368,7 @@
                 <include>Info_Panel_Dimensions</include>
                 <include>Home_Info_Animation</include>
                 <include content="Info_Panel">
-                    <param name="visible">[!$EXP[Exp_InfoDialogs] + [Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id]) | [$EXP[Exp_Search_Window_Text] + Control.IsVisible($PARAM[id])]]]</param>
+                    <param name="visible">[!$EXP[Exp_InfoDialogs] + [[$EXP[Exp_Search_Window_Text] + Control.IsVisible($PARAM[id])] | [!$EXP[Exp_Search_Window_Text] + Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id])]]]</param>
                     <!-- LOTTO 296 -> 297: qui c'era visible_line = !Control.IsVisible(972$PARAM[id]). Ora sparisce
                          l'intero blocco (gruppo qui sopra), quindi la condizione sulla sola riga e' superflua e si
                          toglie per non valutarla a ogni fotogramma. -->
