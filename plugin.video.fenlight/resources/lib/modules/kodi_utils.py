@@ -205,6 +205,20 @@ SEGNAPOSTO_PARAM, SEGNAPOSTO_VALORE = 'vuota', 'segnaposto'
 SEGNAPOSTO_MODE = 'segnaposto'
 SEGNAPOSTO_PROP = 'fenlight.segnaposto'
 SEGNAPOSTO_LABEL = 'Nessun risultato'
+# LO STATO DELLA CONSEGNA (step 2 di RICERCA.md, 21/09). Il segnaposto diceva una cosa sola: "questa
+# riga non ha elementi". Ma una riga senza elementi puo' esserlo per due ragioni opposte, e la skin
+# deve mostrarne due cose diverse:
+#     vuoto    ha finito di cercare e non ha trovato niente  -> "Nessun risultato per <ricerca>"
+#     attesa   si e' appena svuotata, la consegna vera arriva -> l'attesa, e nessuna scritta
+# Finora la differenza era approssimata da FUORI, con proprieta' globali per TIPO DI MEDIA
+# (FenLight.TextSearch.Movie.State e gemelle). Sono sull'asse sbagliato -- le righe le configura
+# l'utente e possono essere una o dieci, anche tutte dello stesso tipo -- e da quell'asse lo stesso
+# difetto e' tornato due volte, il 19/09 e il 21/09.
+# Qui vale la regola del 338: lo stato di una consegna sta nel primo elemento che consegna, accanto a
+# QUERY_PROP e per la stessa ragione.
+SEGNAPOSTO_STATO_PROP = 'fenlight.segnaposto.stato'
+STATO_VUOTO = 'vuoto'
+STATO_ATTESA = 'attesa'
 # Elementi consegnati da QUESTA invocazione (una invocazione = un processo Python = una cartella).
 _CONSEGNATI = [0]
 # LOTTO 338 -- lo stato di una consegna sta nel PRIMO ELEMENTO che consegna (specifica del 15/09,
@@ -221,22 +235,58 @@ def timbra_primo_elemento(nome, valore):
 	"""Annota una proprieta' da scrivere sul primo elemento che questa invocazione consegnera'."""
 	_PRIMO_ELEMENTO[nome] = valore
 
+def url_segnaposto(pgctl=None):
+	"""L'URL del segnaposto, con dentro la POSIZIONE del contenitore che si sta svuotando.
+
+	La posizione non e' decorazione: questo URL e' cio' da cui il paginator calcola la firma di un
+	contenitore vuoto, e HEAD_PROP e' un indice firma -> chiave. Un URL uguale per tutti darebbe una
+	firma sola a tutte le righe vuote, e l'indice terrebbe solo l'ultima. E' il lotto 91 -- due widget
+	con lo stesso primo titolo che si azzeravano il token a vicenda -- ma qui sarebbe la regola e non
+	l'eccezione, perche' le due righe di una ricerca si svuotano sempre insieme.
+	"""
+	dati = {'mode': SEGNAPOSTO_MODE}
+	if pgctl: dati['pgctl'] = pgctl
+	return build_url(dati)
+
+def _pgctl_corrente():
+	"""La posizione dichiarata dal path di QUESTA invocazione, o None.
+
+	La CHIEDE al paginator invece di rileggersela dal path. Sembra un giro in piu' ed e' il contrario:
+	questa stringa entra nell'URL del segnaposto, e dallo stesso URL il paginator calcola la firma con
+	cui il watcher ritrova il contenitore. Due derivazioni che divergono anche di uno spazio sono due
+	firme diverse, e il sintomo sarebbe un contenitore che smette di paginare senza dire niente.
+	Vedi paginator.chiave_invocazione, dove sta anche la convalida.
+	"""
+	try:
+		from modules.paginator import chiave_invocazione
+		return chiave_invocazione()
+	except Exception: return None
+
 def vuole_segnaposto(query):
 	"""La riga per cui gira questa invocazione ha chiesto il segnaposto? `query` e' sys.argv[2]."""
 	return dict(parse_qsl((query or '').lstrip('?'))).get(SEGNAPOSTO_PARAM) == SEGNAPOSTO_VALORE
 
-def _aggiungi_segnaposto(handle):
+def _aggiungi_segnaposto(handle, stato):
 	import sys
 	if len(sys.argv) < 3 or not vuole_segnaposto(sys.argv[2]): return
 	listitem = make_listitem()
 	listitem.setLabel(SEGNAPOSTO_LABEL)
-	listitem.setProperties({SEGNAPOSTO_PROP: 'true',
-							'override_square': 'fallback/no-results-square.png',
-							'override_poster': 'fallback/no-results-poster.png',
-							'override_landscape': 'fallback/no-results-landscape.png'})
+	# I TIMBRI DEL PRIMO ELEMENTO VANNO ANCHE QUI. Il segnaposto e' il primo elemento della consegna a
+	# tutti gli effetti, e senza i timbri sarebbe un vuoto ANONIMO: la skin non potrebbe distinguere
+	# il segnaposto di questa ricerca da quello della precedente, ed e' proprio il confronto su cui si
+	# reggono le linguette, le righe e la rotellina. Non passa da add_items (non e' un elemento
+	# consegnato e non deve entrare nei conti), quindi la copia si fa qui.
+	proprieta = {SEGNAPOSTO_PROP: 'true',
+				SEGNAPOSTO_STATO_PROP: stato,
+				'override_square': 'fallback/no-results-square.png',
+				'override_poster': 'fallback/no-results-poster.png',
+				'override_landscape': 'fallback/no-results-landscape.png'}
+	proprieta.update(_PRIMO_ELEMENTO)
+	listitem.setProperties(proprieta)
 	# Non cartella e non riproducibile: il clic invoca il plugin con un modo che il router lascia cadere.
 	# Diretto e non add_item: non e' un elemento consegnato.
-	addDirectoryItem(handle, build_url({'mode': SEGNAPOSTO_MODE}), listitem, False)
+	addDirectoryItem(handle, url_segnaposto(_pgctl_corrente()), listitem, False)
+	return True
 
 # PERF (lotto 48): la CONSEGNA a Kodi, cioe' l'unico pezzo grosso mai misurato. Tutta la
 # strumentazione finora si fermava a log_build, che scatta PRIMA di add_items; ma nel log della stick
@@ -458,14 +508,29 @@ BUILD_LOG_PROP = 'fenlight.lastbuild.log'
 # cinque widget insieme) restando una stringa corta da rileggere a ogni costruzione.
 BUILD_LOG_CAP = 8
 
-def end_directory(handle, cacheToDisc=True, segnaposto=True):
+def end_directory(handle, cacheToDisc=True, segnaposto=STATO_VUOTO):
 	# La misura avvolge la chiamata, non la duplica: endOfDirectory resta una sola, fuori da qualunque
 	# try, cosi' nessun errore della diagnostica puo' impedirla o farla eseguire due volte.
-	# `segnaposto=False` lo passa solo chi chiude a vuoto SAPENDO che la cartella giusta arriva subito
-	# (router: query superata, token scaduto): li' un "nessun risultato" lampeggerebbe e basta.
+	# `segnaposto` porta lo STATO della consegna, o None per non consegnare niente. Un parametro solo
+	# e non uno stato a fianco di un booleano: con due esisterebbe la combinazione
+	# `segnaposto=False, stato='attesa'`, cioe' uno stato illegale rappresentabile.
+	#   STATO_VUOTO   ho finito e non ho trovato niente (il caso di sempre, quindi il default)
+	#   STATO_ATTESA  mi sono svuotato, la consegna vera arriva
+	#   None          non toccare il contenitore: lo passa chi chiude a vuoto SAPENDO che la cartella
+	#                 giusta arriva subito (router: query superata, token scaduto)
 	if segnaposto and not _CONSEGNATI[0]:
-		try: _aggiungi_segnaposto(handle)
+		consegnato = False
+		try: consegnato = _aggiungi_segnaposto(handle, segnaposto)
 		except Exception: pass
+		# LA CONSEGNA VUOTA SI DICHIARA AL PONTE. Chi chiude a vuoto saltava set_head, e set_head e'
+		# l'unico che pubblica il conteggio e la firma del contenitore: senza, il ponte resta fermo
+		# alla query VECCHIA mentre a schermo non c'e' piu' niente. Sta qui e non nei chiamanti perche'
+		# qui si sa che un segnaposto e' stato consegnato, e la firma la da' proprio lui.
+		if consegnato:
+			try:
+				from modules.paginator import dichiara_vuota
+				dichiara_vuota(segnaposto)
+			except Exception: pass
 	from time import perf_counter as _pc
 	_t = _pc()
 	endOfDirectory(handle, cacheToDisc=cacheToDisc)

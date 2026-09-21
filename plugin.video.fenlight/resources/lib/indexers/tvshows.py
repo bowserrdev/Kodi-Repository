@@ -15,6 +15,7 @@ string, external, add_items, add_dir = str, kodi_utils.external, kodi_utils.add_
 sleep, add_item, cast_label, home, tmdb_api_key = kodi_utils.sleep, kodi_utils.add_item, kodi_utils.cast_label, kodi_utils.home, settings.tmdb_api_key
 set_category, make_listitem, build_url, set_property = kodi_utils.set_category, kodi_utils.make_listitem, kodi_utils.build_url, kodi_utils.set_property
 set_content, end_directory, set_view_mode, folder_path = kodi_utils.set_content, kodi_utils.end_directory, kodi_utils.set_view_mode, kodi_utils.folder_path
+STATO_VUOTO = kodi_utils.STATO_VUOTO
 poster_empty, nextpage_landscape = kodi_utils.empty_poster, kodi_utils.nextpage_landscape
 media_open_action, default_all_episodes, page_limit, paginate = settings.media_open_action, settings.default_all_episodes, settings.page_limit, settings.paginate
 widget_hide_next_page, watched_indicators = settings.widget_hide_next_page, settings.watched_indicators
@@ -69,6 +70,10 @@ class TVShows:
 		# Text-search hub builds are debounced + guarded against stale (out-of-order) completion; for any
 		# other build search_query is None and these guards are no-ops. See paginator.search_should_abort.
 		self.search_query = self.params_get('query') if (self.action == 'tmdb_tv_search_filtered' and self.params_get('search_hub')) else None
+		# L'ESITO DI QUESTA COSTRUZIONE, dichiarato qui e non dedotto a valle con getattr: i casi sono
+		# quattro e uno -- il fallimento -- si raggiunge da un `except`, cioe' dal solo posto in cui e'
+		# facile dimenticarsene. Lo legge la chiusura della cartella, in fondo a fetch_list.
+		self.consegna = 'piena'
 
 
 	# LOTTO 119. Vedi la nota al punto di chiamata di set_head.
@@ -114,7 +119,10 @@ class TVShows:
 				pronta, self._pg_pages = paginator.passo_pronto(self.params, self.pg_key, 'tvshow', self.pg_action())
 				kodi_utils.tappa('tvshows.pagine')
 				self.list = [tmdb for _tipo, tmdb in (pronta.voci if pronta else ())]
-				paginator.set_state(self.pg_key, pronta.passi if pronta else 0, bool(pronta and pronta.fine and not pronta.altri))
+				# Sorpassati per posizione: non si scrive niente sul contenitore, nemmeno lo stato dei
+				# passi. Scriverlo voleva dire azzerare a 0 i passi della lista che ci ha sostituiti.
+				if not paginator.passo_superato():
+					paginator.set_state(self.pg_key, pronta.passi if pronta else 0, bool(pronta and pronta.fine and not pronta.altri))
 			elif self.action in main:
 				data = function(page_no)
 				self.list = [i['id'] for i in data['results']]
@@ -181,10 +189,20 @@ class TVShows:
 			items = self.worker()
 			paginator.log_build('tvshows', self.action, _t0, _t1, paginator.now(), len(items) if items else 0,
 						getattr(self, '_pg_pages', None), self.params_get('pages'))
-			if self.search_query and paginator.search_is_stale(self.search_query):
-				# A newer keystroke arrived while this build ran: drop the result so it can't overwrite
-				# the live container / head bridge. The directory is closed empty in the tail below.
-				pass
+			# Due modi di sapere che questa costruzione non parla piu' per il suo contenitore, e sono
+			# diversi: search_is_stale guarda la CASELLA (l'utente ha scritto altro), passo_superato
+			# guarda la risposta del SERVIZIO (un'altra lista ha preso questa posizione). Il secondo
+			# vale per qualunque riga paginata, non solo per le ricerche.
+			if paginator.passo_superato():
+				# UN'ALTRA LISTA HA PRESO QUESTA POSIZIONE mentre costruivamo (il servizio risponde
+				# 'superata'): il contenitore non e' piu' nostro. E' il difetto del 21/09 notte, quando
+				# una costruzione gia' dichiarata superata pubblicava set_head con zero elementi sul
+				# contenitore che un'altra stava gia' riempiendo.
+				self.consegna = 'superata'
+			elif self.search_query and paginator.search_is_stale(self.search_query):
+				# LA CASELLA HA GIA' UN'ALTRA QUERY. Restano due fatti separati e non si fondono: li'
+				# a cambiare e' stata la POSIZIONE, qui il TESTO, e solo il secondo e' una ricerca.
+				self.consegna = 'lasciata'
 			else:
 				add_items(handle, items)
 				# AZIONE QUALIFICATA PER TIPO DI MEDIA (lotto 119). 'trakt_watchlist' e' lo stesso nome di
@@ -204,11 +222,28 @@ class TVShows:
 			# MAI silenzioso: una build che esplode chiude la directory VUOTA, e il container
 			# torna a ricostruirsi da capo -- e' il meccanismo per cui "spariscono le pagine
 			# dopo la prima". Senza questo log il fallimento e' invisibile.
+			self.consegna = 'fallita'
 			import traceback
 			logger('FenLight BUILD FALLITA', 'tvshows action=%s: %s\n%s' % (self.action, e, traceback.format_exc()))
 		set_content(handle, content_type)
 		set_category(handle, self.category_name)
-		end_directory(handle, cacheToDisc=False if self.is_external else True)
+		# SI DICHIARA SOLO CIO' CHE SI VEDRA'. Il ponte descrive il contenitore a schermo, e questa
+		# cartella arriva a schermo soltanto se Kodi la applica -- cioe' solo se il path che l'ha
+		# chiesta e' ancora quello del contenitore. Delle quattro uscite di fetch_list una sola lo e':
+		#   'piena'      si e' costruito davvero. Zero titoli allora vuol dire zero risultati, e si
+		#                consegna STATO_VUOTO: e' un "Nessun risultato" vero;
+		#   'superata'   la posizione e' di un'altra lista: non si tocca cio' che non e' nostro;
+		#   'lasciata'   la casella ha gia' un'altra query, quindi il path e' cambiato e Kodi ha gia'
+		#                chiesto altro: questa cartella la SCARTA. Dichiararla portava BUILT_PROP a 0
+		#                mentre a schermo c'erano i quaranta elementi di prima, e da li' in poi
+		#                _search_svuota_prima -- che chiede proprio BUILT_PROP > 0 per sapere se c'e'
+		#                qualcosa da togliere -- trovava 0 e si fermava. E' il difetto che la sonda
+		#                delle 06:05 ha trovato nel gemello di questo ramo, router._search_debounce_abort;
+		#   'fallita'    non si sa niente. Un errore non e' una risposta: dichiararlo vuoto scriveva
+		#                "Nessun risultato" su una ricerca che non e' mai arrivata in fondo.
+		# A svuotare davvero resta chi agisce sul path VIVO, cioe' _search_svuota_prima.
+		end_directory(handle, cacheToDisc=False if self.is_external else True,
+					segnaposto=STATO_VUOTO if self.consegna == 'piena' else None)
 		if not self.is_external:
 			if self.params_get('refreshed') == 'true': sleep(1000)
 			set_view_mode(view_mode, content_type, self.is_external)

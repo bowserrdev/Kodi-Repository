@@ -253,7 +253,7 @@
                     <ondown>12</ondown>
                     <onleft>2025</onleft>
                     <onright>2025</onright>
-                    <label>Cancel</label>
+                    <label>Cancella</label>
                     <font>font12</font> <!-- FENLIGHT_26 -->
                     <textcolor>FFCCCCCC</textcolor>
                     <focusedcolor>FF1F2020</focusedcolor>
@@ -271,7 +271,7 @@
                     <ondown>13</ondown>
                     <onleft>2025</onleft>
                     <onright>2025</onright>
-                    <label>Select All</label>
+                    <label>Seleziona Tutto</label>
                     <font>font12</font> <!-- FENLIGHT_26 -->
                     <textcolor>FFCCCCCC</textcolor>
                     <focusedcolor>FF1F2020</focusedcolor>
@@ -290,7 +290,7 @@
                     <ondown>10</ondown>
                     <onleft>2025</onleft>
                     <onright>2025</onright>
-                    <label>Deselect All</label>
+                    <label>Deseleziona Tutto</label>
                     <font>font12</font> <!-- FENLIGHT_26 -->
                     <textcolor>FFCCCCCC</textcolor>
                     <focusedcolor>FF1F2020</focusedcolor>

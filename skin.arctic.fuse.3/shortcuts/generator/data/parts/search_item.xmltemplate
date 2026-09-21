@@ -11,5 +11,8 @@
          solo NumItems restava accesa, al cambio di query, con il nome dei risultati vecchi (19/09). Da
          questa visible dipendono anche la linea sotto le linguette e la freccia giu' verso 601: leggono
          Container(601).NumItems. -->
-    <visible>String.IsEqual(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</visible>
+    <!-- STEP 4: e il segnaposto non merita una linguetta. Lo porta anche lui, il timbro della query,
+         quindi senza questo termine una riga che ha risposto "niente" avrebbe comunque il suo nome
+         in cima, e da Container(601).NumItems dipende anche "Nessun risultato". -->
+    <visible>String.IsEqual(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1)) + String.IsEmpty(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.segnaposto))</visible>
 </item>

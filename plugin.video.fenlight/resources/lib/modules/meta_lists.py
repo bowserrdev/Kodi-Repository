@@ -1,48 +1,29 @@
 # -*- coding: utf-8 -*-
 
-years_movies = [
-{'name': '2030', 'id': 2030}, {'name': '2029', 'id': 2029}, {'name': '2028', 'id': 2028}, {'name': '2027', 'id': 2027}, {'name': '2026', 'id': 2026}, {'name': '2025', 'id': 2025},
-{'name': '2024', 'id': 2024}, {'name': '2023', 'id': 2023}, {'name': '2022', 'id': 2022}, {'name': '2021', 'id': 2021}, {'name': '2020', 'id': 2020}, {'name': '2019', 'id': 2019},
-{'name': '2018', 'id': 2018}, {'name': '2017', 'id': 2017}, {'name': '2016', 'id': 2016}, {'name': '2015', 'id': 2015}, {'name': '2014', 'id': 2014}, {'name': '2013', 'id': 2013},
-{'name': '2012', 'id': 2012}, {'name': '2011', 'id': 2011}, {'name': '2010', 'id': 2010}, {'name': '2009', 'id': 2009}, {'name': '2008', 'id': 2008}, {'name': '2007', 'id': 2007},
-{'name': '2006', 'id': 2006}, {'name': '2005', 'id': 2005}, {'name': '2004', 'id': 2004}, {'name': '2003', 'id': 2003}, {'name': '2002', 'id': 2002}, {'name': '2001', 'id': 2001},
-{'name': '2000', 'id': 2000}, {'name': '1999', 'id': 1999}, {'name': '1998', 'id': 1998}, {'name': '1997', 'id': 1997}, {'name': '1996', 'id': 1996}, {'name': '1995', 'id': 1995},
-{'name': '1994', 'id': 1994}, {'name': '1993', 'id': 1993}, {'name': '1992', 'id': 1992}, {'name': '1991', 'id': 1991}, {'name': '1990', 'id': 1990}, {'name': '1989', 'id': 1989},
-{'name': '1988', 'id': 1988}, {'name': '1987', 'id': 1987}, {'name': '1986', 'id': 1986}, {'name': '1985', 'id': 1985}, {'name': '1984', 'id': 1984}, {'name': '1983', 'id': 1983},
-{'name': '1982', 'id': 1982}, {'name': '1981', 'id': 1981}, {'name': '1980', 'id': 1980}, {'name': '1979', 'id': 1979}, {'name': '1978', 'id': 1978}, {'name': '1977', 'id': 1977},
-{'name': '1976', 'id': 1976}, {'name': '1975', 'id': 1975}, {'name': '1974', 'id': 1974}, {'name': '1973', 'id': 1973}, {'name': '1972', 'id': 1972}, {'name': '1971', 'id': 1971},
-{'name': '1970', 'id': 1970}, {'name': '1969', 'id': 1969}, {'name': '1968', 'id': 1968}, {'name': '1967', 'id': 1967}, {'name': '1966', 'id': 1966}, {'name': '1965', 'id': 1965},
-{'name': '1964', 'id': 1964}, {'name': '1963', 'id': 1963}, {'name': '1962', 'id': 1962}, {'name': '1961', 'id': 1961}, {'name': '1960', 'id': 1960}, {'name': '1959', 'id': 1959},
-{'name': '1958', 'id': 1958}, {'name': '1957', 'id': 1957}, {'name': '1956', 'id': 1956}, {'name': '1955', 'id': 1955}, {'name': '1954', 'id': 1954}, {'name': '1953', 'id': 1953},
-{'name': '1952', 'id': 1952}, {'name': '1951', 'id': 1951}, {'name': '1950', 'id': 1950}, {'name': '1949', 'id': 1949}, {'name': '1948', 'id': 1948}, {'name': '1947', 'id': 1947},
-{'name': '1946', 'id': 1946}, {'name': '1945', 'id': 1945}, {'name': '1944', 'id': 1944}, {'name': '1943', 'id': 1943}, {'name': '1942', 'id': 1942}, {'name': '1941', 'id': 1941},
-{'name': '1940', 'id': 1940}, {'name': '1939', 'id': 1939}, {'name': '1938', 'id': 1938}, {'name': '1937', 'id': 1937}, {'name': '1936', 'id': 1936}, {'name': '1935', 'id': 1935},
-{'name': '1934', 'id': 1934}, {'name': '1933', 'id': 1933}, {'name': '1932', 'id': 1932}, {'name': '1931', 'id': 1931}, {'name': '1930', 'id': 1930}, {'name': '1929', 'id': 1929},
-{'name': '1928', 'id': 1928}, {'name': '1927', 'id': 1927}, {'name': '1926', 'id': 1926}, {'name': '1925', 'id': 1925}, {'name': '1924', 'id': 1924}, {'name': '1923', 'id': 1923},
-{'name': '1922', 'id': 1922}, {'name': '1921', 'id': 1921}, {'name': '1920', 'id': 1920}, {'name': '1919', 'id': 1919}, {'name': '1918', 'id': 1918}, {'name': '1917', 'id': 1917},
-{'name': '1916', 'id': 1916}, {'name': '1915', 'id': 1915}, {'name': '1914', 'id': 1914}, {'name': '1913', 'id': 1913}, {'name': '1912', 'id': 1912}, {'name': '1911', 'id': 1911},
-{'name': '1910', 'id': 1910}, {'name': '1909', 'id': 1909}, {'name': '1908', 'id': 1908}, {'name': '1907', 'id': 1907}, {'name': '1906', 'id': 1906}, {'name': '1905', 'id': 1905},
-{'name': '1904', 'id': 1904}, {'name': '1903', 'id': 1903}, {'name': '1902', 'id': 1902}, {'name': '1901', 'id': 1901}, {'name': '1900', 'id': 1900}
-	]
+# GLI ANNI SI CALCOLANO, NON SI SCRIVONO. Erano quattro elenchi scritti a mano che arrivavano al
+# 2030: un utente poteva chiedere i film del 2029, e soprattutto il PRIMO elemento -- che il codice usa
+# come "l'anno corrente" -- era 2030 da quando l'elenco e' stato scritto. Vedi tmdb_anime_popular_recent,
+# che ci costruiva sopra una query a TMDb con first_air_date_year=2030.
+# Calcolati, quei difetti non sono correggibili: non sono rappresentabili. Il costo e' un ciclo di
+# centotrenta elementi all'import del modulo.
+# L'anno si fissa al caricamento del modulo, e per i menu va bene (un'invocazione del plugin e' un
+# processo nuovo). Chi vive a lungo -- il servizio -- non deve dedurre l'anno da questi elenchi ma
+# chiederlo all'orologio quando gli serve.
+from datetime import date as _date
+_ANNO_CORRENTE = _date.today().year
 
-years_tvshows = [
-{'name': '2030', 'id': 2030}, {'name': '2029', 'id': 2029}, {'name': '2028', 'id': 2028}, {'name': '2027', 'id': 2027}, {'name': '2026', 'id': 2026}, {'name': '2025', 'id': 2025},
-{'name': '2024', 'id': 2024}, {'name': '2023', 'id': 2023}, {'name': '2022', 'id': 2022}, {'name': '2021', 'id': 2021}, {'name': '2020', 'id': 2020}, {'name': '2019', 'id': 2019},
-{'name': '2018', 'id': 2018}, {'name': '2017', 'id': 2017}, {'name': '2016', 'id': 2016}, {'name': '2015', 'id': 2015}, {'name': '2014', 'id': 2014}, {'name': '2013', 'id': 2013},
-{'name': '2012', 'id': 2012}, {'name': '2011', 'id': 2011}, {'name': '2010', 'id': 2010}, {'name': '2009', 'id': 2009}, {'name': '2008', 'id': 2008}, {'name': '2007', 'id': 2007},
-{'name': '2006', 'id': 2006}, {'name': '2005', 'id': 2005}, {'name': '2004', 'id': 2004}, {'name': '2003', 'id': 2003}, {'name': '2002', 'id': 2002}, {'name': '2001', 'id': 2001},
-{'name': '2000', 'id': 2000}, {'name': '1999', 'id': 1999}, {'name': '1998', 'id': 1998}, {'name': '1997', 'id': 1997}, {'name': '1996', 'id': 1996}, {'name': '1995', 'id': 1995},
-{'name': '1994', 'id': 1994}, {'name': '1993', 'id': 1993}, {'name': '1992', 'id': 1992}, {'name': '1991', 'id': 1991}, {'name': '1990', 'id': 1990}, {'name': '1989', 'id': 1989},
-{'name': '1988', 'id': 1988}, {'name': '1987', 'id': 1987}, {'name': '1986', 'id': 1986}, {'name': '1985', 'id': 1985}, {'name': '1984', 'id': 1984}, {'name': '1983', 'id': 1983},
-{'name': '1982', 'id': 1982}, {'name': '1981', 'id': 1981}, {'name': '1980', 'id': 1980}, {'name': '1979', 'id': 1979}, {'name': '1978', 'id': 1978}, {'name': '1977', 'id': 1977},
-{'name': '1976', 'id': 1976}, {'name': '1975', 'id': 1975}, {'name': '1974', 'id': 1974}, {'name': '1973', 'id': 1973}, {'name': '1972', 'id': 1972}, {'name': '1971', 'id': 1971},
-{'name': '1970', 'id': 1970}, {'name': '1969', 'id': 1969}, {'name': '1968', 'id': 1968}, {'name': '1967', 'id': 1967}, {'name': '1966', 'id': 1966}, {'name': '1965', 'id': 1965},
-{'name': '1964', 'id': 1964}, {'name': '1963', 'id': 1963}, {'name': '1962', 'id': 1962}, {'name': '1961', 'id': 1961}, {'name': '1960', 'id': 1960}, {'name': '1959', 'id': 1959},
-{'name': '1958', 'id': 1958}, {'name': '1957', 'id': 1957}, {'name': '1956', 'id': 1956}, {'name': '1955', 'id': 1955}, {'name': '1954', 'id': 1954}, {'name': '1953', 'id': 1953},
-{'name': '1952', 'id': 1952}, {'name': '1951', 'id': 1951}, {'name': '1950', 'id': 1950}, {'name': '1949', 'id': 1949}, {'name': '1948', 'id': 1948}, {'name': '1947', 'id': 1947},
-{'name': '1946', 'id': 1946}, {'name': '1945', 'id': 1945}, {'name': '1944', 'id': 1944}
-	]
+def _anni(primo):
+	"""Dall'anno corrente a `primo` compreso, dal piu' recente al piu' vecchio."""
+	return [{'name': str(a), 'id': a} for a in range(_ANNO_CORRENTE, primo - 1, -1)]
 
+def _decenni(primo):
+	"""Idem per i decenni: il primo e' quello in corso, non quello che verra'."""
+	return [{'name': '%ds' % d, 'id': d} for d in range(_ANNO_CORRENTE - _ANNO_CORRENTE % 10, primo - 1, -10)]
+
+years_movies = _anni(1900)
+years_tvshows = _anni(1944)
+decades_movies = _decenni(1900)
+decades_tvshows = _decenni(1940)
 years_anime = [
 {'name': '2030', 'id': 2030}, {'name': '2029', 'id': 2029}, {'name': '2028', 'id': 2028}, {'name': '2027', 'id': 2027}, {'name': '2026', 'id': 2026}, {'name': '2025', 'id': 2025},
 {'name': '2024', 'id': 2024}, {'name': '2023', 'id': 2023}, {'name': '2022', 'id': 2022}, {'name': '2021', 'id': 2021}, {'name': '2020', 'id': 2020}, {'name': '2019', 'id': 2019},
@@ -58,16 +39,7 @@ years_anime = [
 {'name': '1964', 'id': 1964}, {'name': '1963', 'id': 1963}, {'name': '1962', 'id': 1962}, {'name': '1961', 'id': 1961}
 	]
 
-decades_movies = [
-{'name': '2030s', 'id': 2030}, {'name': '2020s', 'id': 2020}, {'name': '2010s', 'id': 2010}, {'name': '2000s', 'id': 2000}, {'name': '1990s', 'id': 1990},
-{'name': '1980s', 'id': 1980}, {'name': '1970s', 'id': 1970}, {'name': '1960s', 'id': 1960}, {'name': '1950s', 'id': 1950}, {'name': '1940s', 'id': 1940},
-{'name': '1930s', 'id': 1930}, {'name': '1920s', 'id': 1920}, {'name': '1910s', 'id': 1910}, {'name': '1900s', 'id': 1900}
-	]
 
-decades_tvshows = [
-{'name': '2030s', 'id': 2030}, {'name': '2020s', 'id': 2020}, {'name': '2010s', 'id': 2010}, {'name': '2000s', 'id': 2000}, {'name': '1990s', 'id': 1990},
-{'name': '1980s', 'id': 1980}, {'name': '1970s', 'id': 1970}, {'name': '1960s', 'id': 1960}, {'name': '1950s', 'id': 1950}, {'name': '1940s', 'id': 1940}
-	]
 
 decades_anime = [
 {'name': '2030s', 'id': 2030}, {'name': '2020s', 'id': 2020}, {'name': '2010s', 'id': 2010}, {'name': '2000s', 'id': 2000}, {'name': '1990s', 'id': 1990},
@@ -156,29 +128,29 @@ regions = [
 	]
 
 movie_genres = [
-{'name': 'Action', 'id': '28', 'icon': 'genre_action'}, {'name': 'Adventure', 'id': '12', 'icon': 'genre_adventure'}, {'name': 'Animation', 'id': '16', 'icon': 'genre_animation'},
-{'name': 'Comedy', 'id': '35', 'icon': 'genre_comedy'}, {'name': 'Crime', 'id': '80', 'icon': 'genre_crime'}, {'name': 'Documentary', 'id': '99', 'icon': 'genre_documentary'},
-{'name': 'Drama', 'id': '18', 'icon': 'genre_drama'}, {'name': 'Family', 'id': '10751', 'icon': 'genre_family'}, {'name': 'Fantasy', 'id': '14', 'icon': 'genre_fantasy'},
-{'name': 'History', 'id': '36', 'icon': 'genre_history'}, {'name': 'Horror', 'id': '27', 'icon': 'genre_horror'}, {'name': 'Music', 'id': '10402', 'icon': 'genre_music'},
-{'name': 'Mystery', 'id': '9648', 'icon': 'genre_mystery'}, {'name': 'Romance', 'id': '10749', 'icon': 'genre_romance'},
-{'name': 'Science Fiction', 'id': '878', 'icon': 'genre_scifi'}, {'name': 'TV Movie', 'id': '10770', 'icon': 'genre_soap'}, {'name': 'Thriller', 'id': '53', 'icon': 'genre_thriller'},
-{'name': 'War', 'id': '10752', 'icon': 'genre_war'}, {'name': 'Western', 'id': '37', 'icon': 'genre_western'}
+{'name': 'Azione', 'id': '28', 'icon': 'genre_action'}, {'name': 'Avventura', 'id': '12', 'icon': 'genre_adventure'}, {'name': 'Animazione', 'id': '16', 'icon': 'genre_animation'},
+{'name': 'Commedia', 'id': '35', 'icon': 'genre_comedy'}, {'name': 'Crime', 'id': '80', 'icon': 'genre_crime'}, {'name': 'Documentario', 'id': '99', 'icon': 'genre_documentary'},
+{'name': 'Dramma', 'id': '18', 'icon': 'genre_drama'}, {'name': 'Famiglia', 'id': '10751', 'icon': 'genre_family'}, {'name': 'Fantasy', 'id': '14', 'icon': 'genre_fantasy'},
+{'name': 'Storia', 'id': '36', 'icon': 'genre_history'}, {'name': 'Horror', 'id': '27', 'icon': 'genre_horror'}, {'name': 'Musica', 'id': '10402', 'icon': 'genre_music'},
+{'name': 'Mistero', 'id': '9648', 'icon': 'genre_mystery'}, {'name': 'Romance', 'id': '10749', 'icon': 'genre_romance'},
+{'name': 'Fantascienza', 'id': '878', 'icon': 'genre_scifi'}, {'name': 'Soap', 'id': '10770', 'icon': 'genre_soap'}, {'name': 'Thriller', 'id': '53', 'icon': 'genre_thriller'},
+{'name': 'Guerra', 'id': '10752', 'icon': 'genre_war'}, {'name': 'Western', 'id': '37', 'icon': 'genre_western'}
 	]
 
 tvshow_genres = [
-{'name': 'Action & Adventure', 'id': '10759', 'icon': 'genre_action'}, {'name': 'Animation', 'id': '16', 'icon': 'genre_animation'},
-{'name': 'Comedy', 'id': '35', 'icon': 'genre_comedy'}, {'name': 'Crime', 'id': '80', 'icon': 'genre_crime'}, {'name': 'Documentary', 'id': '99', 'icon': 'genre_documentary'},
-{'name': 'Drama', 'id': '18', 'icon': 'genre_drama'}, {'name': 'Family', 'id': '10751', 'icon': 'genre_family'}, {'name': 'Kids', 'id': '10762', 'icon': 'genre_kids'},
-{'name': 'Mystery', 'id': '9648', 'icon': 'genre_mystery'}, {'name': 'News', 'id': '10763', 'icon': 'genre_news'}, {'name': 'Reality', 'id': '10764', 'icon': 'genre_reality'},
-{'name': 'Sci-Fi & Fantasy', 'id': '10765', 'icon': 'genre_scifi'}, {'name': 'Soap', 'id': '10766', 'icon': 'genre_soap'}, {'name': 'Talk', 'id': '10767', 'icon': 'genre_talk'},
-{'name': 'War & Politics', 'id': '10768', 'icon': 'genre_war'}, {'name': 'Western', 'id': '37', 'icon': 'genre_western'}
+{'name': 'Azione & Avventura', 'id': '10759', 'icon': 'genre_action'}, {'name': 'Animazione', 'id': '16', 'icon': 'genre_animation'},
+{'name': 'Commedia', 'id': '35', 'icon': 'genre_comedy'}, {'name': 'Crime', 'id': '80', 'icon': 'genre_crime'}, {'name': 'Documentario', 'id': '99', 'icon': 'genre_documentary'},
+{'name': 'Dramma', 'id': '18', 'icon': 'genre_drama'}, {'name': 'Famiglia', 'id': '10751', 'icon': 'genre_family'}, {'name': 'Bambini', 'id': '10762', 'icon': 'genre_kids'},
+{'name': 'Mistero', 'id': '9648', 'icon': 'genre_mystery'}, {'name': 'News', 'id': '10763', 'icon': 'genre_news'}, {'name': 'Reality', 'id': '10764', 'icon': 'genre_reality'},
+{'name': 'Fantascienza & Fantasy', 'id': '10765', 'icon': 'genre_scifi'}, {'name': 'Soap', 'id': '10766', 'icon': 'genre_soap'}, {'name': 'Talk', 'id': '10767', 'icon': 'genre_talk'},
+{'name': 'Guerra & politica', 'id': '10768', 'icon': 'genre_war'}, {'name': 'Western', 'id': '37', 'icon': 'genre_western'}
 	]
 
 anime_genres = [
-{'name': 'Action & Adventure', 'id': '10759', 'icon': 'genre_action'}, {'name': 'Comedy', 'id': '35', 'icon': 'genre_comedy'}, {'name': 'Crime', 'id': '80', 'icon': 'genre_crime'},
-{'name': 'Drama', 'id': '18', 'icon': 'genre_drama'}, {'name': 'Family', 'id': '10751', 'icon': 'genre_family'}, {'name': 'Kids', 'id': '10762', 'icon': 'genre_kids'},
-{'name': 'Mystery', 'id': '9648', 'icon': 'genre_mystery'}, {'name': 'Sci-Fi & Fantasy', 'id': '10765', 'icon': 'genre_scifi'},
-{'name': 'War & Politics', 'id': '10768', 'icon': 'genre_war'}, {'name': 'Western', 'id': '37', 'icon': 'genre_western'}
+{'name': 'Azione & Avventura', 'id': '10759', 'icon': 'genre_action'}, {'name': 'Commedia', 'id': '35', 'icon': 'genre_comedy'}, {'name': 'Crime', 'id': '80', 'icon': 'genre_crime'},
+{'name': 'Dramma', 'id': '18', 'icon': 'genre_drama'}, {'name': 'Famiglia', 'id': '10751', 'icon': 'genre_family'}, {'name': 'Bambini', 'id': '10762', 'icon': 'genre_kids'},
+{'name': 'Mistero', 'id': '9648', 'icon': 'genre_mystery'}, {'name': 'Fantascienza & Fantasy', 'id': '10765', 'icon': 'genre_scifi'},
+{'name': 'Guerra & politica', 'id': '10768', 'icon': 'genre_war'}, {'name': 'Western', 'id': '37', 'icon': 'genre_western'}
 	]
 
 networks = [
@@ -407,18 +379,18 @@ watch_providers_tvshows = [
 {'name': 'Citytv', 'id': 1985, 'icon': 'piaX7JA1HEJ3qA4CKQ5LZyxxshm.jpg'}]
 
 movie_sorts = [
-{'name': 'Popularity (asc)', 'id': '&sort_by=popularity.asc'}, {'name': 'Popularity (desc)', 'id': '&sort_by=popularity.desc'},
-{'name': 'Release Date (asc)', 'id': '&sort_by=primary_release_date.asc'}, {'name': 'Release Date (desc)', 'id': '&sort_by=primary_release_date.desc'},
-{'name': 'Total Revenue (asc)', 'id': '&sort_by=revenue.asc'}, {'name': 'Total Revenue (desc)', 'id': '&sort_by=revenue.desc'},
-{'name': 'Title (asc)', 'id': '&sort_by=original_title.asc'}, {'name': 'Title (desc)', 'id': '&sort_by=original_title.desc'},
-{'name': 'Rating (asc)', 'id': '&sort_by=vote_average.asc'}, {'name': 'Rating (desc)', 'id': '&sort_by=vote_average.desc'},
+{'name': 'Popolarità (asc)', 'id': '&sort_by=popularity.asc'}, {'name': 'Popolarità (disc)', 'id': '&sort_by=popularity.desc'},
+{'name': 'Data Di Uscita (asc)', 'id': '&sort_by=primary_release_date.asc'}, {'name': 'Data Di Uscita (disc)', 'id': '&sort_by=primary_release_date.desc'},
+{'name': 'Incasso (asc)', 'id': '&sort_by=revenue.asc'}, {'name': 'Incasso (disc)', 'id': '&sort_by=revenue.desc'},
+{'name': 'Titolo (asc)', 'id': '&sort_by=original_title.asc'}, {'name': 'Titolo (disc)', 'id': '&sort_by=original_title.desc'},
+{'name': 'Valutazione (asc)', 'id': '&sort_by=vote_average.asc'}, {'name': 'Valutazione (disc)', 'id': '&sort_by=vote_average.desc'},
 {'name': 'Random', 'id': '[random]'}
 		]
 
 tvshow_sorts = [
-{'name': 'Popularity (asc)', 'id': '&sort_by=popularity.asc'}, {'name': 'Popularity (desc)', 'id': '&sort_by=popularity.desc'},
-{'name': 'First Aired (asc)', 'id': '&sort_by=first_air_date.asc'}, {'name': 'First Aired (desc)', 'id': '&sort_by=first_air_date.desc'},
-{'name': 'Rating (asc)', 'id': '&sort_by=vote_average.asc'}, {'name': 'Rating (desc)', 'id': '&sort_by=vote_average.desc'},
+{'name': 'Popolarità (asc)', 'id': '&sort_by=popularity.asc'}, {'name': 'Popolarità (disc)', 'id': '&sort_by=popularity.desc'},
+{'name': 'Prima Messa In Onda (asc)', 'id': '&sort_by=first_air_date.asc'}, {'name': 'Prima Messa In Onda (disc)', 'id': '&sort_by=first_air_date.desc'},
+{'name': 'Valutazione (asc)', 'id': '&sort_by=vote_average.asc'}, {'name': 'Valutazione (disc)', 'id': '&sort_by=vote_average.desc'},
 {'name': 'Random', 'id': '[random]'}
 		]
 

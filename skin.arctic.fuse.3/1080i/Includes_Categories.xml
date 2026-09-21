@@ -208,6 +208,7 @@
         <!-- Quando accendere la rotellina in coda alla striscia dei nomi. Spenta di default: le
              strisce che non hanno niente da caricare non la vedono mai. -->
         <param name="spinner_condition">false</param>
+        <param name="spinner_hide_now">false</param>
         <definition>
             <control type="group">
 
@@ -276,6 +277,7 @@
                                     <param name="left">-20</param>
                                     <param name="textcolor">main_fg_100</param>
                                     <param name="visible">$PARAM[spinner_condition]</param>
+                                    <param name="hide_now">$PARAM[spinner_hide_now]</param>
                                 </include>
                             </control>
                         </control>
@@ -299,6 +301,7 @@
         <param name="scrolltime">400</param>
         <param name="extended">false</param>
         <param name="spinner_condition">false</param>
+        <param name="spinner_hide_now">false</param>
         <definition>
             <include content="List_ButtonMenu_Row">
                 <param name="id">$PARAM[id]</param>
@@ -344,6 +347,7 @@
                 <param name="color_nf">$PARAM[color_nf]</param>
                 <param name="extended">$PARAM[extended]</param>
                 <param name="spinner_condition">$PARAM[spinner_condition]</param>
+                <param name="spinner_hide_now">$PARAM[spinner_hide_now]</param>
                 <nested />
             </include>
 

@@ -126,6 +126,15 @@
              distanza dal testo a view_spinner_gap. Dentro un grouplist la posizione la decide il
              grouplist, quindi qui 0 vuol dire "dove mi metti". -->
         <param name="left">0</param>
+        <!-- IL RITARDO DI USCITA SI SALTA QUANDO L'ATTESA E' FINITA, non solo sospesa.
+             I 400 ms dell'animazione Hidden qui sotto difendono da un'INTERMITTENZA: mentre un
+             contenitore pagina la condizione oscilla fra un passo e l'altro, e senza ritardo la
+             rotellina lampeggerebbe a ogni consegna. Ma dove la condizione non e' oscillante bensi'
+             finita (la ricerca cancellata, per esempio: non c'e' piu' niente che possa riaccenderla)
+             quel ritardo copre solo se stesso, e si paga con la rotellina sospesa sul vuoto per
+             quasi mezzo secondo (segnalato due volte, 21/09).
+             Chi non dichiara niente resta esattamente com'era. -->
+        <param name="hide_now">false</param>
         <definition>
         <control type="image">
             <width>32</width>
@@ -144,7 +153,8 @@
                  Ora la rotazione e' legata alla stessa condizione che mostra la rotellina. -->
             <animation effect="rotate" start="0" end="-180" time="1200" delay="1200" loop="true" center="auto" tween="back" condition="$PARAM[visible]">Conditional</animation>
             <animation effect="fade" start="0" end="100" delay="1600" time="1" reversible="true">Visible</animation>
-            <animation effect="fade" start="100" end="0" delay="400" time="1" reversible="true">Hidden</animation>
+            <animation effect="fade" start="100" end="0" delay="400" time="1" reversible="true" condition="![$PARAM[hide_now]]">Hidden</animation>
+            <animation effect="fade" start="100" end="0" delay="0" time="1" reversible="true" condition="$PARAM[hide_now]">Hidden</animation>
             <visible>$PARAM[visible]</visible>
         </control>
         </definition>

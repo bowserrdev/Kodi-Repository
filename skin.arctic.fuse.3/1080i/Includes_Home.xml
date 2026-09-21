@@ -191,6 +191,23 @@
                 <include content="Home_Header_Focus_Actions">
                     <param name="overlay">$PARAM[overlay]</param>
                 </include>
+                <!-- RETE, NON CORREZIONE, e va tolta il giorno in cui si capisce chi muove quel fuoco.
+                     Nella finestra della ricerca il 300 si raggiunge in un modo solo voluto: il
+                     dirottamento del 3001 quando RefocusMenu e' alzata (l'Indietro dalla tastiera a
+                     schermo o dal pulsante filtri). Da 3000 e da 3005 non c'e' nessuna navigazione che
+                     porti qui. Ogni altro arrivo e' un incidente, e costa caro, perche' un Select su
+                     questo bottone fa ActivateWindow della scorciatoia, cioe' esce dalla ricerca: il
+                     sintomo e' a un passo dal guasto, ed e' per questo che sembra intermittente.
+                     Il difetto e' tornato tre volte (21/09: 00:51, 03:35, 05:54) sempre con la stessa
+                     firma, fuoco 3005 -> 300 -> Home, e fra i due campioni del watcher non si registra
+                     niente. Le tre diagnosi tentate sono cadute tutte; l'ultima ("il 3005 smette di
+                     poter prendere il fuoco") e' smentita dal fatto che ora e' focalizzabile sempre e
+                     il difetto resta. Finche' la causa non si trova, il danno si rende impossibile.
+                     RefocusMenu la pulisce il 3001 DOPO aver dirottato, quindi quando questo onfocus
+                     gira la richiesta e' ancora alzata e il rimbalzo non scatta.
+                     tests/test_fuoco_intestazione.py -->
+                <onfocus condition="Window.IsVisible(1105) + String.IsEmpty(Window.Property(RefocusMenu))">SetFocus(3000)</onfocus>
+
                 <onclick condition="$PARAM[onclick_condition] + !String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">ActivateWindow($INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target)],$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)],return)</onclick>
                 <onclick condition="$PARAM[onclick_condition] + String.IsEmpty(Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Target))">$INFO[Skin.String(HomeSwitcher.$PARAM[window].Shortcut.Path)]</onclick>
                 <onclick condition="Window.IsVisible(1105)">SetFocus(3001)</onclick>
