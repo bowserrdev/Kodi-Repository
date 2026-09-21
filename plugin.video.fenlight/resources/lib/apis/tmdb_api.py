@@ -2,7 +2,8 @@
 import datetime
 from caches.meta_cache import cache_function
 from caches.lists_cache import lists_cache_object
-from modules.meta_lists import oscar_winners, years_tvshows
+from datetime import date as _date
+from modules.meta_lists import oscar_winners
 from modules.settings import get_meta_filter, tmdb_api_key
 from modules.utils import make_thread_list_enumerate
 from modules.kodi_utils import make_session, tmdb_dict_removals, remove_keys, notification, logger
@@ -495,7 +496,7 @@ def tmdb_anime_popular_recent(page_no):
 	if api_key in empty_setting_check: return no_api_key()
 	string = 'tmdb_tv_anime_popular_recent_%s' % page_no
 	url = '%s/discover/tv?api_key=%s&with_keywords=210024&sort_by=first_air_date.desc&include_null_first_air_dates=false&first_air_date_year=%s&page=%s' \
-							% (base_url, api_key, years_tvshows[0]['id'], page_no)
+							% (base_url, api_key, _date.today().year, page_no)
 	return lists_cache_object(get_data, string, url)
 
 def tmdb_anime_premieres(page_no):

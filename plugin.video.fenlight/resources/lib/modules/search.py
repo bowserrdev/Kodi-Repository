@@ -10,6 +10,7 @@ logger = kodi_utils.logger
 close_all_dialog, external = kodi_utils.close_all_dialog, kodi_utils.external
 build_url, kodi_dialog, execute_builtin, select_dialog = kodi_utils.build_url, kodi_utils.kodi_dialog, kodi_utils.execute_builtin, kodi_utils.select_dialog
 notification, kodi_refresh = kodi_utils.notification, kodi_utils.kodi_refresh
+get_icon = kodi_utils.get_icon
 clear_history_list = [('Clear Movie Search History', 'movie_queries'),
 					('Clear TV Show Search History', 'tvshow_queries'),
 					('Clear Anime Search History', 'anime_queries'),
@@ -65,7 +66,7 @@ def remove_from_search(params):
 		result = main_cache.get(params['setting_id'])
 		result.remove(params.get('key_id'))
 		main_cache.set(params['setting_id'], result, expiration=8760)
-		notification('Success', 2500)
+		notification('Fatto', 2500)
 		kodi_refresh(coalesce=False)
 	except: return
 
@@ -80,8 +81,30 @@ def clear_search():
 
 def clear_all(setting_id, refresh='false'):
 	main_cache.set(setting_id, '', expiration=365)
-	notification('Success', 2500)
+	notification('Fatto', 2500)
 	if refresh == 'true': kodi_refresh(coalesce=False)
+
+# LE ETICHETTE DEI PANNELLI DEI FILTRI, una per chiave.
+# Prima il titolo si RICAVAVA dalla chiave interna:
+#     'with_genres'.replace('with_', '').replace('_', ' ').title()  ->  'Genres'
+# cioe' non era un testo ma un effetto collaterale del nome di una variabile. Due conseguenze, e la
+# seconda pesa piu' della prima: non si poteva tradurre, e soprattutto NON ERA LEGATO a quello che
+# l'utente aveva appena letto. Si clicca "Generi Inclusi" e si apriva "Genres": due nomi per la stessa
+# cosa, uno dei quali nessuno aveva mai scritto.
+# Qui le etichette sono le STESSE STRINGHE delle righe del pannello (Includes_Search.xml,
+# Search_Advanced_Panel), e ci deve restare: il titolo di un pannello e' il nome del filtro che si e'
+# aperto. Lo verifica tests/test_etichette_filtri.py, che le confronta una per una con la skin.
+ETICHETTE_FILTRI = {
+    'with_year_start': 'Anno Inizio',
+    'with_year_end': 'Anno Fine',
+    'with_genres': 'Generi Inclusi',
+    'without_genres': 'Generi Esclusi',
+    'with_cast': 'Cast',
+    'with_network': 'Network',
+    'with_rating': 'Min Valutazione',
+    'with_rating_votes': 'Voti Minimi',
+    'with_sort': 'Ordina',
+}
 
 def select_discover_filter(params):
     import json, xbmcgui
@@ -101,15 +124,34 @@ def select_discover_filter(params):
             win.setProperty(prop_d, 'Yes'); win.setProperty(prop_u, url)
         return
     if fk == 'with_cast':
-        name = kodi_dialog().input('Include Cast')
+        name = kodi_dialog().input('Nome attore')
         if not name: return
         try:
             from apis.tmdb_api import tmdb_people_info
             results = tmdb_people_info(name)['results']
-        except: return notification('No Results', 2500)
-        if not results: return notification('No Results', 2500)
-        items = [{'line1': r['name'], 'name': r['name'], 'id': str(r['id'])} for r in results]
-        choice = select_dialog(items, **{'items': json.dumps(items), 'heading': 'Include Cast', 'enumerate': 'false', 'narrow_window': 'true'})
+        except: return notification('Nessun risultato', 2500)
+        if not results: return notification('Nessun risultato', 2500)
+        # LA FOTO E I TITOLI NOTI SONO LA RISPOSTA, non un ornamento: la domanda che l'utente ha
+        # davanti e' "quale dei tre omonimi e'?", e un elenco di soli nomi non la risponde. Fen Light
+        # la risponde gia' nel suo Discover (windows/discover.py, casts) e i due pannelli aprono la
+        # STESSA finestra, select.xml: bastava consegnarle le righe complete.
+        # `known_for` porta 'title' per i film e 'name' per le serie: leggerne uno solo, come fa il
+        # gemello, lascia senza sottotitolo chi ha fatto soltanto televisione.
+        items = []
+        for r in results:
+            noti = [i.get('title') or i.get('name') for i in r.get('known_for', [])]
+            noti = [t for t in noti if t and t != 'NA']
+            items.append({'line1': r['name'],
+                          'line2': ', '.join(noti),
+                          'icon': ('https://image.tmdb.org/t/p/h632/%s' % r['profile_path']
+                                   if r.get('profile_path') else get_icon('genre_family')),
+                          'name': r['name'], 'id': str(r['id'])})
+        # Un risultato solo non e' una scelta: non c'e' nessuna omonimia da sciogliere. Anche qui
+        # come il gemello.
+        if len(items) == 1: choice = items[0]
+        else:
+            choice = select_dialog(items, **{'items': json.dumps(items), 'heading': ETICHETTE_FILTRI['with_cast'],
+                                             'enumerate': 'false', 'multi_line': 'true'})
         if choice:
             win.setProperty(prop_d, choice['name'])
             win.setProperty(prop_u, '&with_cast=%s' % choice['id'])
@@ -139,7 +181,7 @@ def select_discover_filter(params):
         url_t = '%s'
     else:
         return
-    heading = fk.replace('with_', '').replace('without_', 'Exclude ').replace('_', ' ').title()
+    heading = ETICHETTE_FILTRI.get(fk, fk)
     kwargs = {'items': json.dumps([{'line1': i['name']} for i in items]), 'heading': heading, 'narrow_window': 'true'}
     if multi:
         kwargs['multi_choice'] = 'true'
@@ -162,7 +204,7 @@ def launch_discover(params):
 			'with_cast','with_network','with_rating','with_sort']
 	user_fragments = ''.join(win.getProperty('Discover.%s.url' % k) for k in keys)
 	xbmc.log('###AF3_DISCOVER### media_type=%s user_fragments=[%s]' % (mt, user_fragments), xbmc.LOGINFO)
-	if not user_fragments: return notification('Set at least one filter', 2500)
+	if not user_fragments: return notification('Imposta almeno un filtro', 2500)
 	import re
 	from datetime import date
 	today = date.today().strftime('%Y-%m-%d')

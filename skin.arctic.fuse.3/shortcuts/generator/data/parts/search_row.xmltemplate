@@ -8,7 +8,11 @@
          accodato dopo ma messo nel SUFFISSO del $VAR, dove sparisce insieme al path. Senza,
          il contenitore resta con il solo '&amp;pgctl=1105.502' e Kodi lo tenta come cartella. -->
     <param name="pggated">true</param>
-    <param name="content">$VAR[{widget_search_variable},{widget_path},{widget_path_end}&amp;pgctl=1105.{widget_id}]</param>
+    <!-- 'vuota=segnaposto' sta nel SUFFISSO del $VAR insieme all'identita', non nel <param name="vuota">
+         di Defs_Widget_Content: qui il path di base e' vuoto a casella vuota, e cio' che sta nel suffisso
+         sparisce insieme a lui. Serve perche' una riga che ha finito senza risultati possa DIRLO
+         (kodi_utils.STATO_VUOTO) invece di restare a zero elementi, muta. -->
+    <param name="content">$VAR[{widget_search_variable},{widget_path},{widget_path_end}&amp;pgctl=1105.{widget_id}&amp;vuota=segnaposto]</param>
     <param name="include">{widget_include}</param>
     <param name="target">{widget_target}</param>
     <param name="sortby">{widget_sortby}</param>
@@ -19,17 +23,24 @@
          elementi vecchi finche' non arriva la cartella nuova, e il row resta nascosto; la paginazione
          riconsegna la stessa query e non lo tocca. LOTTO 338: prima si leggeva FenLight.TextSearch.Settled,
          uno per tutte le righe, scritto dalla prima che finiva: l'altra compariva con i risultati vecchi. -->
-    <!-- LOTTO 165. Il row resta nascosto anche finche' il riposizionamento non e' stato eseguito.
-         Perche': al cambio query reconcile_position mette il contenitore in coda (fenlight.pg.rehead) e
-         il watcher lo riporta in testa con Control.Move, che NON e' istantaneo: e' uno scorrimento
-         animato. Con le pagine gia' in cache fra il riposizionamento e la fine della build passano
-         128 ms (misurato il 05/09), il row torna visibile a scorrimento ancora in corso e si vede la
-         lista scivolare DOPO essere comparsa, invece di comparire gia' in testa.
-         La proprieta' esiste gia' e la svuota il watcher appena ha agito: nessuno stato nuovo, e
-         nessun ritardo a tempo. Se la coda non si svuota il row resta nascosto, ma e' autolimitante:
-         il watcher consuma appena quel contenitore ha elementi nella finestra a schermo, che e'
-         esattamente la condizione in cui il row avrebbe qualcosa da mostrare. -->
-    <param name="visible">String.IsEqual(Container(601).ListItem.Property(guid),{widget_guid}) + String.IsEqual(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1)) + !String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.{widget_id})</param>
+    <!-- Il terzo termine (STEP 4): il segnaposto porta anche lui la query che lo ha prodotto, quindi
+         supera il cancello qui sopra. Senza questo la riga comparirebbe con dentro "Nessun risultato",
+         accanto alla scritta grande che dice gia' la stessa cosa. Una riga si mostra quando ha TITOLI,
+         non quando ha una risposta. -->
+        <!-- LOTTO 165 RITIRATO (21/09). Qui c'era anche
+         !String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.{widget_id}): la riga
+         restava nascosta finche' il watcher non aveva riportato il contenitore in testa, perche'
+         al cambio query Kodi teneva gli elementi vecchi e il cursore dove l'utente l'aveva
+         lasciato. Con la costruzione vuota quel presupposto e' caduto: il contenitore passa
+         SEMPRE dal vuoto prima di riempirsi, e un contenitore vuoto non ha nessuna posizione da
+         riportare in testa (lo osservava gia' il commento di reconcile_position per Discover).
+         E non era solo inutile: il watcher trovava il contenitore gia' in testa, aspettava i suoi
+         3 secondi e mollava, e in quei 3 secondi il cancello teneva nascosta una riga che con la
+         cache calda era pronta in 112 ms. Log del 21/09 06:19, sei volte in tre ricerche:
+             06:19:11.373  svuoto prima di costruire key=1105.502 query="lust"
+             06:19:15.270  watcher testa nuova key=1105.502: mollo dopo 3 s (fermo a 1/0)
+         tests/test_rehead_ricerca.py -->
+    <param name="visible">String.IsEqual(Container(601).ListItem.Property(guid),{widget_guid}) + String.IsEqual(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1)) + String.IsEmpty(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.segnaposto))</param>
     <param name="allowhiddenfocus">true</param>
     <param name="hidden_button_enabled">true</param>
 </include>

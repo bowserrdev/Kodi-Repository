@@ -298,14 +298,42 @@ _VOLATILE_PARAMS = ('new_page', 'paginate_start', 'refreshed', 'pages', 'reload'
 # and wrongly consider itself current (that was the first attempt's flaw). The live label can't be
 # corrupted by build ordering.
 SEARCH_EDIT_INFOLABEL = 'Control.GetLabel(3000).index(1)'
+# ...e la finestra in cui quell'id vuol dire la casella di ricerca. Serve perche' un'infolabel non si
+# puo' indirizzare a una finestra (PR.md, voce 12): 'Control.GetLabel(3000)' significa "il controllo
+# 3000 di qualunque finestra sia a schermo adesso". Nella skin l'id 3000 esiste due volte --
+# Includes_Search.xml:402 e' l'edit della ricerca, Custom_1115_Window_Shortcuts.xml:116 e' un
+# grouplist -- e senza questo controllo bastava una finestra diversa in primo piano perche' una
+# costruzione legittima si leggesse come sorpassata e venisse buttata. Oggi il grouplist non ha
+# etichetta e la cosa non si vedrebbe: e' sicurezza per caso, ed e' quella che si sostituisce qui.
+# Il controllo NON e' completo, e vale la pena dirlo invece di crederlo: getCurrentWindowId() e'
+# GetActiveWindow e ignora i dialoghi, mentre le infolabel di controllo risolvono contro il dialogo
+# modale in cima (vedi kodi_utils.modal_dialog_present). Un DIALOGO con un controllo 3000 etichettato
+# passerebbe ancora: nella skin non ce n'e' nessuno, e il verso dell'errore e' quello prudente
+# (etichetta vuota = non lo so = non butto niente), ma resta un caso scoperto.
+# Lo scope si chiede a ctl_scope(), che e' gia' l'unico posto che sa tradurre l'id di finestra di
+# Kodi nel numero che la skin usa (le finestre custom sono sfalsate di CUSTOM_WINDOW_BASE).
+SEARCH_SCOPE = '1105'
 # How long a search build waits before doing any expensive work. If the live label no longer matches this
 # build's query after the wait, a newer keystroke has superseded it and it bails -- so the API/metadata
 # work only runs once the user pauses typing.
 SEARCH_DEBOUNCE_MS = 500
 
-def _search_live_query():
+def query_viva():
+	"""Il testo che c'e' ADESSO nella casella di ricerca, o None se non e' leggibile.
+
+	"Non leggibile" comprende il caso in cui a schermo c'e' un'altra finestra: li' l'id 3000 e' un
+	altro controllo (vedi SEARCH_SCOPE) e la sua etichetta non e' una query. Chi legge tratta gia'
+	il vuoto come "non lo so" e non come "la query e' cambiata" (_live_supersedes), quindi la
+	risposta prudente e' la stessa che si da' con un dialogo modale aperto sopra la ricerca.
+
+	Pubblica: la legge anche chi consegna un'attesa, che deve timbrarla con la query per cui si
+	aspetta -- nel debounce il path porta la query LASCIATA, cioe' proprio quella per cui non si
+	sta piu' aspettando.
+	"""
 	from modules.kodi_utils import get_infolabel
-	try: return get_infolabel(SEARCH_EDIT_INFOLABEL)
+	try:
+		if ctl_scope() != SEARCH_SCOPE: return None
+		return get_infolabel(SEARCH_EDIT_INFOLABEL)
 	except: return None
 
 # Verbose diagnostic logging for the interactive pagination flow. Grep the Kodi log for FENLIGHT_PG.
@@ -376,11 +404,11 @@ def search_should_abort(query):
 	from modules.kodi_utils import sleep
 	if not query: return False
 	if search_superseded(query):
-		log('search_should_abort: superseded before wait query="%s" live="%s"' % (query, _search_live_query()))
+		log('search_should_abort: superseded before wait query="%s" live="%s"' % (query, query_viva()))
 		return True
 	sleep(SEARCH_DEBOUNCE_MS)
 	if search_superseded(query):
-		log('search_should_abort: superseded after %sms query="%s" live="%s"' % (SEARCH_DEBOUNCE_MS, query, _search_live_query()))
+		log('search_should_abort: superseded after %sms query="%s" live="%s"' % (SEARCH_DEBOUNCE_MS, query, query_viva()))
 		return True
 	return False
 
@@ -393,7 +421,7 @@ def search_superseded(query):
 	tre letture della stessa domanda e due di loro non se la ponevano affatto.
 	"""
 	if not query: return False
-	return _live_supersedes(query, _search_live_query())
+	return _live_supersedes(query, query_viva())
 
 def search_is_stale(query):
 	# Post-build guard, called right before publishing (add_items/set_head). The build itself takes ~1s,
@@ -403,7 +431,7 @@ def search_is_stale(query):
 	# _live_supersedes) -- otherwise a pagination refresh that completes while a modal dialog is open
 	# would skip publishing and blank the widget.
 	if not search_superseded(query): return False
-	log('search_is_stale: skip publish query="%s" live="%s"' % (query, _search_live_query()))
+	log('search_is_stale: skip publish query="%s" live="%s"' % (query, query_viva()))
 	return True
 
 # --- Strumentazione temporanea per le misure di prestazione (lotto ottimizzazioni) ---
@@ -1026,14 +1054,23 @@ def set_head(key, items, action=None, params=None, preparata=False):
 	# 15/09): una lista finisce quando la SORGENTE e' finita, e nient'altro la ferma. Il costo per
 	# elemento si affronta dove nasce, cioe' nella costruzione della voce (fase 6), non nascondendo
 	# elementi che esistono.
-	url = _first_item_url(items)
+	if items:
+		url = _first_item_url(items)
+	else:
+		# CONSEGNA VUOTA: si passa dalla strada comune, la stessa di testa_vuota. La firma si calcola
+		# dai primi elementi e qui non ce n'e' nessuno, quindi gliela da' il segnaposto -- ed e' il
+		# motivo per cui una riga vuota riceve un elemento invece di restare a zero.
+		# Sta in un `if` e non in un'espressione condizionale perche' _senza_elementi non si limita a
+		# rispondere: TOGLIE il contenitore dalla coda del riposizionamento, e una mutazione non si
+		# nasconde dentro un ternario.
+		url = _senza_elementi(key)
 	# Due firme, e la seconda e' una rete di sicurezza, non un ripensamento. Quella a tre elementi e'
 	# la buona ed e' quella che il watcher prova per prima. Quella a un elemento -- il comportamento di
 	# prima, collisioni comprese -- resta pubblicata perche' il watcher legge i suoi tre path da
 	# Container(id).ListItemAbsolute(1|2).FolderPath: se in qualche stato quelle infolabel tornassero
 	# vuote, senza la seconda firma il contenitore diventerebbe NON identificabile e la paginazione si
 	# fermerebbe del tutto. Cosi' il caso peggiore e' tornare a com'era, non peggio.
-	headhash = _head_signature_from_items(items)
+	headhash = _head_signature_from_items(items) or (head_signature([url]) if url else None)
 	headhash_one = head_signature([url]) if url else None
 	for h in (headhash, headhash_one):
 		if h: set_property(HEAD_PROP % h, key)
@@ -1072,6 +1109,113 @@ def set_head(key, items, action=None, params=None, preparata=False):
 	except: pass
 	log('set_head key=%s built=%s firma=%s first_url=%s' %
 		(short(key), count, (headhash[:8] if headhash else '-'), (url[:90] if url else '-')))
+
+def chiave_invocazione():
+	"""La chiave del contenitore per cui gira QUESTA invocazione, o None se il path non la dichiara.
+
+	UN POSTO SOLO, e non e' pignoleria: questa stessa stringa finisce nell'URL del segnaposto (che la
+	consegna) e nel calcolo della sua FIRMA (con cui il watcher ritrova il contenitore). Due
+	derivazioni che divergono anche di uno spazio sono due firme diverse, cioe' un contenitore che il
+	watcher non riconosce piu' e che da li' in poi non pagina -- in silenzio. La convalida sta in
+	position_of e ci resta.
+	"""
+	import sys
+	if len(sys.argv) < 3: return None
+	scope, cid = position_of(dict(parse_qsl((sys.argv[2] or '').lstrip('?'), keep_blank_values=True)))
+	return '%s.%s' % (scope, cid) if scope else None
+
+def _url_segnaposto(key):
+	"""L'URL che avra' il segnaposto di questo contenitore, o None se questa cartella non ne avra' uno.
+
+	Lo chiede la skin con 'vuota=segnaposto' nel path: solo lei sa quali righe da vuote devono restare.
+	Chi non lo chiede resta senza firma da vuoto, ed e' il comportamento di sempre.
+	"""
+	try:
+		from modules.kodi_utils import vuole_segnaposto, url_segnaposto
+		import sys
+		if len(sys.argv) < 3 or not vuole_segnaposto(sys.argv[2]): return None
+		return url_segnaposto(key)
+	except Exception: return None
+
+def _senza_elementi(key):
+	"""Un contenitore che resta SENZA ELEMENTI: cio' che vale comunque ci si arrivi.
+
+	Le strade sono due -- set_head, quando una costruzione ha consegnato zero titoli, e testa_vuota,
+	quando non si costruisce affatto -- e finche' erano due strade separate una delle due dimenticava
+	un pezzo. Quel che le accomuna non e' un dettaglio:
+
+	  un contenitore vuoto NON HA NESSUNA POSIZIONE da riportare in testa, l'indice si azzera da se',
+	  quindi esce dalla coda del riposizionamento. Lasciarcelo costa 3 secondi a vuoto: il watcher lo
+	  trova gia' in testa, aspetta il suo timeout e molla (log del 21/09 06:19, sei volte in tre
+	  ricerche). Fino allo step 7 questo valeva solo per testa_vuota, e una ricerca a zero risultati
+	  -- che passa per set_head -- quei 3 secondi li pagava ancora;
+
+	  la sua FIRMA non puo' venire dai titoli, quindi viene dall'unico URL che avra', quello del
+	  segnaposto. Senza, il contenitore e' ANONIMO (nel log 'built=0 firma=-'): il watcher parte da
+	  Container(id).ListItemAbsolute(0).FolderPath, non lo ritrova in HEAD_PROP, e non pagina piu'.
+
+	Torna quell'URL, o None se questa cartella il segnaposto non lo chiede.
+	"""
+	rehead_done(key)
+	return _url_segnaposto(key)
+
+def testa_vuota(key, stato=None, query=None):
+	"""Il contenitore adesso e' VUOTO, e la chiave e' ancora questa.
+
+	`stato` e `query` NON SI SCRIVONO DA NESSUNA PARTE: servono solo alla riga di log. Lo stato della
+	consegna vive sul primo elemento e ce lo mette kodi_utils._aggiungi_segnaposto, che e' l'unico
+	posto in cui quel primo elemento esiste; qui si descrive il contenitore, non lo si costruisce.
+	Sono in firma e non letti da soli perche' chi chiama li ha gia' in mano e questa funzione, per
+	restare utile a un contenitore qualunque, non deve dipendere dall'invocazione in corso.
+
+	DUE FATTI SU TRE, e il terzo e' lasciato in pace di proposito. set_head ne pubblica tre: il
+	conteggio (BUILT_PROP), la firma, e l'azzeramento di LOADING_PROP. I primi due descrivono il
+	contenitore e vanno aggiornati anche quando non si consegna niente, o il ponte resta fermo alla
+	query vecchia. Il terzo no: LOADING_PROP la scrive un solo posto, il watcher (service.py), e
+	significa "ho ordinato una pagina in piu' per questo contenitore e la aspetto". Una consegna vuota
+	non soddisfa quell'ordine, e la proprieta' e' per CONTENITORE, non per costruzione: azzerarla qui
+	cancellerebbe la marca della costruzione VIVA e direbbe al watcher "fatto" senza che sia stato
+	fatto niente. E' lo stesso errore gia' commesso e ritirato il 21/09 -- allora in una funzione
+	`rinuncia` che da quel ritiro non esiste piu' -- ed e' scritto nel commento di
+	router._search_debounce_abort.
+	Per la stessa ragione non si scrive nel db e non si pubblicano id: non c'e' niente da registrare,
+	e una lista vuota registrata sopra quella vera sarebbe una perdita di dati, non una dichiarazione.
+	"""
+	from modules.kodi_utils import set_property
+	url = _senza_elementi(key)
+	if not url: return False
+	set_property(BUILT_PROP % key, '0')
+	firma = head_signature([url])
+	if firma: set_property(HEAD_PROP % firma, key)
+	# Lo stato e il timbro nella riga: una consegna vuota si legge come una consegna piena, e di una
+	# consegna piena set_head dice sempre di chi e'. Senza, dal log non si distingue un'attesa da un
+	# "non ho trovato niente", ne' si vede PER QUALE ricerca si aspetta -- che e' il confronto da cui
+	# dipendono tutti i lettori della skin.
+	log('testa vuota key=%s firma=%s stato=%s query="%s"'
+		% (short(key), firma[:8] if firma else '-', stato or '-', query if query is not None else '-'))
+	return True
+
+def dichiara_vuota(stato=None):
+	"""La chiama end_directory dopo aver consegnato un segnaposto, per l'invocazione in corso.
+
+	Sta qui e non nei chiamanti perche' chi consegna un segnaposto non deve ricordarsi di dichiararlo:
+	e' end_directory a sapere che un segnaposto e' stato consegnato, ed e' la sola a saperlo.
+	CHI CI ARRIVA DAVVERO, oggi, e' meno di quanto sembri, e vale la pena scriverlo perche' e'
+	cambiato due volte:
+	  - router._search_svuota_prima, che consegna un'attesa senza costruire niente. E' il caso vivo;
+	  - una costruzione che non passa da set_head e finisce con zero elementi. Una riga di ricerca a
+	    zero risultati NON e' questo caso: e' paginata, quindi set_head ha gia' parlato e il guardiano
+	    qui sotto la ferma.
+	I due abbandoni del router e i due dell'indexer, che questa nota citava, non ci arrivano piu': dal
+	21/09 chiudono con segnaposto=None, perche' la loro cartella verra' scartata e il ponte descrive
+	cio' che si vede.
+	Non parla se set_head ha gia' parlato per questa invocazione: una consegna ha una testa sola.
+	"""
+	if _PUBBLICATE: return False
+	key = chiave_invocazione()
+	if not key: return False
+	from modules.kodi_utils import QUERY_PROP, _PRIMO_ELEMENTO
+	return testa_vuota(key, stato, _PRIMO_ELEMENTO.get(QUERY_PROP))
 
 def rehead_queue(key):
 	"""Mette questo widget in coda per il riposizionamento. Idempotente.
@@ -1783,6 +1927,28 @@ def token_is_stale(params):
 		'build lasciata cadere e token azzerato' % (scope, cid, path_pages))
 	return True
 
+def tiene_altra_lista(params):
+	"""Il contenitore mostra ancora una lista DIVERSA da quella che stiamo per costruire?
+
+	La costruzione non puo' guardare lo schermo, ma non le serve: la risposta sta nel ponte.
+	CTL_KEY_PROP porta l'impronta della lista che occupa quella POSIZIONE, e la aggiorna
+	reconcile_position in testa a ogni costruzione paginata -- quindi finche' non e' girata contiene
+	ancora quella di PRIMA. Se e' diversa dalla nostra e il contenitore ha elementi, cio' che l'utente
+	sta vedendo non e' nostro.
+
+	Le due condizioni servono entrambe: un'impronta diversa su un contenitore gia' vuoto non ha niente
+	da togliere, e un contenitore pieno con la NOSTRA impronta e' una ricostruzione in posto (un passo
+	di paginazione, un refresh), che non va svuotata o l'infinite-scroll singhiozza.
+	"""
+	from modules.kodi_utils import get_property
+	scope, cid = position_of(params)
+	if not scope: return False
+	try:
+		if int(get_property(BUILT_PROP % ('%s.%s' % (scope, cid))) or 0) <= 0: return False
+	except Exception: return False
+	attuale = get_property(CTL_KEY_PROP % (scope, cid))
+	return bool(attuale) and attuale != make_key(params)
+
 def reconcile_position(key, params):
 	"""Azzera il conteggio se in questa posizione e' cambiata la lista. Torna il path_pages da usare.
 
@@ -1978,6 +2144,27 @@ def composizione_chiesta(params):
 	if params.get(RELOAD_KIND_PARAM) != RELOAD_KIND_ACTION: return ''
 	return str(params.get(RELOAD_PARAM) or '')
 
+# L'esito dell'ultimo passo chiesto al servizio in QUESTA invocazione. Una invocazione costruisce una
+# lista sola (vedi _CHIAVE_INVOCAZIONE), quindi non c'e' niente da confondere.
+_ESITO_PASSO = [None]
+
+def passo_superato():
+	"""Il servizio ha detto che un'altra lista ha preso questa posizione mentre costruivamo?
+
+	'superata' e' il preparatore che dichiara il sorpasso PER POSIZIONE (preparatore.py: "passo
+	superato da una lista piu' recente nella stessa posizione"). Chi riceve quella risposta sta
+	costruendo per un contenitore che non e' piu' suo, e non deve scriverci: ne' gli elementi, ne'
+	lo stato dei passi, ne' la testa.
+	Senza questo, una build sorpassata consegnava comunque -- con la lista vuota, perche' il passo
+	non e' arrivato -- e SVUOTAVA il contenitore vivo. Log del 21/09, seconda ricerca di 'love':
+	    02:53:13.427  passo_pronto key=1105.502 esito=superata in 105 ms coperti=0
+	    02:53:13.433  set_head key=1105.502 built=0 firma=- first_url=-
+	cioe' zero elementi, firma di testa persa e BUILT azzerato su un contenitore che un'altra
+	costruzione stava gia' riempiendo. E' il gemello di search_is_stale: quello guarda la casella,
+	questo guarda la risposta del servizio, e tutti e due dicono "non sei piu' tu".
+	"""
+	return _ESITO_PASSO[0] == 'superata'
+
 def passo_pronto(params, key, tipo, azione=None, esterna=True):
 	"""La lista da consegnare in questa costruzione, preparata dal servizio. Torna (Pronta o None, passi).
 
@@ -2037,6 +2224,7 @@ def passo_pronto(params, key, tipo, azione=None, esterna=True):
 					% (key, short(chiave), passi, inviata, p.passi if p else '-', LIMITE_ATTESA))
 			break
 	del monitor
+	_ESITO_PASSO[0] = esito
 	log('passo_pronto key=%s esito=%s in %.0f ms coperti=%s' % (short(key), esito, (_now() - t0) * 1000, p.passi if p else '-'))
 	return p, passi
 

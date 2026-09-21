@@ -4,74 +4,167 @@ from modules.kodi_utils import external, mark_phase, parse_qsl
 
 def sys_exit_check(): return external()
 
-def _text_search_start(params, media_type):
-	search_scope = params.get('search_hub')
-	if search_scope not in ('true', 'combined', 'standard'): return None
-	if search_scope == 'true': search_scope = 'standard'
+def _timbra_query(params):
+	"""La riga dichiara di quale ricerca sono i suoi elementi (kodi_utils.QUERY_PROP).
+
+	E' tutto quel che resta di _text_search_start, che oltre a questo teneva in piedi un canale
+	globale di proprieta' della finestra Home per dire all'hub "sto caricando" e "ho finito". Era uno
+	stato per TIPO DI MEDIA, mentre le righe le configura l'utente e possono essere una o dieci, anche
+	tutte dello stesso tipo. L'asse sbagliato, e da li' lo stesso difetto e' tornato due volte: il
+	19/09 una riga che finiva parlava per tutte, il 21/09 "Nessun risultato" e' rimasto 1,73 s sopra
+	una ricerca da sedici titoli. Adesso ogni riga porta il proprio stato nel primo elemento e quel
+	canale non lo legge piu' nessuno.
+	Il timbro invece resta, ed e' il perno: senza, una riga non e' attribuibile alla sua ricerca. Lo
+	leggono il cancello della riga, quello della linguetta, la rotellina, "Ricerca in corso" e "Nessun
+	risultato". Vale anche per le ricostruzioni di paginazione, che riconsegnano la stessa query.
+	"""
+	# La condizione e' la stessa dei due cancelli qui sotto, e prima non lo era: qui si accettavano i
+	# tre valori ('true', 'combined', 'standard') mentre loro guardano solo se il parametro c'e'. Il
+	# valore non lo legge piu' nessuno da quando il canale globale e' stato demolito (allo scope
+	# serviva per sapere se le righe erano una o due), e di fatto ne viene emesso uno solo. Due
+	# definizioni di "questa e' una costruzione dell'hub di ricerca" erano una in piu': un path con un
+	# valore inatteso sarebbe passato dai cancelli e non dal timbro, e una riga senza timbro non si
+	# mostra piu'.
+	if not params.get('search_hub'): return
 	query = params.get('query', '')
-	if not query: return None
-	# La riga dichiara di quale query sono i suoi elementi: vedi kodi_utils.QUERY_PROP. Anche per le
-	# ricostruzioni di paginazione, che consegnano di nuovo la stessa query.
+	if not query: return
 	from modules.kodi_utils import timbra_primo_elemento, QUERY_PROP
 	timbra_primo_elemento(QUERY_PROP, query)
+
+def _chiudi_discover(params, azioni):
+	"""Una ricerca testuale e Discover non stanno a schermo insieme: la riga Discover si mostra solo
+	a casella vuota, quindi appena si cerca il suo path va via.
+
+	LA CONDIZIONE E' LA CASELLA, NON QUESTA COSTRUZIONE, ed e' la correzione. Prima bastava che una
+	costruzione di ricerca passasse di qui con una query nel path. Ma una costruzione in volo non dice
+	niente su cosa c'e' a schermo ADESSO: _search_debounce_abort dorme 500 ms prima di lasciar
+	passare, e in quei 500 ms l'utente puo' applicare i filtri. launch_discover svuota la casella,
+	scrive il path e se ne va; l'invocazione si sveglia, trova la casella vuota, e una casella vuota
+	non e' un sorpasso (regola di _live_supersedes: "vuoto" vuol dire "non lo so", e una costruzione
+	legittima non si butta per un dubbio), quindi prosegue e cancella il path appena scritto. La riga
+	Discover spariva subito dopo essere comparsa.
+	Chiederlo alla casella toglie il caso invece di rilevarlo: se non c'e' testo non c'e' nessuna
+	ricerca in corso, e niente da chiudere. Se la casella non e' leggibile (un'altra finestra in
+	primo piano) si tace, che e' il verso prudente e lo stesso di tutti gli altri lettori.
+	"""
+	if params.get('action') not in azioni or not params.get('query'): return
+	from modules import paginator
+	if not paginator.query_viva(): return
 	from xbmcgui import Window
-	win = Window(10000)
-	if win.getProperty('FenLight.TextSearch.Query') != query:
-		# La query annunciata all'hub e' un'altra: o questa build e' la prima della ricerca nuova, o
-		# e' un residuo della vecchia. La differenza non si deduce dal confronto qui sopra, si legge
-		# nella casella: paginator.search_superseded.
-		# Il residuo esiste per costruzione. Una ricostruzione di PAGINAZIONE non viene mai messa in
-		# debounce (_search_debounce_abort esce subito su is_loading: sospendere un passo della
-		# cascata farebbe singhiozzare l'infinite-scroll), e la cascata continua a emettere passi
-		# anche dopo che l'utente ha scritto una query nuova. Quei passi portano nel path la query
-		# VECCHIA, arrivavano qui DOPO la build della query nuova - che aveva gia' annunciato la
-		# sua - e riportavano indietro tutto lo stato dell'hub: Query alla query vecchia e State a
-		# 'loading'. Da cui i due sintomi visti insieme: 'Ricerca in corso' che RICOMPARE sopra
-		# risultati validi, e la rotellina accesa sotto quella scritta, che per definizione si
-		# escludono (skin, Exp_Search_Loading / Exp_Search_Row_Spinner).
-		# _text_search_done la sua guardia ce l'aveva gia'; a mancare era quella in apertura, cioe'
-		# proprio dove lo stato si scrive.
-		from modules import paginator
-		if paginator.search_superseded(query): return None
-		win.setProperty('FenLight.TextSearch.Query', query)
-		win.setProperty('FenLight.TextSearch.Scope', search_scope)
-		win.clearProperty('FenLight.TextSearch.Movie.State')
-		win.clearProperty('FenLight.TextSearch.TV.State')
-		if search_scope == 'standard':
-			win.setProperty('FenLight.TextSearch.Movie.State', 'loading')
-			win.setProperty('FenLight.TextSearch.TV.State', 'loading')
-		# LOTTO 168 -- 'loading' vuol dire "sta caricando una RICERCA NUOVA", non "una build sta
-		# girando". Queste due righe stavano FUORI dal cancello, quindi le rialzava anche una
-		# ricostruzione per paginare: stessa query, risultati gia' a schermo. La skin ci appende tre
-		# cose che allora sparivano e tornavano a ogni pagina caricata --
-		#   Includes_Search.xml:250 e 263   'Ricerca in corso' / 'Attendi il caricamento dei
-		#                                    risultati', che si ristendevano sopra i risultati validi
-		#   Includes_Search.xml:211         il pannello info del risultato a fuoco, che sbatteva
-		# -- ed e' il difetto segnalato dall'utente il 05/09.
-		# Dentro il cancello il significato torna quello che i tre consumatori gia' assumevano.
-		# La paginazione ha il suo segnale ed e' un altro: Container(N).IsUpdating, usato dal
-		# Widget_Busy, che e' per contenitore e non per ricerca.
-		win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'loading')
-		win.setProperty('FenLight.TextSearch.State', 'loading')
-	return win
+	Window(10000).clearProperty('FenLight.Discover.ContentPath')
 
 def _search_debounce_abort(sys, params, action_filtered):
-	# Debounce gate for the live search hub, run BEFORE _text_search_start so a superseded keystroke's
+	# Debounce gate for the live search hub, run BEFORE _timbra_query so a superseded keystroke's
 	# build never touches the skin state nor builds anything. paginator.search_should_abort waits the
 	# debounce window and compares this build's query against the live search-box text; if they differ
 	# the user has moved on -> close the (now-irrelevant) directory empty and bail.
 	if params.get('action') != action_filtered or not params.get('search_hub'): return False
 	from modules import paginator
 	from modules.kodi_utils import get_property, end_directory
-	# A watcher-driven pagination step or a global soft refresh rebuilds the SAME query in place; never
-	# debounce those -- it would lag infinite-scroll and (via the Settled gate) hide the row mid-scroll.
-	# Only a genuine query change is debounced.
-	key = paginator.widget_key(params)
-	if paginator.is_loading(key) or get_property(paginator.PG_REFRESH_PROP) == 'true':
-		return False
-	if not paginator.search_should_abort(params.get('query', '')): return False
-	try: end_directory(int(sys.argv[1]), cacheToDisc=False, segnaposto=False)
+	query = params.get('query', '')
+	# PRIMA DI TUTTO, e senza attendere: la casella ha gia' lasciato questa query? Allora questa
+	# costruzione e' un residuo, e non lo diventa di meno perche' il contenitore e' occupato.
+	# Le esenzioni qui sotto rispondono alla domanda "e' un passo di paginazione?" guardando SE IL
+	# CONTENITORE E' IN VOLO, che e' un'altra domanda: la prima costruzione di una query e' essa
+	# stessa il lavoro in volo per quella chiave, quindi si auto-esentava. Nel log del 21/09
+	# (shrek -> zodiaco) tre costruzioni sono passate da questa porta e sono arrivate in fondo --
+	# chiamate TMDb comprese -- per query che l'utente aveva gia' lasciato:
+	#     02:15:17.333  query="shr"  live="zodic"     1973 ms
+	#     02:15:19.249  query="shr"  live="zodiaco"   3845 ms
+	#     02:15:21.227  query="sh"   live="zodiaco"   5771 ms
+	# 11,6 s di lavoro buttato, e i contenitori tenuti occupati per tutto quel tempo: nello stesso
+	# intervallo il watcher ha mollato il riposizionamento di 1105.503 dopo i suoi 3 s di attesa.
+	# Se ne accorgeva solo search_is_stale, in fondo, al momento di pubblicare.
+	# Chi molla qui NON rilascia niente. La bandiera "in ricostruzione" del watcher (LOADING_PROP) la
+	# azzera set_head, e a set_head ci arriva la costruzione della query VIVA, che per questo
+	# contenitore esiste sempre: il testo e' cambiato, quindi il path e' cambiato, quindi Kodi ne ha
+	# gia' chiesta un'altra. Rilasciarla qui vorrebbe dire cancellare la marca di QUELLA -- e' una
+	# proprieta' per contenitore, non per costruzione -- e far credere al canale dei rinvii che non
+	# ci sia niente in volo.
+	if paginator.search_superseded(query):
+		paginator.log('debounce: residuo di una query lasciata, chiudo subito query="%s"' % query)
+	else:
+		# Un passo di paginazione o un refresh globale ricostruiscono la STESSA query in posto: quelli
+		# non si mettono mai in attesa, o l'infinite-scroll singhiozza. Arrivati qui sappiamo gia' che
+		# la query e' quella viva, quindi l'esenzione vale solo per cio' per cui e' nata.
+		key = paginator.widget_key(params)
+		if paginator.is_loading(key) or get_property(paginator.PG_REFRESH_PROP) == 'true':
+			return False
+		if not paginator.search_should_abort(query): return False
+	# NON SI CONSEGNA NIENTE, E NON SI DICHIARA NIENTE AL PONTE. Questa invocazione risponde a un path
+	# che Kodi ha gia' abbandonato, che e' la definizione stessa di residuo: quando la cartella torna,
+	# il contenitore ha gia' chiesto altro e quella risposta viene SCARTATA. L'unica cartella che Kodi
+	# applica e' quella dell'ultimo path.
+	# Dallo step 3 fino alla sonda delle 06:05 qui si consegnava STATO_ATTESA. Quella consegna non
+	# arrivava mai a schermo, ma chiamava testa_vuota, che porta BUILT_PROP a 0: da li' in poi il ponte
+	# diceva "contenitore vuoto" mentre a schermo c'erano quaranta elementi della ricerca precedente.
+	# E _search_svuota_prima, che e' la funzione nata per svuotare davvero perche' agisce
+	# sull'invocazione del path VIVO, chiede proprio BUILT_PROP > 0 per sapere se c'e' qualcosa da
+	# togliere: trovava 0 e si fermava. Misurato con la sonda 3098:
+	#     06:05:45.566  testa vuota 1105.502 stato=attesa query="bur"
+	#     06:05:45.956  box=[burn]  502[vis=40 q=sea sel=Blu profondo]
+	# Il ponte descrive quello che si VEDE. Chi sa che la propria cartella sara' scartata non lo tocca.
+	try: end_directory(int(sys.argv[1]), cacheToDisc=False, segnaposto=None)
 	except: pass
+	return True
+
+def _search_svuota_prima(sys, params, action_filtered):
+	"""La ricerca in UN COLPO SOLO: svuota il contenitore prima di costruire, e riordina.
+
+	L'UNICO POSTO CHE SVUOTA, e deve restarlo. Nato per le query INCOLLATE -- due sole invocazioni,
+	nessuna da riciclare, il contenitore che tiene i risultati di prima per tutta la costruzione: 21,7 s
+	misurati il 21/09 -- copre da subito anche quelle digitate. All'inizio no: fino alla sonda delle
+	06:05 le invocazioni chiuse dal debounce consegnavano STATO_ATTESA e lo svuotamento della ricerca
+	digitata veniva da li'. Quella consegna pero' rispondeva a un path che Kodi aveva gia' abbandonato,
+	quindi non arrivava mai a schermo mentre il ponte la registrava lo stesso: e' il difetto che la
+	sonda ha trovato. Da allora chi sa che la propria cartella sara' scartata non dichiara piu' niente
+	-- ne' il debounce qui sopra, ne' l'indexer che molla -- e a svuotare resta questa funzione sola,
+	che e' anche l'unica a consegnare STATO_ATTESA in tutto l'addon.
+
+	Il giro: si consegna subito la cartella vuota e si ordina la ricostruzione. ordina_ricarica e'
+	esplicitamente aperta a qualunque processo -- il plugin annota, il servizio scrive il token, il
+	token cambia il path, Kodi rilegge -- quindi non serve niente di nuovo. In cambio la ricostruzione
+	dipende dal servizio: se l'ordine si perde la riga resta vuota e nessuno riprova. E' il prezzo del
+	lotto 325, uno scrittore solo per il token, e non si paga con una rete a tempo.
+
+	COSA IMPEDISCE IL GIRO INFINITO. Quello che fa il lavoro e' BUILT_PROP: la consegna vuota lo porta
+	a 0 (paginator.testa_vuota), quindi la ricostruzione ordinata trova il contenitore gia' vuoto,
+	`tiene_altra_lista` risponde no e si costruisce.
+	Ma BUILT_PROP lo azzera testa_vuota, che scrive solo se un segnaposto e' stato davvero consegnato:
+	su una riga che non lo chiede, la consegna vuota non azzera niente e la ricostruzione ritroverebbe
+	il posto occupato, svuoterebbe e riordinerebbe, per sempre. Quel caso non si copre con una rete: si
+	rende impossibile, non cominciandolo. Chi non avra' un segnaposto non passa di qui.
+	(Ci ero arrivato per gradi, e le due versioni scartate valgono piu' della conclusione: prima una
+	finestra a tempo sul nonce della ricarica, che vale 60 s e resta nel path -- avrebbe coperto anche
+	le query incollate DOPO, dentro quel minuto, cioe' proprio i casi per cui questa funzione esiste;
+	poi una proprieta' "per questa query ho gia' svuotato", esatta ma pur sempre uno stato in piu' per
+	reagire a un guasto invece di escluderlo.)
+	"""
+	if params.get('action') != action_filtered or not params.get('search_hub'): return False
+	query = params.get('query')
+	if not query: return False
+	from modules.kodi_utils import (vuole_segnaposto, timbra_primo_elemento, end_directory,
+									QUERY_PROP, STATO_ATTESA)
+	if len(sys.argv) < 3 or not vuole_segnaposto(sys.argv[2]): return False
+	from modules import paginator
+	scope, cid = paginator.position_of(params)
+	if not scope: return False
+	if not paginator.tiene_altra_lista(params): return False
+	from time import time
+	key = '%s.%s' % (scope, cid)
+	paginator.log('svuoto prima di costruire key=%s query="%s"' % (key, query))
+	paginator.ordina_ricarica(scope, cid, str(int(time() * 1000)))
+	# L'attesa porta il timbro della query VIVA, non di quella nel path. timbra_primo_elemento sta in
+	# _timbra_query, che questo cancello scavalca: senza questa riga si consegnerebbe un'attesa
+	# anonima, e una scritta che dice "sto cercando" deve sapere PER COSA o resta accesa sull'attesa di
+	# una ricerca gia' lasciata. Nel debounce le due query sono diverse per definizione.
+	timbra_primo_elemento(QUERY_PROP, paginator.query_viva() or query)
+	try: end_directory(int(sys.argv[1]), cacheToDisc=False, segnaposto=STATO_ATTESA)
+	except: pass
+	# L'ordine si spedisce DOPO la consegna, non prima: ordina_ricarica annota e basta, a spedire e' una
+	# notifica a Kodi, e davanti a endOfDirectory c'e' il thread grafico che aspetta questa cartella
+	# (stessa ragione del lotto 313, che ha spostato li' anche la scrittura del database).
+	paginator.spedisci_ricariche()
 	return True
 
 def _stale_token_abort(sys, params):
@@ -85,33 +178,13 @@ def _stale_token_abort(sys, params):
 	from modules import paginator
 	if not paginator.token_is_stale(params): return False
 	from modules.kodi_utils import end_directory
-	try: end_directory(int(sys.argv[1]), cacheToDisc=False, segnaposto=False)
+	# segnaposto=None, al contrario del fratello qui sopra: li' il contenitore tiene i risultati di
+	# una query che l'utente ha lasciato, qui tiene quelli GIUSTI con un conteggio di pagine vecchio,
+	# e la cartella corretta e' gia' in arrivo per lo stesso contenuto. Svuotarlo vorrebbe dire farlo
+	# sfarfallare -- vuoto e poi di nuovo pieno degli stessi titoli -- per niente.
+	try: end_directory(int(sys.argv[1]), cacheToDisc=False, segnaposto=None)
 	except: pass
 	return True
-
-def _text_search_done(win, query, media_type):
-	if not win or win.getProperty('FenLight.TextSearch.Query') != query: return
-	win.setProperty('FenLight.TextSearch.%s.State' % media_type, 'done')
-	# Qui si scriveva anche FenLight.TextSearch.<tipo>.HasResults, che nessuno legge piu'. Diceva
-	# 'false' sia per "questa riga ha risposto zero" sia per "questa riga non ha ancora risposto" --
-	# _text_search_start la azzerava a 'false' a ogni query nuova -- e in modalita' combinata lo State
-	# passa a 'done' alla PRIMA riga che finisce: bastava che la piu' veloce tornasse a vuoto perche'
-	# la skin credesse la ricerca finita e senza risultati mentre l'altra stava ancora lavorando
-	# (log del 21/09, 1,73 s di "Nessun risultato" sopra una ricerca da 16 titoli).
-	# La distinzione mancante non si poteva aggiungere: la proprieta' e' per TIPO DI MEDIA, mentre le
-	# righe le configura l'utente e possono essere una o dieci, anche tutte dello stesso tipo. Ora a
-	# rispondere e' la skin, per riga, come gia' per il resto dal lotto 338: zero linguette vuol dire
-	# nessuna riga con risultati, e una linguetta esiste solo se la sua riga porta questa query
-	# (Exp_Search_NoResults in Includes_Search.xml).
-	# LOTTO 338: qui si scriveva FenLight.TextSearch.Settled, "la query dei risultati a schermo". Era uno
-	# per tutte le righe e lo scriveva la prima che finiva. Ogni riga ora lo porta da se' nel primo
-	# elemento (kodi_utils.QUERY_PROP, timbrato in _text_search_start).
-	if win.getProperty('FenLight.TextSearch.Scope') == 'combined':
-		win.setProperty('FenLight.TextSearch.State', 'done')
-		return
-	movie_done = win.getProperty('FenLight.TextSearch.Movie.State') == 'done'
-	tv_done = win.getProperty('FenLight.TextSearch.TV.State') == 'done'
-	if movie_done and tv_done: win.setProperty('FenLight.TextSearch.State', 'done')
 
 def routing(sys):
 	# Marcatore (lotto 50 ter): da qui a mark_phase('indexer_in') c'e' SOLO il parsing dei parametri e
@@ -238,29 +311,23 @@ def routing(sys):
 		if mode == 'build_movie_list':
 			if _get('action') == 'tmdb_movies_search' and _get('search_hub'): params['action'] = 'tmdb_movies_search_filtered'
 			if _search_debounce_abort(sys, params, 'tmdb_movies_search_filtered'): return
-			search_win = _text_search_start(params, 'Movie') if _get('action') == 'tmdb_movies_search_filtered' else None
-			if _get('action') in ('tmdb_movies_search', 'tmdb_movies_search_filtered') and _get('query', ''):
-				from xbmcgui import Window
-				Window(10000).clearProperty('FenLight.Discover.ContentPath')
+			if _search_svuota_prima(sys, params, 'tmdb_movies_search_filtered'): return
+			_timbra_query(params)
+			_chiudi_discover(params, ('tmdb_movies_search', 'tmdb_movies_search_filtered'))
 			from indexers.movies import Movies
 			mark_phase('indexer_in')
 			movies = Movies(params)
-			result = movies.fetch_list()
-			_text_search_done(search_win, _get('query', ''), 'Movie')
-			return result
+			return movies.fetch_list()
 		if mode == 'build_tvshow_list':
 			if _get('action') == 'tmdb_tv_search' and _get('search_hub'): params['action'] = 'tmdb_tv_search_filtered'
 			if _search_debounce_abort(sys, params, 'tmdb_tv_search_filtered'): return
-			search_win = _text_search_start(params, 'TV') if _get('action') == 'tmdb_tv_search_filtered' else None
-			if _get('action') in ('tmdb_tv_search', 'tmdb_tv_search_filtered') and _get('query', ''):
-				from xbmcgui import Window
-				Window(10000).clearProperty('FenLight.Discover.ContentPath')
+			if _search_svuota_prima(sys, params, 'tmdb_tv_search_filtered'): return
+			_timbra_query(params)
+			_chiudi_discover(params, ('tmdb_tv_search', 'tmdb_tv_search_filtered'))
 			from indexers.tvshows import TVShows
 			mark_phase('indexer_in')
 			tvshows = TVShows(params)
-			result = tvshows.fetch_list()
-			_text_search_done(search_win, _get('query', ''), 'TV')
-			return result
+			return tvshows.fetch_list()
 		if mode == 'build_season_list':
 			from indexers.seasons import build_season_list
 			mark_phase('indexer_in')

@@ -1,16 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <window type="window" id="1105">
 
-    <!-- Dove va il fuoco quando resta senza casa. Serve perche' in questa finestra capita per
-         costruzione: la X di clear (3005) cancella il testo, e il testo e' la condizione di
-         visibilita' della X stessa. Finche' qui non c'era un defaultcontrol, quel fuoco lo
-         raccoglieva il primo controllo focalizzabile dell'albero - il 300, l'intestazione - e da
-         li' un Select fa ActivateWindow della scorciatoia della finestra, cioe' esce dalla ricerca
-         (log del 21/09, 00:51:35 fuoco 3005 -> 300, 00:51:38 finestra 11105 -> 10000).
-         3001 non e' un controllo vero, e' lo smistatore di questa finestra: manda sull'edit, o
-         sull'intestazione se e' l'intestazione che si sta chiedendo (RefocusMenu). Senza
-         always="true" Kodi continua a preferire l'ultimo controllo a fuoco quando la finestra
-         torna, che e' quello che il rientro dal player deve poter ripristinare (vedi sotto). -->
+    <!-- Da dove parte il fuoco quando la finestra si apre. 3001 non e' un controllo vero, e' lo
+         smistatore di questa finestra: manda sull'edit, o sull'intestazione se e' l'intestazione
+         che si sta chiedendo (RefocusMenu). Senza always="true" Kodi continua a preferire l'ultimo
+         controllo a fuoco quando la finestra torna, che e' quello che il rientro dal player deve
+         poter ripristinare (vedi sotto).
+         NON e' questo che raccoglie un fuoco perso a finestra gia' aperta: Kodi legge il
+         defaultcontrol all'Init. Il 21/09 l'avevo aggiunto credendo il contrario, e il log della
+         sessione dopo lo smentisce: il fuoco perso e' finito di nuovo sul 300, mentre passando di
+         qui sarebbe finito sul 3000 (la RefocusMenu era vuota - i suoi due soli scrittori, l'onback
+         del 301 e quello del 3004, non hanno mai avuto il fuoco in quella sessione). A finestra
+         aperta quel fuoco se lo prende il primo controllo focalizzabile dell'albero, il 300.
+         Il caso per cui l'avevo messo e' chiuso dove nasce, in Includes_Search.xml: il 3005 non ha
+         piu' una <visible> che possa spegnerlo mentre ha il fuoco. -->
     <defaultcontrol>3001</defaultcontrol>
 
     <onload>ClearProperty(Background.ShowOverlay,Home)</onload>

@@ -108,6 +108,10 @@
 	                                <visible>!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window.Property(Search.ActivePanel))</visible>
 	                                <include content="Hub_Widget_Switcher" condition="!Skin.HasSetting(Search.DisableCombined)">
 	                                    <param name="spinner_condition">$EXP[Exp_Search_Row_Spinner]</param>
+	                                    <!-- Casella vuota: non c'e' piu' nessuna ricerca, quindi la
+	                                         rotellina non puo' tornare e il ritardo di uscita non ha
+	                                         niente da coprire. Vedi View_Spinner_Icon. -->
+	                                    <param name="spinner_hide_now">String.IsEmpty(Control.GetLabel(3000).index(1))</param>
 	                                    <param name="include_content">Search_Switcher_Items</param>
 	                                    <param name="top">520</param>
 	                                    <param name="wall">false</param>
@@ -116,6 +120,10 @@
 	                                </include>
 	                                <include content="Hub_Widget_Switcher" condition="Skin.HasSetting(Search.DisableCombined)">
 	                                    <param name="spinner_condition">$EXP[Exp_Search_Row_Spinner]</param>
+	                                    <!-- Casella vuota: non c'e' piu' nessuna ricerca, quindi la
+	                                         rotellina non puo' tornare e il ritardo di uscita non ha
+	                                         niente da coprire. Vedi View_Spinner_Icon. -->
+	                                    <param name="spinner_hide_now">String.IsEmpty(Control.GetLabel(3000).index(1))</param>
 	                                    <param name="include_content">Search_Switcher_Items</param>
 	                                    <param name="top">-520</param>
 	                                    <param name="wall">false</param>
@@ -210,7 +218,73 @@
          quella ma la sta ancora costruendo. E' la condizione delle due scritte 'Ricerca in corso' /
          'Attendi il caricamento dei risultati', scritta qui una volta sola perche' ha un secondo
          lettore che deve dire esattamente il contrario: la rotellina. -->
-    <expression name="Exp_Search_Loading">[!String.IsEmpty(Control.GetLabel(3000).index(1)) + [!String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) | String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),loading)]]</expression>
+    <!-- "QUELLO CHE LA RIGA N HA ADESSO E' DI QUESTA RICERCA."
+         Il primo elemento porta la query che lo ha prodotto (fenlight.query, kodi_utils.QUERY_PROP,
+         regola del lotto 338) e qui si confronta con cio' che e' scritto nella casella. Vale sia per
+         una riga piena di titoli sia per una che tiene il solo segnaposto: dice DI CHI E' il
+         contenuto, non che contenuto sia.
+         Definita una volta per riga perche' la leggono in tre (il cancello della riga, quello della
+         linguetta, la rotellina) e finche' era scritta per esteso in ognuno cambiarla voleva dire
+         quindici modifiche coerenti. E' gia' successo che se ne facessero quattordici: il lotto 167,
+         dove il cancello nuovo entro' nei template delle righe generate e non nella riga scritta a
+         mano. I cinque id sono letterali per la ragione di sempre: non c'e' modo di riferirsi a un
+         contenitore il cui id e' un dato (PR.md, voce 20). -->
+    <expression name="Exp_Search_502_Risponde">String.IsEqual(Container(502).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</expression>
+    <expression name="Exp_Search_503_Risponde">String.IsEqual(Container(503).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</expression>
+    <expression name="Exp_Search_504_Risponde">String.IsEqual(Container(504).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</expression>
+    <expression name="Exp_Search_505_Risponde">String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</expression>
+    <expression name="Exp_Search_506_Risponde">String.IsEqual(Container(506).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</expression>
+
+    <!-- "LA RIGA N SI E' SVUOTATA E ASPETTA LA CONSEGNA VERA."
+         Lo stato `attesa` viaggia sul primo elemento dallo step 2 (kodi_utils.STATO_ATTESA) e fino
+         alla revisione del 21/09 non lo leggeva nessuno: la skin confrontava solo con `vuoto`, e
+         "aspetto" finiva confuso con "non lo so". Lo scrive un posto solo, _search_svuota_prima,
+         che e' anche l'unico che svuota un contenitore vivo.
+         SERVE PERCHE' LE RIGHE NON FINISCONO INSIEME. Se una risponde "niente" in fretta mentre
+         l'altra aspetta, e nell'istante in cui si guarda quest'ultima non sta scaricando (fra la
+         cartella vuota che atterra e la ricostruzione ordinata passano ~90 ms), allora nessuna
+         linguetta esiste, nessun contenitore aggiorna, e una riga ha detto "vuoto": "Nessun
+         risultato" si accendeva sopra una ricerca che stava per consegnare quaranta titoli. E se
+         l'ordine di ricostruzione si perde, quella riga aspetta per sempre e la scritta sbagliata
+         resta per sempre.
+         Si usa NEGATO in "Nessun risultato" e come allargamento in "Ricerca in corso", mai da solo:
+         cosi' un timbro diventato vecchio, perche' l'utente ha continuato a digitare, lo rende falso
+         senza fare danni, perche' in quel caso anche Exp_Search_Row_Empty e' falsa e la domanda non
+         si pone. E' la ragione per cui l'Exp_Search_Row_Waiting del primo tentativo non funzionava:
+         li' era un predicato POSITIVO e doveva inseguire un dato che cambiava sotto di lui. -->
+    <expression name="Exp_Search_502_Attende">[[$EXP[Exp_Search_502_Risponde]] + String.IsEqual(Container(502).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),attesa)]</expression>
+    <expression name="Exp_Search_503_Attende">[[$EXP[Exp_Search_503_Risponde]] + String.IsEqual(Container(503).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),attesa)]</expression>
+    <expression name="Exp_Search_504_Attende">[[$EXP[Exp_Search_504_Risponde]] + String.IsEqual(Container(504).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),attesa)]</expression>
+    <expression name="Exp_Search_505_Attende">[[$EXP[Exp_Search_505_Risponde]] + String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),attesa)]</expression>
+    <expression name="Exp_Search_506_Attende">[[$EXP[Exp_Search_506_Risponde]] + String.IsEqual(Container(506).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),attesa)]</expression>
+
+    <!-- ALMENO UNA RIGA HA DETTO DI NON AVER TROVATO NIENTE (step 4).
+         E' il dato che a "Nessun risultato" e' sempre mancato. Il numero delle linguette dice "nessuna
+         riga ha titoli", che e' vero anche prima che qualcuno abbia risposto; Exp_Search_Row_Building lo
+         approssimava con "nessuna sta costruendo", vero pure nell'istante fra due consegne. Qui la riga
+         DICE di aver finito a vuoto: lo stato viaggia sul primo elemento (kodi_utils.STATO_VUOTO,
+         regola del lotto 338) e il confronto con la casella garantisce che abbia risposto a QUESTA
+         ricerca e non a quella di prima.
+         I cinque id sono scritti a mano per la ragione di sempre: non c'e' modo di riferirsi a un
+         contenitore il cui id e' un dato (PR.md, voce 20). -->
+    <expression name="Exp_Search_Row_Empty">[[[$EXP[Exp_Search_502_Risponde]] + String.IsEqual(Container(502).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),vuoto)] | [[$EXP[Exp_Search_503_Risponde]] + String.IsEqual(Container(503).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),vuoto)] | [[$EXP[Exp_Search_504_Risponde]] + String.IsEqual(Container(504).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),vuoto)] | [[$EXP[Exp_Search_505_Risponde]] + String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),vuoto)] | [[$EXP[Exp_Search_506_Risponde]] + String.IsEqual(Container(506).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),vuoto)]]</expression>
+
+    <!-- ALMENO UNA RIGA STA ANCORA ASPETTANDO LA SUA CONSEGNA. Il complemento di Row_Empty: le due
+         insieme dicono "qualcuno ha risposto" e "qualcuno deve ancora rispondere", e servono
+         entrambe perche' una ricerca puo' essere in tutti e due gli stati nello stesso istante. -->
+    <expression name="Exp_Search_Row_Waiting">[[$EXP[Exp_Search_502_Attende]] | [$EXP[Exp_Search_503_Attende]] | [$EXP[Exp_Search_504_Attende]] | [$EXP[Exp_Search_505_Attende]] | [$EXP[Exp_Search_506_Attende]]]</expression>
+
+    <!-- "RICERCA IN CORSO", e la domanda e' POSTA AL CONTRARIO di come verrebbe naturale.
+         Non "qualcuno sta aspettando" ma "nessuno ha ancora risposto". La prima versione chiedeva a
+         una riga di dichiarare l'attesa CON il timbro della query, e non poteva funzionare: il timbro
+         e' la query viva nell'istante in cui la riga si svuota, ma l'utente sta ancora digitando:
+         il segnaposto porta "shar" mentre la casella dice gia' "shark", e il confronto cade. Un
+         predicato positivo qui deve inseguire un dato che cambia sotto di lui; quello negativo no.
+         I due termini: c'e' del testo, e nessuna riga ha titoli (nessuna linguetta). A quel punto o
+         qualcuno ha risposto "niente" per QUESTA ricerca, e allora si scrive "Nessun risultato",
+         oppure no, e allora si sta ancora aspettando. Le due scritte sono le due risposte alla stessa
+         domanda e si escludono per costruzione, non per una guardia. -->
+    <expression name="Exp_Search_Loading">[!String.IsEmpty(Control.GetLabel(3000).index(1)) + Integer.IsEqual(Container(601).NumItems,0) + [![$EXP[Exp_Search_Row_Empty]] | [$EXP[Exp_Search_Row_Waiting]]]]</expression>
 
     <!-- "Sta ancora costruendo una riga qualunque della ricerca". Grezzo di proposito: non chiede
          di quale query siano gli elementi, chiede solo se il contenitore ha un lavoro in corso.
@@ -239,9 +313,16 @@
          stesso tipo (sulla stick ce n'e' una sola: con "non ha ancora risposto" distinto da "zero",
          la riga TV non avrebbe risposto MAI e la scritta non sarebbe mai comparsa). La risposta che
          scala e' per riga, ed e' la stessa a cui era gia' arrivato il lotto 338.
-         Il terzo termine e' quello che chiude la finestra: finche' una riga qualunque sta ancora
-         costruendo, non si sa se il risultato sia zero. -->
-    <expression name="Exp_Search_NoResults">[!String.IsEmpty(Control.GetLabel(3000).index(1)) + ![$EXP[Exp_Search_Loading]] + ![$EXP[Exp_Search_Row_Building]] + Integer.IsEqual(Container(601).NumItems,0)]</expression>
+         Il secondo termine e' quello che chiude la finestra: finche' una riga qualunque sta ancora
+         costruendo, non si sa se il risultato sia zero.
+         QUI C'ERA ANCHE ![Exp_Search_Loading], e non poteva mai essere falso. Loading vale
+         'casella piena + nessuna linguetta + nessuna riga vuota', e questa espressione asserisce
+         gia' i primi due insieme al loro opposto sul terzo: dove si arriva a valutarlo, Loading e'
+         falso per costruzione. Era un residuo dello stato precedente, quando il termine
+         Exp_Search_Row_Empty non c'era e la negazione portava un'informazione sua. Le due scritte
+         restano esclusive: lo sono perche' l'una chiede Row_Empty e l'altra la sua negazione, non
+         perche' si guardino a vicenda. -->
+    <expression name="Exp_Search_NoResults">[!String.IsEmpty(Control.GetLabel(3000).index(1)) + ![$EXP[Exp_Search_Row_Building]] + Integer.IsEqual(Container(601).NumItems,0) + [$EXP[Exp_Search_Row_Empty]] + ![$EXP[Exp_Search_Row_Waiting]]]</expression>
 
     <!-- Quando accendere la rotellina della ricerca. DOVE finisca non si decide piu' qui: la
          rotellina e' l'ultima voce del grouplist che dispone i nomi, quindi sta sempre a
@@ -262,8 +343,29 @@
          query scritta adesso sta caricando una pagina in piu'; durante la PRIMA pagina di una query
          nuova i suoi elementi sono ancora della query precedente. E' lo stesso cancello dei row e
          delle linguette, riga per riga (lotto 338: il primo elemento porta la query che lo ha
-         prodotto, kodi_utils.QUERY_PROP). -->
-    <expression name="Exp_Search_Row_Spinner">![$EXP[Exp_Search_Loading]] + [[Container(502).IsUpdating + String.IsEqual(Container(502).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(503).IsUpdating + String.IsEqual(Container(503).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(504).IsUpdating + String.IsEqual(Container(504).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(505).IsUpdating + String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))] | [Container(506).IsUpdating + String.IsEqual(Container(506).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))]]</expression>
+         prodotto, kodi_utils.QUERY_PROP).
+         IL TERMINE IN TESTA, la casella non vuota, non e' un di piu': senza, il confronto del
+         secondo termine DEGENERA. A casella svuotata un contenitore senza timbro da'
+         String.IsEqual("","") cioe' VERO, e la rotellina si riaccendeva sopra i risultati appena
+         cancellati (segnalato il 21/09). "Nessun timbro" e "nessuna ricerca" sono due assenze, e
+         due assenze che coincidono non sono una corrispondenza. Le linguette questa guardia ce
+         l'hanno gia' (search_item.xmltemplate); qui mancava.
+         STEP 4 RITIRATO. Qui c'era un terzo termine per riga, String.IsEmpty(fenlight.segnaposto):
+         "una riga che ricostruisce tenendo SOLO il segnaposto non sta paginando". Il ragionamento
+         valeva finche' a coprire quel momento c'era la scritta 'Ricerca in corso', e la scritta si
+         spegne alla PRIMA riga che finisce, perche' guarda il numero delle linguette. Quando le
+         righe finiscono in tempi diversi, e nel log finiscono sempre in tempi diversi, resta un
+         intervallo in cui la riga lenta e' invisibile, la scritta e' spenta e la rotellina era
+         spenta pure: la ricerca sembra finita con i soli risultati della riga veloce.
+         Log del 21/09, ricerca 'lust':
+             06:19:16.500  set_head key=1105.503 built=2     la riga TV finisce
+             06:19:29.242  set_head key=1105.502 built=40    la riga film finisce
+         dodici secondi e sette decimi di silenzio. Il termine contraddiceva il significato
+         dichiarato due righe piu' su: la rotellina dice "stanno arrivando altri risultati", e una
+         riga che ricostruisce dal vuoto sta per consegnarne. Adesso lo dice anche quando la riga
+         parte dal segnaposto, ed e' l'unico stato in cui la ricerca ha ancora qualcosa da dare.
+         tests/test_rotella_riga_lenta.py -->
+    <expression name="Exp_Search_Row_Spinner">!String.IsEmpty(Control.GetLabel(3000).index(1)) + ![$EXP[Exp_Search_Loading]] + [[Container(502).IsUpdating + [$EXP[Exp_Search_502_Risponde]]] | [Container(503).IsUpdating + [$EXP[Exp_Search_503_Risponde]]] | [Container(504).IsUpdating + [$EXP[Exp_Search_504_Risponde]]] | [Container(505).IsUpdating + [$EXP[Exp_Search_505_Risponde]]] | [Container(506).IsUpdating + [$EXP[Exp_Search_506_Risponde]]]]</expression>
 
     <!-- LOTTO 212. "La ricerca testuale ha risultati a schermo": finestra 1105 (id reale 11105) con testo nel box.
          Serve ai consumatori che devono sapere QUALE contenitore mostra i risultati senza dipendere dal
@@ -285,7 +387,9 @@
                 </include>
             </control>
             <control type="group">
-                <visible>!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEqual(Window(Home).Property(FenLight.TextSearch.Query),Control.GetLabel(3000).index(1)) + !String.IsEqual(Window(Home).Property(FenLight.TextSearch.State),loading)</visible>
+                <!-- Era l'altro lettore del canale globale, e diceva la stessa cosa in un modo diverso:
+                     "la ricerca di adesso e' arrivata". Adesso e' il complemento della scritta di attesa. -->
+                <visible>!String.IsEmpty(Control.GetLabel(3000).index(1)) + ![$EXP[Exp_Search_Loading]]</visible>
                 <include>skinvariables-searchwidgets-info</include>
             </control>
             <control type="label">
@@ -495,12 +599,26 @@
         <!-- X di clear dentro la pill: visibile solo con testo presente. Cerchio grigio (idle) / nero (focus),
              X scura (idle) / bianca (focus). Eredita la geometria della pill (width 800, height 80). -->
         <control type="group">
-            <!-- Il secondo termine: finche' la X ha il fuoco resta viva anche a casella vuota. Senza,
-                 il controllo che ha il fuoco spariva come conseguenza del PROPRIO clic - la X cancella
-                 il testo, e il testo e' la sua condizione di visibilita' - e il fuoco restava senza
-                 casa: a deciderne la sorte era Kodi, non la skin. Il fuoco torna sull'edit un istante
-                 dopo (l'onclick e lo setfocus dello script), e a quel punto la X si nasconde da se'. -->
-            <visible>!String.IsEmpty(Control.GetLabel(3000).index(1)) | Control.HasFocus(3005)</visible>
+            <!-- QUESTO GRUPPO NON HA UNA <visible>, ED E' IL PUNTO.
+                 La X cancella il testo, e il testo era la condizione di visibilita' della X: un anello
+                 in cui il controllo che ha il fuoco puo' smettere di esistere come conseguenza del
+                 proprio clic. Quando succede il fuoco resta senza casa e se lo prende il primo
+                 controllo focalizzabile dell'albero, il 300 - che in questa finestra fa ActivateWindow
+                 della scorciatoia, cioe' esce dalla ricerca. Log del 21/09 03:35, ricerca "dark":
+                   03:35:13.618  fuoco 3005
+                   03:35:15.135  fuoco 300     <- senza passare dal 3000
+                   03:35:16.226  finestra 11105 -> 10000
+                 Il 3000 assente e' la prova che l'onclick della X non ha girato: il suo SetFocus(3000)
+                 e' sincrono, e il watcher campiona ogni 0,3 s. Ne' ci arriva un tasto di direzione:
+                 onup/onleft/onback vanno al 3000, onright al 3004 (sempre focalizzabile), e un ondown
+                 senza condizioni vere non muove niente. Resta solo il fuoco senza casa.
+                 Le tre chiusure del 21/09 notte giravano tutte intorno all'anello - tenere viva la X
+                 finche' ha il fuoco, rimettere il fuoco dopo, dichiarare un defaultcontrol - e l'anello
+                 le ha superate tutte e tre. Qui l'anello si taglia: cio' che puo' prendere il fuoco non
+                 dipende piu' dal dato che cancella. Il bottone 3005 e' focalizzabile sempre; la
+                 condizione e' scesa sui soli pixel (il gruppo in fondo a questo include).
+                 Restano utili, per altro: la X sotto il dito non sparisce a meta' clic, e il fuoco dopo
+                 lo svuotamento torna sull'edit invece di lasciare il cursore su un bottone invisibile. -->
             <!-- Ancorata a destra dentro la pill da 730px: 730 - 68 (larghezza) - 16 (margine) = 646 -->
             <left>646</left>
             <width>68</width>
@@ -528,11 +646,11 @@
                 <!-- Logica di clear (ex chip "Cancella"): azzera tutto e svuota il box. Svuotato il testo,
                      la X si auto-nasconde e il focus torna sull'edit. -->
                 <onclick>ClearProperty(FenLight.Discover.ContentPath,Home)</onclick>
-                <onclick>ClearProperty(FenLight.TextSearch.Query,Home)</onclick>
-                <onclick>ClearProperty(FenLight.TextSearch.State,Home)</onclick>
-                <onclick>ClearProperty(FenLight.TextSearch.Scope,Home)</onclick>
-                <onclick>ClearProperty(FenLight.TextSearch.Movie.State,Home)</onclick>
-                <onclick>ClearProperty(FenLight.TextSearch.TV.State,Home)</onclick>
+                <!-- Qui c'erano cinque ClearProperty del canale globale FenLight.TextSearch.*, che la
+                     X doveva spegnere perche' nessun altro lo avrebbe fatto. Il canale non esiste
+                     piu': ogni riga porta il proprio stato nel primo elemento, e il primo elemento se
+                     ne va insieme agli elementi. Non c'era niente da pulire, c'era da non avere uno
+                     stato che sopravvive a cio' che descrive. -->
                 <onclick>ClearProperty(TMDbHelper.WidgetContainer)</onclick>
                 <onclick>SetProperty(Background.HideArtwork,True)</onclick>
                 <onclick>SetFocus(3000)</onclick>
@@ -553,37 +671,45 @@
                 <onclick>RunScript(script.skinvariables,set_editcontrol=3000,window_id=1105,text=,setfocus=3000)</onclick>
             </control>
 
-            <!-- Cerchio di sfondo (maschera bianca tinta via colordiffuse).
-                 Barra inattiva: piu' trasparente. Barra attiva: grigio pieno. Focus sulla X: nero. -->
-            <control type="image">
-                <texture colordiffuse="main_fg_30">resource://resource.images.arcticfuse/icons/circle.png</texture>
-                <visible>!Control.HasFocus(3005) + !Control.HasFocus(3000)</visible>
-            </control>
-            <control type="image">
-                <texture colordiffuse="main_fg_50">resource://resource.images.arcticfuse/icons/circle.png</texture>
-                <visible>!Control.HasFocus(3005) + Control.HasFocus(3000)</visible>
-            </control>
-            <control type="image">
-                <texture colordiffuse="main_bg_100">resource://resource.images.arcticfuse/icons/circle.png</texture>
-                <visible>Control.HasFocus(3005)</visible>
-            </control>
+            <!-- I PIXEL, e solo loro, dipendono dal testo. Il gruppo non ha geometria propria:
+                 eredita quella del padre, quindi le immagini stanno dove stavano.
+                 Il secondo termine tiene disegnata la X finche' ha il fuoco, cosi' non svanisce sotto
+                 il dito nell'istante fra lo svuotamento e il ritorno del fuoco sull'edit. -->
+            <control type="group">
+                <visible>!String.IsEmpty(Control.GetLabel(3000).index(1)) | Control.HasFocus(3005)</visible>
 
-            <!-- X sopra il cerchio -->
-            <control type="image">
-                <left>17</left>
-                <top>17</top>
-                <width>34</width>
-                <height>34</height>
-                <texture colordiffuse="main_bg_100">resource://resource.images.arcticfuse/icons/xmark.png</texture>
-                <visible>!Control.HasFocus(3005)</visible>
-            </control>
-            <control type="image">
-                <left>17</left>
-                <top>17</top>
-                <width>34</width>
-                <height>34</height>
-                <texture colordiffuse="main_fg_100">resource://resource.images.arcticfuse/icons/xmark.png</texture>
-                <visible>Control.HasFocus(3005)</visible>
+                <!-- Cerchio di sfondo (maschera bianca tinta via colordiffuse).
+                     Barra inattiva: piu' trasparente. Barra attiva: grigio pieno. Focus sulla X: nero. -->
+                <control type="image">
+                    <texture colordiffuse="main_fg_30">resource://resource.images.arcticfuse/icons/circle.png</texture>
+                    <visible>!Control.HasFocus(3005) + !Control.HasFocus(3000)</visible>
+                </control>
+                <control type="image">
+                    <texture colordiffuse="main_fg_50">resource://resource.images.arcticfuse/icons/circle.png</texture>
+                    <visible>!Control.HasFocus(3005) + Control.HasFocus(3000)</visible>
+                </control>
+                <control type="image">
+                    <texture colordiffuse="main_bg_100">resource://resource.images.arcticfuse/icons/circle.png</texture>
+                    <visible>Control.HasFocus(3005)</visible>
+                </control>
+
+                <!-- X sopra il cerchio -->
+                <control type="image">
+                    <left>17</left>
+                    <top>17</top>
+                    <width>34</width>
+                    <height>34</height>
+                    <texture colordiffuse="main_bg_100">resource://resource.images.arcticfuse/icons/xmark.png</texture>
+                    <visible>!Control.HasFocus(3005)</visible>
+                </control>
+                <control type="image">
+                    <left>17</left>
+                    <top>17</top>
+                    <width>34</width>
+                    <height>34</height>
+                    <texture colordiffuse="main_fg_100">resource://resource.images.arcticfuse/icons/xmark.png</texture>
+                    <visible>Control.HasFocus(3005)</visible>
+                </control>
             </control>
         </control>
     </include>
@@ -1050,8 +1176,21 @@
     <include name="Search_Advanced_Panel">
         <control type="group">
             <visible>String.IsEqual(Window.Property(Search.ActivePanel),advanced)</visible>
-            <!-- Centrato orizzontalmente: (1920 - 1000) / 2 = 460 -->
-            <left>460</left>
+            <!-- CENTRATO DAVVERO, non a mano. Qui c'era <left>460</left> con il commento
+                 "(1920 - 1000) / 2", e quel conto vale solo su uno schermo 16:9.
+                 Lo spazio di coordinate della skin NON e' sempre 1920 unita': Kodi lo adatta al
+                 rapporto d'aspetto del display. Su un MacBook Pro 14 (3024x1964, cioe' 1,54) misura
+                 1620 unita', quindi il centro dello schermo sta a 810 e non a 960: il pannello
+                 finiva 150 unita' a destra, 272 px su quello schermo. Misurato sullo screenshot del
+                 21/09, riga della data simmetrica (148 px a sinistra, 148 a destra) contro pannello
+                 a 854 e 310: 272 px esatti, cioe' esattamente 150 unita'.
+                 L'intestazione e la barra di ricerca non avevano il problema perche' si ancorano ai
+                 DUE bordi (Home_Group_Definition: left=view_pad, right=view_pad), quindi restano
+                 simmetriche qualunque sia la larghezza. Qui si fa la stessa cosa con centerleft, che
+                 la skin usa gia' in una trentina di punti. Una geometria che dipende da un numero
+                 magico e' sbagliata anche quando per caso torna.
+                 tests/test_pannello_centrato.py -->
+            <centerleft>50%</centerleft>
             <top>330</top>
             <width>1000</width>
 
@@ -1142,31 +1281,34 @@
             <control type="group">
                 <top>70</top>
                 <visible>String.IsEqual(Window(Home).Property(Discover.MediaType),movie) | String.IsEmpty(Window(Home).Property(Discover.MediaType))</visible>
-                <include content="Search_Discover_Filter"><param name="id">3020</param><param name="label">Anno inizio</param><param name="key">with_year_start</param><param name="top">0</param><param name="left">0</param><param name="width">480</param><param name="onup">3009</param><param name="ondown">3021</param><param name="onright">3025</param><param name="onleft">0</param><param name="media_type">movie</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3021</param><param name="label">Anno fine</param><param name="key">with_year_end</param><param name="top">55</param><param name="left">0</param><param name="width">480</param><param name="onup">3020</param><param name="ondown">3022</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3022</param><param name="label">Generi inclusi</param><param name="key">with_genres</param><param name="top">110</param><param name="left">0</param><param name="width">480</param><param name="onup">3021</param><param name="ondown">3023</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3023</param><param name="label">Generi esclusi</param><param name="key">without_genres</param><param name="top">165</param><param name="left">0</param><param name="width">480</param><param name="onup">3022</param><param name="ondown">3024</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3020</param><param name="label">Anno Inizio</param><param name="key">with_year_start</param><param name="top">0</param><param name="left">0</param><param name="width">480</param><param name="onup">3009</param><param name="ondown">3021</param><param name="onright">3025</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3021</param><param name="label">Anno Fine</param><param name="key">with_year_end</param><param name="top">55</param><param name="left">0</param><param name="width">480</param><param name="onup">3020</param><param name="ondown">3022</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3022</param><param name="label">Generi Inclusi</param><param name="key">with_genres</param><param name="top">110</param><param name="left">0</param><param name="width">480</param><param name="onup">3021</param><param name="ondown">3023</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3023</param><param name="label">Generi Esclusi</param><param name="key">without_genres</param><param name="top">165</param><param name="left">0</param><param name="width">480</param><param name="onup">3022</param><param name="ondown">3024</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
                 <include content="Search_Discover_Filter"><param name="id">3024</param><param name="label">Cast</param><param name="key">with_cast</param><param name="top">220</param><param name="left">0</param><param name="width">480</param><param name="onup">3023</param><param name="ondown">3015</param><param name="onright">3027</param><param name="onleft">0</param><param name="media_type">movie</param></include>
                 <include content="Search_Discover_Filter"><param name="id">3025</param><param name="label">Min Valutazione</param><param name="key">with_rating</param><param name="top">0</param><param name="left">520</param><param name="width">480</param><param name="onup">3009</param><param name="ondown">3027</param><param name="onright">0</param><param name="onleft">3020</param><param name="media_type">movie</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3027</param><param name="label">Ordinamento</param><param name="key">with_sort</param><param name="top">55</param><param name="left">520</param><param name="width">480</param><param name="onup">3025</param><param name="ondown">3016</param><param name="onright">0</param><param name="onleft">3021</param><param name="media_type">movie</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3027</param><param name="label">Ordina</param><param name="key">with_sort</param><param name="top">55</param><param name="left">520</param><param name="width">480</param><param name="onup">3025</param><param name="ondown">3016</param><param name="onright">0</param><param name="onleft">3021</param><param name="media_type">movie</param></include>
             </control>
 
             <!-- Serie TV filters -->
             <control type="group">
                 <top>70</top>
                 <visible>String.IsEqual(Window(Home).Property(Discover.MediaType),tvshow)</visible>
-                <include content="Search_Discover_Filter"><param name="id">3030</param><param name="label">Anno inizio</param><param name="key">with_year_start</param><param name="top">0</param><param name="left">0</param><param name="width">480</param><param name="onup">3010</param><param name="ondown">3031</param><param name="onright">3035</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3031</param><param name="label">Anno fine</param><param name="key">with_year_end</param><param name="top">55</param><param name="left">0</param><param name="width">480</param><param name="onup">3030</param><param name="ondown">3032</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3032</param><param name="label">Generi inclusi</param><param name="key">with_genres</param><param name="top">110</param><param name="left">0</param><param name="width">480</param><param name="onup">3031</param><param name="ondown">3033</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3033</param><param name="label">Generi esclusi</param><param name="key">without_genres</param><param name="top">165</param><param name="left">0</param><param name="width">480</param><param name="onup">3032</param><param name="ondown">3034</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3030</param><param name="label">Anno Inizio</param><param name="key">with_year_start</param><param name="top">0</param><param name="left">0</param><param name="width">480</param><param name="onup">3010</param><param name="ondown">3031</param><param name="onright">3035</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3031</param><param name="label">Anno Fine</param><param name="key">with_year_end</param><param name="top">55</param><param name="left">0</param><param name="width">480</param><param name="onup">3030</param><param name="ondown">3032</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3032</param><param name="label">Generi Inclusi</param><param name="key">with_genres</param><param name="top">110</param><param name="left">0</param><param name="width">480</param><param name="onup">3031</param><param name="ondown">3033</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3033</param><param name="label">Generi Esclusi</param><param name="key">without_genres</param><param name="top">165</param><param name="left">0</param><param name="width">480</param><param name="onup">3032</param><param name="ondown">3034</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
                 <include content="Search_Discover_Filter"><param name="id">3034</param><param name="label">Network</param><param name="key">with_network</param><param name="top">220</param><param name="left">0</param><param name="width">480</param><param name="onup">3033</param><param name="ondown">3015</param><param name="onright">3037</param><param name="onleft">0</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3035</param><param name="label">Min valutazione</param><param name="key">with_rating</param><param name="top">0</param><param name="left">520</param><param name="width">480</param><param name="onup">3010</param><param name="ondown">3037</param><param name="onright">0</param><param name="onleft">3030</param><param name="media_type">tvshow</param></include>
-                <include content="Search_Discover_Filter"><param name="id">3037</param><param name="label">Ordinamento</param><param name="key">with_sort</param><param name="top">55</param><param name="left">520</param><param name="width">480</param><param name="onup">3035</param><param name="ondown">3016</param><param name="onright">0</param><param name="onleft">3031</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3035</param><param name="label">Min Valutazione</param><param name="key">with_rating</param><param name="top">0</param><param name="left">520</param><param name="width">480</param><param name="onup">3010</param><param name="ondown">3037</param><param name="onright">0</param><param name="onleft">3030</param><param name="media_type">tvshow</param></include>
+                <include content="Search_Discover_Filter"><param name="id">3037</param><param name="label">Ordina</param><param name="key">with_sort</param><param name="top">55</param><param name="left">520</param><param name="width">480</param><param name="onup">3035</param><param name="ondown">3016</param><param name="onright">0</param><param name="onleft">3031</param><param name="media_type">tvshow</param></include>
             </control>
 
-            <!-- Cerca -->
+            <!-- Cerca. I due bottoni sono larghi 180 con 40 di stacco, quindi occupano 400 su
+                 1000: partono da 300, non da 280. Il 280 era quello delle LINGUETTE, che sono larghe
+                 200 e occupano 440; copiato di li', lasciava la coppia 20 unita' a sinistra del
+                 centro del pannello. -->
             <control type="button" id="3015">
-                <left>280</left>
+                <left>300</left>
                 <top>375</top>
                 <width>180</width>
                 <height>50</height>
@@ -1189,9 +1331,9 @@
                 <onright>3016</onright>
             </control>
 
-            <!-- Reset -->
+            <!-- Reset: 300 + 180 + 40 -->
             <control type="button" id="3016">
-                <left>500</left>
+                <left>520</left>
                 <top>375</top>
                 <width>180</width>
                 <height>50</height>
