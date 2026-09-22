@@ -352,8 +352,16 @@
                 <include>Info_Panel_Dimensions</include>
                 <control type="group">
                     <!-- LOTTO 297: era top 200 con l'animazione a -200; ora top 0 e animazione a +200. -->
+                    <!-- Nella ricerca il logo di una riga che non si vede e' TRASPARENTE, non nascosto: un
+                         pannello nascosto congela la sua immagine sull'ultimo logo (Kodi non aggiorna i
+                         figli di un gruppo nascosto), e al ritorno il ponte del lotto 306 mostrava il logo
+                         della ricerca precedente. Trasparente, l'immagine segue lo stato e vede sparire il
+                         logo vecchio insieme ai risultati. Fuori dalla ricerca Exp_Search_Window_Text e'
+                         falsa: la dissolvenza non scatta e la Home resta com'era. Vedi Search_Info_Panel.
+                         tests/test_logo_vede_il_vuoto.py -->
+                    <animation effect="fade" start="100" end="0" time="0" condition="$EXP[Exp_Search_Window_Text] + !Control.IsVisible($PARAM[id])">Conditional</animation>
                     <include content="Info_Panel">
-                        <param name="visible">[!$EXP[Exp_InfoDialogs] + [[$EXP[Exp_Search_Window_Text] + Control.IsVisible($PARAM[id])] | [!$EXP[Exp_Search_Window_Text] + Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id])]]]</param>
+                        <param name="visible">[!$EXP[Exp_InfoDialogs] + [[$EXP[Exp_Search_Window_Text]] | [!$EXP[Exp_Search_Window_Text] + Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id])]]]</param>
                         <param name="visible_line">false</param>
                         <param name="visible_plot">false</param>
                         <param name="visible_meta">false</param>
