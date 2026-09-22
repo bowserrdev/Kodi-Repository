@@ -296,8 +296,11 @@
     <!-- "La ricerca e' finita e non ha prodotto niente". Lo dice il numero delle LINGUETTE: una
          linguetta esiste se e solo se la sua riga ha elementi di questa query (vedi
          search_item.xmltemplate), quindi zero linguette e' esattamente "nessuna riga ha risultati".
-         E' la stessa cosa che il testo dell'etichetta gia' assumeva (Label_Search_NoResults legge
-         Container(601).NumItems): qui si allinea la condizione che decide se mostrarla.
+         Il TESTO dell'etichetta legge questa stessa espressione (Label_Search_NoResults e
+         Label_Search_Title_NoResults). Prima aveva una copia sua, "casella piena + zero linguette",
+         rimasta indietro quando la visibilita' e' stata affinata: vera anche durante l'attesa, faceva
+         dire "Nessun risultato" alla scritta "Benvenuto" mentre sfumava in uscita, alla conferma di
+         ogni ricerca (registrazione del 21/09, 21:09:42.252). tests/test_logo_vede_il_vuoto.py
          PRIMA leggeva FenLight.TextSearch.Movie.HasResults e .TV.HasResults, e la scritta lampeggiava
          per un paio di secondi prima dei risultati. Quelle due proprieta' valevano 'false' sia per
          "ha risposto zero" sia per "non ha ancora risposto": _text_search_start le azzerava a ogni
@@ -388,8 +391,18 @@
             </control>
             <control type="group">
                 <!-- Era l'altro lettore del canale globale, e diceva la stessa cosa in un modo diverso:
-                     "la ricerca di adesso e' arrivata". Adesso e' il complemento della scritta di attesa. -->
-                <visible>!String.IsEmpty(Control.GetLabel(3000).index(1)) + ![$EXP[Exp_Search_Loading]]</visible>
+                     "la ricerca di adesso e' arrivata". Adesso e' il complemento della scritta di attesa.
+                     TRASPARENTE, NON NASCOSTO, durante il caricamento. Kodi aggiorna i figli di un gruppo
+                     solo se il gruppo e' visibile (GUIControlGroup.cpp:86-104): con il caricamento in
+                     <visible> il logo non vedeva mai il contenitore svuotarsi, passava dal logo della
+                     ricerca precedente a quello nuovo direttamente, e il ponte del lotto 306 teneva il
+                     vecchio a schermo per tutto il download (registrazione del 21/09: MOON sopra i
+                     risultati di "red" per un secondo). Una dissolvenza a 0 non si vede come il gruppo
+                     nascosto, ma lascia che l'immagine riceva il file vuoto e scarti la texture vecchia.
+                     Vale anche per Hub_Combined_Info, che fa lo stesso sul pannello del titolo.
+                     tests/test_logo_vede_il_vuoto.py -->
+                <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
+                <animation effect="fade" start="100" end="0" time="0" condition="$EXP[Exp_Search_Loading]">Conditional</animation>
                 <include>skinvariables-searchwidgets-info</include>
             </control>
             <control type="label">
