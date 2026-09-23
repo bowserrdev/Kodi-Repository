@@ -618,6 +618,17 @@
                 <param name="widget_showoverlay">$PARAM[widget_showoverlay]</param>
                 <param name="congela">$PARAM[congela]</param>
                 <param name="congelata">$PARAM[congelata]</param>
+                <!-- SINISTRA SUL PRIMO ELEMENTO: rimbalzo, non salto in fondo. Stessa regola delle righe
+                     degli hub (Includes_Hubs.xml): senza <onleft> Kodi avvolge di proposito
+                     (GUIBaseContainer.cpp:582-586, wrapAround e' vero quando nessuno dichiara dove si va a
+                     sinistra) e la lista salta all'ultimo elemento, cioe' in fondo a pagine che non sono
+                     mai state chieste. Le azioni spengono l'avvolgimento e Kodi le esegue solo dove il
+                     movimento non e' possibile. Va scritto qui e non nella riga degli hub soltanto: le
+                     righe nascono da due include diversi, e il 23/09 la correzione era entrata solo in uno
+                     (la deriva del lotto 167). Che ogni riga PAGINABILE ce l'abbia, in ogni finestra, lo
+                     verifica tests/test_rimbalzo_orizzontale.py sulla skin espansa. -->
+                <onleft condition="Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">SetProperty(Bumper.Direction,Left,Home)</onleft>
+                <onleft condition="Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">ActivateWindow(1180)</onleft>
                 <nested />
             </include>
         </definition>
