@@ -84,6 +84,18 @@
                     <onback condition="Player.HasMedia">309</onback>
 
                     <ondown>ActivateWindow(1180)</ondown>
+                    <!-- SINISTRA SUL PRIMO ELEMENTO: rimbalzo, non salto in fondo. Senza <onleft> Kodi avvolge
+                         di proposito (GUIBaseContainer.cpp:582-586: wrapAround e' vero quando nessuno dichiara
+                         dove si va a sinistra) e la fixedlist salta all'ultimo elemento: l'utente si ritrova in
+                         fondo a una lista non ancora paginata e aspetta una pagina che nessuno ha chiesto. Le
+                         azioni spengono l'avvolgimento, e Kodi le esegue solo quando il movimento non e'
+                         possibile, cioe' sul primo elemento (CGUIControl::OnLeft). La condizione sul primo
+                         elemento non serve a Kodi: serve a non toccare il movimento interno di chi passa una
+                         griglia al posto della riga. Il rimbalzo e' quello di sempre, la finestra 1180, con la
+                         direzione scritta prima di aprirla: la stessa strada di <ondown>, dove 'Down' e' il
+                         valore vuoto. tests/test_rimbalzo_orizzontale.py -->
+                    <onleft condition="Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">SetProperty(Bumper.Direction,Left,Home)</onleft>
+                    <onleft condition="Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">ActivateWindow(1180)</onleft>
                     <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id])</onfocus>
                     <onfocus>SetProperty(fenlight.active_widget,$PARAM[id],Home)</onfocus>
                     <onfocus>SetProperty(fenlight.active_widget_path,"$PARAM[widgetpath]",Home)</onfocus>
@@ -168,6 +180,18 @@
                 <onback condition="Player.HasMedia">309</onback>
 
                 <ondown>ActivateWindow(1180)</ondown>
+                <!-- SINISTRA SUL PRIMO ELEMENTO: rimbalzo, non salto in fondo. Senza <onleft> Kodi avvolge
+                     di proposito (GUIBaseContainer.cpp:582-586: wrapAround e' vero quando nessuno dichiara
+                     dove si va a sinistra) e la fixedlist salta all'ultimo elemento: l'utente si ritrova in
+                     fondo a una lista non ancora paginata e aspetta una pagina che nessuno ha chiesto. Le
+                     azioni spengono l'avvolgimento, e Kodi le esegue solo quando il movimento non e'
+                     possibile, cioe' sul primo elemento (CGUIControl::OnLeft). La condizione sul primo
+                     elemento non serve a Kodi: serve a non toccare il movimento interno di chi passa una
+                     griglia al posto della riga. Il rimbalzo e' quello di sempre, la finestra 1180, con la
+                     direzione scritta prima di aprirla: la stessa strada di <ondown>, dove 'Down' e' il
+                     valore vuoto. tests/test_rimbalzo_orizzontale.py -->
+                <onleft condition="Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">SetProperty(Bumper.Direction,Left,Home)</onleft>
+                <onleft condition="Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">ActivateWindow(1180)</onleft>
                 <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id])</onfocus>
                 <onfocus>SetProperty(fenlight.active_widget,$PARAM[id],Home)</onfocus>
                 <onfocus>SetProperty(fenlight.active_widget_path,"$PARAM[widgetpath]",Home)</onfocus>
