@@ -273,7 +273,7 @@ class TraktMonitor:
 					if status in ('success', 'no account'): logger('Fen Light', trakt_service_string % ('Success. %s' % trakt_success_line_dict[status], next_update_string))
 					else: logger('Fen Light', trakt_service_string % ('Success. No Changes Needed', next_update_string))# 'not needed'
 					# Le due ondate di ricostruzione dopo una riproduzione erano lo STESSO evento contato due
-					# volte: a fine film mandiamo lo scrobble a Trakt, il poll successivo lo rilegge come
+					# volte: a fine film scriviamo su Trakt, il poll successivo lo rilegge come
 					# 'qualcosa e' cambiato' e ricostruisce tutto una seconda volta per lo stesso titolo.
 					# Nel log del Mac del 21/08: scan alle 23:37:44.874 (il nostro flush post-riproduzione) e
 					# di nuovo alle 23:37:51.969, 62 ms dopo 'Trakt Update Performed'. Se l'interfaccia e'

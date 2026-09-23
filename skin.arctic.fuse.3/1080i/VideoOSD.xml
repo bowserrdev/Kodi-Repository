@@ -123,6 +123,24 @@
                             <param name="groupid">6104</param>
                             <param name="itemgap">osd_itemgap</param>
                         </include>
+
+                        <!-- Button 9 :: LOTTO 339, cambio sorgente. Fen Light scrive la proprieta' solo se
+                             dopo quella in riproduzione resta una sorgente da provare; il clic arriva al
+                             player come notifica (AscoltoPlayer in modules/player.py). -->
+                        <control type="button" id="6009">
+                            <include>Defs_OSD_Button</include>
+                            <onclick>CancelAlarm(osd_timeout,true)</onclick>
+                            <onclick>NotifyAll(plugin.video.fenlight,cambia_sorgente)</onclick>
+                            <onup>8200</onup>
+                            <visible>$EXP[Exp_OSD_SorgenteSuccessiva]</visible>
+                        </control>
+                        <include content="OSD_Button_Icon_Overlay">
+                            <param name="icon">resource://resource.images.arcticfuse/icons/right-left.png</param>
+                            <param name="id">6009</param>
+                            <param name="groupid">6109</param>
+                            <param name="itemgap">osd_itemgap</param>
+                            <param name="visible">$EXP[Exp_OSD_SorgenteSuccessiva]</param>
+                        </include>
                     </control>
 
                     <!-- Right Side Buttons -->
@@ -133,7 +151,10 @@
                         <orientation>horizontal</orientation>
                         <itemgap>osd_itemgap</itemgap>
                         <align>right</align>
-                        <onleft>6004</onleft>
+                        <!-- Il pulsante del cambio sorgente puo' mancare: Kodi non sposta il fuoco su un
+                             controllo nascosto, quindi a sinistra si va all'ultimo pulsante visibile. -->
+                        <onleft condition="Control.IsVisible(6009)">6009</onleft>
+                        <onleft condition="!Control.IsVisible(6009)">6004</onleft>
                         <onright>6001</onright>
 
                         <!-- Button 5 -->

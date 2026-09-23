@@ -2,9 +2,10 @@
 import json
 from time import perf_counter
 from threading import Thread
-from apis.trakt_api import make_trakt_slug, trakt_scrobble_start, trakt_scrobble_stop, trakt_official_status
+from apis.trakt_api import make_trakt_slug
 from caches.settings_cache import get_setting
 from modules import kodi_utils as ku, settings as st, watched_status as ws
+from modules.paginator import ADDON_ID
 # logger = ku.logger
 
 set_property, clear_property, get_visibility, hide_busy_dialog, xbmc_actor = ku.set_property, ku.clear_property, ku.get_visibility, ku.hide_busy_dialog, ku.xbmc_actor
@@ -22,22 +23,20 @@ perf_logger = ku.logger
 WRITE_DONE_PROP = 'fenlight.perf.write_done'
 total_time_errors = ('0.0', '', 0.0, None)
 set_resume, set_watched = 5, 90
-# LOTTO 202 -- CAMBIO SORGENTE AUTOMATICO. Soglie in secondi: il ciclo di monitor() dorme 1000 ms
-# per giro, quindi un giro vale un secondo. Due guasti diversi meritano due soglie diverse.
-#
-# MAI PARTITO. L'08/09 un episodio HEVC 10 bit 1920x1456 ha fatto morire il decoder della stick,
-# che dichiara max="1920x1088": 44.055 righe 'dequeueInputBuffer failed' in 67 secondi, schermo
-# nero, e alla fine Kodi si e' ucciso da solo su un bug di formattazione nel PROPRIO percorso
-# d'errore (fmt::format_error, SIGABRT). Kodi non ha mai emesso Player.OnAVStart e la posizione e'
-# rimasta a zero, ma isPlayingVideo() diceva di si': dal punto di vista di Fen Light la
-# riproduzione era in corso, e nessuna delle nostre misure di banda poteva accorgersene -- il file
-# era da 2,1 Mbit/s con la cache piena. Quindici secondi fermi a zero non sono mai una
-# riproduzione lenta: sono una sorgente che questa macchina non sa riprodurre.
-#
-# BLOCCATO. Soglia molto piu' alta perche' qui l'ambiguita' c'e' davvero: un buco di banda blocca
-# la posizione allo stesso modo, ma si riprende. Il congelamento di Dead Man del 07/09 e' durato
-# 77 secondi e non si e' ripreso mai.
-FERMO_MAI_PARTITO, FERMO_BLOCCATO = 15, 60
+# LOTTO 339 -- CAMBIO SORGENTE MANUALE, al posto di quello automatico del lotto 202. Il player non
+# sorveglia piu' la posizione per indovinare un guasto (e non chiede piu' Player.Paused alla GUI a
+# ogni giro): la sorgente la cambia chi guarda, dal pulsante dell'OSD.
+# Il pulsante manda NotifyAll(plugin.video.fenlight,cambia_sorgente) e il Monitor del player la riceve
+# come evento (AscoltoPlayer). Non una proprieta' letta a ogni giro: in Kodi 21 anche
+# Window.getProperty prende il lock del contesto grafico (legacy/Window.cpp), come la condizione di
+# pausa che il controllo automatico chiedeva -- si sarebbe tolta una presa del lock per metterne
+# un'altra. Una notifica non si legge: arriva, e solo quando c'e'.
+MESSAGGIO_CAMBIA_SORGENTE = 'cambia_sorgente'
+# Il player dice alla skin se dopo questa c'e' ancora una sorgente da provare: senza, il pulsante non
+# compare. Ha UN solo scrittore, monitor(): la scrive o la toglie a riproduzione partita, la toglie a
+# riproduzione finita. Non la tocca run() all'ingresso: durante un cambio il pulsante deve restare
+# dov'e' mentre la sorgente dopo si prepara. play_file la toglie se un cambio finisce senza sorgenti.
+SORGENTE_SUCCESSIVA_PROP = 'fenlight.sorgente_successiva'
 
 # LOTTO 212 -- LA CAPACITA' SI VEDE SOLO QUANDO IL BUFFER HA SPAZIO.
 #
@@ -130,6 +129,45 @@ def nota_sorgente(item, esito, motivo, dettaglio='', posizione=None):
 					   _it.get('name') or _it.get('display_name') or 'senza nome'))
 	except: pass
 
+# LOTTO 339 -- lo stesso film a 25 fotogrammi (PAL) dura il 4,1% meno che a 23,976: un secondo del
+# file vecchio non e' lo stesso secondo del nuovo, e al minuto 60 lo scarto sono due minuti e mezzo.
+RAPPORTO_PAL = 25 / 23.976
+# Quanto una coppia di durate puo' scostarsi dal rapporto e restare PAL: su due ore, 36 secondi di
+# titoli di coda diversi. Da un segnalibro sotto il 10% la durata si ricava con un errore fino all'1%
+# (resume_point ha un decimale) e il rapporto puo' cadere fuori: si riprende senza riscalare, che e'
+# il verso prudente.
+TOLLERANZA_PAL = 0.005
+
+def secondi_di_partenza(posizione, durata_vecchia, durata_nuova):
+	"""Da dove far partire un file, dato il punto raggiunto su un altro (lotto 339).
+
+	`posizione` e' grezza, in secondi: l'arretramento si toglie qui, dopo la riscalatura, perche' e'
+	un margine per chi guarda e non una parte del film. Si riscala SOLO sui due rapporti PAL noti: una
+	durata diversa per qualunque altro motivo -- director's cut, versione tagliata -- non dice dove si
+	trovi la scena nel file nuovo, e allora i secondi restano quelli. Senza una delle due durate non
+	si riscala.
+	"""
+	if durata_vecchia and durata_nuova:
+		rapporto = float(durata_nuova) / durata_vecchia
+		if abs(rapporto - RAPPORTO_PAL) < TOLLERANZA_PAL or abs(rapporto - 1 / RAPPORTO_PAL) < TOLLERANZA_PAL:
+			posizione = posizione * rapporto
+	return max(0.0, posizione - ws.ARRETRAMENTO_RIPRESA)
+
+class AscoltoPlayer(xbmc_monitor):
+	"""Il Monitor del player: abortRequested come prima, piu' il pulsante dell'OSD (lotto 339).
+
+	Kodi consegna le notifiche nel thread che ha creato il Monitor, quando quel thread dorme in
+	xbmc.sleep: e' lo stesso thread del ciclo di monitor(), che dorme a ogni giro. Una richiesta
+	vive quanto questo oggetto -- un player per sorgente -- quindi non ne resta nessuna appesa per
+	la riproduzione dopo.
+	"""
+	def __init__(self):
+		xbmc_monitor.__init__(self)
+		self.cambia_sorgente = False
+
+	def onNotification(self, sender, method, data):
+		if sender == ADDON_ID and method == 'Other.' + MESSAGGIO_CAMBIA_SORGENTE: self.cambia_sorgente = True
+
 
 class FenLightPlayer(xbmc_player):
 	def __init__ (self):
@@ -173,18 +211,20 @@ class FenLightPlayer(xbmc_player):
 			if getattr(self, 'is_generic', True): return
 			if not getattr(self, '_av_started', False): return
 			if getattr(self, 'media_marked', False): return
-			# Una sorgente che non si e' riprodotta non lascia traccia (lotto 202). self.stop() dentro
-			# _cambia_sorgente fa scattare questa richiamata, e senza la guardia scriverebbe un punto di
-			# ripresa a zero su un film che l'utente non ha visto -- peggio del guasto stesso, perche'
-			# resterebbe nel 'continua a guardare'. La guardia sta QUI e non solo in monitor() perche'
-			# questa e' una richiamata di Kodi: arriva anche per strade che monitor() non controlla.
-			if getattr(self, '_esito_guasto', None): return
+			# Una sorgente lasciata per passare alla successiva non e' una fine di riproduzione (lotti
+			# 202 e 339). Dal cambio sul posto _cambia_sorgente non ferma piu' il player, e una
+			# sostituzione riuscita non emette nessun OnPlayBackStopped; ma se Kodi si fermasse mentre
+			# play_file risolve la sorgente dopo, senza la guardia si marcherebbe il titolo e si
+			# ricostruirebbero i widget. Il segnalibro lo scrive _cambia_sorgente. La guardia sta QUI e
+			# non solo in monitor() perche' questa e' una richiamata di Kodi: arriva anche per strade che
+			# monitor() non controlla.
+			if getattr(self, '_esito', None): return
 			self.media_watched_marker()
 		except: pass
 
 	def onPlayBackSeek(self, time, seekOffset):
 		# Si aggiorna SOLO la posizione: nessuna chiamata a Trakt e nessuna marcatura qui.
-		# Trakt riceve uno scrobble start all'avvio e uno stop alla chiusura, niente altro.
+		# Trakt riceve una sola scrittura, alla chiusura (vedi media_watched_marker).
 		# SONDA (lotto 182): il numero di salti serve a separare il livello di cache PRIMA del primo
 		# salto da quello DOPO l'ultimo. E' la sola cosa che questa richiamata aggiunge.
 		# Il tratto in corso si spezza qui: un salto butta la cache di Kodi, e un tratto a cavallo
@@ -236,6 +276,12 @@ class FenLightPlayer(xbmc_player):
 		# cui la riga PERF misura quanto lavoro di interfaccia cade sull'avvio del film.
 		try: mark_playback_start()
 		except: pass
+		# LOTTO 339 -- un video in corso vuol dire che questo play() lo SOSTITUISCE sul posto: e' il cambio
+		# sorgente dall'OSD. VideoPlayer apre il file nuovo senza chiudersi (ApplicationPlayer.cpp:96,
+		# VideoPlayer.cpp:2606): niente OnPlayBackStopped, quindi niente ritorno alla Home, e il fullscreen
+		# resta aperto. Si legge qui, sul fatto, e non da una bandiera del giro: se una sostituzione
+		# fallisce Kodi si ferma, e la sorgente dopo parte da capo come una riproduzione normale.
+		self._sostituisce = not self.is_generic and self.isPlayingVideo()
 		self.play(self.url, self.make_listing())
 		if not self.is_generic:
 			self.check_playback_start()
@@ -286,6 +332,15 @@ class FenLightPlayer(xbmc_player):
 				execute_builtin('SendClick(okdialog, 11)')
 				self._motivo_avvio = ('errore di Kodi', 'Kodi ha aperto una finestra di errore sul file')
 				self.playback_successful = False
+			elif getattr(self, '_sostituisce', False):
+				# 'C'e' un video in fullscreen' e' vero anche per il file VECCHIO, che resta a schermo finche'
+				# il nuovo non e' pronto: l'unico segno che il nuovo e' partito e' il suo OnAVStarted. Se il
+				# player si ferma, Kodi non e' riuscito ad aprirlo -- isPlaying e non isPlayingVideo, che per
+				# un istante puo' mancare mentre VideoPlayer riapre gli stream sul posto.
+				if getattr(self, '_av_started', False): self.playback_successful = True
+				elif not self.isPlaying():
+					self._motivo_avvio = ('sostituzione fallita', 'il player si e\' fermato aprendo il file nuovo')
+					self.playback_successful = False
 			elif self.isPlayingVideo():
 				try:
 					if self.getTotalTime() not in total_time_errors and get_visibility(video_fullscreen_check): self.playback_successful = True
@@ -542,8 +597,13 @@ class FenLightPlayer(xbmc_player):
 			_ok, _banda = self._banda_sufficiente(_h)
 			if not _ok:
 				return self._rifiuta_sorgente('banda', '%s, %s' % (_forma, _banda), 'scartata_banda')
+			# Da dove parte: Kodi lo scrive solo in DEBUG (VideoPlayer.cpp:1296), e senza non si puo'
+			# verificare una ripresa dal log (lotto 339).
+			_punto = self._punto_di_partenza()
+			_da = ('dall\'inizio' if not _punto else 'da %s' % self._mmss(_punto[1]) if _punto[0] == 'StartOffset'
+				   else 'dal %s%%' % _punto[1])
 			nota_sorgente(self.playing_item, 'ACCETTATA', 'riproducibile',
-						  '%s, %s, %s' % (_forma, _perche, _banda), self._posizione())
+						  '%s, %s, %s, parte %s' % (_forma, _perche, _banda, _da), self._posizione())
 			return True
 		except:
 			# Qualunque cosa vada storta qui dentro non deve poter impedire una riproduzione.
@@ -934,7 +994,7 @@ class FenLightPlayer(xbmc_player):
 				secondi_a_secco=getattr(self, '_cache_secco_max', 0),
 				campioni=getattr(self, '_cache_n', 0),
 				larghezza=getattr(self, '_vid_larghezza', None), altezza=getattr(self, '_vid_altezza', None),
-				codec=getattr(self, '_vid_codec', None), esito=getattr(self, '_esito_guasto', None),
+				codec=getattr(self, '_vid_codec', None), esito=getattr(self, '_esito', None),
 				nome=_it.get('name') or getattr(self, 'playing_filename', None) or None,
 				dimensione_dichiarata=_dich, provider=_it.get('provider') or _it.get('scrape_provider') or None,
 				pacchetto=_it.get('package') or None, **self._campi_sonda())
@@ -963,7 +1023,7 @@ class FenLightPlayer(xbmc_player):
 						   # senza dover aprire il database.
 						   _con_peso(_porta('_prima'), '_prima'), _con_peso(_porta('_dopo'), '_dopo'),
 						   getattr(self, '_cache_secco_max', 0),
-						   getattr(self, '_esito_guasto', None) or 'normale', playback_stats.quante()))
+						   getattr(self, '_esito', None) or 'normale', playback_stats.quante()))
 		except: pass
 
 	def _misura_flusso(self):
@@ -991,92 +1051,53 @@ class FenLightPlayer(xbmc_player):
 						% (self._vid_larghezza, self._vid_altezza, self._vid_codec))
 		except: pass
 
-	def _controlla_avanzamento(self):
-		"""Riconosce una sorgente che NON si sta riproducendo, mentre Kodi dice che si'.
-
-		Il criterio e' la posizione, non la cache e non il codec. Un decoder morto, un demuxer
-		congelato e un collegamento che non consegna piu' niente hanno tre cause diverse e un solo
-		sintomo osservabile da qui: getTime() non avanza. Guardare il sintomo li copre tutti e tre e
-		non richiede di indovinare quale sia -- ed e' importante, perche' l'08/09 la causa vera non
-		era osservabile da Python in nessun modo.
-
-		Due condizioni da escludere prima di dire 'guasto', e sono le uniche due in cui la posizione
-		sta ferma legittimamente: la pausa e un salto (che la fa anche tornare indietro).
-		"""
-		if getattr(self, '_esito_guasto', None): return
-		try: _pos = float(self.curr_time or 0)
-		except: return
-		try:
-			if get_visibility('Player.Paused'):
-				self._fermo_da, self._pos_prec = 0, _pos
-				return
-		except: pass
-		_prec = getattr(self, '_pos_prec', None)
-		self._pos_prec = _pos
-		# In valore assoluto: un salto all'indietro e' movimento quanto uno in avanti. Mezzo secondo
-		# di tolleranza perche' il ciclo dorme 1000 ms ma slitta, e getTime() e' un float.
-		if _prec is None or abs(_pos - _prec) > 0.5:
-			self._fermo_da = 0
-			# "Mai partito" e' una storia, non una posizione: contano i secondi visti scorrere, non il
-			# numero sul cronometro. Con un punto di ripresa la posizione parte gia' da 1200 s, e un
-			# criterio basato sul valore assoluto -- la prima stesura diceva `if _pos <= 1.0` --
-			# avrebbe classificato lo stesso guasto come 'bloccato', facendo aspettare 60 secondi
-			# invece di 15 proprio nei film che si stanno riprendendo a meta'.
-			if _prec is not None: self._pos_avanzata = True
-			return
-		_fermo = self._fermo_da = getattr(self, '_fermo_da', 0) + 1
-		if not getattr(self, '_pos_avanzata', False):
-			if _fermo < FERMO_MAI_PARTITO: return
-			_esito = 'mai_partito'
-		else:
-			if _fermo < FERMO_BLOCCATO: return
-			_esito = 'bloccato'
-		self._esito_guasto = _esito
-		# Il livello di cache non decide niente, ma va scritto: e' cio' che dira', rileggendo le righe
-		# raccolte, se abbiamo cambiato sorgente su un decoder morto (cache alta) o su un collegamento
-		# semplicemente lento (cache bassa). Se il secondo caso comparisse, la soglia va alzata.
-		perf_logger('FenLight PERF CACHE',
-					'SORGENTE GUASTA (%s) | posizione ferma a %.1f s da %s s | Player.OnAVStart %s '
-					'| cache max %s%% media ultimi campioni %s | passo alla sorgente successiva'
-					% (_esito, _pos, _fermo, 'mai arrivato' if not getattr(self, '_av_started', False) else 'arrivato',
-					   getattr(self, '_cache_max_prima', 0), getattr(self, '_cache_tratto', None)))
-
 	def _cambia_sorgente(self):
-		"""Chiude la sorgente guasta e fa riprendere play_file dalla successiva.
+		"""Lascia la sorgente in riproduzione e fa ripartire play_file dalla successiva (lotto 339).
 
-		La riga di misura e' gia' stata scritta da _riassunto_cache prima di arrivare qui, con la
-		colonna `esito` valorizzata: una riproduzione che non e' avvenuta resta agli atti, ma il
-		wizard deve escluderla dal percentile della banda -- non e' una misura di banda.
+		Ci si arriva solo dal pulsante dell'OSD. La riga di misura e' gia' stata scritta da
+		_riassunto_cache con `esito` = 'manuale': resta agli atti, ma il wizard la esclude dal
+		percentile della banda -- una sorgente lasciata a meta' non e' una misura completa.
 		"""
-		try:
-			self.stop()
-			sleep(500)
-		except: pass
-		# Lo scrobble era gia' partito alla prima iterazione del ciclo: si chiude, altrimenti su Trakt
-		# resta appesa una visione a zero mentre la sorgente successiva ne apre un'altra.
-		try:
-			if getattr(self, 'scrobble_started', False):
-				Thread(target=trakt_scrobble_stop, args=(self.media_type, self.tmdb_id, 0.0,
-														 self._trakt_season, self._trakt_episode)).start()
-				self.scrobble_started = False
-		except: pass
-		self.clear_playback_properties()
-		nota_sorgente(getattr(self, 'playing_item', None), 'SCARTATA', getattr(self, '_esito_guasto', 'bloccata'),
-					  'la riproduzione era partita e si e\' fermata', self._posizione())
+		# La posizione di adesso, non quella del giro prima: il ciclo legge una volta al secondo.
+		try: posizione, durata = self.getTime(), self.getTotalTime()
+		except: posizione, durata = self.curr_time, self.total_time
+		# Da qui riparte la sorgente dopo -- e ogni altra che la rotazione prima dell'avvio dovesse
+		# prendere al suo posto: play_file crea un player per ciascuna, e ognuno rilegge questi valori
+		# in set_constants. La percentuale serve solo se i secondi non arrivassero a set_resume_point.
+		_s = self.sources_object
+		_s.playback_seconds, _s.playback_duration = posizione, durata
+		_s.playback_percent = round(posizione / durata * 100, 1) if durata else 0.0
+		_s.cambio_manuale = True
+		# Il segnalibro si scrive come a una chiusura, e per la stessa strada: se le sorgenti dopo
+		# fallissero tutte, il punto raggiunto non va perso. Ma NON media_watched_marker: lasciare una
+		# sorgente al 95% non e' aver finito il film, e i widget non si ricostruiscono mentre play_file
+		# risolve la sorgente dopo (do_refresh False, lotto 111).
+		if _s.playback_percent >= set_resume:
+			self._timbra_scrittura_trakt()
+			Thread(target=self.run_media_progress, args=(set_bookmark, self._parametri_segnalibro(posizione, durata), False)).start()
+		nota_sorgente(getattr(self, 'playing_item', None), 'SCARTATA', 'manuale',
+					  'lasciata dall\'utente a %s' % self._mmss(posizione), self._posizione())
+		# NIENTE stop(). La sorgente lasciata resta a schermo mentre play_file risolve la successiva, e il
+		# play() di quella la sostituisce sul posto (vedi play_video). Fermarla qui era cio' che riportava
+		# alla Home: Kodi, a player fermo, chiude il fullscreen (Application::PlaybackCleanup). Il pulsante
+		# resta: un secondo clic durante la preparazione si ignora (vedi monitor), e chi guarda sa cosa
+		# sta succedendo da una notifica invece che da un pulsante sparito.
+		notification('Preparazione della sorgente successiva', 3000)
 		# clear_playing_item e flush_pending_refresh NON si chiamano qui, e non e' una dimenticanza.
 		# flush_pending_refresh lancia la ricostruzione dei widget rimandata durante il video: farla
 		# ora vorrebbe dire ricostruire l'interfaccia proprio mentre play_file risolve la sorgente
 		# successiva, cioe' esattamente cio' che il presidio del lotto 111 esiste per impedire. La
-		# riproduzione che riesce la eseguira' lei; se falliscono tutte, ci pensa playback_failed_action.
+		# riproduzione che riesce la eseguira' lei; se falliscono tutte, Kodi si ferma e il rinvio lo
+		# consuma il servizio (WidgetRefresher), che aspetta proprio un player fermo.
 		try:
-			self.sources_object.playback_successful = False
-			self.sources_object.cancel_all_playback = False
-			# SENZA QUESTA RIGA IL MECCANISMO NON FUNZIONA AFFATTO. playback_close_dialogs, alla prima
-			# iterazione del ciclo, ha chiuso la finestra del risolutore e _kill_progress_dialog la
-			# mette a None; play_file, al giro successivo, apre con `if not self.progress_dialog:
-			# break` e uscirebbe dal ciclo senza provare nessun'altra sorgente. Ricrearla e' lo stesso
-			# rimedio che random_continual_handler usa gia' dopo una riproduzione.
-			self.sources_object._make_resolve_dialog()
+			_s.playback_successful = False
+			_s.cancel_all_playback = False
+			_s.cambio_sul_posto = True
+			# SENZA UNA FINESTRA IL GIRO NON CONTINUA. playback_close_dialogs, alla prima iterazione del
+			# ciclo, ha chiuso quella del risolutore e _kill_progress_dialog la mette a None; play_file,
+			# al giro successivo, apre con `if not self.progress_dialog: break`. Qui ne serve una che non
+			# si veda: stessi metodi, niente a schermo.
+			_s._make_silent_resolve_dialog()
 		except: pass
 		return False
 
@@ -1096,29 +1117,8 @@ class FenLightPlayer(xbmc_player):
 				if disable_autoplay_next_episode: notification('Scrape with Custom Values - Autoplay Next Episode Cancelled', 4500)
 				if any((play_random_continual, play_random, disable_autoplay_next_episode)): self.autoplay_nextep, self.autoscrape_nextep = False, False
 				else: self.autoplay_nextep, self.autoscrape_nextep = self.sources_object.autoplay_nextep, self.sources_object.autoscrape_nextep
-				# LA MAPPA STA NELLA META, O NON ESISTE (lotto 144). Qui c'era un ripiego che, quando la
-				# meta non aveva 'tvdb_to_tmdb_ep', importava skyhook_api e chiamava get_tvdb_to_tmdb_map.
-				# Non poteva funzionare, e non funzionava mai: le due chiavi 'tvdb_to_tmdb_ep' e
-				# 'tmdb_season_data_original' si scrivono nello STESSO blocco di tvshow_meta (metadata.py,
-				# righe 935 e 939), quindi se manca la prima manca anche la seconda -- e il ripiego riceveva
-				# una lista vuota, da cui la mappa esce vuota per costruzione. Codice morto in ogni ramo.
-				# Il prezzo non era zero: si pagava a OGNI riproduzione di episodio, anime o no, ed era
-				# _fetch_raw sull'intero JSON skyhook della serie (105 KB per Hunter x Hunter) per ottenere
-				# {} -- rete a cache fredda, e comunque una lettura di metacache piu' un json.loads sul
-				# percorso caldo. Per una serie NON anime la chiave non c'e' mai, quindi il ripiego scattava
-				# sempre.
-				# TRE esiti, non due (lotto 145). None vuol dire che questo episodio su Trakt non
-				# esiste: si riproduce normalmente, ma non si scrobbla -- mandare una coppia
-				# inventata segnerebbe come visto un altro episodio.
-				from modules.utils import traduci_episodio
-				_coppia = traduci_episodio(self.meta.get('tvdb_to_tmdb_ep'), self.meta.get('ep_esclusi_tvdb'),
-											self.season, self.episode)
-				self._trakt_mappabile = _coppia is not None
-				self._trakt_season, self._trakt_episode = _coppia if _coppia else (self.season, self.episode)
 			else:
 				play_random_continual, self.autoplay_nextep, self.autoscrape_nextep = False, False, False
-				self._trakt_mappabile = True
-				self._trakt_season, self._trakt_episode = self.season, self.episode
 			while total_check_time <= 30 and not get_visibility(video_fullscreen_check):
 				sleep(200)
 				total_check_time += 0.10
@@ -1152,9 +1152,13 @@ class FenLightPlayer(xbmc_player):
 					if not ensure_dialog_dead:
 						ensure_dialog_dead = True
 						self.playback_close_dialogs()
-						if st.trakt_user_active() and trakt_official_status(self.media_type) and self._trakt_mappabile:
-							Thread(target=trakt_scrobble_start, args=(self.media_type, self.tmdb_id, self._trakt_season, self._trakt_episode)).start()
-							self.scrobble_started = True
+						# Solo ora, a riproduzione partita, e in tutti e due i versi: dopo un cambio questa puo'
+						# essere l'ultima della lista, e il pulsante rimasto acceso va spento.
+						if self.sources_object.sorgente_successiva: set_property(SORGENTE_SUCCESSIVA_PROP, 'true')
+						else: clear_property(SORGENTE_SUCCESSIVA_PROP)
+						# Un clic arrivato mentre questa si preparava era per la sorgente di prima: vale il
+						# cambio gia' fatto, non un secondo.
+						self.kodi_monitor.cambia_sorgente = False
 						from modules.auto_subtitles import auto_subtitle_check
 						Thread(target=auto_subtitle_check, args=(self,)).start()
 						# Una volta sola, in sfondo: a player fermo non si legge piu' (lotto 202).
@@ -1163,11 +1167,15 @@ class FenLightPlayer(xbmc_player):
 
 					self._attesa_campionata()
 					self._campiona_cache()
-					self._controlla_avanzamento()
-					if getattr(self, '_esito_guasto', None): break
+					# Il pulsante dell'OSD, arrivato come notifica mentre il giro dormiva. Senza una
+					# sorgente dopo il pulsante non si vede; se la richiesta arrivasse lo stesso, si ignora.
+					if self.kodi_monitor.cambia_sorgente:
+						self.kodi_monitor.cambia_sorgente = False
+						if self.sources_object.sorgente_successiva:
+							self._esito = 'manuale'
+							break
 					self.current_point = round(float(self.curr_time/self.total_time * 100), 1)
-					# Durante la riproduzione non si tocca ne' Trakt ne' il database dei visti: niente
-					# rinvio periodico dello scrobble (era ogni 120s) e niente marcatura al 90%. Tutto
+					# Durante la riproduzione non si tocca ne' Trakt ne' il database dei visti. Tutto
 					# avviene una volta sola all'uscita dal ciclo, con la percentuale reale di chiusura.
 					if self.current_point >= set_watched:
 						if play_random_continual: self.run_random_continual(); break
@@ -1177,15 +1185,17 @@ class FenLightPlayer(xbmc_player):
 				except: pass
 			hide_busy_dialog()
 			self._riassunto_cache()
-			# L'ordine conta: prima si scrive la misura (che ora porta anche il motivo del guasto),
-			# poi si cambia sorgente. Cambiando prima, self.stop() smonterebbe il player e il
-			# riassunto troverebbe getTotalTime() gia' morto.
-			if getattr(self, '_esito_guasto', None): return self._cambia_sorgente()
+			# L'ordine conta: prima si scrive la misura (che porta anche l'esito), poi si cambia
+			# sorgente. La misura legge getTotalTime() del file lasciato, che dopo il play() della
+			# sorgente dopo sarebbe gia' quello del file nuovo.
+			if getattr(self, '_esito', None): return self._cambia_sorgente()
 			if not self.media_marked: self.media_watched_marker()
+			clear_property(SORGENTE_SUCCESSIVA_PROP)
 			self.clear_playback_properties()
 			self.clear_playing_item()
 			Thread(target=self.flush_pending_refresh).start()
 		except:
+			clear_property(SORGENTE_SUCCESSIVA_PROP)
 			hide_busy_dialog()
 			self.sources_object.playback_successful = False
 			self.sources_object.cancel_all_playback = True
@@ -1236,21 +1246,14 @@ class FenLightPlayer(xbmc_player):
 			self.set_playback_properties()
 		return listitem
 
-	def media_watched_marker(self, force_watched=False):
-		self.media_marked = True
-		try: clear_property(PLAYBACK_ACTIVE_PROP)
-		except: pass
-		# PERF: timbro della chiusura, letto da paginator.log_build. Serve a UNA domanda sola: quanto
-		# ci mette Kodi a rileggere da solo la cartella aperta uscendo dal player? E' l'attesa che il
-		# sleep(2000) di run_media_progress deve coprire, e quel 2000 non e' mai stato misurato --
-		# su Mac la rilettura arriva a 390-653 ms, ma il numero che conta e' quello del Mi Stick.
+	def _timbra_scrittura_trakt(self):
+		"""'Questa scrittura su Trakt e' nostra': a fine riproduzione e al cambio sorgente (lotto 339)."""
 		try:
 			from time import time as _now
-			ku.set_property('fenlight.perf.closefile', str(_now()))
 			# Timbro "questa modifica e' nostra" anche quando NON marchiamo niente. Finora lo metteva
 			# solo watched_status._mark_on_trakt, cioe' solo se si superava la soglia di visto: chiudere
-			# un film a meta' mandava comunque uno scrobble stop a Trakt, il monitor lo rileggeva come
-			# cambiamento remoto e ordinava una ricostruzione GLOBALE di tutti i widget.
+			# un film a meta' scriveva comunque su Trakt (oggi la pausa di set_bookmark), il monitor lo
+			# rileggeva come cambiamento remoto e ordinava una ricostruzione GLOBALE di tutti i widget.
 			# Nel log della stick del 23/08: CloseFile 14:18:40.877 -> 'Trakt Update Performed'
 			# 14:18:45.895 -> 'DIAG refresh: GLOBALE (UpdateLibrary)' 14:18:48.472, e dietro otto
 			# ricostruzioni di widget in cinquanta secondi. E' la risposta alla domanda "perche' si
@@ -1259,8 +1262,27 @@ class FenLightPlayer(xbmc_player):
 			ku.set_property('fenlight.trakt.self_mark',
 							'%s|%s' % (_now(), 'tvshow' if self.media_type == 'episode' else 'movie'))
 		except: pass
-		if self.scrobble_started:
-			Thread(target=trakt_scrobble_stop, args=(self.media_type, self.tmdb_id, self.current_point, self._trakt_season, self._trakt_episode)).start()
+
+	def media_watched_marker(self, force_watched=False):
+		self.media_marked = True
+		try: clear_property(PLAYBACK_ACTIVE_PROP)
+		except: pass
+		# PERF: timbro della chiusura, letto da paginator.log_build. Serve a UNA domanda sola: quanto
+		# ci mette Kodi a rileggere da solo la cartella aperta uscendo dal player? E' l'attesa che il
+		# sleep(2000) di run_media_progress deve coprire, e quel 2000 non e' mai stato misurato --
+		# su Mac la rilettura arriva a 390-653 ms, ma il numero che conta e' quello del Mi Stick.
+		# Solo qui e non al cambio sorgente: una sostituzione sul posto non chiude il player.
+		try:
+			from time import time as _now
+			ku.set_property('fenlight.perf.closefile', str(_now()))
+		except: pass
+		self._timbra_scrittura_trakt()
+		# NIENTE SCROBBLE (lotto 339). Alla chiusura Trakt riceve UNA scrittura, quella esplicita qui
+		# sotto: la cronologia di mark_movie/mark_episode sopra set_watched, la pausa di set_bookmark
+		# sotto. Lo scrobble/stop ripeteva la stessa scrittura a ogni soglia -- sotto l'80% una
+		# seconda pausa (le voci gemelle di TRAKT.md 9.1), sopra il 90% una seconda visione -- e fra
+		# l'80 e il 90 segnava visto su Trakt un film che in locale restava in corso. Lo start serviva
+		# solo a far comparire 'sta guardando'.
 		try:
 			if self.current_point >= set_watched or force_watched:
 				if self.media_type == 'movie': watched_function = mark_movie
@@ -1282,10 +1304,12 @@ class FenLightPlayer(xbmc_player):
 			else:
 				clear_property('fenlight.random_episode_history')
 				if self.current_point >= set_resume:
-					progress_params = {'media_type': self.media_type, 'tmdb_id': self.tmdb_id, 'curr_time': self.curr_time, 'total_time': self.total_time,
-									'title': self.title, 'season': self.season, 'episode': self.episode, 'from_playback': 'true'}
-					Thread(target=self.run_media_progress, args=(set_bookmark, progress_params, True)).start()
+					Thread(target=self.run_media_progress, args=(set_bookmark, self._parametri_segnalibro(self.curr_time, self.total_time), True)).start()
 		except: pass
+
+	def _parametri_segnalibro(self, curr_time, total_time):
+		return {'media_type': self.media_type, 'tmdb_id': self.tmdb_id, 'curr_time': curr_time, 'total_time': total_time,
+				'title': self.title, 'season': self.season, 'episode': self.episode, 'from_playback': 'true'}
 
 	def flush_pending_refresh(self):
 		# Esegue, a riproduzione finita, l'unico refresh eventualmente rimandato da kodi_utils mentre il
@@ -1612,8 +1636,23 @@ class FenLightPlayer(xbmc_player):
 		if not self.media_marked: self.media_watched_marker(force_watched=True)
 		EpisodeTools(self.meta).play_random_continual(False)
 
+	def _punto_di_partenza(self):
+		"""('StartOffset', secondi), ('StartPercent', percento) o None (lotto 339).
+
+		Al secondo quando lo sappiamo, altrimenti alla percentuale, che Kodi converte con la durata vera
+		del file. Si chiama dopo _esamina_sorgente: _durata_vera, se l'intestazione l'ha data, e' gia'
+		quella del file che sta per partire.
+		"""
+		if self.playback_seconds:
+			secondi = secondi_di_partenza(self.playback_seconds, self.playback_duration, getattr(self, '_durata_vera', None))
+			return ('StartOffset', secondi) if secondi > 0.0 else None
+		if self.playback_percent > 0.0: return ('StartPercent', self.playback_percent)
+		return None
+
 	def set_resume_point(self, listitem):
-		if self.playback_percent > 0.0: listitem.setProperty('StartPercent', str(self.playback_percent))
+		punto = self._punto_di_partenza()
+		if not punto: return
+		listitem.setProperty(punto[0], '%.3f' % punto[1] if punto[0] == 'StartOffset' else str(punto[1]))
 
 	def info_next_ep(self):
 		self.nextep_info_gathered = True
@@ -1653,20 +1692,12 @@ class FenLightPlayer(xbmc_player):
 		self.is_generic = self.sources_object == 'video'
 		if not self.is_generic:
 			self.meta = self.sources_object.meta
-			self.meta_get, self.kodi_monitor, self.playback_percent = self.meta.get, xbmc_monitor(), self.sources_object.playback_percent or 0.0
+			self.meta_get, self.kodi_monitor, self.playback_percent = self.meta.get, AscoltoPlayer(), self.sources_object.playback_percent or 0.0
+			self.playback_seconds, self.playback_duration = self.sources_object.playback_seconds, self.sources_object.playback_duration
 			self.playing_filename = self.sources_object.playing_filename
 			self.media_marked, self.nextep_info_gathered = False, False
 			self.current_point = 0.0
-			self.scrobble_started = False
 			self.playback_successful, self.cancel_all_playback = None, False
-			# Prudente per difetto: se monitor() non arriva a calcolarla, non si scrobbla.
-			# La bandiera dice se questo episodio ha una coppia valida su Trakt (lotto 145).
-			# NON si puo' leggere self.media_type qui: set_constants gira per PRIMA in play_video,
-			# mentre media_type nasce in make_listing, dopo. La prima stesura lo faceva, e siccome
-			# play_video sta dentro il try di run(), l'AttributeError avrebbe fatto fallire OGNI
-			# riproduzione con 'run_error'. Entrambi i rami di monitor() la assegnano prima dell'uso:
-			# questo e' solo il valore di partenza, e il verso giusto e' il piu' prudente.
-			self._trakt_mappabile = False
 			self.playing_item = self.sources_object.playing_item
 			self._av_started = False
 

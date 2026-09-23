@@ -50,8 +50,14 @@ Remote = namedtuple('Remote', 'resume_point curr_time last_played resume_id titl
 Upsert = namedtuple('Upsert', 'key resume_point curr_time last_played resume_id title state misses')
 Plan = namedtuple('Plan', 'upserts deletes changed retry_remote_delete retry_push')
 
-def _from_remote(key, r):
-	return Upsert(key, r.resume_point, r.curr_time, r.last_played, r.resume_id, r.title, SYNCED, 0)
+def _from_remote(key, r, l=None):
+	# I SECONDI NON LI CONOSCE TRAKT (lotto 339). sync/playback porta solo la percentuale, e la riga
+	# remota arriva con curr_time 0. Se la percentuale e' ancora la nostra, il punto e' quello che
+	# abbiamo scritto noi: i secondi locali valgono ancora e si tengono, perche' sono cio' da cui la
+	# riproduzione riprende al secondo. Se e' cambiata, qualcuno e' andato avanti altrove e i secondi
+	# vecchi descrivono un punto che non c'e' piu'.
+	curr_time = l.curr_time if l is not None and l.resume_point == r.resume_point else r.curr_time
+	return Upsert(key, r.resume_point, curr_time, r.last_played, r.resume_id, r.title, SYNCED, 0)
 
 def reconcile(local, remote, misses_allowed=PENDING_PUT_MISSES_ALLOWED):
 	"""(righe locali, snapshot di Trakt) -> il piano di scrittura. Otto celle, nessuna eccezione.
@@ -94,7 +100,7 @@ def reconcile(local, remote, misses_allowed=PENDING_PUT_MISSES_ALLOWED):
 			# 4. PENDING_PUT e presente -> la spinta e' arrivata. Vince la versione di Trakt, che
 			#    porta il resume_id vero, e lo stato diventa SYNCED.
 			if state != SYNCED or l.misses or l.resume_point != r.resume_point or l.resume_id != r.resume_id:
-				upserts.append(_from_remote(key, r))
+				upserts.append(_from_remote(key, r, l))
 			if l.resume_point != r.resume_point: changed.add(key)
 			continue
 

@@ -683,20 +683,6 @@ def trakt_progress(action, media, media_id, percent, season=None, episode=None, 
 	if refresh_trakt: trakt_sync_activities()
 	return resume_id
 
-def trakt_scrobble_start(media, media_id, season=None, episode=None, progress=0.0):
-	try:
-		if media in ('movie', 'movies'): data = {'movie': {'ids': {'tmdb': media_id}}, 'progress': float(progress)}
-		else: data = {'show': {'ids': {'tmdb': media_id}}, 'episode': {'season': int(season), 'number': int(episode)}, 'progress': float(progress)}
-		call_trakt('scrobble/start', data=data)
-	except: pass
-
-def trakt_scrobble_stop(media, media_id, percent, season=None, episode=None):
-	try:
-		if media in ('movie', 'movies'): data = {'movie': {'ids': {'tmdb': media_id}}, 'progress': float(percent)}
-		else: data = {'show': {'ids': {'tmdb': media_id}}, 'episode': {'season': int(season), 'number': int(episode)}, 'progress': float(percent)}
-		call_trakt('scrobble/stop', data=data)
-	except: pass
-
 def trakt_collection_lists(media_type, list_type=None):
 	data = trakt_fetch_collection_watchlist('collection', media_type)
 	if list_type == 'recent':
@@ -1991,7 +1977,9 @@ def trakt_progress_movies(progress_info):
 	def _process(item):
 		tmdb_id = get_trakt_movie_id(item['movie']['ids'])
 		if not tmdb_id: return
-		obj = ('movie', str(tmdb_id), '', '', str(round(item['progress'], 1)), 0, item['paused_at'], item['id'], item['movie']['title'])
+		# float() prima di round: un 40 intero di Trakt diventerebbe '40', e progress_sync lo
+		# confronterebbe con il '40.0' scritto da set_bookmark come se fosse un altro punto.
+		obj = ('movie', str(tmdb_id), '', '', str(round(float(item['progress']), 1)), 0, item['paused_at'], item['id'], item['movie']['title'])
 		insert_append(obj)
 	insert_list = []
 	insert_append = insert_list.append
@@ -2027,7 +2015,7 @@ def trakt_progress_tv(progress_info):
 				_coppia = traduci_episodio(ep_remap[0], ep_remap[1], season, ep_num)
 				if _coppia is None: continue
 				tvdb_s, tvdb_e = _coppia
-				if tvdb_s > 0: yield ('episode', str(tmdb_id), tvdb_s, tvdb_e, str(round(p_item['progress'], 1)),
+				if tvdb_s > 0: yield ('episode', str(tmdb_id), tvdb_s, tvdb_e, str(round(float(p_item['progress']), 1)),
 									0, p_item['paused_at'], p_item['id'], p_item['show']['title'])
 			except: pass
 	shows_info = {}

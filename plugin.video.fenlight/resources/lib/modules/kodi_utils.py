@@ -1391,11 +1391,11 @@ def _defer_refresh_if_busy(kind, ids=(), actions=()):
 
 # Istante dell'ultima ricostruzione globale effettivamente eseguita. Serve a chi puo' innescarne una
 # per un cambiamento che potrebbe essere gia' stato mostrato: al momento il monitor Trakt, che a fine
-# riproduzione rileva come 'cambiamento' lo scrobble che abbiamo appena mandato noi -- vedi TraktMonitor.
+# riproduzione rileva come 'cambiamento' la scrittura che abbiamo appena mandato noi -- vedi TraktMonitor.
 LAST_REFRESH_PROP = 'fenlight.refresh.last'
 # Due ricostruzioni globali che si accavallano sono la STESSA ricostruzione. Non e' un'ipotesi: nel
 # log del Mac del 21/08 23:50 le due UpdateLibrary post-riproduzione distavano 282 ms -- il flush di
-# fine film e il monitor Trakt che rileggeva il nostro stesso scrobble. Chi arriva primo ricostruisce,
+# fine film e il monitor Trakt che rileggeva la nostra stessa scrittura. Chi arriva primo ricostruisce,
 # il secondo si accoda a vuoto. La finestra e' corta apposta: sopprime solo le collisioni, non un
 # cambiamento davvero diverso arrivato qualche secondo dopo.
 REFRESH_COALESCE_SECONDS = 5

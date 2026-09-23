@@ -511,10 +511,13 @@
                 <animation effect="fade" start="100" end="30" condition="!Control.IsEnabled($PARAM[id])" reversible="false">Conditional</animation>
                 <left>$PARAM[itemgap_mod]$PARAM[itemgap]</left>
                 <width>0</width>
+                <!-- LOTTO 339 :: la condizione sta sul gruppo ESTERNO, quello che il grouplist conta. Sul
+                     gruppo interno spariva l'icona ma restava lo spazio di un itemgap, e un pulsante
+                     nascosto lasciava un buco nell'OSD. -->
+                <visible>$PARAM[visible]</visible>
                 <control type="group">
                     <animation effect="slide" start="0" end="0,-8" condition="$PARAM[iconoffset_condition]">Conditional</animation>
                     <left>-$PARAM[size]</left>
-                    <visible>$PARAM[visible]</visible>
                     <control type="image">
                         <bordersize>$PARAM[bordersize]</bordersize>
                         <height>$PARAM[size]</height>
@@ -1090,6 +1093,7 @@
          Dialog.Close(id) e' idempotente: sul dialogo gia' chiuso non fa nulla. -->
     <include name="OSD_CustomDialog_FakeButton">
         <param name="dialog_id">0</param>
+        <param name="visible">true</param>
         <definition>
             <control type="button" id="600$PARAM[id]">
                 <width>80</width>
@@ -1097,6 +1101,7 @@
                 <texturenofocus />
                 <font />
                 <label />
+                <visible>$PARAM[visible]</visible>
                 <onfocus>Dialog.Close($PARAM[dialog_id])</onfocus>
                 <onfocus>SetFocus(600$PARAM[id])</onfocus>
             </control>
@@ -1215,6 +1220,15 @@
                     <param name="iconoffset_condition">$PARAM[iconoffset_condition]</param>
                 </include>
 
+                <!-- LOTTO 339 :: il cambio sorgente (6009 nella VideoOSD). Nessun pannello nasce da lui,
+                     quindi qui e' sempre finto; conta solo che esista e sia visibile quando lo e' il
+                     vero, perche' la navigazione lo raggiunga. -->
+                <include content="OSD_CustomDialog_FakeButton">
+                    <param name="id">9</param>
+                    <param name="dialog_id">$PARAM[dialog_id]</param>
+                    <param name="visible">$EXP[Exp_OSD_SorgenteSuccessiva]</param>
+                </include>
+
             </control>
 
             <control type="grouplist">
@@ -1225,7 +1239,8 @@
                 <itemgap>osd_itemgap</itemgap>
                 <align>right</align>
 
-                <onleft>6004</onleft>
+                <onleft condition="Control.IsVisible(6009)">6009</onleft>
+                <onleft condition="!Control.IsVisible(6009)">6004</onleft>
                 <onright>6001</onright>
 
                 <include content="OSD_CustomDialog_FakeButton" condition="![$PARAM[button_5]]">
