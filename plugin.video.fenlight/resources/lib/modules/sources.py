@@ -8,7 +8,7 @@ from caches.episode_groups_cache import episode_groups_cache
 from caches.settings_cache import get_setting
 from scrapers import external, folders
 from modules import debrid, kodi_utils, settings, metadata, watched_status
-from modules.player import FenLightPlayer, nota_sorgente
+from modules.player import FenLightPlayer, nota_sorgente, SORGENTE_SUCCESSIVA_PROP
 from modules.source_utils import get_cache_expiry, make_alias_dict
 from modules.utils import clean_file_name, string_to_float, safe_string, remove_accents, get_datetime, append_module_to_syspath, manual_function_import, manual_module_import, install_lazy_chardet
 # logger = kodi_utils.logger
@@ -26,8 +26,8 @@ scraping_settings, include_prerelease_results, auto_rescrape_with_all = settings
 ignore_results_filter, results_sort_order, results_format, filter_status = settings.ignore_results_filter, settings.results_sort_order, settings.results_format, settings.filter_status
 autoplay_next_episode, autoscrape_next_episode, limit_resolve = settings.autoplay_next_episode, settings.autoscrape_next_episode, settings.limit_resolve
 auto_episode_group, preferred_autoplay, preferred_language, debrid_enabled = settings.auto_episode_group, settings.preferred_autoplay, settings.preferred_language, debrid.debrid_enabled
-get_progress_status_movie, get_bookmarks_movie, erase_bookmark = watched_status.get_progress_status_movie, watched_status.get_bookmarks_movie, watched_status.erase_bookmark
-get_progress_status_episode, get_bookmarks_episode = watched_status.get_progress_status_episode, watched_status.get_bookmarks_episode
+get_bookmarks_movie, get_bookmarks_episode, erase_bookmark = watched_status.get_bookmarks_movie, watched_status.get_bookmarks_episode, watched_status.erase_bookmark
+posizione_del_segnalibro = watched_status.posizione_del_segnalibro
 internal_include_list = ['easynews', 'rd_cloud', 'pm_cloud', 'ad_cloud', 'oc_cloud', 'tb_cloud']
 external_exclude_list = ['easynews', 'gdrive', 'library', 'filepursuit', 'plexshare']
 sd_check = ('SD', 'CAM', 'TELE', 'SYNC')
@@ -59,6 +59,20 @@ preference_values = {0:100, 1:50, 2:20, 3:10, 4:5, 5:2}
 
 # 10**6 / 2**30: quanti MB decimali stanno in un GiB. Vedi filter_results.
 MB_PER_GIB = 1073.741824
+
+class RisolutoreMuto():
+	"""La finestra di risoluzione durante un cambio sorgente dall'OSD: stessi metodi, niente a schermo.
+
+	Lotto 339. Il giro di play_file la interroga a ogni sorgente (annullata? saltata?) e le passa il
+	testo e la percentuale; mentre il video resta a schermo non deve comparire niente, e nessuno puo'
+	annullare o saltare da una finestra che non c'e'.
+	"""
+	def reset_is_cancelled(self): pass
+	def update_resolver(self, text='', percent=0): pass
+	def busy_spinner(self, toggle='true'): pass
+	def iscanceled(self): return False
+	def skip_resolved(self): return False
+	def close(self): pass
 
 class Sources():
 	def __init__(self):
@@ -927,6 +941,9 @@ class Sources():
 		if not self.progress_dialog: self._make_progress_dialog()
 		self.progress_dialog.enable_resolver()
 
+	def _make_silent_resolve_dialog(self):
+		self.progress_dialog, self.progress_thread = RisolutoreMuto(), None
+
 	def _make_resume_dialog(self, percent):
 		if not self.progress_dialog: self._make_progress_dialog()
 		self.progress_dialog.enable_resume(percent)
@@ -944,7 +961,8 @@ class Sources():
 			success += 1
 		except: pass
 		try:
-			self.progress_thread.join()
+			# La finestra muta non ha un thread: chiusa lei, non c'e' altro da aspettare.
+			if self.progress_thread: self.progress_thread.join()
 			success += 1
 		except: pass
 		if not success == 2: close_all_dialog()
@@ -974,12 +992,17 @@ class Sources():
 
 	def play_file(self, results, source={}):
 		self.playback_successful, self.cancel_all_playback = None, False
+		self.cambio_manuale, self.cambio_sul_posto, self.sorgente_successiva = False, False, False
 		try:
 			hide_busy_dialog()
 			url = None
 			results = [i for i in results if not 'Uncached' in i.get('cache_provider', '')]
 			if not source: source = results[0]
 			items = [source]
+			# LOTTO 339 -- le sorgenti SOPRA quella scelta. Il giro le prova dopo quelle sotto, al contrario:
+			# e' la rotazione di avvio, e resta. Ma per il pulsante dell'OSD la lista finisce in fondo --
+			# 'la prossima' e' quella sotto -- quindi si marcano, e un cambio non risale fra loro.
+			sopra = set()
 			if not self.limit_resolve: 
 				source_index = results.index(source)
 				results.remove(source)
@@ -987,10 +1010,12 @@ class Sources():
 				items_prev.reverse()
 				items_next = results[source_index:]
 				items = items + items_next + items_prev
+				sopra = {id(i) for i in items_prev}
 			processed_items = []
 			processed_items_append = processed_items.append
 			for count, item in enumerate(items, 1):
 				resolve_item = dict(item)
+				if id(item) in sopra: resolve_item['sopra'] = True
 				provider = item['scrape_provider']
 				if provider == 'external': provider = item['debrid'].replace('.me', '')
 				elif provider == 'folders': provider = item['source']
@@ -1001,8 +1026,10 @@ class Sources():
 				processed_items_append(resolve_item)
 				if provider == 'easynews':
 					for retry in range(1, 2):
-						resolve_item = dict(item)
+						# Dalla voce gia' marcata, non dalla sorgente: la ripetizione di una sorgente 'sopra' e' sopra anche lei.
+						resolve_item = dict(resolve_item)
 						resolve_item['resolve_display'] = '%02d. [B]%s (RETRYx%s)[/B][CR]%s[CR]%s' % (count, provider_text, retry, extra_info, display_name)
+						resolve_item['ripetizione'] = True
 						processed_items_append(resolve_item)
 			items = list(processed_items)
 			if not self.continue_resolve_check(): return self._kill_progress_dialog()
@@ -1014,6 +1041,14 @@ class Sources():
 			monitor = xbmc_monitor()
 			for count, item in enumerate(items, 1):
 				try:
+					# LOTTO 339 -- la ripetizione di Easynews e' lo stesso file: serve quando la prima
+					# risoluzione fallisce, non dopo che l'utente l'ha lasciato dal pulsante dell'OSD.
+					if item.get('ripetizione') and self.cambio_manuale: continue
+					# E un cambio non risale sopra la sorgente scelta: la lista, per il pulsante, finisce in fondo.
+					if item.get('sopra') and self.cambio_sul_posto: continue
+					self.cambio_manuale = False
+					# Il pulsante compare solo se sotto questa resta una sorgente vera da provare.
+					self.sorgente_successiva = any(not i.get('ripetizione') and not i.get('sopra') for i in items[count:])
 					hide_busy_dialog()
 					if not self.progress_dialog: break
 					self.progress_dialog.reset_is_cancelled()
@@ -1071,26 +1106,42 @@ class Sources():
 					except: pass
 				except: pass
 		except: self._kill_progress_dialog()
+		# LOTTO 339 -- un cambio dall'OSD che non ha trovato una sorgente buona. Il film lasciato puo' essere
+		# ancora a schermo (se l'ultima candidata e' caduta prima del play()), e nessuno lo sorveglia piu':
+		# si chiude, e lo si dice. Non playback_failed_action: con prescrape e autoplay ripartirebbe una
+		# ricerca intera sopra un film che l'utente stava guardando.
+		if self.cambio_sul_posto and not self.playback_successful:
+			kodi_utils.clear_property(SORGENTE_SUCCESSIVA_PROP)
+			xbmc_player().stop()
+			self._kill_progress_dialog()
+			return notification('Playback Failed', 3500)
 		if self.cancel_all_playback: return self._kill_progress_dialog()
 		if not self.playback_successful or not url: self.playback_failed_action()
 		try: del monitor
 		except: pass
 
 	def get_playback_percent(self):
-		if self.media_type == 'movie': percent = get_progress_status_movie(get_bookmarks_movie(), str(self.tmdb_id))
+		# LOTTO 339 -- la riga intera, non la percentuale arrotondata. get_progress_status_* la
+		# arrotonda all'intero perche' serve ai badge: per riprendere, su due ore, un punto vale 72
+		# secondi. Dalla riga escono anche i secondi raggiunti, da cui il player riprende al secondo.
+		self.playback_seconds, self.playback_duration = 0.0, 0.0
+		if self.media_type == 'movie': bookmark = get_bookmarks_movie().get(str(self.tmdb_id))
 		elif any((self.random, self.random_continual)): return 0.0
-		else: percent = get_progress_status_episode(get_bookmarks_episode(self.tmdb_id, self.season), self.episode)
+		else: bookmark = get_bookmarks_episode(self.tmdb_id, self.season).get(self.episode)
+		try: percent = float(bookmark['resume_point'])
+		except: return 0.0
 		if not percent: return 0.0
 		action = self.get_resume_status(percent)
 		if action == 'cancel': return None
 		if action == 'start_over':
 			erase_bookmark(self.media_type, self.tmdb_id, self.season, self.episode)
 			return 0.0
-		return float(percent)
+		self.playback_seconds, self.playback_duration = posizione_del_segnalibro(bookmark)
+		return percent
 
 	def get_resume_status(self, percent):
-		if auto_resume(self.media_type): return float(percent)
-		return self._make_resume_dialog(percent)
+		if auto_resume(self.media_type): return percent
+		return self._make_resume_dialog(str(round(percent)))
 
 	def playback_failed_action(self):
 		self._kill_progress_dialog()

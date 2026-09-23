@@ -52,6 +52,9 @@ PROGRESS_WRITE = 'INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?
 PROGRESS_MARK_DELETED = ("UPDATE progress SET sync_state = 'pending_delete' "
 							'WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?')
 PROGRESS_DROP = 'DELETE FROM progress WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?'
+# Quanti secondi prima del punto raggiunto si riprende. Uno solo per chi scrive il segnalibro e per chi
+# riprende (lotto 339): la percentuale salvata li ha gia' tolti, i secondi (curr_time) no.
+ARRETRAMENTO_RIPRESA = 5
 
 def get_database(watched_indicators=None):
 	return connect_database(indicators_dict[watched_indicators or watched_indicators_function()])
@@ -301,6 +304,20 @@ def get_progress_status_all_episode(progress_info, season, episode):
 	except: percent = None
 	return percent
 
+def posizione_del_segnalibro(bookmark):
+	"""(secondi raggiunti, durata del file) di un segnalibro, (0.0, 0.0) se non si sanno (lotto 339).
+
+	I secondi sono curr_time, grezzi: l'arretramento lo toglie chi riprende. La durata non sta in
+	tabella ma si ricava, perche' resume_point e' stato calcolato su di lei da set_bookmark. Sulle
+	righe arrivate da un altro dispositivo curr_time vale 0 -- Trakt conosce solo la percentuale -- e
+	allora non si sa niente: si riprende dalla percentuale.
+	"""
+	try:
+		secondi, percento = float(bookmark['curr_time'] or 0), float(bookmark['resume_point'])
+		if secondi <= ARRETRAMENTO_RIPRESA or percento <= 0: return 0.0, 0.0
+		return secondi, (secondi - ARRETRAMENTO_RIPRESA) * 100.0 / percento
+	except: return 0.0, 0.0
+
 def clear_local_bookmarks():
 	from caches.base_cache import database
 	try:
@@ -473,7 +490,7 @@ def set_bookmark(params):
 		media_type, tmdb_id, curr_time, total_time = params.get('media_type'), params.get('tmdb_id'), params.get('curr_time'), params.get('total_time')
 		refresh = False if params.get('from_playback', 'false') == 'true' else True
 		title, season, episode = params.get('title'), params.get('season'), params.get('episode')
-		adjusted_current_time = float(curr_time) - 5
+		adjusted_current_time = float(curr_time) - ARRETRAMENTO_RIPRESA
 		resume_point = round(adjusted_current_time/float(total_time)*100,1)
 		watched_indicators = watched_indicators_function()
 		_lap_ms('watched_indicators')

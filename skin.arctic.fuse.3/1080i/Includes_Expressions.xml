@@ -156,6 +156,9 @@
 
     <expression name="Exp_OSD_HasPlaylist">[VideoPlayer.Content(episodes) | VideoPlayer.Content(livetv) | [VideoPlayer.Content(movies) + !Integer.IsEqual(VideoPlayer.PlaylistLength,1) + !Integer.IsEqual(VideoPlayer.PlaylistLength,0)]]</expression>
 
+    <!-- LOTTO 339 :: Fen Light la scrive solo se dopo la sorgente in riproduzione ne resta una da provare. -->
+    <expression name="Exp_OSD_SorgenteSuccessiva">!String.IsEmpty(Window(Home).Property(fenlight.sorgente_successiva))</expression>
+
     <expression name="Exp_OSD_PVRChannelSwitch">[VideoPlayer.Content(livetv) + [!String.IsEmpty(PVR.ChannelNumberInput) | Player.ShowInfo]]</expression>
 
     <expression name="Exp_OSD_DelayInfo_Timing">[[System.IdleTime(3)] | [System.IdleTime(2) + Skin.String(OSD.AutoOnPause.Delay,2s)] | [System.IdleTime(1) + Skin.String(OSD.AutoOnPause.Delay,1s)] | [System.IdleTime(0) + Skin.String(OSD.AutoOnPause.Delay,0s)]]</expression>
