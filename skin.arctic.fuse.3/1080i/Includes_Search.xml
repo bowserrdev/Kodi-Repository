@@ -375,7 +375,8 @@
          fuoco - il pannello info (logo) e l'artwork in primo piano - perche' fino a che il fuoco sta
          sulla barra di ricerca nessun onfocus ha ancora dichiarato niente. Vedi Hub_Combined_Info e
          Image_Foreground. -->
-    <expression name="Exp_Search_Window_Text">[[Window.IsVisible(1105) | Window.IsVisible(11105)] + !String.IsEmpty(Control.GetLabel(3000).index(1))]</expression>
+    <expression name="Exp_Search_Window">[Window.IsVisible(1105) | Window.IsVisible(11105)]</expression>
+    <expression name="Exp_Search_Window_Text">[[$EXP[Exp_Search_Window]] + !String.IsEmpty(Control.GetLabel(3000).index(1))]</expression>
 
     <include name="Search_Info_Panel">
         <control type="group">
@@ -390,19 +391,24 @@
                 </include>
             </control>
             <control type="group">
-                <!-- Era l'altro lettore del canale globale, e diceva la stessa cosa in un modo diverso:
-                     "la ricerca di adesso e' arrivata". Adesso e' il complemento della scritta di attesa.
-                     TRASPARENTE, NON NASCOSTO, durante il caricamento. Kodi aggiorna i figli di un gruppo
-                     solo se il gruppo e' visibile (GUIControlGroup.cpp:86-104): con il caricamento in
-                     <visible> il logo non vedeva mai il contenitore svuotarsi, passava dal logo della
-                     ricerca precedente a quello nuovo direttamente, e il ponte del lotto 306 teneva il
-                     vecchio a schermo per tutto il download (registrazione del 21/09: MOON sopra i
-                     risultati di "red" per un secondo). Una dissolvenza a 0 non si vede come il gruppo
-                     nascosto, ma lascia che l'immagine riceva il file vuoto e scarti la texture vecchia.
-                     Vale anche per Hub_Combined_Info, che fa lo stesso sul pannello del titolo.
-                     tests/test_logo_vede_il_vuoto.py -->
-                <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
-                <animation effect="fade" start="100" end="0" time="0" condition="$EXP[Exp_Search_Loading]">Conditional</animation>
+                <!-- QUI NON C'E' PIU' NESSUNA <visible>, ed e' la correzione.
+                     Prima c'era "casella piena, e non si sta caricando". Un gruppo nascosto pero' non
+                     e' solo invisibile: Kodi non aggiorna niente di cio' che contiene
+                     (GUIControlGroup.cpp:86-104), quindi il logo non vedeva mai il contenitore
+                     svuotarsi e, quando il gruppo tornava, il ponte del lotto 306 partiva dal logo
+                     della ricerca precedente e lo teneva a schermo per tutto il download
+                     (registrazione del 21/09: MOON sopra i risultati di "red" per un secondo).
+                     Nasconderlo solo durante il caricamento non bastava: nel giro in cui un gruppo
+                     RICOMPARE il suo contenuto e' ancora quello di prima, e si vede: un fotogramma
+                     pieno col logo dell'ultimo elemento selezionato, a ogni conferma
+                     (registrazione del 23/09, 17:40:01.066 e 17:41:28.732, sempre nello stesso punto
+                     della transizione).
+                     Dentro la 1105 questo gruppo c'e' e basta. A decidere cosa si vede e' la sola
+                     dissolvenza del pannello del titolo in Hub_Combined_Info, che segue la riga
+                     visibile e non cambia quando cambia la casella: cosi' non c'e' nessun ritorno
+                     dal nascosto, e il logo segue lo stato senza interruzioni. I pannelli dei
+                     dettagli restano regolati dalla loro <visible>, che non ha immagini da
+                     congelare. tests/test_logo_vede_il_vuoto.py -->
                 <include>skinvariables-searchwidgets-info</include>
             </control>
             <control type="label">
