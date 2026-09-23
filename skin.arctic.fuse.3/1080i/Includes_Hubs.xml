@@ -356,12 +356,26 @@
                          pannello nascosto congela la sua immagine sull'ultimo logo (Kodi non aggiorna i
                          figli di un gruppo nascosto), e al ritorno il ponte del lotto 306 mostrava il logo
                          della ricerca precedente. Trasparente, l'immagine segue lo stato e vede sparire il
-                         logo vecchio insieme ai risultati. Fuori dalla ricerca Exp_Search_Window_Text e'
-                         falsa: la dissolvenza non scatta e la Home resta com'era. Vedi Search_Info_Panel.
+                         logo vecchio insieme ai risultati. La condizione guarda la FINESTRA e la riga, non
+                         la casella: cosi' non cambia quando l'utente conferma una ricerca nuova, e non c'e'
+                         nessun fotogramma in cui il pannello torna opaco con dentro il logo di prima.
+                         Fuori dalla ricerca Exp_Search_Window e' falsa: la dissolvenza non scatta e la Home
+                         resta com'era. Vedi Search_Info_Panel.
                          tests/test_logo_vede_il_vuoto.py -->
-                    <animation effect="fade" start="100" end="0" time="0" condition="$EXP[Exp_Search_Window_Text] + !Control.IsVisible($PARAM[id])">Conditional</animation>
+                    <!-- DUE TERMINI, E SERVONO TUTTI E DUE. Control.IsVisible dice QUALE riga e' a schermo
+                         (quella della linguetta scelta) e a quella domanda risponde solo lui; ma e' la
+                         visibilita' di un altro controllo, e si congela per la stessa ragione di tutto il
+                         resto: le righe stanno in un gruppo che si nasconde a casella vuota, e da li' in poi
+                         Control.IsVisible resta indietro. Il 23/09 il logo di "Wonder Woman" e' rimasto
+                         dietro la scritta "Benvenuto" proprio cosi', e prima ancora era il fotogramma che
+                         compariva a ogni conferma. Il secondo termine e' il DATO, che non si congela mai:
+                         gli elementi di questa riga sono la risposta a cio' che c'e' scritto adesso, e non
+                         sono un segnaposto. Dove il primo resta fermo, il secondo e' gia' falso.
+                         E' la regola di identita' della riga (search_row.xmltemplate, Exp_Search_NNN_Risponde),
+                         scritta per esteso perche' qui l'id e' un parametro. -->
+                    <animation effect="fade" start="100" end="0" time="0" condition="$EXP[Exp_Search_Window] + ![Control.IsVisible($PARAM[id]) + String.IsEqual(Container($PARAM[id]).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1)) + String.IsEmpty(Container($PARAM[id]).ListItemAbsolute(0).Property(fenlight.segnaposto))]">Conditional</animation>
                     <include content="Info_Panel">
-                        <param name="visible">[!$EXP[Exp_InfoDialogs] + [[$EXP[Exp_Search_Window_Text]] | [!$EXP[Exp_Search_Window_Text] + Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id])]]]</param>
+                        <param name="visible">[!$EXP[Exp_InfoDialogs] + [[$EXP[Exp_Search_Window]] | [!$EXP[Exp_Search_Window] + Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id])]]]</param>
                         <param name="visible_line">false</param>
                         <param name="visible_plot">false</param>
                         <param name="visible_meta">false</param>
