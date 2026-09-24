@@ -24,8 +24,8 @@
 #
 # STRADA SCELTA. La correzione del cookie basterebbe, ma cercando l'ho trovata una strada migliore:
 # quicksearch.php con `section` DIVERSO da 'theatrical' non cerca fra i film, cerca nel CATALOGO
-# PRODOTTI home-video gia' filtrato per paese, e accanto a ogni voce mette data d'uscita e codice
-# paese. Una richiesta invece di due, ~0,42 s invece di ~0,87 s, 0-3 KB invece di 3-11 KB, e nessuna
+# PRODOTTI gia' filtrato per paese -- ma solo quello BLU-RAY, vedi il lotto 340 qui sotto -- e accanto
+# a ogni voce mette data d'uscita e codice paese. Una richiesta invece di due, ~0,42 s invece di ~0,87 s, 0-3 KB invece di 3-11 KB, e nessuna
 # pagina pesante da aprire mai.
 #
 #     keyword='Oppenheimer 2023', cookie country=it  ->  3.286 B
@@ -50,6 +50,24 @@
 #     tt13405778 -> Insidious: The Red Door (era Skinamarink)
 #     tt28607951 -> Anora                   (era The Brutalist)
 # Passerebbe qualunque prova superficiale. Non usare l'IMDb id come chiave di ricerca.
+#
+# LOTTO 340 -- IL CATALOGO ERA SOLO BLU-RAY, E I DVD NON LI VEDEVAMO. Il lotto 94 aveva misurato che
+# 'bluray', 'dvd', 'all' e '' danno la stessa risposta, e ne aveva dedotto che cercassero tutti fra i
+# prodotti home-video. Uguali lo sono -- misurato di nuovo il 24/09, byte per byte, anche 'digital' --
+# ma perche' il sito non riconosce nessuno di quei valori e ricade sul catalogo Blu-ray. I valori veri
+# sono quelli della tendina del sito: 'bluraymovies', 'dvdmovies', '4k', '3d', 'itunesmovies',
+# 'aivmovies', 'uvmovies', 'mamovies'. Il caso che l'ha fatto vedere, paese IT:
+#
+#     Ichi the Killer 2001   bluray: vuoto      dvdmovies: 2 voci, senza data   -> era NASCOSTO
+#     Visitor Q 2001         bluray: vuoto      dvdmovies: Jan 16, 2007         -> era NASCOSTO
+#     Oppenheimer 2023       bluray: 5 voci     dvdmovies: vuoto (il DVD IT esiste: il sito non lo ha)
+#
+# Il catalogo DVD del sito e' quindi un'AGGIUNTA, non un sostituto: sui titoli recenti e' lacunoso. Si
+# chiede prima il Blu-ray (che contiene gia' i 4K: 'The Matrix 4K', 'Perfect Days 4K' ci sono) e il DVD
+# solo se il Blu-ray non ha trovato un'edizione uscita. I titoli che il Blu-ray lo hanno pagano la
+# richiesta di prima e basta; la seconda la pagano solo quelli che fino a oggi venivano scartati.
+# I verdetti negativi scritti prima di questo lotto sono sbagliati per costruzione: li butta
+# dub_cache.migra_verdetti, una volta.
 import re
 
 # Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
@@ -60,10 +78,11 @@ def _requests():
 	return import_requests('bluray_api')
 
 _SEARCH_URL = 'https://www.blu-ray.com/search/quicksearch.php'
-# 'theatrical' cerca fra i FILM (e la risposta non dice nulla sulle edizioni). Qualunque altro valore
-# -- 'bluray', 'dvd', 'all', o la stringa vuota: sono equivalenti, verificato -- cerca fra i PRODOTTI
-# home-video del paese. E' quello che ci serve.
-_CATALOGUE_SECTION = 'bluray'
+# 'theatrical' cerca fra i FILM (e la risposta non dice nulla sulle edizioni). I cataloghi PRODOTTI del
+# paese sono uno per supporto, e si chiedono in quest'ordine (lotto 340). Un valore che il sito non
+# conosce -- 'bluray', 'dvd', 'all', '' -- non e' un catalogo "di tutto": ricade in silenzio su
+# 'bluraymovies', ed e' cosi' che per 246 lotti abbiamo chiesto solo dei Blu-ray.
+_CATALOGUES = ('bluraymovies', 'dvdmovies')
 # Una voce del menu a tendina: <li id="matchN"><span ...>Dec 21, 2023</span>&nbsp;Oppenheimer (2023)</li>
 # La data sta nello span (che il CSS manda a destra ma nel sorgente viene prima); il nome e' il resto.
 _ENTRY_RE = re.compile(r'id="match\d+"[^>]*>(.*?)</li>', re.DOTALL)
@@ -124,7 +143,7 @@ def _looks_genuine(response):
 		return True   # nel dubbio si assume buona: non si apre un interruttore per un errore nostro
 
 # Lazily-built shared session. Built through modules.http_client (lotto 84), which already keeps
-# POOL_PER_HOST=8 keep-alive connections per host. Cookies are passed PER-REQUEST (never mutating
+# keep-alive connections per host (CONNESSIONI_PER_HOST, lotto 343). Cookies are passed PER-REQUEST (never mutating
 # session state) so the shared session is safe to use from the parallel per-item filter threads.
 _session = None
 
@@ -197,8 +216,11 @@ def _parse_entries(body, country):
 # una richiesta ogni mezz'ora, e solo se un negativo capita davvero.
 # 'The Matrix 1999' e' scelto per misura, non a naso: provato su 13 paesi (IT US UK FR DE ES JP NL SE
 # PL BR AU CA) risponde in tutti. 'Oppenheimer 2023' no -- in Brasile e' vuoto.
+# LOTTO 340 -- una sentinella PER CATALOGO: che risponda l'indice Blu-ray non dice niente di quello DVD.
+# Stesso titolo, rimisurato il 24/09 su 'dvdmovies' negli stessi 13 paesi: risponde in tutti (IT con una
+# voce sola, 'The Matrix Collection'). 'Gladiator 2000' e 'Jurassic Park 1993' no -- JP, PL, SE, BR vuoti.
 _SENTINEL_KEYWORD = 'The Matrix 1999'
-_SENTINEL_PROP = 'fenlight.bluray.index.%s'
+_SENTINEL_PROP = 'fenlight.bluray.index.%s.%s'
 _SENTINEL_TTL = 1800
 _MEMORY_SENTINEL = {}
 
@@ -219,33 +241,33 @@ def _log(message):
 		logger('FenLight BLURAY', message)
 	except Exception: pass
 
-def _index_alive(country):
+def _index_alive(country, section):
 	# True  -> l'indice risponde: un corpo vuoto significa davvero "nessuna edizione".
 	# False -> l'indice non risponde nemmeno per un titolo che c'e' di sicuro: il vuoto non e' un no.
 	from time import time
 	get_property, set_property = _sentinel_io()
-	key = _SENTINEL_PROP % country
+	key = _SENTINEL_PROP % (section, country)
 	try:
 		state, expiry = (get_property(key) or '').split('|')
 		if time() < float(expiry): return state == 'ok'
 	except Exception:
 		pass
 	try:
-		alive = bool(_search(_SENTINEL_KEYWORD, country))
+		alive = bool(_search(_SENTINEL_KEYWORD, country, section))
 	except Exception:
 		return False   # non si e' potuto stabilire: non si trasforma un dubbio in un "no"
 	set_property(key, '%s|%s' % ('ok' if alive else 'ko', time() + _SENTINEL_TTL))
 	if not alive:
-		_log('SENTINELLA FALLITA per %s: "%s" non risulta nel catalogo. L\'indice non sta rispondendo, '
+		_log('SENTINELLA FALLITA per %s/%s: "%s" non risulta nel catalogo. L\'indice non sta rispondendo, '
 			'quindi le risposte vuote NON valgono come "nessuna edizione" e i verdetti restano '
-			'inconcludenti (elementi mostrati) finche\' non torna.' % (country, _SENTINEL_KEYWORD))
+			'inconcludenti (elementi mostrati) finche\' non torna.' % (country, section, _SENTINEL_KEYWORD))
 	return alive
 
-def _search(keyword, country):
+def _search(keyword, country, section):
 	# Una richiesta. Ritorna la lista delle edizioni del paese ([] se non ce ne sono).
 	# Solleva se la rete fallisce: la classificazione, la riprova e l'interruttore per host stanno in
 	# modules/http_client (lotto 93) e valgono per ogni chiamata di rete della stick.
-	payload = {'section': _CATALOGUE_SECTION, 'userid': '-1', 'country': country, 'keyword': keyword}
+	payload = {'section': section, 'userid': '-1', 'country': country, 'keyword': keyword}
 	response = _get_session().post(_SEARCH_URL, data=payload, cookies=_cookies(country),
 									timeout=_TIMEOUT, validate=_looks_genuine)
 	response.raise_for_status()
@@ -280,10 +302,28 @@ def _on_sale(entries, verify_released, today):
 	# l'ipotesi di gran lunga piu' probabile e non conta; per un titolo vecchio conta.
 	return bool(undated) and not verify_released
 
+def _catalogue_verdict(keyword, country, section, verify_released):
+	# Il verdetto di UN catalogo: True / False / None, con le stesse regole per tutti i supporti.
+	try:
+		entries = _search(keyword, country, section)
+	except Exception:
+		# LOTTO 93: la POLITICA sugli errori non sta qui. Classificazione, riprova e interruttore per
+		# host vivono in modules/http_client e valgono per ogni chiamata di rete della stick; qui
+		# resta la sola decisione DI DOMINIO, che e' sempre la stessa: se non si e' potuto stabilire
+		# nulla si torna None, e il chiamante mostra l'elemento (fail open).
+		# In particolare NON si distingue piu' fra tipi di guasto: quando l'interruttore e' aperto
+		# arriva un CircuitOpen (sottoclasse di OSError) e si esce subito, senza aspettare _TIMEOUT.
+		return None
+	if not entries:
+		# Il negativo di questa strada e' il corpo vuoto. Vale come "no" solo se l'indice risponde.
+		return False if _index_alive(country, section) else None
+	return _on_sale(entries, verify_released, _today())
+
 def has_home_video_release(title, year, country='IT', verify_released=False):
 	# Returns:
 	#   True  -> a home-video release exists for `title` in `country` and is actually out
-	#   False -> conclusively no release (not in the country's catalogue, or only announced editions)
+	#   False -> conclusively no release (in none of the country's catalogues -- Blu-ray, DVD -- or only
+	#            announced editions)
 	#   None  -> network/parse error, or the query can't be asked: INCONCLUSIVE. The caller must fail
 	#            open (show the item) and NOT cache.
 	# verify_released: when True the caller is asking about a recently-released title, where an
@@ -301,17 +341,12 @@ def has_home_video_release(title, year, country='IT', verify_released=False):
 		_log('"%s": senza anno la ricerca a catalogo non e\' interrogabile (serve piu\' di una parola) '
 			'-> INCONCLUSIVO' % title)
 		return None
-	try:
-		entries = _search(keyword, country)
-	except Exception:
-		# LOTTO 93: la POLITICA sugli errori non sta qui. Classificazione, riprova e interruttore per
-		# host vivono in modules/http_client e valgono per ogni chiamata di rete della stick; qui
-		# resta la sola decisione DI DOMINIO, che e' sempre la stessa: se non si e' potuto stabilire
-		# nulla si torna None, e il chiamante mostra l'elemento (fail open).
-		# In particolare NON si distingue piu' fra tipi di guasto: quando l'interruttore e' aperto
-		# arriva un CircuitOpen (sottoclasse di OSError) e si esce subito, senza aspettare _TIMEOUT.
-		return None
-	if not entries:
-		# Il negativo di questa strada e' il corpo vuoto. Vale come "no" solo se l'indice risponde.
-		return False if _index_alive(country) else None
-	return _on_sale(entries, verify_released, _today())
+	# LOTTO 340 -- basta UN catalogo che dica si'. Il "no" invece dev'essere di tutti: se uno non ha potuto
+	# rispondere (rete, sentinella fallita) il verdetto e' inconcludente, non il "no" degli altri. Un "no"
+	# si scrive in cache per mesi, ed e' esattamente l'errore che questo lotto corregge.
+	inconclusive = False
+	for section in _CATALOGUES:
+		verdict = _catalogue_verdict(keyword, country, section, verify_released)
+		if verdict: return True
+		if verdict is None: inconclusive = True
+	return None if inconclusive else False

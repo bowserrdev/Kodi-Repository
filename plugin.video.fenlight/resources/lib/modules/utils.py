@@ -143,6 +143,11 @@ def _run_pool(_target, _list, _style, _max_workers=None):
 	from threading import Thread
 	next_index, lock = [0], Lock()
 	def _worker():
+		# LOTTO 342 -- un worker aspetta la rete: usa le connessioni condivise, non ne apre di sue (base_cache).
+		try:
+			from caches.base_cache import usa_connessioni_condivise
+			usa_connessioni_condivise()
+		except Exception: pass
 		while True:
 			with lock:
 				index = next_index[0]
