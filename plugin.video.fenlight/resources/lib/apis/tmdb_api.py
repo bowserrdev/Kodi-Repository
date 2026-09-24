@@ -21,11 +21,14 @@ tvshows_append = 'external_ids,videos,credits,content_ratings,translations,alter
 # 15-84 KB (+28%/+57%), perche' TMDb restituisce i provider di TUTTI i paesi -- 65-131 -- e a noi
 # ne serve uno. Il conto resta ampiamente a favore (decine di KB su una connessione gia' aperta
 # contro secondi di handshake), ma solo per chi il filtro ce l'ha ACCESO: per tutti gli altri
-# sarebbe peso puro, quindi si appende solo quando serve. Vedi metadata._store_streaming_verdict.
+# sarebbe peso puro, quindi si appende solo quando serve. Vedi modules/uscita.registra_da_scheda.
+#
+# LOTTO 344 -- anche il filtro "uscito" legge i provider (di tutti i paesi, ed e' la volta che servono tutti). Dal
+# lotto 348 e' l'unico filtro che li chiede: il doppiato e' una sua sottovoce.
 def _append_for(base):
 	try:
-		from modules.settings import dub_filter_enabled
-		if dub_filter_enabled(): return base + ',watch/providers'
+		from modules.settings import release_filter_enabled
+		if release_filter_enabled(): return base + ',watch/providers'
 	except: pass
 	return base
 empty_setting_check = (None, 'empty_setting', '')
@@ -707,25 +710,16 @@ def get_tmdb(url):
 		response = None
 	return response
 
-def streaming_available(media_type, tmdb_id, country, api_key):
-	# Used by the widget "dubbed content" filter (the streaming half of its OR check). Returns:
-	#   True  -> the title is on at least one platform (TMDb/JustWatch) in `country`
-	#   False -> conclusively NOT on any platform in `country`
-	#   None  -> network/parse/API error: INCONCLUSIVE (caller fails open + does not cache).
-	# TMDb's watch/providers lists a country under `results` ONLY when it has providers there, so the mere
-	# presence of the country key (with any flatrate/free/ads/rent/buy bucket) means it's available -- where
-	# exactly is irrelevant. A country with no providers is simply absent from `results`.
-	media = 'tv' if media_type in ('tvshow', 'tv', 'episode') else 'movie'
-	country = country.upper()
-	url = '%s/%s/%s/watch/providers?api_key=%s' % (base_url, media, tmdb_id, api_key)
-	try:
-		response = _get_session().get(url, timeout=timeout)
-		if response is None: return None
-		data = response.json()
+def dati_uscita(media_type, tmdb_id, api_key):
+	"""LOTTO 344 -- la domanda del filtro "uscito" per un titolo la cui scheda e' in cache senza verdetto (scaricata
+	col filtro spento). UNA richiesta, perche' la risposta porta insieme tutto cio' che le regole U1/U2 leggono:
+	i provider di tutti i paesi e, per i film, le date d'uscita. Senza lingua ne' altri append: 3,4 KB compressi
+	per Glass Onion, misurato il 24/09. None se non arriva o non e' una risposta di TMDb."""
+	media = 'movie' if media_type == 'movie' else 'tv'
+	append = 'release_dates,watch/providers' if media == 'movie' else 'watch/providers'
+	response = get_tmdb('%s/%s/%s?api_key=%s&append_to_response=%s' % (base_url, media, tmdb_id, api_key, append))
+	if response is None: return None
+	try: data = response.json()
 	except: return None
-	if not isinstance(data, dict) or data.get('success') is False: return None
-	results = data.get('results')
-	if results is None: return None
-	country_data = results.get(country)
-	if not country_data: return False
-	return any(country_data.get(bucket) for bucket in ('flatrate', 'free', 'ads', 'rent', 'buy'))
+	if not isinstance(data, dict) or data.get('success') is False or not data.get('id'): return None
+	return data

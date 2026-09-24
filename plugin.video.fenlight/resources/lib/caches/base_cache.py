@@ -822,7 +822,7 @@ def clear_all_cache():
 	caches = (
 		('meta', 'Meta Cache'), ('internal_scrapers', 'Internal Scrapers Cache'),
 		('external_scrapers', 'External Scrapers Cache'), ('trakt', 'Trakt Cache'),
-		('imdb', 'IMDb Cache'), ('list', 'List Data Cache'), ('dub', 'Dubbed Filter Cache'), ('main', 'Main Cache'),
+		('imdb', 'IMDb Cache'), ('list', 'List Data Cache'), ('dub', 'Released/Dubbed Filter Cache'), ('main', 'Main Cache'),
 		('pm_cloud', 'Premiumize Cloud'), ('rd_cloud', 'Real Debrid Cloud'),
 		('ad_cloud', 'All Debrid Cloud'), ('oc_cloud', 'OffCloud Cloud'),
 		('ed_cloud', 'Easy Debrid Cloud'), ('tb_cloud', 'TorBox Cloud')

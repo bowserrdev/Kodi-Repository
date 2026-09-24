@@ -50,20 +50,11 @@ tmdb_image_url, youtube_url, date_format = 'https://image.tmdb.org/t/p/%s%s', 'p
 EXPIRES_1_DAYS, EXPIRES_4_DAYS, EXPIRES_7_DAYS, EXPIRES_14_DAYS, EXPIRES_30_DAYS, EXPIRES_182_DAYS = 24, 96, 168, 336, 720, 4368
 invalid_error_codes = (6, 34, 37)
 
-# Diagnostic logging for the widget "dubbed content" filter. Grep the Kodi log for FENLIGHT_DUB.
-DUB_DEBUG = False
-
 # TMDb restituisce il cast COMPLETO: per un film grosso sono 100+ voci, ognuna con nome, ruolo, id e
 # URL immagine. Finivano tutte nel blob salvato in cache e poi in setCast() su OGNI riga dei widget --
 # con 200 elementi in lista sono decine di migliaia di oggetti attore creati per mostrarne sei.
 # Nessuna interfaccia ne mostra piu' di una ventina. Il resto era peso puro.
 CAST_LIMIT = 20
-def _dub_log(msg):
-	if not DUB_DEBUG: return
-	try:
-		import xbmc
-		xbmc.log('### FENLIGHT_DUB ### %s' % msg, 1)
-	except: pass
 
 # A title released (in cinemas) within this many days may have only an ANNOUNCED / pre-order home-video
 # listing on blu-ray.com, not one actually on sale. For such titles the blu-ray check is asked to verify
@@ -84,71 +75,17 @@ DUB_RECENT_DAYS = 120
 # che dichiara di fare una cosa e ne fa un'altra e' peggio di nessun interruttore: costa una sessione
 # di indagine alla prima volta che qualcuno lo gira per capire un difetto.
 
-def dub_resolve(country, media_type, tmdb_id, title, year, verify, api_key):
-	"""Il verdetto completo per UN titolo: True / False / None (inconcludente).
+# LOTTO 348 -- qui stavano dub_resolve (la regola "streaming nel paese OPPURE disco nel paese") e
+# _store_streaming_verdict (il suo verdetto sullo streaming dalla scheda appena scaricata). La regola faceva passare i
+# sottotitolati -- Visitor Q, DVD italiano col solo giapponese; Il vero Oppenheimer, Prime IT solo in inglese -- ed e'
+# stata sostituita dai filtri "uscito" e "doppiato" di modules/uscita.py (FILTRO-USCITA.md). La scheda appena
+# scaricata regala i loro verdetti tramite _registra_uscita.
 
-	Unico posto in cui vive la regola 'streaming OPPURE home video'. Dal lotto 324 ha un chiamante
-	solo -- il servizio che svuota la coda -- perche' una costruzione la rete non la tocca piu' in
-	nessun caso. Resta una funzione a parte perche' e' la REGOLA, e una regola si scrive una volta.
-
-	Scrive in dub_cache ogni verdetto CONCLUSIVO -- compreso il verdetto parziale sullo streaming, che
-	e' meta' del lavoro gia' pagato. Un esito inconcludente non si scrive mai: dev'essere richiesto di
-	nuovo, non ricordato.
-	"""
-	from caches.dub_cache import dub_cache
-	from apis.bluray_api import has_home_video_release
-	streaming = dub_cache.get_streaming(country, media_type, tmdb_id)
-	if streaming is None:
-		from apis.tmdb_api import streaming_available
-		streaming = streaming_available(media_type, tmdb_id, country, api_key)
-		if streaming is not None: dub_cache.set_streaming(country, media_type, tmdb_id, streaming, year)
-	if streaming is True:
-		dub_cache.set_availability(country, media_type, tmdb_id, True, year)
-		return True
-	if streaming is None: return None
-	# LOTTO 320 -- il titolo puo' mancare, e va bene cosi'. Chi ha rimandato questo verdetto poteva non
-	# avere la scheda in mano, e scaricarla li' -- dentro una costruzione, con l'utente fermo davanti --
-	# e' esattamente cio' che il 320 ha tolto: 86 s in una sessione di dodici minuti. Il posto giusto per
-	# pagarla e' QUI, perche' qui ci arriva solo il servizio, che lavora a stick ferma.
-	# Si scende fin qui solo dopo aver escluso lo streaming, cioe' la meta' di verdetti che la scheda non
-	# la richiede affatto: la si scarica per i pochi che devono davvero passare da blu-ray.com.
-	if not title:
-		title, year, verify = _scheda_per_bluray(media_type, tmdb_id, api_key, year, verify)
-		if not title: return None
-	# Non e' su streaming -> ripiego home video. blu-ray.com indicizza i titoli internazionali, quindi
-	# si passa il titolo inglese/originale e l'anno IMDb.
-	home_video = has_home_video_release(title, year, country, verify_released=verify)
-	if home_video is None: return None
-	available = bool(home_video)
-	dub_cache.set_availability(country, media_type, tmdb_id, available, year)
-	return available
-def _store_streaming_verdict(media_type, data, year):
-	# Chiamata SOLO su dati appena scaricati da TMDb, mai su quelli letti dalla cache: e' proprio la
-	# freschezza a rendere il dato utilizzabile. I metadati restano in cache per mesi, i provider
-	# cambiano -- quindi il verdetto non viaggia dentro 'meta', dove invecchierebbe insieme al resto,
-	# ma va nella cache del filtro, che ha un TTL suo e sa gestirlo.
-	# Scrive DUE cose distinte: se il titolo e' su streaming il verdetto complessivo e' gia' deciso
-	# (streaming OPPURE home video), altrimenti si annota solo che lo streaming non c'e', cosi' la
-	# prossima valutazione salta la chiamata e va dritta a blu-ray.com. Non si conclude mai
-	# 'indisponibile' da qui: manca la meta' blu-ray.
-	try:
-		from modules.settings import dub_filter_enabled, dub_filter_country
-		# Con il filtro spento non si scrive niente: sarebbe una riga di cache e una lettura di
-		# impostazione per ogni titolo scaricato, per un verdetto che nessuno andra' a leggere.
-		if not dub_filter_enabled(): return
-		country = dub_filter_country()
-		if not country: return
-		providers = data.get('watch/providers') or {}
-		results = providers.get('results')
-		if not isinstance(results, dict): return   # risposta assente o malformata: non si conclude nulla
-		tmdb_id = data.get('id')
-		if not tmdb_id: return
-		country_data = results.get(country.upper())
-		on_streaming = bool(country_data) and any(country_data.get(b) for b in ('flatrate', 'free', 'ads', 'rent', 'buy'))
-		from caches.dub_cache import dub_cache
-		dub_cache.set_streaming(country, media_type, tmdb_id, on_streaming, year)
-		if on_streaming: dub_cache.set_availability(country, media_type, tmdb_id, True, year)
-	except: pass
+def _registra_uscita(media_type, data, year):
+	# LOTTO 344 -- i verdetti che la scheda appena scaricata regala ai filtri "uscito" e "doppiato" (riassunto TMDb, dal
+	# 347). La regola sta in modules/uscita.
+	from modules.uscita import registra_da_scheda
+	registra_da_scheda(media_type, data, year)
 
 def _is_recent_release(premiered, current_date):
 	if not premiered: return False
@@ -174,35 +111,9 @@ def _entry_query(meta, current_date):
 			meta.get('imdb_year') or meta.get('year'),
 			_is_recent_release(meta.get('premiered'), current_date))
 
-def assicura_scheda(media_type, tmdb_id, api_key):
-	"""La scheda del titolo, dalla cache o dalla rete -- e da qui in poi comunque in cache. None se non si ottiene.
+# LOTTO 348 -- qui stavano assicura_scheda e _scheda_per_bluray: scaricavano la scheda di un titolo che dub_resolve
+# riceveva senza. Il preparatore giudica sempre con la scheda in mano (preparatore.giudica), quindi non servono piu'.
 
-	La chiama solo il servizio (_scheda_per_bluray: per interrogare blu-ray.com serve il titolo). Dal
-	lotto 333 il preparatore scarica la scheda di ogni titolo PRIMA del verdetto, quindi qui si arriva
-	quasi sempre con la scheda gia' in cache.
-	"""
-	try:
-		from modules.settings import mpaa_region
-		from modules.utils import get_datetime, get_current_timestamp
-		meta_func = movie_meta if media_type == 'movie' else tvshow_meta
-		meta = meta_func('tmdb_id', tmdb_id, api_key, mpaa_region(), get_datetime(), get_current_timestamp())
-		if not meta or meta.get('blank_entry'): return None
-		return meta
-	except Exception as e:
-		_dub_log('scheda tmdb=%s EXCEPTION %s' % (tmdb_id, e))
-		return None
-
-def _scheda_per_bluray(media_type, tmdb_id, api_key, year, verify):
-	"""La scheda di un titolo rimandato SENZA scheda, scaricata qui perche' qui ci arriva solo il servizio.
-
-	Torna (titolo, anno, verify) come _entry_query, oppure (None, ...) se la scheda non si ottiene --
-	e in quel caso il chiamante conclude INCONCLUSIVO, non "indisponibile": non aver potuto chiedere
-	non e' una risposta. Il titolo resta in coda e ci si riprova al giro dopo.
-	"""
-	meta = assicura_scheda(media_type, tmdb_id, api_key)
-	if not meta: return None, year, verify
-	from modules.utils import get_datetime
-	return _entry_query(meta, get_datetime())
 
 def _has_cjk(value):
 	try:
@@ -307,8 +218,8 @@ def discover_ammesso(media_type, meta, min_rating):
 
 # LOTTO 333 -- qui stavano dub_filter e dub_keep_mask, il filtro doppiaggio che girava DENTRO la
 # costruzione (e che, dal lotto 95, nascondeva e accodava cio' che non sapeva decidere). Il verdetto ora
-# lo decide solo il servizio prima di mettere un titolo in lista: vedi modules/preparatore.giudica, che
-# usa la stessa regola (dub_resolve) e la stessa scorciatoia sullo streaming (scheda prima del verdetto).
+# lo decide solo il servizio prima di mettere un titolo in lista: vedi modules/preparatore.giudica e, dal lotto 348,
+# la regola in modules/uscita.
 
 def _is_blank(meta):
 	# Un "blank entry" e' il segnaposto salvato quando TMDb rifiuta un id (codici 6/34/37): serve
@@ -520,6 +431,9 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 				'duration': duration, 'rootname': rootname, 'country': country, 'country_codes': country_codes, 'mpaa': mpaa,'writer': writer, 'all_trailers': all_trailers,
 				'director': director, 'directors': directors, 'writers': writers, 'alternative_titles': alternative_titles, 'plot': plot, 'studio': studio, 'extra_info': extra_info,
 				'mediatype': 'movie', 'tvdb_id': 'None', 'clearlogo': clearlogo, 'landscape': landscape, 'spoken_language': spoken_language, 'meta_language': lang}
+		# LOTTO 347 -- la scheda delle serie la portava gia', quella dei film no: 0 su 5292 nel database del Mac. Il
+		# filtro doppiaggio la legge (regola D0: la lingua originale e' un doppiaggio per definizione).
+		meta['original_language'] = data_get('original_language', '')
 		if imdb_data_result:
 			if imdb_data_result.get('rating'): meta['rating'] = imdb_data_result['rating']
 			if imdb_data_result.get('votes'): meta['votes'] = imdb_data_result['votes']
@@ -532,7 +446,7 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 			# count specifically (more reliable than TMDb) and filter out non-film entries (music videos).
 			meta['imdb_votes'] = imdb_data_result.get('votes')
 			meta['media_subtype'] = imdb_data_result.get('title_type')
-		_store_streaming_verdict('movie', data, meta.get('imdb_year') or meta.get('year'))
+		_registra_uscita('movie', data, meta.get('imdb_year') or meta.get('year'))
 		metacache_set('movie', id_type, meta, movie_expiry(current_date, meta), current_time)
 	except: pass
 	return meta
@@ -845,7 +759,7 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 				meta['ep_esclusi_tvdb'] = _giuntura['esclusi_tvdb']
 				meta['ep_esclusi_trakt'] = _giuntura['esclusi_trakt']
 				meta['rimappaggio_v'] = _RIMAPPAGGIO_V
-		_store_streaming_verdict('tvshow', data, meta.get('imdb_year') or meta.get('year'))
+		_registra_uscita('tvshow', data, meta.get('imdb_year') or meta.get('year'))
 		_scadenza = tvshow_expiry(current_date, meta)
 		if _rimappaggio_incompleto: _scadenza = min(_scadenza, EXPIRES_1_DAYS)
 		metacache_set('tvshow', id_type, _pack_ep_maps(meta), _scadenza, current_time)
