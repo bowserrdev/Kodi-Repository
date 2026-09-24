@@ -413,23 +413,136 @@ BASE_DELETE = 'DELETE FROM %s WHERE id = ?'
 # opening/closing a connection on every cache read or write.
 _local = _ThreadLocal()
 
+def _apri(database_name):
+	conn = database.connect(
+		database_locations[database_name],
+		timeout=database_timeout,
+		isolation_level=None,  # autocommit
+		check_same_thread=False
+	)
+	# WAL mode: allows concurrent readers while writing, and is crash-safe.
+	# NORMAL synchronous: no fsync on every commit, but safe at WAL checkpoints.
+	conn.execute('PRAGMA journal_mode = WAL')
+	conn.execute('PRAGMA synchronous = NORMAL')
+	return conn
+
 def connect_database(database_name):
+	if getattr(_local, 'condivisa', False): return _tramite(database_name)
 	if not hasattr(_local, 'connections'):
 		_local.connections = {}
 	conn = _local.connections.get(database_name)
 	if conn is None:
-		conn = database.connect(
-			database_locations[database_name],
-			timeout=database_timeout,
-			isolation_level=None,  # autocommit
-			check_same_thread=False
-		)
-		# WAL mode: allows concurrent readers while writing, and is crash-safe.
-		# NORMAL synchronous: no fsync on every commit, but safe at WAL checkpoints.
-		conn.execute('PRAGMA journal_mode = WAL')
-		conn.execute('PRAGMA synchronous = NORMAL')
+		conn = _apri(database_name)
 		_local.connections[database_name] = conn
 	return conn
+
+# --- LOTTO 342: i thread di rete non possiedono connessioni ----------------------------------------
+# Una connessione per thread e per database, mai chiusa finche' il thread vive, in WAL tiene aperti due
+# file suoi (il database e il -wal; lo -shm e' uno per processo). Con pochi thread e' il modello giusto:
+# niente apertura a ogni lettura, e ogni thread ha le sue transazioni. Ma i descrittori crescono col
+# NUMERO DI THREAD, e tutti gli interpreti Python vivono nel processo di Kodi, che sul Mac ne ha 256
+# (`launchctl limit maxfiles`). Il 24/09 il lotto 341 ha portato la rete del preparatore da 3 a 20 thread:
+# file di database aperti da 0 a 217 in 1,4 s (lsof da fuori), `OSError(24, 'Too many open files')`, DNS
+# e SQLite di Kodi in errore, e Kodi morto in SIGABRT nel thread della GUI -- due prove su due.
+#
+# I thread che esistono per ASPETTARE LA RETE (il gruppo del preparatore, i worker di utils._run_pool)
+# passano quasi tutto il tempo fuori dal database: una scheda e' una lettura, qualche centinaio di ms di
+# rete, una scrittura. Tenere una connessione ciascuno per tutta la vita non serve a niente -- SQLite
+# serializza comunque le scritture sullo stesso file -- e costa descrittori. Questi thread si dichiarano
+# con usa_connessioni_condivise() e da li' connect_database da' loro un TRAMITE: tutti i thread condivisi
+# di un interprete usano UNA connessione per database, sotto un lucchetto tenuto per la sola istruzione.
+# I descrittori dipendono dal numero di database, non dal numero di thread.
+#
+# Tre cose che il tramite deve garantire, e come:
+#   - il risultato si legge FUORI dal lucchetto: execute consuma le righe subito (fetchall) e restituisce
+#     un cursore gia' pieno. I chiamanti fanno execute(...).fetchone()/fetchall(), iterano, o leggono
+#     rowcount: tutto coperto (verificato su tutta la lib il 24/09);
+#   - una TRANSAZIONE non si mescola con le istruzioni degli altri thread: se dopo un'istruzione la
+#     connessione e' in transazione, il lucchetto resta a chi l'ha aperta fino a COMMIT o ROLLBACK;
+#   - close() non chiude: la connessione e' di tutti.
+# Il lucchetto e' rientrante e per database: un thread che tiene una transazione puo' continuare a usarla.
+try: from _thread import RLock as _RLock, allocate_lock as _allocate_lock
+except ImportError: from threading import RLock as _RLock, Lock as _allocate_lock
+
+_condivise, _condivise_lock = {}, _allocate_lock()
+
+def usa_connessioni_condivise():
+	"""Da chiamare all'inizio di un thread che esiste per aspettare la rete. Vale per tutta la sua vita."""
+	_local.condivisa = True
+
+class _Cursore:
+	__slots__ = ('_righe', '_i', 'rowcount', 'lastrowid')
+
+	def __init__(self, righe, rowcount, lastrowid):
+		self._righe, self._i, self.rowcount, self.lastrowid = righe, 0, rowcount, lastrowid
+
+	def fetchone(self):
+		if self._i >= len(self._righe): return None
+		self._i += 1
+		return self._righe[self._i - 1]
+
+	def fetchall(self):
+		resto, self._i = self._righe[self._i:], len(self._righe)
+		return resto
+
+	def __iter__(self):
+		return iter(self.fetchall())
+
+class _Tramite:
+	def __init__(self, conn):
+		self._conn, self._lock, self._in_transazione = conn, _RLock(), False
+
+	def _esegui(self, metodo, *argomenti):
+		self._lock.acquire()
+		try:
+			cur = getattr(self._conn, metodo)(*argomenti)
+			return _Cursore(cur.fetchall() if cur is not None else [],
+							getattr(cur, 'rowcount', -1), getattr(cur, 'lastrowid', None))
+		finally:
+			self._rilascia()
+
+	def _rilascia(self):
+		# Chiamato una volta per ogni acquire. Se l'istruzione ha APERTO una transazione, questo acquire
+		# resta come pegno fino alla sua chiusura; se l'ha CHIUSA, si rende anche il pegno.
+		aperta = self._conn.in_transaction
+		if aperta and not self._in_transazione:
+			self._in_transazione = True
+			return
+		if not aperta and self._in_transazione:
+			self._in_transazione = False
+			self._lock.release()
+		self._lock.release()
+
+	def execute(self, sql, parametri=()):
+		return self._esegui('execute', sql, parametri)
+
+	def executemany(self, sql, righe):
+		return self._esegui('executemany', sql, righe)
+
+	def commit(self):
+		self._lock.acquire()
+		try: self._conn.commit()
+		finally: self._rilascia()
+
+	def close(self):
+		pass
+
+def _tramite(database_name):
+	t = _condivise.get(database_name)
+	if t is None:
+		with _condivise_lock:
+			t = _condivise.get(database_name)
+			if t is None:
+				t = _condivise[database_name] = _Tramite(_apri(database_name))
+	return t
+
+def _dimentica_condivisa(database_name):
+	"""Il file del database e' stato ricreato: la connessione condivisa punta al vecchio, si butta."""
+	with _condivise_lock:
+		t = _condivise.pop(database_name, None)
+	if t is not None:
+		try: t._conn.close()
+		except: pass
 
 def checkpoint_database(database_name):
 	"""Forza su disco cio' che e' appena stato scritto.
@@ -577,6 +690,7 @@ def check_databases_integrity():
 				# Evict stale connection from thread-local pool so the rebuilt DB gets a fresh one.
 				if hasattr(_local, 'connections'):
 					_local.connections.pop(database_name, None)
+				_dimentica_condivisa(database_name)
 				delete_file(database_location)
 	command_base = 'SELECT * FROM %s LIMIT 1'
 	database_errors = []

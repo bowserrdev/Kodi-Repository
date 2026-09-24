@@ -1241,6 +1241,12 @@ class FenLightMonitor(xbmc.Monitor):
 		# le fermerebbe tutte fino al limite di sicurezza. Prima, il token dei contenitori: il preparatore
 		# ordina ricariche da questo processo (lotto 325).
 		self._preparatore = None
+		# LOTTO 340 -- i verdetti del doppiaggio scritti con una regola superata si buttano prima che il
+		# preparatore, che li legge, possa usarli. Vedi caches/dub_cache.migra_verdetti.
+		try:
+			from caches.dub_cache import migra_verdetti
+			migra_verdetti()
+		except Exception as e: logger('Fen Light', 'migrazione dei verdetti non eseguita (%s)' % e)
 		try:
 			from modules import paginator as _pg, preparatore
 			_pg.abilita_token_locale()

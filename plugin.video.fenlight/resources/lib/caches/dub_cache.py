@@ -50,6 +50,46 @@ GET_ALL = 'SELECT id FROM dubcache'
 DELETE_ALL = 'DELETE FROM dubcache'
 CLEAN = 'DELETE FROM dubcache WHERE CAST(expires AS INT) <= ?'
 
+# LOTTO 340 -- quale regola ha scritto i verdetti che stanno nel database (PRAGMA user_version di dub.db).
+# Quando la regola cambia in un modo che rende sbagliati dei verdetti gia' scritti, si alza il numero e
+# migra_verdetti butta quelli e solo quelli, una volta.
+#   1  blu-ray.com interrogato anche nel catalogo DVD (apis/bluray_api.py). Prima si chiedeva solo il
+#      Blu-ray: ogni "no" poteva essere un titolo uscito solo in DVD, come Ichi the Killer, e un "no"
+#      di un titolo vecchio resta in cache 180 giorni. I "si'" restano validi, e restano validi anche i
+#      verdetti del solo streaming ('dubs_'): la correzione non li riguarda.
+VERDETTI_REV = 1
+# substr e non LIKE: in LIKE '_' e' un jolly, e 'dub_%' prenderebbe anche le righe 'dubs_'.
+DELETE_NEGATIVE = "DELETE FROM dubcache WHERE substr(id, 1, 4) = 'dub_' AND data = 'false'"
+
+def migra_verdetti():
+	"""Porta i verdetti di dub.db alla regola corrente. La chiama il servizio all'avvio, una volta per sessione.
+
+	Deve girare PRIMA del preparatore, che e' il lettore di questi verdetti e parte subito, mentre
+	make_databases aspetta la Home piena: messa li', la prima sessione dopo l'aggiornamento avrebbe scartato
+	di nuovo, con i "no" vecchi, i titoli che questa migrazione esiste per recuperare. Sulle sessioni
+	successive costa una CREATE IF NOT EXISTS e una lettura di PRAGMA.
+
+	La cancellazione e il nuovo numero stanno nella stessa transazione: un'interruzione a meta' lascia il
+	database alla revisione vecchia, e la sessione dopo rifa' tutto.
+	"""
+	from caches.base_cache import connect_database, make_database
+	from modules.kodi_utils import logger
+	try:
+		make_database('dub_db')   # al primo avvio in assoluto la tabella non c'e' ancora
+		dbcon = connect_database('dub_db')
+		if dbcon.execute('PRAGMA user_version').fetchone()[0] >= VERDETTI_REV: return
+		dbcon.execute('BEGIN')
+		try:
+			tolti = dbcon.execute(DELETE_NEGATIVE).rowcount
+			dbcon.execute('PRAGMA user_version = %d' % VERDETTI_REV)
+			dbcon.execute('COMMIT')
+		except Exception:
+			dbcon.execute('ROLLBACK')
+			raise
+		logger('Fen Light', 'dub.db: verdetti portati alla revisione %d, %d negativi buttati' % (VERDETTI_REV, tolti))
+	except Exception as e:
+		logger('Fen Light', 'dub.db: migrazione dei verdetti FALLITA: %s' % e)
+
 class DubCache(BaseCache):
 	def __init__(self):
 		BaseCache.__init__(self, 'dub_db', 'dubcache')

@@ -34,7 +34,22 @@ from _thread import allocate_lock as Lock  # builtin, vedi la nota in caches/bas
 
 DEFAULT_TIMEOUT = 20
 MAX_REDIRECTS = 5
-POOL_PER_HOST = 8
+# LOTTO 343 -- quante connessioni verso UN server possono essere in uso insieme, in tutto l'interprete. Con HTTP/1.1
+# una connessione porta una richiesta alla volta: senza tetto, 20 thread aprono 20 connessioni, e finito il
+# picco restavano li'. Col tetto i thread in piu' ASPETTANO che una connessione si liberi invece di aprirne
+# un'altra: poche connessioni, usate a fondo. Misurato il 24/09 sul Mac, 20 thread di rete e cache vuota, somma dei
+# tempi delle quattro righe della Home (dalla richiesta alla consegna) e picco dei descrittori del processo (256):
+#     senza tetto (20)  25,1-29,8 s   picco 207-211 file, 85-89 socket
+#     12                25,0 s        picco 189 file, 67 socket
+#     8                 37,7 s        picco 171 file, 49 socket
+# 12 e' la stessa velocita' di nessun tetto con 20 descrittori in meno al picco; 8 costa un terzo del tempo.
+# Referti in strumenti/diagnostica/referti/riempimento-341-C*.
+CONNESSIONI_PER_HOST = 12
+# Una connessione ferma da piu' di questi secondi si chiude. Fra una pagina e l'altra di un lavoro passano
+# frazioni di secondo, quindi durante il traffico il riuso resta intero; finito il traffico, i socket spariscono
+# invece di occupare descrittori finche' il server non li chiude lui (sul Mac il processo ne ha 256: 24/09, 60
+# socket fermi su 177 descrittori).
+SCADENZA_FERME = 5.0
 USER_AGENT = 'Mozilla/5.0 (Linux; Android 9) FenLight'
 
 # ---------------------------------------------------------------------------------------------
@@ -127,7 +142,7 @@ class _Adapters:
 	# AttributeError dentro un try che finiva in `return None`, quindi l'interrogazione a
 	# blu-ray.com e' stata spenta in silenzio dal lotto 84 al 93 senza che nulla lo dicesse.
 	# La lezione: una superficie di compatibilita' incompleta non da' errore, da' comportamento
-	# sbagliato. Qui l'adapter non deve fare nulla -- il pool per host c'e' gia' (POOL_PER_HOST) --
+	# sbagliato. Qui l'adapter non deve fare nulla -- il pool per host c'e' gia' (_Pool, lotto 343) --
 	# ma deve ESISTERE, cosi' che un chiamante scritto per requests non cada nel vuoto.
 	class HTTPAdapter:
 		def __init__(self, *args, **kwargs): pass
@@ -282,49 +297,150 @@ def _encode_params(params):
 	from modules.kodi_utils import urlencode
 	return urlencode(params)
 
+class _Tetto:
+	"""Semaforo contatore sui soli builtin di _thread (threading costa import: vedi caches/base_cache).
+
+	I posti si passano DIRETTAMENTE al primo in attesa, in ordine d'arrivo: chi rilascia non rimette il posto
+	in comune dove un nuovo arrivato potrebbe soffiarlo a chi aspetta da piu' tempo.
+	"""
+	def __init__(self, posti):
+		self._liberi, self._lock, self._attese = posti, Lock(), []
+
+	def prendi(self, attesa):
+		with self._lock:
+			if self._liberi > 0:
+				self._liberi -= 1
+				return True
+			segnale = Lock(); segnale.acquire(); self._attese.append(segnale)
+		if segnale.acquire(True, attesa): return True
+		with self._lock:
+			if segnale in self._attese:
+				self._attese.remove(segnale)
+				return False
+		# Il posto e' arrivato insieme alla scadenza: rendi() l'ha gia' consegnato, quindi e' nostro.
+		segnale.acquire()
+		return True
+
+	def rendi(self):
+		with self._lock:
+			if self._attese:
+				self._attese.pop(0).release()
+				return
+			self._liberi += 1
+
+	def in_uso(self, posti):
+		with self._lock: return posti - self._liberi
+
+_tetti, _tetti_lock = {}, Lock()
+
+def _tetto(scheme, host, port):
+	# Uno per server e per INTERPRETE, non per sessione: due sessioni verso lo stesso host (tmdb_api la crea
+	# pigramente, e piu' thread possono crearla insieme) non devono raddoppiare le connessioni.
+	chiave = (scheme, host, port)
+	with _tetti_lock:
+		t = _tetti.get(chiave)
+		if t is None: t = _tetti[chiave] = _Tetto(CONNESSIONI_PER_HOST)
+	return t
+
+class NessunaConnessioneLibera(NetworkError):
+	"""Tutte le connessioni verso l'host sono rimaste occupate per l'intero timeout. Non e' un guasto
+	dell'host: e' coda nostra, e non conta per l'interruttore."""
+
 class _Pool:
-	# Un pool di connessioni per (host, porta, timeout). Sostituisce l'HTTPAdapter(pool_maxsize=8) che
-	# make_session montava su requests: senza, i thread che risolvono i metadati mancanti
-	# serializzerebbero tutti sulla stessa connessione.
+	# Le connessioni FERME di una sessione, per (schema, host, porta). Sostituisce l'HTTPAdapter(pool_maxsize=8)
+	# che make_session montava su requests.
+	# LOTTO 343 -- quelle IN USO le conta il tetto dell'host. Ogni prendi() va chiusa con release() (la
+	# connessione torna ferma) o scarta() (la connessione e' stata chiusa): tutte e due rendono il posto.
+	# Un posto non reso e' perso per sempre, e al CONNESSIONI_PER_HOST-esimo tutti aspettano: _attempt lo
+	# garantisce con un finally. Il timeout non fa piu' parte della chiave: si imposta sulla connessione al
+	# momento del riuso, cosi' un host ha UN gruppo di connessioni ferme e non uno per ogni timeout usato.
 	def __init__(self):
 		self._free, self._lock = {}, Lock()
+		with _pool_lock: _pool_vivi.append(_ref(self))
+
+	def _scadute(self, bucket, adesso):
+		# Le ferme sono in ordine di rilascio: le piu' vecchie in testa.
+		n = 0
+		while n < len(bucket) and adesso - bucket[n][1] >= SCADENZA_FERME: n += 1
+		scadute = [c for c, _t in bucket[:n]]
+		del bucket[:n]
+		return scadute
 
 	def prendi(self, scheme, host, port, timeout, nuova=False):
-		"""(connessione, riciclata). `nuova` salta il pool: la si chiede dopo che una riciclata e' morta."""
-		key = (scheme, host, port, timeout)
-		if not nuova:
-			with self._lock:
-				bucket = self._free.get(key)
-				if bucket: return bucket.pop(), True
+		"""(connessione, riciclata). Aspetta un posto libero fino a `timeout`, poi NessunaConnessioneLibera.
+		`nuova` salta le ferme: la si chiede dopo che una riciclata e' morta."""
+		if not _tetto(scheme, host, port).prendi(timeout):
+			raise NessunaConnessioneLibera('%s: %d connessioni occupate per %s s' % (host, CONNESSIONI_PER_HOST, timeout))
+		key, conn, scadute = (scheme, host, port), None, []
+		with self._lock:
+			bucket = self._free.get(key)
+			if bucket:
+				scadute = self._scadute(bucket, _adesso())
+				if bucket and not nuova: conn = bucket.pop()[0]   # la piu' recente: la piu' probabilmente viva
+		_chiudi(scadute)
+		if conn is not None:
+			conn.timeout = timeout
+			if conn.sock is not None: conn.sock.settimeout(timeout)
+			return conn, True
 		if scheme == 'https':
 			return http.client.HTTPSConnection(host, port, timeout=timeout), False
 		return http.client.HTTPConnection(host, port, timeout=timeout), False
 
 	def release(self, scheme, host, port, timeout, conn):
-		key = (scheme, host, port, timeout)
+		"""La connessione ha finito e resta aperta: torna ferma, e il posto si rende."""
 		with self._lock:
-			bucket = self._free.setdefault(key, [])
-			if len(bucket) < POOL_PER_HOST:
-				bucket.append(conn)
-				return
-		try: conn.close()
-		except: pass
+			self._free.setdefault((scheme, host, port), []).append((conn, _adesso()))
+		_tetto(scheme, host, port).rendi()
 
-	def svuota(self, scheme, host, port, timeout):
+	def scarta(self, scheme, host, port):
+		"""La connessione presa e' stata chiusa (errore, o il server ha detto Connection: close): si rende il posto."""
+		_tetto(scheme, host, port).rendi()
+
+	def svuota(self, scheme, host, port, timeout=None):
 		"""Chiude le connessioni ferme di questo host: una di loro e' appena risultata morta (lotto 334)."""
 		with self._lock:
-			bucket = self._free.pop((scheme, host, port, timeout), [])
-		for conn in bucket:
-			try: conn.close()
-			except: pass
+			bucket = self._free.pop((scheme, host, port), [])
+		_chiudi(c for c, _t in bucket)
+
+	def chiudi_ferme(self, adesso):
+		with self._lock:
+			scadute = [c for b in self._free.values() for c in self._scadute(b, adesso)]
+			for k in [k for k, b in self._free.items() if not b]: del self._free[k]
+		_chiudi(scadute)
+
+	def ferme(self):
+		with self._lock: return sum(len(b) for b in self._free.values())
 
 	def close_all(self):
 		with self._lock:
 			buckets, self._free = list(self._free.values()), {}
-		for bucket in buckets:
-			for conn in bucket:
-				try: conn.close()
-				except: pass
+		_chiudi(c for b in buckets for c, _t in b)
+
+def _chiudi(connessioni):
+	for conn in connessioni:
+		try: conn.close()
+		except: pass
+
+# I pool vivi di questo interprete, per la pulizia periodica. Riferimenti DEBOLI: un pool di una sessione che
+# nessuno usa piu' deve poter sparire, e con lui i suoi socket.
+from _weakref import ref as _ref
+from time import monotonic as _adesso
+_pool_vivi, _pool_lock = [], Lock()
+
+def connessioni_ferme():
+	"""Quante connessioni ferme tiene questo interprete. Zero = non c'e' niente da pulire, e chi aspetta puo'
+	aspettare senza svegliarsi."""
+	with _pool_lock: pool = [r() for r in _pool_vivi]
+	return sum(p.ferme() for p in pool if p is not None)
+
+def chiudi_connessioni_ferme():
+	"""Chiude le connessioni ferme da piu' di SCADENZA_FERME. La chiama il preparatore quando resta senza lavoro."""
+	adesso = _adesso()
+	with _pool_lock:
+		_pool_vivi[:] = [r for r in _pool_vivi if r() is not None]
+		pool = [r() for r in _pool_vivi]
+	for p in pool:
+		if p is not None: p.chiudi_ferme(adesso)
 
 # --- normalizzazione del request-target (lotto 260) ---------------------------------------------
 # Il buco lasciato aperto dal lotto 84. requests non mandava l'URL sul filo come gli arrivava: lo
@@ -559,6 +675,7 @@ class Session:
 		fast_retries, nuova = 0, False
 		while True:
 			conn, reused = self.pool.prendi(scheme, host, port, timeout, nuova)
+			reso = False   # LOTTO 343: il posto del tetto si rende UNA volta, in qualunque modo si esca
 			try:
 				conn.request(method, path, body=body, headers=headers)
 				raw = conn.getresponse()
@@ -574,12 +691,15 @@ class Session:
 				if hdrs.get('connection', '').lower() == 'close':
 					try: conn.close()
 					except: pass
+					self.pool.scarta(scheme, host, port)
 				else:
 					self.pool.release(scheme, host, port, timeout, conn)
+				reso = True
 				return Response(status, payload, hdrs, '%s://%s%s' % (scheme, host, path))
 			except (http.client.HTTPException, socket.error, OSError) as error:
 				try: conn.close()
 				except: pass
+				self.pool.scarta(scheme, host, port); reso = True
 				if reused:
 					self.pool.svuota(scheme, host, port, timeout)
 					nuova = True
@@ -591,3 +711,10 @@ class Session:
 				# esattamente come prima -- cambia solo che ora sappiamo COSA e' successo.
 				breaker_failure(host, type(error).__name__ or 'errore di trasporto')
 				raise TemporaryError('%s: %s' % (host, error)) from error
+			finally:
+				if not reso:
+					# Uscita imprevista (un'eccezione che non e' di trasporto): la connessione e' in uno stato
+					# che non si conosce, quindi si chiude, e il posto si rende comunque.
+					try: conn.close()
+					except: pass
+					self.pool.scarta(scheme, host, port)

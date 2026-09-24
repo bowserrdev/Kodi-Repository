@@ -24,7 +24,8 @@ ricerca che il filtro svuota) non e' un servizio morto.
 
 UN THREAD SOLO scrive `widgets.db`, ed e' questo: anche le consegne spedite dalle costruzioni (pgdb)
 passano da qui. La rete invece va a un gruppo di al massimo RETE_IN_PARALLELO richieste -- pagine della
-sorgente e giudizi dei titoli, mai insieme: sulla stick le raffiche di rete sono una causa nota di riavvio.
+sorgente e giudizi dei titoli, mai insieme. Le pagine lette insieme sono al piu' FINESTRA_PAGINE: e' un'altra
+domanda (quanto leggere in anticipo), e ha un'altra risposta.
 
 LE PRIORITA':
     P0  un passo che una costruzione sta aspettando (e le consegne, che sono istantanee)
@@ -40,6 +41,7 @@ NIENTE SILENZI: ogni lavoro P0 finisce con una risposta, anche quando fallisce.
 """
 import heapq
 import json
+import sys
 from threading import Thread, Condition
 from time import time as _ora
 from urllib.parse import parse_qsl
@@ -47,7 +49,21 @@ from urllib.parse import parse_qsl
 from modules import paginator, sorgenti
 from modules.kodi_utils import logger, set_property, clear_property
 
-RETE_IN_PARALLELO = 3
+# LOTTO 341 -- era 3, e la ragione scritta qui era "sulla stick le raffiche di rete sono una causa nota di
+# riavvio". Non lo erano: i riavvii della Mi Stick venivano dall'alimentatore guasto (cold_boot del 31/08, poi
+# confermato). Il tetto non proteggeva niente e serializzava i giudizi: una pagina da 20 titoli ne giudicava 3
+# alla volta, cioe' sette attese di rete in fila invece di una.
+# 20 e' una pagina TMDb intera: dentro una pagina non c'e' altro da mettere in parallelo. Ed e' anche il punto
+# oltre il quale TMDb non restituisce di piu', misurato il 24/09 dal Mac con schede complete (append come
+# metadata.py): 20 insieme -> 14-26 richieste/s, 0,46 s l'una, nessun 429; 40 insieme -> 13-22 richieste/s,
+# 1,02 s l'una. Raddoppiare fa solo aspettare di piu' ciascuno. Il limite dichiarato di TMDb e' "intorno alle
+# 40 richieste al secondo": un 429 conta per l'interruttore di http_client, e tre di fila chiudono TMDb per
+# tutti per 30 s -- per questo non si sale oltre la misura.
+RETE_IN_PARALLELO = 20
+# Le pagine della sorgente lette in anticipo, quando la resa dice che una non basta. Resta 3, e non per la rete:
+# ogni pagina letta porta 20 titoli da giudicare, e con 20 pagine una ricerca che il filtro svuota ne
+# giudicherebbe 400 per trovarne pochi. Le pagine in piu' non si buttano, ma costano comunque i loro giudizi.
+FINESTRA_PAGINE = 3
 P0, P1, P2 = 0, 1, 2
 # I passi pronti in piu' che la riga a fuoco tiene davanti a se'.
 ANTICIPO_PASSI = 1
@@ -164,9 +180,9 @@ def giudica(media_type, id_type, ident, filtrata, ctx, ammetti=None):
 # --- il preparatore ------------------------------------------------------------------------------------------
 
 def _finestra(mancano, lette, presi):
-	"""Quante pagine leggere insieme: quelle che, alla resa vista finora, bastano per `mancano` titoli (1..RETE_IN_PARALLELO)."""
-	if not presi: return RETE_IN_PARALLELO if lette else 1
-	return max(1, min(RETE_IN_PARALLELO, -(-mancano * lette // presi)))
+	"""Quante pagine leggere insieme: quelle che, alla resa vista finora, bastano per `mancano` titoli (1..FINESTRA_PAGINE)."""
+	if not presi: return FINESTRA_PAGINE if lette else 1
+	return max(1, min(FINESTRA_PAGINE, -(-mancano * lette // presi)))
 
 class Lavoro:
 	__slots__ = ('priorita', 'genere', 'chiave', 'dati')
@@ -260,7 +276,15 @@ class Preparatore:
 	def _prossimo(self):
 		with self._cond:
 			while not self._coda and not self._fermo:
-				self._cond.wait()
+				# LOTTO 343 -- senza lavoro la rete del servizio si ferma: e' il momento di chiudere le connessioni
+				# rimaste ferme, invece di tenerle finche' il server non le chiude lui. Se non ce ne sono si aspetta
+				# come prima, senza svegliarsi. http_client si guarda solo se e' gia' stato importato: se non lo
+				# e', connessioni non ce ne possono essere.
+				rete = sys.modules.get('modules.http_client')
+				if rete is None or not rete.connessioni_ferme():
+					self._cond.wait()
+				elif not self._cond.wait(rete.SCADENZA_FERME):
+					rete.chiudi_connessioni_ferme()
 			if self._fermo: return None
 			return heapq.heappop(self._coda)[2]
 
@@ -431,7 +455,7 @@ class Preparatore:
 		"""Legge la sorgente finche' i preparati sono almeno `serve`, o la sorgente finisce.
 
 		A FINESTRE: quando la sorgente dichiara la sua ultima pagina se ne possono leggere fino a
-		RETE_IN_PARALLELO insieme, poi si giudicano in ordine. Quante, lo dice la RESA misurata in questo lavoro:
+		FINESTRA_PAGINE insieme, poi si giudicano in ordine. Quante, lo dice la RESA misurata in questo lavoro:
 		una riga normale da' un titolo per voce e si legge una pagina per volta, una ricerca che il filtro svuota
 		(il 16/09 "more": un titolo ogni cinque pagine, 180 ms l'una) ne legge tre. Le pagine lette oltre il bisogno
 		non si buttano: i loro titoli restano preparati per il passo dopo.
@@ -581,7 +605,10 @@ class Preparatore:
 def avvia():
 	"""Lato SERVIZIO: crea e fa partire il preparatore. Torna l'istanza (per smistarle i messaggi)."""
 	from concurrent.futures import ThreadPoolExecutor
-	p = Preparatore(ThreadPoolExecutor(max_workers=RETE_IN_PARALLELO, thread_name_prefix='FL:rete'))
+	from caches.base_cache import usa_connessioni_condivise
+	# LOTTO 342 -- questi thread aspettano la rete: niente connessioni proprie ai database (vedi base_cache).
+	p = Preparatore(ThreadPoolExecutor(max_workers=RETE_IN_PARALLELO, thread_name_prefix='FL:rete',
+									   initializer=usa_connessioni_condivise))
 	t = Thread(target=p.run, name='FL:preparatore')
 	t.daemon = True
 	t.start()
