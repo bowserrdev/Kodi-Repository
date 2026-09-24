@@ -118,19 +118,26 @@ def firma_nota(media_type, id_type, ident):
 # --- il giudizio di UN titolo: scheda, poi verdetto --------------------------------------------------------
 
 PRONTO, SCARTO, ATTESA = 'pronto', 'scarto', 'attesa'
+# Le fonti esterne dei filtri "uscito" e "doppiato" (lotto 348): se una ha l'interruttore aperto, l'utente lo sa.
+FONTI_FILTRI = ('m.blu-ray.com', 'apis.justwatch.com', 'www.themoviedb.org')
 
 class Contesto:
-	"""Le impostazioni che un giudizio legge. Si leggono una volta per lavoro, non per titolo."""
+	"""Le impostazioni che un giudizio legge. Si leggono una volta per lavoro, non per titolo.
+
+	LOTTO 348 -- i filtri sono `uscita` (uscito in digitale da qualche parte) e, sotto di lui, `lingue` (doppiato in
+	almeno una): il doppiato senza l'uscito non vale, come nella finestra delle impostazioni. Prima c'era `paese`.
+	"""
 	def __init__(self):
-		from modules.settings import tmdb_api_key, mpaa_region, dub_filter_enabled, dub_filter_country, meta_language
+		from modules.settings import tmdb_api_key, mpaa_region, dub_filter_enabled, dub_filter_languages, meta_language, release_filter_enabled
 		from modules.utils import get_datetime, get_current_timestamp
 		self.api_key, self.mpaa = tmdb_api_key(), mpaa_region()
-		self.paese = dub_filter_country() if dub_filter_enabled() else ''
+		self.uscita = release_filter_enabled()
+		self.lingue = dub_filter_languages() if self.uscita and dub_filter_enabled() else ()
 		self.lingua = meta_language()
 		self.data, self.ora = get_datetime(), get_current_timestamp()
 
 	def impronta(self):
-		return '%s|%s' % (self.paese, self.lingua)
+		return '%s|%s|%s' % ('uscita' if self.uscita else '', ','.join(self.lingue), self.lingua)
 
 def scheda(media_type, id_type, ident, ctx):
 	"""La scheda del titolo. Una scheda scaduta si riscarica e si sovrascrive (meta_cache.get, lotto 334)."""
@@ -142,19 +149,20 @@ def scheda(media_type, id_type, ident, ctx):
 	return meta
 
 def verdetto(media_type, tmdb, meta, ctx):
-	"""True / False / None (inconcludente). Dalla cache se c'e', altrimenti la regola completa."""
-	from caches.dub_cache import dub_cache
-	noto = dub_cache.get_availability(ctx.paese, media_type, tmdb)
-	if noto is not None: return noto
-	from modules.metadata import dub_resolve, _entry_query
-	titolo, anno, verifica = _entry_query(meta, ctx.data)
-	try: return dub_resolve(ctx.paese, media_type, tmdb, titolo, anno, verifica, ctx.api_key)
-	except Exception as e:
-		_log('verdetto tmdb=%s fallito: %r' % (tmdb, e)); return None
+	"""True / False / None (inconcludente): il titolo passa i filtri accesi? La regola e' in modules/uscita.
+
+	Prima "uscito", che costa meno (quasi sempre la scheda l'ha gia' deciso), poi il doppiato, solo se chiesto e solo
+	per un titolo uscito. Una domanda TMDb sola per le due regole (uscita.DatiTmdb).
+	"""
+	from modules import uscita
+	domanda = uscita.DatiTmdb(media_type, tmdb, ctx.api_key)
+	v = uscita.verdetto(media_type, tmdb, meta, ctx, domanda)
+	if not v or not ctx.lingue: return v
+	return uscita.doppiato(media_type, tmdb, meta, ctx.lingue, ctx, domanda)
 
 def giudica(media_type, id_type, ident, filtrata, ctx, ammetti=None):
-	"""(esito, firma, scheda). La scheda PRIMA del verdetto: scaricandola arriva gratis anche il verdetto sullo
-	streaming (metadata._store_streaming_verdict), che chiude meta' dei casi senza blu-ray.com.
+	"""(esito, firma, scheda). La scheda PRIMA del verdetto: scaricandola arrivano gratis anche i verdetti dei filtri
+	(modules/uscita.registra_da_scheda), che chiudono la maggior parte dei casi senza altre richieste.
 
 	Una scheda che non arriva non e' un titolo inesistente: la rete puo' non aver risposto. Il titolo
 	resta IN ATTESA e si riprova (se la sua firma si sa gia'); lo si scarta solo quando TMDb dice che non
@@ -168,8 +176,11 @@ def giudica(media_type, id_type, ident, filtrata, ctx, ammetti=None):
 		if meta.get('blank_entry') or not meta.get('tmdb_id'): return SCARTO, None, None
 		firma = (paginator.TIPI[media_type], int(meta['tmdb_id']))
 		if ammetti is not None and not ammetti(meta): return SCARTO, firma, meta
-		if not filtrata or not ctx.paese: return PRONTO, firma, meta
-		v = verdetto(media_type, int(meta['tmdb_id']), meta, ctx)
+		if not filtrata or not ctx.uscita: return PRONTO, firma, meta
+		# Il "no" scarta, il "non so" rimette in attesa: un titolo senza verdetto non compare finche' non ce l'ha.
+		try: v = verdetto(media_type, int(meta['tmdb_id']), meta, ctx)
+		except Exception as e:
+			_log('verdetto tmdb=%s fallito: %r' % (meta.get('tmdb_id'), e)); v = None
 		if v is None: return ATTESA, firma, meta
 		return (PRONTO if v else SCARTO), firma, meta
 	except Exception as e:
@@ -383,21 +394,24 @@ class Preparatore:
 		# Richiesta dell'utente (era nel DubResolver, lotto 97): *"magari una notifica che avvisa l'utente che
 		# la rete non ha risposto per il filtro doppiaggio"*. Una volta per apertura dell'interruttore, e solo
 		# se in questo lavoro qualche titolo e' davvero rimasto in attesa.
+		# LOTTO 348 -- era il solo www.blu-ray.com, che dopo il passaggio non interroga piu' nessuno: la notifica non
+		# sarebbe partita mai. Le fonti esterne dei filtri sono FONTI_FILTRI.
 		try:
 			from modules.http_client import breaker_state
-			aperto, restano = breaker_state('www.blu-ray.com')
-			if not aperto:
+			aperti = [(host, restano) for host, (aperto, restano) in ((h, breaker_state(h)) for h in FONTI_FILTRI) if aperto]
+			if not aperti:
 				self._interruttore_segnalato = False   # richiuso: la prossima apertura torna a essere una notizia
 				return
 			if self._interruttore_segnalato or not self._attese_lavoro: return
+			host, restano = aperti[0]
 			from modules.kodi_utils import notification
-			notification('Filtro doppiaggio: blu-ray.com non risponde, riprovo fra %s min. '
-						'Alcuni titoli restano nascosti.' % max(1, restano // 60), 6000)
+			notification('Filtri dei widget: %s non risponde, riprovo fra %s min. '
+						'Alcuni titoli restano nascosti.' % (host, max(1, restano // 60)), 6000)
 			self._interruttore_segnalato = True
 		except Exception: pass
 
 	def _controlla_impronta(self, ctx):
-		# Paese del filtro o lingua delle schede cambiati: cio' che e' preparato e non consegnato e' stato
+		# Filtri (uscita, lingue del doppiato) o lingua delle schede cambiati: cio' che e' preparato e non consegnato e' stato
 		# deciso con l'altra impostazione. Si confronta un fatto, a ogni lavoro -- nessun orologio.
 		impronta = ctx.impronta()
 		if self._impronta is not None and impronta != self._impronta:

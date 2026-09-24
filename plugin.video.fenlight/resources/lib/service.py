@@ -1243,6 +1243,12 @@ class FenLightMonitor(xbmc.Monitor):
 		self._preparatore = None
 		# LOTTO 340 -- i verdetti del doppiaggio scritti con una regola superata si buttano prima che il
 		# preparatore, che li legge, possa usarli. Vedi caches/dub_cache.migra_verdetti.
+		# LOTTO 348 -- e il filtro doppiaggio "per paese" diventa la sottovoce per lingue del filtro "uscito": chi l'aveva
+		# acceso lo ritrova acceso. Prima di sync_settings, che poterebbe la vecchia impostazione prima di leggerla.
+		try:
+			from caches.settings_cache import migra_filtro_doppiaggio
+			if migra_filtro_doppiaggio(): logger('Fen Light', 'filtro doppiaggio portato sotto il filtro "uscito"')
+		except Exception as e: logger('Fen Light', 'migrazione delle impostazioni dei filtri non eseguita (%s)' % e)
 		try:
 			from caches.dub_cache import migra_verdetti
 			migra_verdetti()

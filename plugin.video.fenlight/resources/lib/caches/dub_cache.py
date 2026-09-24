@@ -1,23 +1,21 @@
 # -*- coding: utf-8 -*-
-# Dedicated cache for the widget "dubbed content" filter (see modules.settings.dub_filter_*).
+# La cache dei filtri "uscito" e "doppiato" (FILTRO-USCITA.md; la regola e' modules/uscita.py). Nata come cache del
+# filtro doppiaggio "per paese", che il lotto 348 ha sostituito: le chiavi di allora (dub_, dubs_) le butta
+# migra_verdetti alla revisione 2.
 #
-# Stores, per (country, media_type, tmdb_id), a single boolean: does a localised release exist in that
-# country (streaming via TMDb/JustWatch, OR home video via blu-ray.com). Once known, the filter applies
-# instantly with zero network on subsequent builds.
+# Le chiavi, tutte con un verdetto che una volta noto applica il filtro senza rete:
+#   rel_   uscito                       relt_  solo film: il "no" di TMDb, con la data annunciata
+#   dubl_  doppiato in UNA lingua       tmdbw_ il riassunto della risposta TMDb che le regole leggono
 #
-# ASYMMETRIC TTL (the key design point):
-#  - AVAILABLE (True): PERMANENTE. Cio' che il verdetto accerta non e' dove il titolo si trova ora, ma che
-#    una traccia italiana ESISTA: se un film e' stato su una piattaforma italiana o e' uscito in home
-#    video, doppiato lo e', e lo restera' anche quando sparira' dal catalogo. Fen Light non riproduce da
-#    quelle piattaforme comunque. Era 180 giorni (valore originale dell'addon), cioe' ~1078 ricontrolli
-#    di una domanda la cui risposta non puo' cambiare.
-#  - UNAVAILABLE (False): a recent title may still get a release later, so cache it briefly and re-check.
+# TTL ASIMMETRICO (il punto del disegno):
+#  - SI' PERMANENTE. Cio' che il verdetto accerta non e' dove il titolo si trova ora, ma che una versione o una
+#    traccia ESISTA: un titolo uscito resta uscito, un doppiaggio che c'e' stato c'e' ancora anche quando sparisce da
+#    un catalogo. Fen Light non riproduce da quelle piattaforme comunque.
+#  - NO A TEMPO, secondo l'eta' del titolo, e mai oltre il giorno dopo un'uscita gia' annunciata (scadenza_negativa).
 #
-# THREE-STATE reads: get_availability returns True/False for a live cache hit, or None for a miss/expired
-# entry (the caller must then look it up). BaseCache.get already returns the stored bool on a hit and None
-# on miss/expiry, so a cached False is distinguishable from a miss. Inconclusive lookups (network errors)
-# must NOT be cached, so the next build retries them.
-from time import localtime as _localtime
+# TRE STATI in lettura: vero/falso da una voce viva, None se manca o e' scaduta. Un esito inconcludente (rete) non si
+# scrive mai: il giro dopo lo richiede.
+from time import localtime as _localtime, mktime as _mktime, time as _time
 from caches.base_cache import BaseCache, get_timestamp
 
 # 100 anni invece di 'mai': la voce non scade in nessun orizzonte utile, ma resta un intero ordinario e
@@ -46,6 +44,24 @@ def unavailable_expiry(year):
 	if age <= UNAVAILABLE_MID_YEARS: return EXPIRY_UNAVAILABLE_MID
 	return EXPIRY_UNAVAILABLE_OLD
 
+SCARTO_MEZZANOTTE = 60   # secondi
+
+def scadenza_negativa(year, prossima=''):
+	"""Ore di vita di un "non e' uscito" (lotto 344). La scala per eta', e in piu' un tetto: se TMDb ha gia' annunciato il
+	giorno in cui il titolo uscira' (`prossima`, 'AAAA-MM-GG'), il "no" non puo' sopravvivergli. Scade alla mezzanotte
+	LOCALE del giorno dopo, che e' anche il primo giorno in cui la regola conta quella data (modules/uscita.py): alla
+	scadenza la risposta e' gia' cambiata. Coyote vs. Acme, 24/09: digitale USA il 29/09; con la sola scala il "no"
+	sarebbe durato fino al 01/10."""
+	ore = unavailable_expiry(year)
+	if not prossima: return ore
+	try:
+		anno, mese, giorno = (int(x) for x in prossima[:10].split('-'))
+		secondi = _mktime((anno, mese, giorno + 1, 0, 0, 0, 0, 0, -1)) - _time()   # mktime normalizza il 32 del mese
+		# Un minuto DOPO la mezzanotte, non a mezzanotte: get_timestamp tronca i secondi, e un "no" scaduto alle
+		# 23:59:59 verrebbe richiesto quando e' ancora il giorno prima, cioe' riscritto per un altro giro.
+		return min(ore, (max(0, secondi) + SCARTO_MEZZANOTTE) / 3600.0)
+	except Exception: return ore
+
 GET_ALL = 'SELECT id FROM dubcache'
 DELETE_ALL = 'DELETE FROM dubcache'
 CLEAN = 'DELETE FROM dubcache WHERE CAST(expires AS INT) <= ?'
@@ -53,13 +69,21 @@ CLEAN = 'DELETE FROM dubcache WHERE CAST(expires AS INT) <= ?'
 # LOTTO 340 -- quale regola ha scritto i verdetti che stanno nel database (PRAGMA user_version di dub.db).
 # Quando la regola cambia in un modo che rende sbagliati dei verdetti gia' scritti, si alza il numero e
 # migra_verdetti butta quelli e solo quelli, una volta.
-#   1  blu-ray.com interrogato anche nel catalogo DVD (apis/bluray_api.py). Prima si chiedeva solo il
-#      Blu-ray: ogni "no" poteva essere un titolo uscito solo in DVD, come Ichi the Killer, e un "no"
-#      di un titolo vecchio resta in cache 180 giorni. I "si'" restano validi, e restano validi anche i
-#      verdetti del solo streaming ('dubs_'): la correzione non li riguarda.
-VERDETTI_REV = 1
-# substr e non LIKE: in LIKE '_' e' un jolly, e 'dub_%' prenderebbe anche le righe 'dubs_'.
-DELETE_NEGATIVE = "DELETE FROM dubcache WHERE substr(id, 1, 4) = 'dub_' AND data = 'false'"
+#   1  blu-ray.com interrogato anche nel catalogo DVD. Si buttavano i soli "no" del filtro per paese.
+#   2  LOTTO 348 -- il filtro per paese non c'e' piu': si buttano TUTTE le sue chiavi, anche i "si'". Erano scritti
+#      con la regola "uscito nel paese", che fa passare i sottotitolati (Visitor Q, Il vero Oppenheimer), e le
+#      regole nuove non le leggono. Le chiavi rel_/relt_ del lotto 344 restano: la loro regola non cambia.
+#   3  LOTTO 349 -- un film senza parlato (muto, corto senza dialoghi) non ha niente da doppiare e passa il filtro
+#      doppiaggio. I "no" del doppiato scritti prima potevano essere di film muti (L'uomo che ride, La danza degli
+#      scheletri, visti sul Mac il 25/09): si buttano i "no" e si ricalcolano; i "si'" restano.
+# Ogni revisione ha la sua cancellazione, e un database fermo a una revisione vecchia le fa tutte, in ordine.
+# substr e non LIKE: in LIKE '_' e' un jolly, e 'dub_%' prenderebbe anche 'dubl_'.
+REVISIONI = (
+	(1, "DELETE FROM dubcache WHERE substr(id, 1, 4) = 'dub_' AND data = 'false'"),
+	(2, "DELETE FROM dubcache WHERE substr(id, 1, 4) = 'dub_' OR substr(id, 1, 5) = 'dubs_'"),
+	(3, "DELETE FROM dubcache WHERE substr(id, 1, 5) = 'dubl_' AND data = 'false'"),
+)
+VERDETTI_REV = REVISIONI[-1][0]
 
 def migra_verdetti():
 	"""Porta i verdetti di dub.db alla regola corrente. La chiama il servizio all'avvio, una volta per sessione.
@@ -77,16 +101,17 @@ def migra_verdetti():
 	try:
 		make_database('dub_db')   # al primo avvio in assoluto la tabella non c'e' ancora
 		dbcon = connect_database('dub_db')
-		if dbcon.execute('PRAGMA user_version').fetchone()[0] >= VERDETTI_REV: return
+		attuale = dbcon.execute('PRAGMA user_version').fetchone()[0]
+		if attuale >= VERDETTI_REV: return
 		dbcon.execute('BEGIN')
 		try:
-			tolti = dbcon.execute(DELETE_NEGATIVE).rowcount
+			tolti = sum(dbcon.execute(cancella).rowcount for revisione, cancella in REVISIONI if revisione > attuale)
 			dbcon.execute('PRAGMA user_version = %d' % VERDETTI_REV)
 			dbcon.execute('COMMIT')
 		except Exception:
 			dbcon.execute('ROLLBACK')
 			raise
-		logger('Fen Light', 'dub.db: verdetti portati alla revisione %d, %d negativi buttati' % (VERDETTI_REV, tolti))
+		logger('Fen Light', 'dub.db: verdetti portati alla revisione %d, %d verdetti vecchi buttati' % (VERDETTI_REV, tolti))
 	except Exception as e:
 		logger('Fen Light', 'dub.db: migrazione dei verdetti FALLITA: %s' % e)
 
@@ -94,36 +119,52 @@ class DubCache(BaseCache):
 	def __init__(self):
 		BaseCache.__init__(self, 'dub_db', 'dubcache')
 
-	def _key(self, country, media_type, tmdb_id):
-		return 'dub_%s_%s_%s' % (country, media_type, tmdb_id)
+	# --- LOTTO 344: filtro "uscito" (FILTRO-USCITA.md) --------------------------------------------------------------
+	# Stessa tabella e stessa scala: un'uscita non si disfa, quindi il si' e' permanente; il no invecchia con
+	# l'eta' del titolo. Due chiavi:
+	#   rel_   il verdetto sull'uscita, completo
+	#   relt_  solo i FILM: TMDb ha detto no (nessuna piattaforma, nessuna uscita digitale, disco o TV), resta
+	#          da chiedere a blu-ray.com. E' cio' che la scheda appena scaricata regala, e che altrimenti si
+	#          ricomprerebbe con una richiesta a parte. Per le serie il no di TMDb e' gia' il verdetto. Il valore
+	#          e' la data d'uscita gia' annunciata ('' se nessuna): serve a far scadere anche il verdetto completo
+	#          che blu-ray.com chiudera' dopo, senza richiedere TMDb.
+	# Ogni "no" riceve `prossima`, la data annunciata: vedi scadenza_negativa.
+	def get_released(self, media_type, tmdb_id):
+		return self.get('rel_%s_%s' % (media_type, tmdb_id))
 
-	def get_availability(self, country, media_type, tmdb_id):
-		# True/False on a live cache hit, None on miss/expired.
-		return self.get(self._key(country, media_type, tmdb_id))
+	def set_released(self, media_type, tmdb_id, released, year=None, prossima=''):
+		expiration = EXPIRY_AVAILABLE if released else scadenza_negativa(year, prossima)
+		self.set('rel_%s_%s' % (media_type, tmdb_id), bool(released), expiration)
 
-	def set_availability(self, country, media_type, tmdb_id, available, year=None):
-		expiration = EXPIRY_AVAILABLE if available else unavailable_expiry(year)
-		self.set(self._key(country, media_type, tmdb_id), bool(available), expiration)
+	def get_released_tmdb(self, media_type, tmdb_id):
+		"""None se TMDb non e' stato sentito; altrimenti ha detto no, e il valore e' la data annunciata ('' se nessuna)."""
+		return self.get('relt_%s_%s' % (media_type, tmdb_id))
 
-	# --- verdetto del solo STREAMING, separato da quello complessivo ------------------------------
-	# Il verdetto del filtro e' 'streaming OPPURE home video', quindi un "non e' su streaming" non
-	# puo' essere scritto come indisponibilita': manca ancora la meta' blu-ray. Va pero' ricordato lo
-	# stesso, perche' e' l'informazione che i metadati freschi ci regalano (append_to_response
-	# watch/providers) e che altrimenti ricompreremmo con una richiesta a parte.
-	#   True  -> e' su streaming: il verdetto complessivo e' gia' deciso, si scrive anche quello
-	#   False -> NON e' su streaming: si salta la chiamata e si va dritti a blu-ray.com
-	#   None  -> non lo sappiamo
-	def _skey(self, country, media_type, tmdb_id):
-		return 'dubs_%s_%s_%s' % (country, media_type, tmdb_id)
+	def set_released_tmdb(self, media_type, tmdb_id, prossima='', year=None):
+		self.set('relt_%s_%s' % (media_type, tmdb_id), prossima or '', scadenza_negativa(year, prossima))
 
-	def get_streaming(self, country, media_type, tmdb_id):
-		return self.get(self._skey(country, media_type, tmdb_id))
+	# --- LOTTO 347: filtro doppiaggio per LINGUA (FILTRO-USCITA.md, regole D0-D3) -----------------------------------
+	#   dubl_  doppiato in QUELLA lingua. Per lingua e non per l'insieme scelto: chi aggiunge una lingua tiene i
+	#          verdetti delle altre. Un si' e' permanente (una traccia che esiste non sparisce); un no invecchia.
+	#   tmdbw_ il riassunto della risposta TMDb che le regole leggono: lingua originale e, per i paesi delle lingue,
+	#          offerte si'/no, Netflix si'/no e il link della pagina "dove guardarlo". I provider cambiano: 7 giorni, e
+	#          mai oltre il giorno dopo la prima uscita annunciata (revisione del 25/09). Il "no" del doppiato scade quel
+	#          giorno per essere ricalcolato, e il ricalcolo legge le offerte da qui: un riassunto piu' vecchio direbbe
+	#          ancora "nessuna offerta in Italia", JustWatch verrebbe saltato e il "no" si riscriverebbe per 7 giorni.
+	def get_doppiato(self, lingua, media_type, tmdb_id):
+		return self.get('dubl_%s_%s_%s' % (lingua, media_type, tmdb_id))
 
-	def set_streaming(self, country, media_type, tmdb_id, available, year=None):
-		# Un 'e' su streaming' e' stabile quanto una disponibilita'; un 'non c'e'' invecchia come le
-		# altre indisponibilita', quindi segue la stessa scala per eta'.
-		expiration = EXPIRY_AVAILABLE if available else unavailable_expiry(year)
-		self.set(self._skey(country, media_type, tmdb_id), bool(available), expiration)
+	def set_doppiato(self, lingua, media_type, tmdb_id, doppiato, year=None, prossima=''):
+		# `prossima`: un'uscita gia' annunciata nei paesi della lingua (lotto 348), come per rel_.
+		expiration = EXPIRY_AVAILABLE if doppiato else scadenza_negativa(year, prossima)
+		self.set('dubl_%s_%s_%s' % (lingua, media_type, tmdb_id), bool(doppiato), expiration)
+
+	def get_riassunto_tmdb(self, media_type, tmdb_id):
+		return self.get('tmdbw_%s_%s' % (media_type, tmdb_id))
+
+	def set_riassunto_tmdb(self, media_type, tmdb_id, riassunto):
+		uscite = [g for g in (riassunto.get('uscite') or {}).values() if g]
+		self.set('tmdbw_%s_%s' % (media_type, tmdb_id), riassunto, scadenza_negativa(None, min(uscite) if uscite else ''))
 
 	def delete_all(self):
 		try:

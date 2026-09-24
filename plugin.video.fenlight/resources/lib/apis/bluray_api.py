@@ -68,7 +68,26 @@
 # richiesta di prima e basta; la seconda la pagano solo quelli che fino a oggi venivano scartati.
 # I verdetti negativi scritti prima di questo lotto sono sbagliati per costruzione: li butta
 # dub_cache.migra_verdetti, una volta.
+#
+# LOTTO 344 -- LA RICERCA MOBILE, PER IL FILTRO "USCITO" (FILTRO-USCITA.md, regola U3). La domanda e' un'altra:
+# non "c'e' un'edizione in questo paese" ma "c'e' un'edizione in un paese qualsiasi". La ricerca desktop con
+# country=all risponde, ma misurato il 24/09 ha un difetto che la rende inservibile per un "si'" senza paese:
+# quando non trova il titolo NON risponde vuoto, riempie la lista con altri film dello stesso anno --
+#     'The Mongoose 2026', DVD, IT   ->  In the Grey (2026), Star Wars: The Mandalorian and Grogu (2026), ...
+# e le voci non portano l'anno a parte, quindi non c'e' modo di scartarle. La ricerca MOBILE
+# (m.blu-ray.com/quicksearch/search.php) fa lo stesso ('The Fix (2026)', 'The Yeti (2026)'), ma risponde in
+# JSON con l'anno in un campo suo: si tengono le voci con l'anno giusto e con TUTTE le parole del titolo
+# (articoli e accenti a parte: 'Leon: The Professional' e' 'Léon: The Professional'). Su 137 film, 548
+# domande: 266 abbinate, 7 scartate, tutte spazzatura. Pesa 0,03-3 KB e si ferma a 10 voci.
+#
+# LOTTO 348 -- LA RICERCA DESKTOP NON C'E' PIU'. La usava solo il filtro doppiaggio per paese (has_home_video_release),
+# sostituito dai filtri "uscito" e "doppiato": restano la ricerca mobile (uscito_su_disco, U3) e le tracce audio delle
+# schede (tracce_audio, D3). Le note dei lotti 93-340 qui sopra sono la storia di quella strada; valgono ancora le
+# regole che ne sono uscite e che il codice sotto conserva: Accept-Language e due cookie (_HEADERS, _cookies), i
+# cataloghi veri (_CATALOGUES), "uscito" = data passata (_on_sale), la sentinella prima di un "no".
 import re
+import unicodedata
+from html import unescape as _unescape
 
 # Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
 # caricavano all'import anche quando l'utente non toccava questo servizio. requests costa ~5,7 s
@@ -77,19 +96,12 @@ def _requests():
 	from modules.kodi_utils import import_requests
 	return import_requests('bluray_api')
 
-_SEARCH_URL = 'https://www.blu-ray.com/search/quicksearch.php'
+_MOBILE_URL = 'https://m.blu-ray.com/quicksearch/search.php'
 # 'theatrical' cerca fra i FILM (e la risposta non dice nulla sulle edizioni). I cataloghi PRODOTTI del
 # paese sono uno per supporto, e si chiedono in quest'ordine (lotto 340). Un valore che il sito non
 # conosce -- 'bluray', 'dvd', 'all', '' -- non e' un catalogo "di tutto": ricade in silenzio su
 # 'bluraymovies', ed e' cosi' che per 246 lotti abbiamo chiesto solo dei Blu-ray.
 _CATALOGUES = ('bluraymovies', 'dvdmovies')
-# Una voce del menu a tendina: <li id="matchN"><span ...>Dec 21, 2023</span>&nbsp;Oppenheimer (2023)</li>
-# La data sta nello span (che il CSS manda a destra ma nel sorgente viene prima); il nome e' il resto.
-_ENTRY_RE = re.compile(r'id="match\d+"[^>]*>(.*?)</li>', re.DOTALL)
-_ENTRY_DATE_RE = re.compile(r'<span[^>]*>(.*?)</span>', re.DOTALL)
-# Array parallelo alle voci, un codice paese per voce.
-_COUNTRYCODES_RE = re.compile(r'var countrycodes = new Array\((.*?)\);', re.DOTALL)
-_QUOTED_RE = re.compile(r"'([^']*)'")
 _MONTHS = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
            'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
 _DATE_RE = re.compile(r'([A-Za-z]{3})\w*\s+(\d{1,2}),?\s+(\d{4})')
@@ -133,7 +145,7 @@ def _looks_genuine(response):
 	# il filtro esiste per trovare. Contarlo come guasto aprirebbe l'interruttore dopo tre titoli
 	# stranieri di fila e spegnerebbe il ripiego proprio quando serve.
 	# Che il vuoto possa nascondere un guasto SISTEMICO (indice cambiato, ip bandito) resta vero, ed
-	# e' il motivo per cui esiste _index_alive: quel dubbio si scioglie li', una volta ogni mezz'ora,
+	# e' il motivo per cui esiste la sentinella (_sentinella): quel dubbio si scioglie li', una volta ogni mezz'ora,
 	# non a ogni risposta.
 	try:
 		head = response.text[:2000].lower()
@@ -189,23 +201,6 @@ def _parse_date(text):
 	except Exception:
 		return None
 
-def _parse_entries(body, country):
-	# Ritorna [(data_o_None, nome), ...] per le sole voci del paese richiesto.
-	raw_entries = _ENTRY_RE.findall(body)
-	if not raw_entries: return []
-	codes_match = _COUNTRYCODES_RE.search(body)
-	codes = _QUOTED_RE.findall(codes_match.group(1)) if codes_match else []
-	entries = []
-	for index, chunk in enumerate(raw_entries):
-		# Se l'array dei codici manca o e' piu' corto, si accetta la voce: la ricerca era GIA'
-		# filtrata per paese dal payload e dal cookie, il codice e' una conferma, non la fonte.
-		if index < len(codes) and codes[index] and codes[index].upper() != country:
-			continue
-		date_match = _ENTRY_DATE_RE.search(chunk)
-		date_text = date_match.group(1) if date_match else ''
-		name = re.sub(r'<[^>]+>', '', chunk.replace(date_match.group(0), '') if date_match else chunk)
-		entries.append((_parse_date(date_text), name.replace('&nbsp;', ' ').strip()))
-	return entries
 
 # --- sentinella: il vuoto e' un "no" solo se l'indice sta rispondendo -----------------------------
 # Il verdetto negativo di questa strada e' il CORPO VUOTO. E' economico e netto, ma ha un difetto:
@@ -220,60 +215,22 @@ def _parse_entries(body, country):
 # Stesso titolo, rimisurato il 24/09 su 'dvdmovies' negli stessi 13 paesi: risponde in tutti (IT con una
 # voce sola, 'The Matrix Collection'). 'Gladiator 2000' e 'Jurassic Park 1993' no -- JP, PL, SE, BR vuoti.
 _SENTINEL_KEYWORD = 'The Matrix 1999'
-_SENTINEL_PROP = 'fenlight.bluray.index.%s.%s'
-_SENTINEL_TTL = 1800
-_MEMORY_SENTINEL = {}
-
-def _sentinel_io():
-	# Le proprieta' di finestra sono l'unica memoria condivisa fra le invocazioni: con
-	# reuselanguageinvoker=false ogni build e' un processo nuovo, quindi una variabile di modulo non
-	# sopravviverebbe. Import ritardato e protetto: il modulo deve restare importabile fuori da Kodi.
-	try:
-		from modules.kodi_utils import get_property, set_property
-		return get_property, set_property
-	except Exception:
-		return (lambda k: _MEMORY_SENTINEL.get(k, ''),
-				lambda k, v: _MEMORY_SENTINEL.__setitem__(k, v))
-
+# LOTTO 344 -- la sentinella della ricerca mobile, per catalogo e paese: 'The Matrix 1999' risponde in entrambi i
+# cataloghi con country=all e, misurato il 24/09 per il lotto 346, in ogni paese delle lingue del filtro doppiaggio
+# (IT US UK CA AU ES MX FR DE PT BR JP PL; nel DVD italiano e giapponese solo con una raccolta, ma risponde).
+_MOBILE_SENTINEL_PROP = 'fenlight.bluray.mobile.%s.%s'
 def _log(message):
 	try:
 		from modules.kodi_utils import logger
 		logger('FenLight BLURAY', message)
 	except Exception: pass
 
-def _index_alive(country, section):
-	# True  -> l'indice risponde: un corpo vuoto significa davvero "nessuna edizione".
-	# False -> l'indice non risponde nemmeno per un titolo che c'e' di sicuro: il vuoto non e' un no.
-	from time import time
-	get_property, set_property = _sentinel_io()
-	key = _SENTINEL_PROP % (section, country)
-	try:
-		state, expiry = (get_property(key) or '').split('|')
-		if time() < float(expiry): return state == 'ok'
-	except Exception:
-		pass
-	try:
-		alive = bool(_search(_SENTINEL_KEYWORD, country, section))
-	except Exception:
-		return False   # non si e' potuto stabilire: non si trasforma un dubbio in un "no"
-	set_property(key, '%s|%s' % ('ok' if alive else 'ko', time() + _SENTINEL_TTL))
-	if not alive:
-		_log('SENTINELLA FALLITA per %s/%s: "%s" non risulta nel catalogo. L\'indice non sta rispondendo, '
-			'quindi le risposte vuote NON valgono come "nessuna edizione" e i verdetti restano '
-			'inconcludenti (elementi mostrati) finche\' non torna.' % (country, section, _SENTINEL_KEYWORD))
-	return alive
+def _sentinella(key, domanda, nome):
+	# LOTTO 345 -- la regola e la memoria della sentinella stanno in modules/sentinella, comune con JustWatch.
+	from modules.sentinella import viva
+	return viva(key, domanda, '%s, "%s"' % (nome, _SENTINEL_KEYWORD), 'FenLight BLURAY')
 
-def _search(keyword, country, section):
-	# Una richiesta. Ritorna la lista delle edizioni del paese ([] se non ce ne sono).
-	# Solleva se la rete fallisce: la classificazione, la riprova e l'interruttore per host stanno in
-	# modules/http_client (lotto 93) e valgono per ogni chiamata di rete della stick.
-	payload = {'section': section, 'userid': '-1', 'country': country, 'keyword': keyword}
-	response = _get_session().post(_SEARCH_URL, data=payload, cookies=_cookies(country),
-									timeout=_TIMEOUT, validate=_looks_genuine)
-	response.raise_for_status()
-	body = response.text
-	if not body or not body.strip(): return []
-	return _parse_entries(body, country)
+
 
 def _on_sale(entries, verify_released, today):
 	# True se almeno un'edizione del paese e' GIA' USCITA. Un'edizione annunciata non implica che una
@@ -302,51 +259,179 @@ def _on_sale(entries, verify_released, today):
 	# l'ipotesi di gran lunga piu' probabile e non conta; per un titolo vecchio conta.
 	return bool(undated) and not verify_released
 
-def _catalogue_verdict(keyword, country, section, verify_released):
-	# Il verdetto di UN catalogo: True / False / None, con le stesse regole per tutti i supporti.
-	try:
-		entries = _search(keyword, country, section)
-	except Exception:
-		# LOTTO 93: la POLITICA sugli errori non sta qui. Classificazione, riprova e interruttore per
-		# host vivono in modules/http_client e valgono per ogni chiamata di rete della stick; qui
-		# resta la sola decisione DI DOMINIO, che e' sempre la stessa: se non si e' potuto stabilire
-		# nulla si torna None, e il chiamante mostra l'elemento (fail open).
-		# In particolare NON si distingue piu' fra tipi di guasto: quando l'interruttore e' aperto
-		# arriva un CircuitOpen (sottoclasse di OSError) e si esce subito, senza aspettare _TIMEOUT.
-		return None
-	if not entries:
-		# Il negativo di questa strada e' il corpo vuoto. Vale come "no" solo se l'indice risponde.
-		return False if _index_alive(country, section) else None
-	return _on_sale(entries, verify_released, _today())
 
-def has_home_video_release(title, year, country='IT', verify_released=False):
-	# Returns:
-	#   True  -> a home-video release exists for `title` in `country` and is actually out
-	#   False -> conclusively no release (in none of the country's catalogues -- Blu-ray, DVD -- or only
-	#            announced editions)
-	#   None  -> network/parse error, or the query can't be asked: INCONCLUSIVE. The caller must fail
-	#            open (show the item) and NOT cache.
-	# verify_released: when True the caller is asking about a recently-released title, where an
-	# announced-but-not-out edition is plausible; it only decides how an UNDATED edition is read (see
-	# _on_sale). Future-dated editions never count, for anyone: that check is free now.
-	if not title: return None
-	country = country.upper()
-	keyword = '%s %s' % (title, year) if year else '%s' % title
-	# La ricerca a catalogo ignora le query di UNA PAROLA SOLA: 'Oppenheimer' -> 0 byte,
-	# 'Oppenheimer 2023' -> 3.286 byte. Misurato, e vale anche per 'Anora', 'Flow', 'Up'. Con l'anno
-	# in mano siamo sempre a due parole, ma se manca -- o se il titolo e' una parola e l'anno e' None
-	# -- la domanda non e' ponibile per questa strada: il vuoto che ne uscirebbe sarebbe un falso
-	# negativo, cioe' un elemento nascosto per sbaglio. Meglio dichiararsi inconcludenti.
-	if len(keyword.split()) < 2:
-		_log('"%s": senza anno la ricerca a catalogo non e\' interrogabile (serve piu\' di una parola) '
-			'-> INCONCLUSIVO' % title)
-		return None
-	# LOTTO 340 -- basta UN catalogo che dica si'. Il "no" invece dev'essere di tutti: se uno non ha potuto
-	# rispondere (rete, sentinella fallita) il verdetto e' inconcludente, non il "no" degli altri. Un "no"
-	# si scrive in cache per mesi, ed e' esattamente l'errore che questo lotto corregge.
-	inconclusive = False
+
+# --- LOTTO 344: ricerca mobile, filtro "uscito" (regola U3 di FILTRO-USCITA.md) ------------------------------------
+
+def _mobile_search(keyword, country, section):
+	"""Le voci della ricerca mobile, come le da' il sito: [{'title', 'year', 'reldate', 'flag', 'url'}, ...].
+
+	Nessuna edizione e' {"items":[]}, cioe' una lista vuota. Un corpo vuoto con 200 (2 volte su 360 nella misura del
+	24/09, e alla riprova non si ripete) non e' un "no": json() solleva, e il chiamante conclude inconcludente.
+	"""
+	response = _get_session().get(_MOBILE_URL, params={'userid': '-1', 'section': section, 'country': country, 'keyword': keyword},
+								  cookies=_cookies(country), timeout=_TIMEOUT, validate=_looks_genuine)
+	response.raise_for_status()
+	items = response.json().get('items')
+	if not isinstance(items, list): raise ValueError('ricerca mobile: risposta senza "items"')
+	return items
+
+def _causa(cosa, errore):
+	"""Una riga di diagnostica: che cosa non ha risposto e perche'. Si scrive solo quando il verdetto resta "non so",
+	e la scrive l'unico punto che conosce la causa (come tmdb_api.get_tmdb dal lotto 334): con "ricerca o scheda
+	senza risposta" e basta, il 25/09 non si poteva distinguere un corpo vuoto da un blocco o da una pagina cambiata."""
+	if isinstance(errore, ValueError) and 'Expecting value' in str(errore): motivo = 'risposta vuota o non JSON'
+	else: motivo = '%s: %s' % (type(errore).__name__, str(errore)[:120])
+	return '%s: %s' % (cosa, motivo)
+
+def _mobile_alive(section, country='all'):
+	return _sentinella(_MOBILE_SENTINEL_PROP % (section, country), lambda: _mobile_search(_SENTINEL_KEYWORD, country, section),
+					   'mobile %s/%s' % (country, section))
+
+_ARTICOLI = frozenset(('the', 'a', 'an'))
+_PAROLA_RE = re.compile(r'[^\W_]+')
+
+def _parole(testo):
+	"""Le parole di un titolo, senza accenti, articoli e maiuscole: 'Léon: The Professional' -> {'leon', 'professional'}."""
+	testo = unicodedata.normalize('NFKD', _unescape(testo or ''))
+	testo = ''.join(c for c in testo if not unicodedata.combining(c)).lower().replace('&', ' and ')
+	return set(_PAROLA_RE.findall(testo)) - _ARTICOLI
+
+def _stesso_anno(voce, year, serie):
+	anno = str(voce.get('year') or '')
+	# Una serie ha anche i cofanetti di piu' stagioni, con l'intervallo: 'Breaking Bad: The Complete Series' e' '2008-2013'.
+	return anno == str(year) or (serie and anno.startswith('%s-' % year))
+
+def _voci_del_titolo(items, title, year, serie=False):
+	"""Le sole voci che sono QUEL titolo: anno uguale e tutte le sue parole presenti.
+
+	Il nome della voce puo' averne di piu' ('Oppenheimer 4K (Limited Edition) (2023)', 'Demon Slayer - Kimetsu no
+	Yaiba - The Movie: Infinity Castle'), non di meno.
+	"""
+	cercate = _parole(title)
+	return [i for i in items if isinstance(i, dict) and _stesso_anno(i, year, serie) and cercate <= _parole(i.get('title'))]
+
+def _date_e_nomi(voci):
+	"""Le voci nella forma che legge _on_sale: [(data_o_None, nome)]. 'No release date' diventa None."""
+	return [(_parse_date(i.get('reldate')), i.get('title') or '') for i in voci]
+
+def uscito_su_disco(title, year, verify_released=False):
+	"""U3: esiste un'edizione Blu-ray o DVD gia' uscita, in un paese qualsiasi? True / False / None (inconcludente).
+
+	Blu-ray, poi DVD solo se serve. Basta un catalogo che dica si'; il "no" dev'essere di tutti, e il vuoto di un
+	catalogo vale "no" solo se risponde la sua sentinella (stessa regola del lotto 340). Un catalogo che ha il titolo
+	ma solo in edizioni non ancora uscite ha risposto: e' un "no", senza sentinella. `verify_released` ha il
+	significato di sempre: per un titolo appena uscito di sala un'edizione senza data non conta.
+	"""
+	if not title or not year or not _parole(title): return None
+	keyword = '%s %s' % (title, year)
+	cause = []
 	for section in _CATALOGUES:
-		verdict = _catalogue_verdict(keyword, country, section, verify_released)
-		if verdict: return True
-		if verdict is None: inconclusive = True
-	return None if inconclusive else False
+		try: items = _mobile_search(keyword, 'all', section)
+		except Exception as e:
+			cause.append(_causa('ricerca %s/all' % section, e))
+			continue
+		entries = _date_e_nomi(_voci_del_titolo(items, title, year))
+		if entries:
+			if _on_sale(entries, verify_released, _today()): return True
+		elif not _mobile_alive(section): cause.append('%s/all: sentinella muta' % section)
+	if cause:
+		_log('"%s" (%s): uscita su disco non accertata -- %s' % (title, year, '; '.join(cause)))
+		return None
+	return False
+
+# --- LOTTO 346: le tracce audio dei dischi, filtro doppiaggio (regola D3 di FILTRO-USCITA.md) ------------------------
+#
+# La domanda non e' piu' "e' uscito un disco nel paese" (il filtro di oggi, che fa passare Visitor Q: DVD italiano con
+# il solo giapponese) ma "esiste un disco con la traccia in quella lingua". La risposta e' nella scheda mobile
+# dell'edizione (m.blu-ray.com/movies/.../ID/), ~4 KB compressi, che elenca le tracce una per riga:
+#     <h3>Audio</h3><p ...>English: DTS-HD Master Audio 5.1 (48kHz, 24-bit)<br> Italian: DTS 5.1<br> </p>
+# Una scheda vale per TUTTE le lingue insieme. "TBA" (audio non ancora catalogato, frequente sui DVD) non certifica
+# niente; una scheda SENZA la sezione Audio e' una pagina che non riconosciamo, e rende il verdetto inconcludente.
+# blu-ray.com scrive i nomi inglesi delle lingue e non distingue le varianti regionali ("Spanish" anche sul disco
+# canadese, che e' il doppiaggio latinoamericano; "Spanish: Dolby Digital Mono (Spain)" su Twin Peaks): come le
+# altre fonti, si riduce alla lingua, cioe' al testo prima dei due punti.
+_NOMI_LINGUE = {'italian': 'it', 'english': 'en', 'spanish': 'es', 'french': 'fr', 'german': 'de',
+				'portuguese': 'pt', 'japanese': 'ja', 'polish': 'pl'}
+_AUDIO_RE = re.compile(r'<h3>\s*Audio\s*</h3>\s*<p[^>]*>(.*?)</p>', re.DOTALL | re.IGNORECASE)
+_BR_RE = re.compile(r'<br\s*/?>', re.IGNORECASE)
+_TAG_RE = re.compile(r'<[^>]+>')
+# Schede lette insieme. Poche: di solito la prima certifica, e sono le fermate dopo a costare meno.
+_SCHEDE_INSIEME = 4
+# Thread per le ricerche di UN titolo (lotto 347). Il preparatore giudica fino a 20 titoli insieme, e senza tetto ogni
+# giudizio ne lancerebbe fino a WORKER_COUNT (10): 200 thread. Il limite vero verso il sito resta CONNESSIONI_PER_HOST.
+_RICERCHE_INSIEME = 4
+
+def _lingue_della_scheda(body):
+	"""Le lingue (codici) delle tracce audio di una scheda. Solleva se la scheda non ha la sezione Audio."""
+	match = _AUDIO_RE.search(body or '')
+	if not match: raise ValueError('scheda senza sezione Audio')
+	lingue = set()
+	for riga in _BR_RE.split(match.group(1)):
+		nome = _unescape(_TAG_RE.sub('', riga)).split(':')[0].strip().lower()
+		codice = _NOMI_LINGUE.get(nome)
+		if codice: lingue.add(codice)
+	return lingue
+
+def _scheda(url):
+	response = _get_session().get(url, cookies=_cookies('all'), timeout=_TIMEOUT, validate=_looks_genuine)
+	response.raise_for_status()
+	return _lingue_della_scheda(response.text)
+
+def _in_vendita(voce, verify_released, today):
+	"""L'edizione e' gia' uscita? La stessa regola di _on_sale, per UNA voce."""
+	return _on_sale(_date_e_nomi([voce]), verify_released, today)
+
+def tracce_audio(title, year, media_type, paesi_per_lingua, verify_released=False):
+	"""D3: quali lingue hanno una traccia audio su un disco (Blu-ray o DVD) gia' uscito nei paesi di quella lingua.
+
+	`paesi_per_lingua` e' {'it': ('IT',), 'es': ('ES', 'MX'), ...}. Restituisce l'insieme delle lingue certificate
+	appena una scheda ne certifica almeno una (le altre lingue restano non chieste, non negate: al filtro basta una
+	lingua); set() se tutte le edizioni sono state lette e nessuna ha quelle tracce; None se non si e' potuto sapere
+	(una ricerca o una scheda senza risposta, una sentinella muta) e niente e' stato certificato.
+	"""
+	if not title or not year or not _parole(title) or not paesi_per_lingua: return None
+	from modules.utils import make_thread_list_enumerate_capped
+	lingue = set(paesi_per_lingua)
+	paesi = []
+	for lingua in sorted(paesi_per_lingua):
+		for paese in paesi_per_lingua[lingua]:
+			if paese.upper() not in paesi: paesi.append(paese.upper())
+	keyword = '%s %s' % (title, year)
+	serie = media_type != 'movie'
+	ricerche = [(section, paese) for section in _CATALOGUES for paese in paesi]
+	risposte = [None] * len(ricerche)
+	def cerca(i, lavoro):
+		section, paese = lavoro
+		try: risposte[i] = _mobile_search(keyword, paese, section)
+		except Exception as e: risposte[i] = e
+	make_thread_list_enumerate_capped(cerca, ricerche, _RICERCHE_INSIEME)
+	cause, oggi, schede = [], _today(), []
+	for (section, paese), items in zip(ricerche, risposte):
+		if not isinstance(items, list):
+			cause.append(_causa('ricerca %s/%s' % (section, paese), items))
+			continue
+		voci = _voci_del_titolo(items, title, year, serie)
+		if not voci:
+			if not _mobile_alive(section, paese): cause.append('%s/%s: sentinella muta' % (section, paese))
+			continue
+		for voce in voci:
+			url = voce.get('url')
+			if url and url not in schede and _in_vendita(voce, verify_released, oggi): schede.append(url)
+	# Le schede nell'ordine delle ricerche: Blu-ray prima dei DVD (hanno l'audio catalogato piu' spesso), a gruppi.
+	for inizio in range(0, len(schede), _SCHEDE_INSIEME):
+		gruppo = schede[inizio:inizio + _SCHEDE_INSIEME]
+		lette = [None] * len(gruppo)
+		def leggi(i, url):
+			try: lette[i] = _scheda(url)
+			except Exception as e: lette[i] = e
+		make_thread_list_enumerate_capped(leggi, gruppo, _SCHEDE_INSIEME)
+		trovate = set()
+		for url, esito in zip(gruppo, lette):
+			if isinstance(esito, set): trovate |= esito & lingue
+			else: cause.append(_causa('scheda %s' % url, esito))
+		if trovate: return trovate
+	if cause:
+		_log('"%s" (%s): tracce audio non accertate -- %s' % (title, year, '; '.join(cause)))
+		return None
+	return set()

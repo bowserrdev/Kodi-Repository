@@ -60,7 +60,8 @@ class SettingsCache:
 		self.set_memory_cache(setting_id, setting_value)
 		if setting_type == 'action' and 'settings_options' in setting_info:
 			name_setting_id = '%s_name' % setting_id
-			name_setting_value = setting_info['settings_options'][setting_value]
+			# LOTTO 348 -- un valore puo' essere una scelta multipla, 'it,es' (set_from_multilist): il nome e' l'elenco.
+			name_setting_value = ', '.join(setting_info['settings_options'][v] for v in setting_value.split(','))
 			dbcon.execute(BASE_SET, (name_setting_id, 'name', '', name_setting_value))
 			self.set_memory_cache(name_setting_id, name_setting_value)
 
@@ -227,6 +228,36 @@ def set_from_list(params):
 	setting_value = new_value[1]
 	set_setting(setting_id, setting_value)
 
+def set_from_multilist(params):
+	"""Come set_from_list, ma si sceglie una o piu' voci (lotto 348, lingue del filtro doppiaggio). Il valore e' l'elenco
+	dei codici separati da virgola, nell'ordine delle opzioni. Nessuna voce scelta non cambia niente: serve almeno una."""
+	setting_id = params['setting_id']
+	options = list(default_setting_values(setting_id)['settings_options'].items())
+	current = (get_setting('fenlight.%s' % setting_id) or '').split(',')
+	import json
+	chosen = select_dialog(options, **{'items': json.dumps([{'line1': name} for _code, name in options]), 'narrow_window': 'true',
+									   'multi_choice': 'true', 'preselect': [i for i, (code, _name) in enumerate(options) if code in current]})
+	if not chosen: return
+	set_setting(setting_id, ','.join(code for code, _name in chosen))
+
+def migra_filtro_doppiaggio():
+	"""LOTTO 348 -- dal filtro doppiaggio "per paese" (dub_filter.enabled + dub_filter.language) al filtro uscita con la
+	sottovoce doppiaggio per lingue (release_filter.enabled + dub_filter.enabled + dub_filter.languages).
+
+	Chi aveva il filtro doppiaggio acceso lo ritrova acceso, con la sua lingua, e con "uscito" acceso: la sottovoce
+	vale solo sotto di lui. La prova che la migrazione non e' ancora stata fatta e' la riga della vecchia
+	impostazione: la si toglie qui, e comunque sync_settings la poterebbe. Va chiamata PRIMA di sync_settings e del
+	preparatore (service.py), come dub_cache.migra_verdetti.
+	"""
+	vecchie = settings_cache.get_many(['dub_filter.language', 'dub_filter.enabled'])
+	if 'dub_filter.language' not in vecchie: return False
+	lingua = (vecchie.get('dub_filter.language') or '').strip().lower()
+	if lingua not in default_setting_values('dub_filter.languages')['settings_options']: lingua = 'it'
+	settings_cache.set('dub_filter.languages', lingua)
+	if vecchie.get('dub_filter.enabled') == 'true': settings_cache.set('release_filter.enabled', 'true')
+	for vecchia in ('dub_filter.language', 'dub_filter.language_name'): settings_cache.remove_setting(vecchia)
+	return True
+
 def set_source_folder_path(params):
 	setting_id = params['setting_id']
 	current_setting = get_setting('fenlight.%s' % setting_id)
@@ -292,8 +323,9 @@ default_settings = [
 {'setting_id': 'widget_refresh_timer', 'setting_type': 'string', 'setting_default': '0'},
 {'setting_id': 'widget_refresh_notification', 'setting_type': 'boolean', 'setting_default': 'true'},
 {'setting_id': 'widget_hide_next_page', 'setting_type': 'boolean', 'setting_default': 'false'},
+{'setting_id': 'release_filter.enabled', 'setting_type': 'boolean', 'setting_default': 'false'},
 {'setting_id': 'dub_filter.enabled', 'setting_type': 'boolean', 'setting_default': 'false'},
-{'setting_id': 'dub_filter.language', 'setting_type': 'action', 'setting_default': 'it', 'settings_options': {'it': 'Italiano'}},
+{'setting_id': 'dub_filter.languages', 'setting_type': 'action', 'setting_default': 'it', 'settings_options': {'it': 'Italian', 'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German', 'pt': 'Portuguese', 'ja': 'Japanese', 'pl': 'Polish'}},
 #==================== General
 {'setting_id': 'paginate.lists', 'setting_type': 'action', 'setting_default': '0', 'settings_options': {'0': 'Off', '1': 'Within Addon Only', '2': 'Widgets Only', '3': 'Both'}},
 {'setting_id': 'paginate.limit_addon', 'setting_type': 'action', 'setting_default': '20'},

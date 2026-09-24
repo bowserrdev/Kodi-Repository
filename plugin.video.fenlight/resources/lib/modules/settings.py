@@ -308,22 +308,21 @@ def meta_language():
 def widget_hide_next_page():
 	return get_setting('fenlight.widget_hide_next_page', 'false') == 'true'
 
-# Widget "dubbed content" filter: keep only items released (streaming or home video) in the chosen
-# language's primary country, so users who only want likely-dubbed content aren't shown unlocalised titles.
-dub_filter_country_dict = {'it': 'IT'}
+# Filtro "uscito" (lotto 344, FILTRO-USCITA.md): si mostra solo un titolo di cui esiste una versione digitale in
+# un paese qualsiasi -- piattaforma, uscita digitale, disco o messa in onda TV.
+def release_filter_enabled():
+	return get_setting('fenlight.release_filter.enabled', 'false') == 'true'
 
+# Sottovoce "doppiato" (lotto 348): si mostra solo un titolo con una traccia audio in una delle lingue scelte. Vale solo
+# sotto il filtro "uscito": acceso da solo non fa niente, e la finestra delle impostazioni lo mostra solo sotto di lui.
 def dub_filter_enabled():
 	return get_setting('fenlight.dub_filter.enabled', 'false') == 'true'
 
-def dub_filter_language():
-	lang = get_setting('fenlight.dub_filter.language', 'it')
-	if not lang or lang in ('empty_setting', ''): return 'it'
-	return lang.lower().strip()
-
-def dub_filter_country():
-	# Primary country for the chosen language (e.g. it -> IT). Both TMDb watch/providers and blu-ray.com
-	# are country-keyed; for multi-country languages we only check this primary country (see step notes).
-	return dub_filter_country_dict.get(dub_filter_language(), '')
+def dub_filter_languages():
+	"""Le lingue scelte, codici ('it', 'es'), nell'ordine delle opzioni; solo quelle che il filtro sa verificare."""
+	from modules.uscita import LINGUE
+	valore = get_setting('fenlight.dub_filter.languages', 'it') or ''
+	return tuple(l for l in (x.strip().lower() for x in valore.split(',')) if l in LINGUE)
 
 def calendar_sort_order():
 	return int(get_setting('fenlight.trakt.calendar_sort_order', '0'))
