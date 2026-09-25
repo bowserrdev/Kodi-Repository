@@ -490,6 +490,17 @@ def copy2clip(txt):
 			p = Popen(['xsel', '-pi'], stdin=PIPE)
 			p.communicate(input=txt)
 		except: return
+def mappa_verso_righe_locali(meta):
+	"""(mappa, esclusi) per tradurre la numerazione di Trakt in quella delle righe locali, o None se NON SI SA.
+
+	Non si sa quando la scheda della serie non c'e' (tvshow_meta fallita) o e' un anime il cui indice episodi
+	non e' arrivato (`rimappaggio_mancante`, correzione del 25/09). Prima tutti e due davano ({}, set()), cioe'
+	l'identita': per un anime sono numeri di un'altra numerazione, e il rebuild dei visti li scriveva nelle righe
+	locali (One Piece S21E1071 in "continua a guardare"). Chi riceve None lascia la serie INTATTA in quel giro.
+	"""
+	if not meta or meta.get('rimappaggio_mancante'): return None
+	return (meta.get('tmdb_to_tvdb_ep') or {}), (meta.get('ep_esclusi_trakt') or set())
+
 def traduci_episodio(mappa, esclusi, stagione, episodio):
 	"""I TRE esiti della mappa episodi, al posto dei due di `mappa.get(chiave, chiave)`.
 

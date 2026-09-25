@@ -101,7 +101,7 @@ class PremiumizeAPI:
 		try: return self.add_headers_to_url(response['content'][0]['link'])
 		except: return None
 
-	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode):
+	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode, absolute=None):
 		try:
 			file_url = None
 			correct_files = []
@@ -114,10 +114,10 @@ class PremiumizeAPI:
 			if season:
 				episode_title = re.sub(r'[^A-Za-z0-9-]+', '.', title.replace('\'', '').replace('&', 'and').replace('%', '.percent')).lower()
 				for item in valid_results:
-					if seas_ep_filter(season, episode, item['path'].split('/')[-1]): append(item)
+					if seas_ep_filter(season, episode, absolute=absolute, release_title=item['path'].split('/')[-1]): append(item)
 					if len(correct_files) == 0: continue
 					for i in correct_files:
-						compare_link = seas_ep_filter(season, episode, i['path'], split=True)
+						compare_link = seas_ep_filter(season, episode, absolute=absolute, release_title=i['path'], split=True)
 						compare_link = re.sub(episode_title, '', compare_link)
 						if not any(x in compare_link for x in EXTRAS):
 							file_url = i['link']

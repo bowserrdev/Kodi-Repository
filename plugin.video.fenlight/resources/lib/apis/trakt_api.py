@@ -8,7 +8,7 @@ from caches.main_cache import cache_object
 from caches.lists_cache import lists_cache_object
 from modules import kodi_utils, settings
 from modules.metadata import movie_meta_external_id, tvshow_meta_external_id
-from modules.utils import sort_list, sort_for_article, make_thread_list, get_datetime, timedelta, replace_html_codes, copy2clip, title_key, traduci_episodio, jsondate_to_datetime as js2date
+from modules.utils import sort_list, sort_for_article, make_thread_list, get_datetime, timedelta, replace_html_codes, copy2clip, title_key, traduci_episodio, mappa_verso_righe_locali, jsondate_to_datetime as js2date
 
 # 'requests' e la Session si creano alla PRIMA richiesta, non all'import (lotto 51). Erano a livello
 # di modulo, quindi chiunque importasse trakt_api pagava l'albero di requests (urllib3, certifi, ssl,
@@ -1242,7 +1242,10 @@ def _azzera_memo_stats():
 # _v3 col lotto 149: nella chiave _v2 e' rimasto memorizzato uno scarto di 210 NON spiegato, che
 # nasconde 210 episodi di Dragon Ball Z -- con quel valore il conto torna e non si ricostruisce mai
 # piu'. Cambiare la chiave e' il modo di dire "quel che sapevo era sbagliato".
-_CONTI_KEY = 'fenlight_conti_trakt_v3'
+# _v4 col lotto 357: la giuntura aggancia per id anche la stagione 0 e rifiuta gli agganci
+# contraddittori, quindi alcune righe locali cambiano coordinate (Dragon Ball Kai, Battle Through the
+# Heavens) e gli speciali Trakt senza corrispondente smettono di avere una riga. Serve un rebuild.
+_CONTI_KEY = 'fenlight_conti_trakt_v4'
 # ATTENZIONE: qui `trakt_cache` e' il MODULO caches.trakt_cache (vedi l'import in testa), non
 # l'istanza. Lo store chiave/valore e' `trakt_cache.trakt_cache`, lo stesso che tiene il segnalibro
 # delle attivita'. Senza questo alias le due funzioni qui sotto sollevano AttributeError, che il
@@ -1420,8 +1423,17 @@ def serve_riallineamento(noti):
 	l'altra di no, si tornerebbe ad aspettare.
 
 	Non e' un ciclo: un rebuild riuscito chiama `_registra_conti`, e da li' in poi torna False.
+
+	LA MEMORIA DELL'ALLINEAMENTO NON DIPENDE DALLE STATISTICHE (lotto 357). Fino a qui "allineato" si
+	deduceva dai conti di `users/me/stats`, che si registrano solo se Trakt li da'. Dal 25/09/2026
+	quell'endpoint risponde 204 senza contenuto, per tutti gli utenti: i conti non si registravano mai,
+	la domanda restava vera, e il servizio rifaceva il rebuild integrale -- sette pagine di cronologia
+	-- a ogni sondaggio da 30 secondi (52 volte in un'ora sul Mac). Il fatto che serve qui e' un altro:
+	"ho allineato con questa versione della mappa?". Lo scrive `_misura_scarto_episodi` dopo ogni
+	allineamento integrale, con o senza statistiche.
 	"""
 	if not isinstance(noti, dict): return True
+	if noti.get('allineato'): return False
 	return noti.get('episodi_scarto') is None or noti.get('episodi_play') is None
 
 def _misura_scarto_episodi(stats, quando, spiegato=None):
@@ -1442,7 +1454,11 @@ def _misura_scarto_episodi(stats, quando, spiegato=None):
 	`stats` e' la lettura fatta all'INIZIO del giro, non una nuova: se nel frattempo qualcosa si e'
 	mosso, al prossimo sondaggio i play non combaceranno e si ricostruira' una volta di troppo. E' il
 	verso giusto dell'errore -- un rebuild in piu', mai un cambiamento perso.
+
+	L'allineamento si registra PRIMA di guardare le statistiche: e' avvenuto comunque, e senza questa
+	riga serve_riallineamento lo richiederebbe a ogni sondaggio finche' Trakt non torna a darle.
 	"""
+	_registra_conti(allineato=True)
 	if stats is None: return
 	_dopo = trakt_watched_cache.watched_episode_count()
 	if _dopo is None: return
@@ -1670,13 +1686,16 @@ def trakt_indicators_tv():
 			# da noi no NON ha una riga locale possibile, e prima ne otteneva comunque una per
 			# identita' -- che poteva cadere sulla riga di un altro episodio e farlo sparire per via
 			# di INSERT OR REPLACE sulla chiave unica.
-			remap_cache[tmdb_id] = ((_meta.get('tmdb_to_tvdb_ep') or {}),
-									(_meta.get('ep_esclusi_trakt') or set())) if _meta else ({}, set())
-		except: remap_cache[tmdb_id] = ({}, set())
+			# None = la mappa non si sa: la serie resta intatta (utils.mappa_verso_righe_locali).
+			remap_cache[tmdb_id] = mappa_verso_righe_locali(_meta)
+		except: remap_cache[tmdb_id] = None
 		return remap_cache[tmdb_id]
 	def _make_row(item, tmdb_id, title, ep_remap):
 		# Torna None quando l'episodio non ha corrispondenza da noi: chi chiama DEVE saltare.
 		# La cardinalita' di quei salti e' lo scarto -- vedi _misura_scarto_episodi.
+		# ep_remap None: la mappa di questa serie non si sa, nessuna riga (e nella via incrementale il play
+		# resta fuori finche' la mappa non torna).
+		if ep_remap is None: return None
 		season_no, episode_no = item['episode']['season'], item['episode']['number']
 		_coppia = traduci_episodio(ep_remap[0], ep_remap[1], season_no, episode_no)
 		if _coppia is None: return None
@@ -1790,11 +1809,14 @@ def trakt_indicators_tv():
 	# mentre si costruisce invece che dedotto dopo. Insieme, non lista: la cronologia ha piu' play
 	# per lo stesso episodio, e uno che manca manca una volta sola.
 	_saltati = set()
+	# Le serie la cui mappa non si sa: le loro righe locali restano come sono (vedi set_bulk_tvshow_watched).
+	_intatte = set(str(info[0]) for info in shows_info.values() if info[3] is None)
 	for item in history:
 		try:
 			info = shows_info.get(item['show']['ids'].get('trakt'))
 			if not info: continue
 			tmdb_id, title, reset_at, ep_remap = info
+			if ep_remap is None: continue
 			watched_at = item['watched_at']
 			if reset_at and watched_at < reset_at: continue
 			key = (item['episode']['season'], item['episode']['number'], tmdb_id)
@@ -1808,12 +1830,14 @@ def trakt_indicators_tv():
 	insert_list = list(watched_episodes.values())
 	logger('FenLight Trakt', 'watched episodes rebuild: %s shows, %s history plays over %s pages, %s episodes' \
 			% (len(shows), len(history), page_count, len(insert_list)))
-	_esito = trakt_watched_cache.set_bulk_tvshow_watched(insert_list)
+	if _intatte: logger('FenLight Trakt', 'watched episodes rebuild: %s serie lasciate intatte, mappa episodi non disponibile: %s'
+						% (len(_intatte), ', '.join(sorted(_intatte))))
+	_esito = trakt_watched_cache.set_bulk_tvshow_watched(insert_list, _intatte)
 	_misura_scarto_episodi(_stats, 'dopo il rebuild integrale', spiegato=len(_saltati))
 	return _esito
 
 def trakt_episode_index(tmdb_id):
-	"""Gli episodi di una serie su Trakt come `(stagione, numero, id_tvdb, data)`.
+	"""Gli episodi di una serie su Trakt come `(stagione, numero, id_tvdb, data, None, id_imdb)`.
 
 	E' il DIZIONARIO della giuntura del lotto 145, non la sua destinazione. Skyhook conosce solo
 	l'id TVDB; dal lato TMDb non esiste una chiamata che dia l'id TVDB di ogni episodio (c'e' solo
@@ -1830,21 +1854,52 @@ def trakt_episode_index(tmdb_id):
 
 	La chiamata si paga una volta per serie, sul ramo di rete di tvshow_meta: la cache della meta e'
 	la sua cache.
+
+	Il quinto posto e' None di proposito: la giuntura legge li' il numero ASSOLUTO, da tutte e due le
+	parti, e Trakt qui non lo da'. L'id IMDb dell'episodio sta al sesto (lotto 358): e' lo stesso
+	dizionario che aggancia voto e regista IMDb per id, senza una richiesta in piu'.
+
+	Due esiti vuoti, non uno (correzione del 25/09): [] = Trakt ha risposto e non ha questa serie o i suoi
+	episodi, None = non ha risposto. Prima erano entrambi None, e un "Trakt non la conosce" -- definitivo --
+	faceva ritentare la scheda come un guasto di rete.
 	"""
 	try:
 		trovate = call_trakt('search/tmdb/%s' % tmdb_id, params={'type': 'show'}, with_auth=False)
-		if not trovate: return None
+		if not isinstance(trovate, list): return None
+		if not trovate: return []
 		slug = trovate[0]['show']['ids'].get('slug') or trovate[0]['show']['ids'].get('trakt')
-		if not slug: return None
+		if not slug: return []
 		stagioni = call_trakt('shows/%s/seasons' % slug, params={'extended': 'episodes,full'}, with_auth=False)
-		if not stagioni: return None
+		if not isinstance(stagioni, list): return None
 		fuori = []
 		for stagione in stagioni:
 			for episodio in stagione.get('episodes') or ():
-				fuori.append((stagione.get('number'), episodio.get('number'),
-								(episodio.get('ids') or {}).get('tvdb'), episodio.get('first_aired')))
-		return fuori or None
+				ids = episodio.get('ids') or {}
+				fuori.append((stagione.get('number'), episodio.get('number'), ids.get('tvdb'),
+								episodio.get('first_aired'), None, ids.get('imdb')))
+		return fuori
 	except: return None
+
+def trakt_imdb_stagione(imdb_serie, stagione):
+	"""{episodio: id IMDb} per una stagione di Trakt, cioe' di TMDb. None se non si e' potuto sapere.
+
+	Serve al rivelatore del lotto 358 (imdb_api.aggancio_sospetto): quando IMDb numera la stagione
+	diversamente da TMDb, voto e regista si agganciano per id e non per posizione. Si chiede con l'id
+	IMDb della SERIE, che Trakt accetta al posto dello slug: una richiesta sola, 1,6 KB per Il Trono di
+	Spade S1. Una stagione che Trakt non ha (404) torna None come un guasto di rete: da qui i due casi
+	non si distinguono, e per chi chiama hanno lo stesso esito.
+	"""
+	if not imdb_serie or imdb_serie == 'tt0000000': return None
+	try: episodi = call_trakt('shows/%s/seasons/%s' % (imdb_serie, stagione), with_auth=False)
+	except: return None
+	if not isinstance(episodi, list): return None
+	fuori = {}
+	for episodio in episodi:
+		try:
+			tt = (episodio.get('ids') or {}).get('imdb')
+			if tt: fuori[int(episodio['number'])] = tt
+		except: pass
+	return fuori
 
 def chiave_voce_playback(item):
 	"""L'identita' della COSA in pausa, non della voce di playback. None se non si sa dirla.
@@ -2000,9 +2055,8 @@ def trakt_progress_tv(progress_info):
 			from modules.metadata import tvshow_meta as _tm
 			from modules.settings import mpaa_region as _mr
 			_meta = _tm('tmdb_id', tmdb_id, tmdb_api_key(), _mr(), get_datetime())
-			_ep_remap = ((_meta.get('tmdb_to_tvdb_ep') or {}),
-							(_meta.get('ep_esclusi_trakt') or set())) if _meta else ({}, set())
-		except: _ep_remap = ({}, set())
+			_ep_remap = mappa_verso_righe_locali(_meta)
+		except: _ep_remap = None
 		shows_info[show['ids'].get('trakt')] = (tmdb_id, _ep_remap)
 	def _process():
 		for p_item in progress_items:
@@ -2011,6 +2065,7 @@ def trakt_progress_tv(progress_info):
 				info = shows_info.get(p_item['show']['ids'].get('trakt'))
 				if not info: continue
 				tmdb_id, ep_remap = info
+				if ep_remap is None: continue
 				season, ep_num = p_item['episode']['season'], p_item['episode']['number']
 				_coppia = traduci_episodio(ep_remap[0], ep_remap[1], season, ep_num)
 				if _coppia is None: continue
@@ -2025,7 +2080,11 @@ def trakt_progress_tv(progress_info):
 	if not progress_items: return trakt_watched_cache.set_bulk_tvshow_progress([])
 	all_shows = {i['show']['ids'].get('trakt'): i['show'] for i in progress_items}
 	make_thread_list(_process_show, list(all_shows.values()))
-	return trakt_watched_cache.set_bulk_tvshow_progress(list(_process()))
+	# Le serie la cui mappa non si sa restano fuori dal confronto: ne' riscritte ne' cancellate.
+	_intatte = set(str(t) for t, r in shows_info.values() if r is None)
+	if _intatte: logger('FenLight Trakt', 'progress episodi: %s serie lasciate intatte, mappa episodi non disponibile: %s'
+						% (len(_intatte), ', '.join(sorted(_intatte))))
+	return trakt_watched_cache.set_bulk_tvshow_progress(list(_process()), _intatte)
 
 OFFICIAL_STATUS_PROP = 'fenlight.trakt.official_status.%s'
 
@@ -2175,18 +2234,20 @@ def _drain_remote_repairs():
 				trakt_progress('clear_progress', db_type, key[0], 0, key[1], key[2], resume_id)
 				logger('Fen Light', 'cancellazione remota ripetuta per %s %s' % (db_type, key[0]))
 			except Exception as e: logger('Fen Light', 'cancellazione remota di %s FALLITA di nuovo: %s' % (key[0], e))
+		# LA RISPINTA E' LA STESSA SPINTA (lotto 357). Qui c'era una seconda copia di
+		# watched_status._push_bookmark_to_trakt -- lettura del punto, trakt_progress, scrittura del
+		# resume_id -- senza la traduzione degli episodi: la riga locale e' in numerazione TVDB, e per gli
+		# anime rimappati si mandava a Trakt una coppia che li' indica un altro episodio o nessuno. Sul Mac
+		# il 25/09: 404 su Dragon Ball Super (5,53) e One Piece (22,24), che per Trakt sono (1,129) e
+		# (22,1109). Una copia sola, e la traduzione e' la sua.
+		from modules.watched_status import _push_bookmark_to_trakt
 		for db_type, key in pushes:
 			try:
 				row = connect_database('trakt_db').execute(
 					'SELECT resume_point FROM progress WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?',
 					(db_type, key[0], key[1], key[2])).fetchone()
 				if not row: continue
-				resume_id = trakt_progress('set_progress', db_type, key[0], float(row[0]), key[1], key[2]) or 0
-				if resume_id:
-					connect_database('trakt_db').execute(
-						'UPDATE progress SET resume_id = ? WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?',
-						(resume_id, db_type, key[0], key[1], key[2]))
-					logger('Fen Light', 'spinta ripetuta e confermata per %s %s' % (db_type, key[0]))
+				_push_bookmark_to_trakt(db_type, key[0], key[1], key[2], float(row[0]))
 			except Exception as e: logger('Fen Light', 'spinta ripetuta di %s FALLITA: %s' % (key[0], e))
 	Thread(target=_work).start()
 

@@ -128,6 +128,44 @@ def aliases_to_array(aliases, filter=None):
 		log_utils.error()
 		return []
 
+def episodio_regex(season, episode, absolute=None):
+	"""Il riconoscitore dell'episodio nel nome di una release: `SxxEyy` OPPURE il numero assoluto.
+
+	Va passato a check_title al posto di `hdlr`, che lo usa gia' come espressione regolare (re.search e
+	re.split). `hdlr` resta la stringa semplice `S23E23` per le query di ricerca e per info_from_name.
+
+	Perche' serve (Fen Light, lotto 361, misurato il 25/09/2026 su One Piece S23E23 = episodio 1178):
+	Torrentio, cercando per id, restituiva 45 file dell'episodio giusto e ne teneva 1; DMM 550 della
+	stagione, 14 dell'episodio giusto, e ne teneva 1. Tutti gli altri si chiamano "One Piece - 1178",
+	"One.Piece.EP1178", "One.Piece.S01E1178": le release anime numerano in assoluto, e il filtro
+	pretendeva `S23E23` nel nome.
+
+	Le forme dell'assoluto accettate, con il numero 1178:
+	  "- 1178" "_1178_" ".1178." "E1178" "EP1178" "Episode 1178" "S01E1178" "S23E1178" "1178v2"
+	(con la stagione, solo la 1 o quella cercata: Bleach S1E19 ha assoluto 19, e "Bleach S17E19" e' un
+	altro episodio. Fino al 25/09 qualunque stagione passava, e la ricerca di S1E19 teneva S17E19.)
+	e quelle rifiutate, che hanno generato falsi positivi o potrebbero farlo:
+	  "1080p" (seguito da una lettera) "x264" "H.264" (codec) "[2094208A]" (codice esadecimale)
+	  "1156-1180" (un intervallo: e' un pacchetto) e, sotto il 10, "2.0" "5.1" (canali audio): un
+	  assoluto a una cifra deve avere lo zero davanti ("02").
+	"""
+	hdlr = 'S%02dE%02d' % (int(season), int(episode))
+	# "S01EP58": la forma con EP, comune nelle release italiane, per TUTTE le serie (Fen Light, 25/09). Non la
+	# prendeva nessuno: Fullmetal Alchemist Brotherhood S01EP58 non passava come episodio, e i suoi 64 fratelli
+	# passavano come pacchetti di stagione (vedi filter_season_pack).
+	con_ep = r'(?:%s|s0*%d[._ ]?ep[._ ]?0*%d(?![0-9]))' % (hdlr, int(season), int(episode))
+	try: n = int(absolute)
+	except (TypeError, ValueError): return con_ep
+	if n <= 0: return con_ep
+	num = ('0*%d' if n >= 10 else '0+%d') % n
+	stagione_assoluta = r's0*(?:1|%d)[._ ]?e(?:p[._ ]?)?%s(?![0-9])' % (int(season), num)
+	# Gli intervalli ("1156-1180", "1156 - 1180") si riconoscono dal NUMERO prima del trattino: un
+	# trattino da solo non basta, "One Piece - 1178" ne ha uno ed e' la forma piu' comune.
+	nudo = (r'(?<![a-z0-9])(?:ep?|episode)?[._ ]?'
+			r'(?<![-~])(?<![hx][._ ])(?<!\d[-~][._ ])(?<!\d[._ ][-~][._ ])'
+			r'%s(?:v\d)?(?![0-9a-z])(?![._ ]?[-~][._ ]?\d)' % num)
+	return r'(?:%s|%s|%s)' % (con_ep, stagione_assoluta, nudo)
+
 def check_title(title, aliases, release_title, hdlr, year, years=None): # non pack file title check, single eps and movies
 	if years: # for movies only, scraper to pass None for episodes
 		if not any(value in release_title for value in years): return False
@@ -257,7 +295,12 @@ def filter_season_pack(show_title, aliases, year, season, release_title):
 				r's\d{1,3}e\d{1,3}[-.](?!\d{2,3}[-.])(?!e\d{1,3})(?!\d{2}gb)',
 				r's\d{1,3}x\d{1,3}[-.](?!\d{2,3}[-.])(?!\d{2}gb)',  # NxM single ep (e.g. 3x04)
 				r'season[.-]?\d{1,3}[.-]?ep[.-]?\d{1,3}[-.](?!\d{2,3}[-.])(?!e\d{1,3})(?!\d{2}gb)',
-				r'season[.-]?\d{1,3}[.-]?episode[.-]?\d{1,3}[-.](?!\d{2,3}[-.])(?!e\d{1,3})(?!\d{2}gb)')
+				r'season[.-]?\d{1,3}[.-]?episode[.-]?\d{1,3}[-.](?!\d{2,3}[-.])(?!e\d{1,3})(?!\d{2}gb)',
+				# Fen Light, 25/09: altre due forme dell'episodio SINGOLO che passavano per pacchetti di stagione.
+				# Fullmetal Alchemist Brotherhood S1: 64 "pacchetti" DMM su 108 erano un file solo, "S01EP62" e
+				# "S01E01v4". Gli intervalli con EP ("S01EP01-EP12") restano pacchetti: la guardia dopo il trattino.
+				r's\d{1,3}ep\d{1,4}(?:v\d)?[-.](?!\d{2,4}[-.])(?!ep?\d{1,4})(?!\d{2}gb)',  # S01EP62
+				r's\d{1,3}e\d{1,4}v\d[-.](?!\d{2,4}[-.])(?!e\d{1,4})')  # S01E01v4 (versione della release)
 		for item in episode_regex:
 			if bool(re.search(item, release_title)): return False, 0, 0
 

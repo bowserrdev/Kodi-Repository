@@ -207,7 +207,7 @@ class RealDebridAPI:
 		response = _requests().delete(base_url + url, timeout=timeout)
 		return response
 
-	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode):
+	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode, absolute=None):
 		compare_title = re.sub(r'[^A-Za-z0-9]+', '.', title.replace('\'', '').replace('&', 'and').replace('%', '.percent')).lower()
 		elapsed_time, transfer_finished = 0, False
 		extensions = supported_video_extensions()
@@ -238,12 +238,12 @@ class RealDebridAPI:
 				correct_files = []
 				correct_file_check = False
 				for value in selected_files:
-					correct_file_check = seas_ep_filter(season, episode, value[1]['path'])
+					correct_file_check = seas_ep_filter(season, episode, absolute=absolute, release_title=value[1]['path'])
 					if correct_file_check: correct_files.append(value[1]); break
 				if len(correct_files) == 0: match = False
 				else:
 					for i in correct_files:
-						compare_link = seas_ep_filter(season, episode, i['path'], split=True)
+						compare_link = seas_ep_filter(season, episode, absolute=absolute, release_title=i['path'], split=True)
 						compare_link = re.sub(compare_title, '', compare_link)
 						if any(x in compare_link for x in EXTRAS): continue
 						else: match = True; break

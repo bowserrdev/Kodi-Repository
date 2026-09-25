@@ -165,7 +165,7 @@ class source(BaseTorrentScraper):
 					log_utils.log('KNABEN SKIP [seeders=%s < min=%s]: "%s"' % (seeders, self.min_seeders, name))
 					continue
 				if self.episode_title:
-					if not source_utils.check_title(self.title, self.aliases, name, self.hdlr, self.year):
+					if not source_utils.check_title(self.title, self.aliases, name, self.hdlr_match, self.year):
 						log_utils.log('KNABEN SKIP [title mismatch]: "%s"' % name)
 						continue
 				else:
@@ -252,6 +252,9 @@ class source(BaseTorrentScraper):
 					continue
 				q = '%s %s' % (st_clean, self.hdlr) if is_tv else st_clean
 				queries.append(q)
+				# Le release anime numerano in assoluto ("One Piece - 1178"): cercando solo S23E23 non
+				# si trovano. Vedi source_utils.episodio_regex.
+				if is_tv and self.absolute: queries.append('%s %s' % (st_clean, self.absolute))
 			queries = list(dict.fromkeys(queries))
 			log_utils.log('KNABEN queries: %s' % queries)
 		except:

@@ -23,14 +23,23 @@ def _fetch_raw(tvdb_id):
 	if data: return data
 	try:
 		response = _get_session().get(SKYHOOK_URL % tvdb_id, timeout=15)
+		# 404 e' una risposta: skyhook non ha questa serie. {} e non None, perche' chi deve distinguere
+		# "non c'e'" da "non ha risposto" (episodi_per_giuntura) possa farlo; per tutti gli altri {} e None
+		# sono ugualmente falsi.
+		if response.status_code == 404: return {}
 		if response.status_code != 200: return None
 		data = response.json()
 		meta_cache.set_function(cache_key, data, expiration=EXPIRY_7_DAYS)
 		return data
 	except: return None
 
-def stagioni_da_skyhook(data, tmdb_season_data, oggi):
+def stagioni_da_skyhook(data, tmdb_season_data, oggi, nascosti=None):
 	"""Le stagioni nella forma che usa il resto del codice. Pura: `data` e' il payload gia' letto.
+
+	`nascosti` sono gli episodi TVDB senza corrispondente su TMDb (gli `esclusi_tvdb` della giuntura).
+	Dal lotto 357 non si mostrano e non si contano, e una stagione che resta senza episodi sparisce:
+	e' cosi' che escono le stagioni delle serie costola (Pokemon S20 = Orizzonti), gli speciali usciti
+	come film e le stagioni annunciate che TVDB elenca con un segnaposto senza data ne' titolo.
 
 	Due correzioni del lotto 147 rispetto alla versione precedente.
 
@@ -47,12 +56,14 @@ def stagioni_da_skyhook(data, tmdb_season_data, oggi):
 	intera. Chi disegna lo sa gia' -- vedi `poster_path.startswith('http')` in indexers/seasons.py.
 	"""
 	try:
-		tutti = data.get('episodes') or []
+		nascosti = nascosti or ()
+		tutti = [e for e in data.get('episodes') or [] if (e.get('seasonNumber'), e.get('episodeNumber')) not in nascosti]
 		poster_tmdb = {x['season_number']: x.get('poster_path') for x in tmdb_season_data if x.get('poster_path')} if tmdb_season_data else {}
 		elenco = []
 		for s in data.get('seasons') or []:
 			numero = s['seasonNumber']
 			episodi = [e for e in tutti if e.get('seasonNumber') == numero]
+			if not episodi: continue
 			usciti = [e for e in episodi if _uscito(e.get('airDate'), oggi)]
 			poster = poster_tmdb.get(numero) or next((i['url'] for i in s.get('images', []) if i.get('coverType') == 'Poster'), None)
 			primo = min(episodi, key=lambda e: e.get('episodeNumber') or 0) if episodi else None
@@ -69,14 +80,14 @@ def stagioni_da_skyhook(data, tmdb_season_data, oggi):
 		return elenco or None
 	except: return None
 
-def get_skyhook_season_data(tvdb_id, tmdb_season_data=None, oggi=None):
+def get_skyhook_season_data(tvdb_id, tmdb_season_data=None, oggi=None, nascosti=None):
 	if tvdb_id in invalid_tvdb: return None
 	data = _fetch_raw(tvdb_id)
 	if not data: return None
 	if oggi is None:
 		from datetime import date as _date
 		oggi = _date.today().isoformat()
-	return stagioni_da_skyhook(data, tmdb_season_data, oggi)
+	return stagioni_da_skyhook(data, tmdb_season_data, oggi, nascosti)
 
 def get_skyhook_episodes(tvdb_id, season, meta):
 	if tvdb_id in invalid_tvdb: return None
@@ -138,43 +149,57 @@ def _uscito(data, oggi):
 def costruisci_mappa_episodi(episodi_tvdb, episodi_trakt, oggi):
 	"""Appaia gli episodi TVDB e Trakt per IDENTITA' -- l'id TVDB -- invece che per posizione.
 
-	Ogni episodio e' una tupla `(stagione, numero, id_tvdb, data)`. Gli adattatori che le costruiscono
-	stanno dai chiamanti: qui non si sa da dove arrivino, e la funzione resta pura e provabile.
+	Ogni episodio e' una tupla `(stagione, numero, id_tvdb, data[, assoluto])`: l'assoluto c'e' solo dal
+	lato TVDB. Gli adattatori che le costruiscono stanno dai chiamanti: qui non si sa da dove arrivino,
+	e la funzione resta pura e provabile.
 
 	Perche' l'id e non la posizione: appaiare due elenchi contando le posizioni assume che contengano
 	le stesse cose nello stesso ordine. Basta un episodio doppio, uno speciale contato da una parte
-	sola o una stagione ridivisa, e l'allineamento salta da li' in avanti -- e' esattamente il difetto
-	che questo lotto chiude. L'id TVDB invece e' la STESSA cosa da entrambe le parti: skyhook lo
-	espone come `tvdbId`, Trakt come `ids.tvdb`.
+	sola o una stagione ridivisa, e l'allineamento salta da li' in avanti (lotto 145). L'id TVDB invece
+	e' la STESSA cosa da entrambe le parti: skyhook lo espone come `tvdbId`, Trakt come `ids.tvdb`.
 
-	Torna un dizionario con tre voci, perche' gli esiti sono TRE e non due:
+	Torna un dizionario con quattro voci:
 
 	  'mappa'          {(s,e) TVDB: (s,e) Trakt}  le coppie appaiate che si numerano DIVERSAMENTE.
-	                   Chi non c'e' e non e' fra gli esclusi si traduce con l'identita'.
-	  'esclusi_tvdb'   {(s,e) TVDB}  esistono da noi e non su Trakt: NON si traducono e NON si
-	                   mandano. L'episodio resta visibile e riproducibile -- si esclude la
-	                   traduzione, non l'episodio.
-	  'esclusi_trakt'  {(s,e) Trakt}  esistono su Trakt e non da noi: nessuna riga locale e'
-	                   possibile. La loro CARDINALITA' e' lo scarto del lotto 142, che cosi' smette
-	                   di essere un numero misurato dopo un rebuild e diventa un numero calcolato
-	                   prima di scaricare qualunque cosa.
+	                   Chi non c'e' e non e' fra gli esclusi si traduce con lo stesso numero.
+	  'esclusi_tvdb'   {(s,e) TVDB}  senza corrispondente su TMDb: NON SI MOSTRANO (lotto 357; prima
+	                   restavano visibili e solo non si traducevano). TMDb e' il fornitore dei metadati:
+	                   un episodio che non ha non avrebbe immagini, titolo ne' date da mostrare.
+	  'esclusi_trakt'  {(s,e) Trakt}  esistono su Trakt e non da noi: nessuna riga locale e' possibile.
+	                   La loro CARDINALITA' e' lo scarto del lotto 142.
+	  'frontiera'      True se fra gli esclusi TVDB c'e' un episodio uscito negli ultimi 30 giorni: e'
+	                   il segno di un collegamento che i cataloghi non hanno ancora fatto, e chi chiama
+	                   deve ricontrollare presto invece di aspettare la scadenza normale.
 
-	Le tre regole, misurate su 29 anime e 5941 episodi (vedi OTTIMIZZAZIONI.md):
+	Le regole, nell'ordine in cui si applicano. Numeri e casi in ANIME.md.
 
-	1. LA STAGIONE 0 E' FUORI. TVDB e Trakt non concordano sugli speciali in nessuna delle due
-	   direzioni (525 contro 324, agganciati 275): la stagione 0 non e' un sistema di coordinate
-	   condiviso. Escluderla toglie la stragrande maggioranza dei casi limite.
-	2. GLI EPISODI NON ANCORA USCITI NON CONTANO COME SCARTO. Entrambi i cataloghi li elencano
-	   (l'ipotesi contraria e' stata verificata e smentita), quindi non si escludono dalla giuntura --
-	   se si agganciano, tanto meglio. Ma un episodio non uscito non puo' essere stato visto, quindi
-	   non puo' mancare dal nostro conto: contarlo fra gli esclusi gonfierebbe lo scarto.
-	3. L'IDENTITA' E' LECITA SOLO SE LA COPPIA E' LIBERA DA ENTRAMBE LE PARTI -- cioe' esiste
-	   dall'altra parte e nessuna delle due e' gia' appaiata con qualcun altro. Non basta "esiste":
-	   e' la liberta' reciproca a garantire che due episodi non finiscano sulla stessa riga. Sul corpus anime questo ramo non si prende mai -- tutti i residui puntano a
-	   coppie che su Trakt non esistono -- ma nella popolazione generale si prende, ed e' la
-	   formulazione che resta corretta in entrambi i casi. Attenzione: "la mappa e' identica" NON
-	   basta come criterio, ci sono serie con mappa identita' al 100% i cui residui puntano nel vuoto.
+	1. AGGANCIO PER ID, IN TUTTE LE STAGIONI. L'id e' un'identita' e non dipende dalle coordinate, quindi
+	   vale anche per la stagione 0 e fra stagioni diverse: Dragon Ball Kai TVDB S1E98 e' TMDb S0E1.
+	   Fino al lotto 357 la stagione 0 restava fuori anche da qui, e quegli episodi si perdevano.
+	2. VETO PER CONTRADDIZIONE, solo stagioni > 0. Se dei due episodi agganciati uno e' uscito e l'altro
+	   no, a piu' di un giorno di distanza, non sono lo stesso episodio: l'aggancio si rifiuta ed
+	   entrambi tornano liberi. Battle Through the Heavens: Trakt (5,210), uscito il 12/09, porta l'id
+	   che su TVDB e' (5,216), in uscita il 25/10. Non e' una soglia sulle date -- il 6% degli agganci
+	   giusti ha date diverse di oltre un giorno -- ma una contraddizione: sulle coppie recenti delle
+	   stagioni regolari del corpus lo scarto oltre il giorno c'e' SOLO negli agganci sbagliati di BTTH.
+	   La stagione 0 resta fuori perche' le sue date sono le meno affidabili: Re:ZERO S0E67-70, aggancio
+	   giusto, 399 giorni fra le due date (una replica).
+	3. STESSO NUMERO LECITO SE LA COPPIA E' LIBERA DA ENTRAMBE LE PARTI, solo stagioni > 0. La stagione 0
+	   non e' un sistema di coordinate condiviso (525 speciali TVDB contro 324 Trakt, 04/09). E' la
+	   liberta' reciproca a garantire che due episodi non finiscano sulla stessa riga: un elemento
+	   dell'intersezione non e' ne' chiave ne' valore della mappa (vedi il caso G di tests/test_145.py,
+	   che prova la PROPRIETA' e non la formula).
+	4. SECONDA CHIAVE, IL NUMERO ASSOLUTO, SOLO SE LA SERIE LA CONVALIDA. Vale se su TUTTE le coppie
+	   agganciate per id (stagioni > 0 da entrambe le parti) l'assoluto TVDB coincide con la posizione
+	   dell'episodio nella numerazione continua di TMDb; e per ogni coppia nuova le due date devono
+	   coincidere entro un giorno. Detective Conan: S34E21.. (TVDB) e S1E1207.. (TMDb) non erano
+	   collegati da nessuno dei due cataloghi, ma la serie conferma l'assoluto su 1206 agganci su 1206.
+	   E' un'euristica sorvegliata, non un'identita': per questo si convalida da sola e dove la
+	   convalida non passa non si applica (Battle Through the Heavens: 12 su 267).
+	5. TUTTO IL RESTO E' "NESSUNA CORRISPONDENZA". Gli episodi Trakt non ancora usciti non contano come
+	   scarto: non possono essere stati visti, quindi non possono mancare dal nostro conto.
 	"""
+	from datetime import date, timedelta
 	def _per_coppia(righe):
 		fuori = {}
 		for riga in righe or ():
@@ -182,9 +207,22 @@ def costruisci_mappa_episodi(episodi_tvdb, episodi_trakt, oggi):
 			except: continue
 			try: stagione, numero = int(stagione), int(numero)
 			except: continue
-			if stagione <= 0: continue  # regola 1
-			fuori[(stagione, numero)] = (id_tvdb or None, data or None)
+			if stagione < 0: continue
+			try: assoluto = int(riga[4]) if len(riga) > 4 and riga[4] else None
+			except: assoluto = None
+			fuori[(stagione, numero)] = (id_tvdb or None, data or None, assoluto)
 		return fuori
+	def _giorno(data):
+		try: return date.fromisoformat(str(data)[:10])
+		except: return None
+	def _contraddizione(data_tvdb, data_trakt):
+		# Uno uscito e l'altro no, a piu' di un giorno di distanza. Il giorno di tolleranza e' il fuso:
+		# TVDB da' la data giapponese, Trakt l'istante UTC, e il giorno dell'uscita i due possono
+		# cadere a cavallo di `oggi` pur essendo lo stesso episodio (649 coppie recenti su 663 hanno
+		# 0-1 giorni di scarto).
+		g1, g2 = _giorno(data_tvdb), _giorno(data_trakt)
+		if g1 is None or g2 is None or abs((g1 - g2).days) <= 1: return False
+		return _uscito(data_tvdb, oggi) != _uscito(data_trakt, oggi)
 	tvdb, trakt = _per_coppia(episodi_tvdb), _per_coppia(episodi_trakt)
 	per_id = {}
 	for coppia in sorted(trakt):
@@ -192,44 +230,84 @@ def costruisci_mappa_episodi(episodi_tvdb, episodi_trakt, oggi):
 		# Il PRIMO vince, e l'ordine e' deterministico: un id ripetuto e' un dato sporco, e fra due
 		# comportamenti sbagliati e' meglio quello uguale su tutti i dispositivi.
 		if ident is not None and ident not in per_id: per_id[ident] = coppia
-	mappa, presi_tvdb, presi_trakt = {}, set(), set()
+	mappa, presi_tvdb, presi_trakt, per_identita = {}, set(), set(), []
 	for coppia in sorted(tvdb):
 		ident = tvdb[coppia][0]
 		if ident is None: continue
 		altra = per_id.get(ident)
 		if altra is None or altra in presi_trakt: continue
+		# REGOLA 2. Senza data non si puo' concludere niente: si tiene l'aggancio.
+		if coppia[0] > 0 and altra[0] > 0 and _contraddizione(tvdb[coppia][1], trakt[altra][1]): continue
 		presi_tvdb.add(coppia)
 		presi_trakt.add(altra)
+		per_identita.append((coppia, altra))
 		if coppia != altra: mappa[coppia] = altra
 	liberi_tvdb, liberi_trakt = set(tvdb) - presi_tvdb, set(trakt) - presi_trakt
-	# REGOLA 3, e la sua parte non ovvia. La prima stesura sottraeva anche le coordinate gia'
-	# impegnate da una traduzione vera (`- (set(mappa) | set(mappa.values()))`), per paura della
-	# collisione che con INSERT OR REPLACE scarta un episodio in silenzio. La verifica in rosso ha
-	# mostrato che quella sottrazione non toglie MAI niente, ed e' giusto cosi': un elemento
-	# dell'intersezione e' libero da entrambe le parti, quindi non e' ne' una chiave della mappa (che
-	# sta fra le appaiate TVDB) ne' un suo valore (che sta fra le appaiate Trakt).
-	# E' l'intersezione stessa a impedire la collisione. Se un giorno la si allentasse a "esiste
-	# dall'altra parte" senza il "ed e' libera", due episodi Trakt finirebbero sulla stessa riga
-	# locale: vedi il caso G di tests/test_145.py, che prova la PROPRIETA' e non la formula.
-	identita = liberi_tvdb & liberi_trakt
+	# REGOLA 3.
+	identita = set(c for c in (liberi_tvdb & liberi_trakt) if c[0] > 0)
+	liberi_tvdb, liberi_trakt = liberi_tvdb - identita, liberi_trakt - identita
+	# REGOLA 4. La posizione e' quella nella numerazione continua di TMDb: le stagioni > 0 in ordine.
+	posizione = {c: i for i, c in enumerate(sorted(c for c in trakt if c[0] > 0), 1)}
+	prove = [(tvdb[a][2], posizione[b]) for a, b in per_identita if a[0] > 0 and b[0] > 0]
+	if prove and all(assoluto == pos for assoluto, pos in prove):
+		per_posizione = {pos: c for c, pos in posizione.items() if c in liberi_trakt}
+		for coppia in sorted(c for c in liberi_tvdb if c[0] > 0):
+			altra = per_posizione.get(tvdb[coppia][2])
+			if altra is None or altra not in liberi_trakt: continue
+			g1, g2 = _giorno(tvdb[coppia][1]), _giorno(trakt[altra][1])
+			if g1 is None or g2 is None or abs((g1 - g2).days) > 1: continue
+			liberi_tvdb.discard(coppia)
+			liberi_trakt.discard(altra)
+			if coppia != altra: mappa[coppia] = altra
+	# REGOLA 5. La frontiera si cerca solo nelle stagioni che restano VISIBILI: una stagione nascosta per
+	# intero e' strutturale (una serie costola), non un collegamento in ritardo. Pokemon S20 e'
+	# *Orizzonti*, ancora in onda: contata qui, terrebbe la frontiera aperta per sempre e la meta di
+	# Pokemon si riscaricherebbe ogni giorno per niente.
+	g_oggi = _giorno(oggi)
+	inizio_frontiera = (g_oggi - timedelta(days=30)).isoformat() if g_oggi else oggi
+	visibili = set(c[0] for c in tvdb if c not in liberi_tvdb)
+	frontiera = any(c[0] > 0 and c[0] in visibili and tvdb[c][1] and inizio_frontiera <= str(tvdb[c][1])[:10] <= oggi
+					for c in liberi_tvdb)
 	return {
 		'mappa': mappa,
-		'esclusi_tvdb': liberi_tvdb - identita,
-		'esclusi_trakt': set(c for c in (liberi_trakt - identita) if _uscito(trakt[c][1], oggi)),  # regola 2
+		'esclusi_tvdb': liberi_tvdb,
+		'esclusi_trakt': set(c for c in liberi_trakt if _uscito(trakt[c][1], oggi)),
+		'frontiera': frontiera,
 	}
 
+def numero_assoluto(tvdb_id, stagione, episodio):
+	"""Il numero assoluto TVDB dell'episodio, o None. Lotto 361: serve agli scraper per riconoscere le
+	release anime, che numerano in assoluto ("One Piece - 1178" e' TVDB S23E23). Legge lo stesso payload
+	skyhook della giuntura, in cache: nessuna richiesta nuova quando la serie e' gia' stata aperta."""
+	if tvdb_id in invalid_tvdb: return None
+	data = _fetch_raw(tvdb_id)
+	if not data: return None
+	try:
+		stagione, episodio = int(stagione), int(episodio)
+		for e in data.get('episodes') or []:
+			if e.get('seasonNumber') == stagione and e.get('episodeNumber') == episodio: return e.get('absoluteEpisodeNumber') or None
+	except: pass
+	return None
+
 def episodi_per_giuntura(tvdb_id):
-	"""Gli episodi della serie su TVDB nella forma `(stagione, numero, id_tvdb, data)`.
+	"""Gli episodi della serie su TVDB nella forma `(stagione, numero, id_tvdb, data, assoluto)`.
+
+	L'assoluto e' la seconda chiave della regola 4 di costruisci_mappa_episodi (lotto 357).
 
 	Sostituisce get_tvdb_to_tmdb_map, che appaiava per posizione e costruiva il lato TMDb come
 	`range(1, episode_count+1)` -- cioe' lo inventava. Vedi il lotto 145.
 	Qui non si mappa niente: si consegna solo l'elenco. L'appaiamento lo fa
 	costruisci_mappa_episodi, che e' pura e provata.
+
+	Due esiti vuoti, e non si confondono (correzione del 25/09): [] = TVDB non ha episodi per questa serie, o la
+	serie non ha un id TVDB -- un dato, la serie resta su TMDb; None = skyhook non ha risposto -- non si sa, e
+	tvshow_meta non deve concludere niente (vedi `rimappaggio_mancante`).
 	"""
-	if tvdb_id in invalid_tvdb: return None
+	if tvdb_id in invalid_tvdb: return []
 	data = _fetch_raw(tvdb_id)
-	if not data: return None
+	if data is None: return None
 	try:
 		righe = data.get('episodes') or []
-		return [(e.get('seasonNumber'), e.get('episodeNumber'), e.get('tvdbId'), e.get('airDate')) for e in righe] or None
+		return [(e.get('seasonNumber'), e.get('episodeNumber'), e.get('tvdbId'), e.get('airDate'), e.get('absoluteEpisodeNumber'))
+				for e in righe]
 	except: return None

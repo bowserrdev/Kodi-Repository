@@ -63,6 +63,7 @@ class source:
 		try:
 			self.media_type, self.tmdb_id, self.orig_title = info['media_type'], str(info['tmdb_id']), info['title']
 			self.season, self.episode, self.total_seasons = info['season'], info['episode'], info['total_seasons']
+			self.absolute = info.get('absolute')
 			self.title, self.year = normalize(info['title']), info['year']
 			ep_name, aliases = normalize(info['ep_name']), info['aliases']
 			self.single_expiry, self.season_expiry, self.show_expiry = info['expiry_times']
@@ -75,7 +76,7 @@ class source:
 				except: self.season_divider = 1
 				self.show_divider = int(self.meta['total_aired_eps'])
 				self.data = {'imdb': info['imdb_id'], 'tvdb': info['tvdb_id'], 'tvshowtitle': self.title, 'aliases': aliases,'year': self.year,
-							'title': ep_name, 'season': str(self.season), 'episode': str(self.episode), 'debrid_service': self.debrid_service, 'debrid_token': self.debrid_token, 'preferred_language': preferred_language(), 'pref_language_country': pref_language_country()}
+							'title': ep_name, 'season': str(self.season), 'episode': str(self.episode), 'absolute': info.get('absolute'), 'debrid_service': self.debrid_service, 'debrid_token': self.debrid_token, 'preferred_language': preferred_language(), 'pref_language_country': pref_language_country()}
 		except: return []
 		return self.get_sources()
 
@@ -266,6 +267,7 @@ class source:
 			else: _debrid_check_dialog()
 			try: pacchi.join(30)
 			except: pass
+			self._senza_episodio(final_results)
 			self._dimensioni_vere(final_results)
 			return final_results
 		except: return []
@@ -311,6 +313,27 @@ class source:
 			pack_cache.manutenzione()
 		except: pass
 
+	def _senza_episodio(self, results):
+		"""Toglie i pacchetti che, per l'elenco dei file noto, NON contengono l'episodio (sul posto).
+
+		Il nome del pacchetto e' una promessa, l'elenco dei file e' il contenuto: TorBox lo da' per i torrent che
+		ha in cache (lotto 207, _impara_pacchetti). La regola e' pack_cache.contiene_episodio, cioe' la stessa
+		scelta del file di resolve_magnet: un pacchetto che non passa qui non partirebbe comunque. Dove l'elenco
+		non c'e' non si decide niente.
+		"""
+		try:
+			if self.media_type == 'movie': return
+			from caches import pack_cache
+			pacchetti = [i for i in results if i.get('hash') and 'package' in i]
+			if not pacchetti: return
+			mappa = pack_cache.leggi(set(i['hash'] for i in pacchetti))
+			if not mappa: return
+			via = set(id(i) for i in pacchetti if pack_cache.contiene_episodio(mappa.get(i['hash']), self.season, self.episode, getattr(self, "absolute", None)) is False)
+			if not via: return
+			results[:] = [i for i in results if id(i) not in via]
+			logger('FenLight PACCHI', 'tolti %d pacchetti che per l\'elenco dei file non contengono S%sE%s' % (len(via), self.season, self.episode))
+		except: pass
+
 	def _dimensioni_vere(self, results):
 		"""Sostituisce la taglia inventata con quella del file che si riprodurra' davvero.
 
@@ -328,7 +351,7 @@ class source:
 			for i in candidati:
 				files = mappa.get(i['hash'])
 				if not files: continue
-				byte = pack_cache.dimensione_episodio(files, self.season, self.episode)
+				byte = pack_cache.dimensione_episodio(files, self.season, self.episode, getattr(self, "absolute", None))
 				if byte: esatte += 1
 				else:
 					pacco = i.get('dimensione_pacchetto')

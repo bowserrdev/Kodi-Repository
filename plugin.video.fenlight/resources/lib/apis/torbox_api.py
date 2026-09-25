@@ -132,7 +132,7 @@ class TorBoxAPI:
 		if not result['success']: return ''
 		return result['data'].get('torrent_id', '')
 
-	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode):
+	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode, absolute=None):
 		try:
 			file_url, match, torrent_id = None, False, None
 			extensions = supported_video_extensions()
@@ -145,7 +145,7 @@ class TorBoxAPI:
 							for item in torrent_files['data']['files'] if item['short_name'].lower().endswith(tuple(extensions))]
 			if not selected_files: return None
 			if season:
-				selected_files = [i for i in selected_files if seas_ep_filter(season, episode, i['filename'])]
+				selected_files = [i for i in selected_files if seas_ep_filter(season, episode, absolute=absolute, release_title=i['filename'])]
 			else:
 				if self._m2ts_check(selected_files): return None
 				selected_files = [i for i in selected_files if not any(x in i['filename'] for x in extras_filtering_list)]

@@ -58,7 +58,7 @@ class EasyDebridAPI:
 		if not 'files' in result: return ''
 		return result.get('files', '')
 
-	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode):
+	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode, absolute=None):
 		try:
 			file_url, match = None, False
 			extensions = supported_video_extensions()
@@ -67,7 +67,7 @@ class EasyDebridAPI:
 			torrent_files = [item for item in torrent_files if item['filename'].lower().endswith(tuple(extensions))]
 			if not torrent_files: return None
 			if season:
-				torrent_files = [i for i in torrent_files if seas_ep_filter(season, episode, i['filename'])]
+				torrent_files = [i for i in torrent_files if seas_ep_filter(season, episode, absolute=absolute, release_title=i['filename'])]
 				if not torrent_files: return None
 			else:
 				if self._m2ts_check(torrent_files): return None

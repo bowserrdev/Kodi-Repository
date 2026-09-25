@@ -228,7 +228,7 @@ class source(BaseTorrentScraper):
 				if self.min_seeders > seeders:
 					log_utils.log('DMM SKIP [seeders=%s < min=%s]: "%s"' % (seeders, self.min_seeders, name))
 					continue
-				if not source_utils.check_title(self.title, self.aliases, name, self.hdlr, self.year, self.years):
+				if not source_utils.check_title(self.title, self.aliases, name, self.hdlr_match, self.year, self.years):
 					if not self._check_title_raw(raw_title):
 						log_utils.log('DMM SKIP [title mismatch]: "%s"' % name)
 						continue

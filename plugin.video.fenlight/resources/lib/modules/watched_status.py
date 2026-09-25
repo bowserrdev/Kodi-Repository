@@ -448,7 +448,14 @@ def _push_bookmark_to_trakt(media_type, tmdb_id, season, episode, resume_point):
 	# quello che abbiamo appena guardato lo sappiamo gia' noi.
 	from apis.trakt_api import trakt_progress
 	try:
-		_ts, _te = _map_to_tmdb_episode(tmdb_id, season, episode)
+		_coppia = _map_to_tmdb_episode(tmdb_id, season, episode)
+		if _coppia is None:
+			# L'episodio esiste da noi (numerazione TVDB) e non su Trakt: non si inventa una coppia.
+			# Stessa regola di _mark_on_trakt (lotto 145).
+			kodi_utils.logger('Fen Light', 'segnalibro non spinto a Trakt per %s %s (s%s e%s): episodio senza corrispondente su Trakt'
+								% (media_type, tmdb_id, season, episode))
+			return
+		_ts, _te = _coppia
 		resume_id = trakt_progress('set_progress', media_type, tmdb_id, resume_point, _ts, _te) or 0
 		if resume_id:
 			# Solo il resume_id: lo stato resta `pending_put`. Che Trakt abbia ACCETTATO la spinta non

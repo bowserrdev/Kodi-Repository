@@ -98,7 +98,7 @@ class source(BaseTorrentScraper):
 				if not parsed: continue
 				hash, name, seeders, dsize, isize, magnet = parsed
 				if self.min_seeders > seeders: continue
-				if not source_utils.check_title(self.title, self.aliases, name, self.hdlr, self.year, self.years): continue
+				if not source_utils.check_title(self.title, self.aliases, name, self.hdlr_match, self.year, self.years): continue
 				name_info = source_utils.info_from_name(name, self.title, self.year, self.hdlr, self.episode_title)
 				if source_utils.remove_lang(name_info, self.check_foreign_audio): continue
 				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables): continue
@@ -133,10 +133,22 @@ class source(BaseTorrentScraper):
 				if self.min_seeders > seeders: continue
 
 				episode_start, episode_end, last_season = 0, 0, None
+				# IL FILTRO CHE MANCAVA (Fen Light, lotto 361). `files` e' la lista di stream gia' chiesta
+				# per l'EPISODIO, e qui ogni elemento veniva etichettato come pacchetto senza nessun
+				# controllo: ne' titolo ne' stagione. Il ramo per episodio scartava i file estranei con
+				# check_title, questo li faceva passare tutti. Misurato il 25/09 su One Piece S22E01:
+				# comet ha consegnato 14 "pacchetti di stagione", 8 dei quali erano Top Gear, South Park,
+				# Cops. E' lo stesso filtro di torrentio e dmm.
 				if not search_series:
+					if not bypass_filter:
+						valid, episode_start, episode_end = source_utils.filter_season_pack(self.title, self.aliases, self.year, self.season_x, name)
+						if not valid: continue
 					package = 'season'
 				else:
-					last_season = total_seasons
+					if not bypass_filter:
+						valid, last_season = source_utils.filter_show_pack(self.title, self.aliases, self.imdb, self.year, self.season_x, name, total_seasons)
+						if not valid: continue
+					else: last_season = total_seasons
 					package = 'show'
 
 				name_info = source_utils.info_from_name(name, self.title, self.year, season=self.season_x, pack=package)

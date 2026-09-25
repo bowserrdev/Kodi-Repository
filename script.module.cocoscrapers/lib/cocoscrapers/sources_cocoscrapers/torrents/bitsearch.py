@@ -166,7 +166,7 @@ class source(BaseTorrentScraper):
 				if not name or not hash: continue
 				log_utils.log('BITSEARCH RAW: "%s" | hash=%s | seeders=%s' % (name, hash, seeders))
 				if self.episode_title:
-					if not source_utils.check_title(self.title, self.aliases, name, self.hdlr, self.year):
+					if not source_utils.check_title(self.title, self.aliases, name, self.hdlr_match, self.year):
 						log_utils.log('BITSEARCH SKIP [title mismatch]: "%s"' % name)
 						continue
 				else:
@@ -257,6 +257,10 @@ class source(BaseTorrentScraper):
 				pages.append(base)
 				if st == self._paginate_title:
 					pages += [base + '&page=%s' % p for p in range(2, 5)]
+				# Le release anime numerano in assoluto ("One Piece - 1178"): cercando solo S23E23 non
+				# si trovano. Vedi source_utils.episodio_regex.
+				if is_tv and self.absolute:
+					pages.append('%s%s' % (self.base_link, self.search_link % quote_plus('%s %s' % (st_clean, self.absolute))))
 			self._run_threads(self.get_sources, list(dict.fromkeys(pages)))
 		except:
 			source_utils.scraper_error('BITSEARCH')

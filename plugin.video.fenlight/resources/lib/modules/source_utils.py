@@ -111,6 +111,44 @@ def make_alias_dict(meta, title):
 		aliases.extend([{'title': '%s %s' % (base, i), 'country': ''} for i in country_codes])
 	return aliases
 
+def alias_della_stagione(aliases, titoli, nome_stagione):
+	"""Toglie gli alias che sono il titolo di UN'ALTRA parte della serie (correzione al lotto 361).
+
+	TMDb ha fuso *Bleach: Thousand-Year Blood War* dentro *Bleach* (stagione 2 TMDb, 17 TVDB), e i suoi titoli
+	sono diventati alias di Bleach: "Bleach: Thousand-Year Blood War", "Bleach Sennen Kessen-hen"... Cercando
+	Bleach S1E19, le release di TYBW "S01E19" e "- 19" (numerazione propria di TYBW) passavano il controllo del
+	titolo con quegli alias e dell'episodio con la coppia o l'assoluto: una trentina il 25/09.
+
+	Il dato che li separa e' il NOME della stagione TMDb dell'episodio cercato. Se non dice niente di suo -- e'
+	il titolo della serie, "Stagione 1", "Season 1", vuoto -- la stagione non ha un sottotitolo, e un alias che
+	ALLUNGA il titolo ("Bleach" + "Thousand-Year Blood War") appartiene a un'altra parte: si toglie. Se il nome ha
+	un sottotitolo ("Thousand Year Blood War", "The Final Season", "Wano") non si toglie niente, perche' le
+	release di quella parte possono chiamarsi proprio cosi'. Nome sconosciuto (None): non si toglie niente.
+	Non sono un allungamento l'anno ("Doctor Who 2005") e il paese ("The Office US"), che make_alias_dict
+	aggiunge di suo.
+
+	`titoli`: il titolo cercato e gli altri titoli principali (originale, inglese). Pura, per la prova.
+	"""
+	import re, unicodedata
+	def _n(testo):
+		try: testo = ''.join(c for c in unicodedata.normalize('NFKD', str(testo)) if unicodedata.category(c) != 'Mn')
+		except: testo = str(testo or '')
+		return re.sub(r'[^a-z0-9]', '', testo.lower())
+	if nome_stagione is None: return aliases
+	basi = set(b for b in (_n(t) for t in titoli if t) if b)
+	nome = _n(nome_stagione)
+	generico = not nome or nome in basi or re.match(r'^(?:season|stagione|staffel|saison|temporada|serie|series|parte?)?\d+$', nome)
+	if not generico or not basi: return aliases
+	def _allunga(alias):
+		a = _n(alias.get('title'))
+		for b in basi:
+			if a.startswith(b) and len(a) > len(b):
+				resto = a[len(b):]
+				if re.match(r'^(?:19|20)\d{2}$', resto) or re.match(r'^[a-z]{2}$', resto): return False
+				return True
+		return False
+	return [a for a in aliases if not _allunga(a)]
+
 def internal_results(provider, sources):
 	set_property(int_window_prop % provider, json.dumps(sources))
 
@@ -142,7 +180,10 @@ def supported_video_extensions():
 	supported_video_extensions = supported_media().split('|')
 	return [i for i in supported_video_extensions if not i in ('','.zip','.rar','.iso')]
 
-def seas_ep_filter(season, episode, release_title, split=False, return_match=False):
+def seas_ep_filter(season, episode, release_title, split=False, return_match=False, absolute=None):
+	# `absolute` (lotto 361): il numero assoluto TVDB, solo per le serie in numerazione TVDB. Le release
+	# anime numerano cosi' ("One Piece - 1178" e' S23E23), e dentro un pacchetto della stagione il file
+	# giusto non si trovava mai. Stesse forme e stesse guardie di cocoscrapers.source_utils.episodio_regex.
 	str_season, str_episode = string(season), string(episode)
 	season_fill, episode_fill = str_season.zfill(2), str_episode.zfill(2)
 	str_ep_plus_1, str_ep_minus_1 = string(episode+1), string(episode-1)
@@ -171,6 +212,21 @@ def seas_ep_filter(season, episode, release_title, split=False, return_match=Fal
 	string_list_append(string5.replace('<<E>>', str_episode))
 	string_list_append(string6.replace('<<E>>', episode_fill))
 	string_list_append(string7.replace('<<E>>', episode_fill))
+	try: _assoluto = int(absolute) if absolute else 0
+	except (TypeError, ValueError): _assoluto = 0
+	if _assoluto > 0:
+		# Il titolo qui e' gia' normalizzato: minuscolo, ogni separatore diventato '.', i trattini tenuti.
+		# "one.piece.-.1178..1080p" si prende; "1156-1180" no (intervallo: e' preceduto o seguito da '-');
+		# "h.264"/"x.264" no (codec); "1080p" no (seguito da una lettera); sotto il 10 serve lo zero ("02").
+		_num = ('0*%d' if _assoluto >= 10 else '0+%d') % _assoluto
+		# Con la stagione davanti, solo la 1 o quella cercata: in un pacchetto completo di Bleach l'assoluto 19
+		# (S1E19) non deve prendere il file "Bleach.S17E19".
+		string_list_append(r'(s0*(?:1|%d)[.-]?e%s[.-])' % (int(season), _num))
+		string_list_append(r'((?<![hx])(?<!\d-)(?<!\d\.-)\.(?:ep?|episode)?\.?%s(?:v\d)?\.(?!-\.?\d))' % _num)
+		# Il file che si chiama SOLO col numero ("58.mp4", "EP58.mkv"): il pacchetto italiano di Fullmetal Alchemist
+		# Brotherhood "S01e01-63" ha 01.mp4 ... 63.mp4, e senza questa forma la riproduzione non trovava mai il file.
+		# Solo con l'assoluto: in una serie normale "01.mp4" in un pacchetto di piu' stagioni sarebbe ambiguo.
+		string_list_append(r'(^(?:ep?\.?)?%s(?:v\d)?\.[a-z0-9]{2,4}$)' % _num)
 	final_string = '|'.join(string_list)
 	reg_pattern = re.compile(final_string)
 	if split: return release_title.split(re.search(reg_pattern, release_title).group(), 1)[1]
