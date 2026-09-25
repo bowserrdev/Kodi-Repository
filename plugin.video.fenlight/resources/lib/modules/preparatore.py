@@ -31,10 +31,13 @@ LE PRIORITA':
     P0  un passo che una costruzione sta aspettando (e le consegne, che sono istantanee)
     P1  l'anticipo della riga a fuoco
     P2  lavoro di fondo: verdetti in attesa, schede da rinnovare
-Fra una finestra di pagine e l'altra un lavoro CEDE il turno a chiunque aspetti con priorita' piu' alta, e a
-chi aspetta con priorita' UGUALE se, alla resa vista finora, gli mancano piu' di PAGINE_PER_TURNO pagine; poi torna
-in coda: il suo stato e' tutto nel database. Cosi' una ricerca lunga non tiene ferme le altre righe, e le righe
-normali, che finiscono in poche pagine, si servono in ordine d'arrivo invece che a turno (lotto 353).
+Fra una finestra di pagine e l'altra un lavoro CEDE il turno a chiunque aspetti con priorita' uguale o
+piu' alta, e torna in coda: il suo stato e' tutto nel database. Cosi' una ricerca lunga non tiene ferme
+le altre righe, e fra righe in attesa si procede a turno.
+LOTTO 353, provato e tolto il 25/09: servire le righe in ordine d'arrivo e far cedere solo quelle con molte
+pagine davanti. Sulla stick la riga rada dell'hub Film (1101.501, 3-4 titoli pronti su 20) e' la PRIMA in alto,
+e cedendo a tutte le altre compariva a 26,5 s invece di 17,3; la media delle sette righe non migliorava (11,0
+contro 10,5 s). A turno, la riga in alto non paga per le altre.
 Una costruzione piu' recente per la stessa POSIZIONE con un'altra lista (la ricerca mentre si digita)
 SUPERA la vecchia: la vecchia smette al primo turno, e chi la aspettava lo sa.
 
@@ -66,16 +69,6 @@ RETE_IN_PARALLELO = 20
 # giudicherebbe 400 per trovarne pochi. Le pagine in piu' non si buttano, ma costano comunque i loro giudizi.
 FINESTRA_PAGINE = 3
 P0, P1, P2 = 0, 1, 2
-# LOTTO 353 -- quando un lavoro cede il turno a chi aspetta con la sua stessa priorita': quando, alla resa vista
-# finora, gli mancano piu' di PAGINE_PER_TURNO pagine. Prima cedeva dopo ogni finestra (la regola "a turno"): con tre
-# righe in attesa ognuna riceveva una pagina a giro e finivano tutte tardi, e Kodi, che costruisce al piu' tre righe
-# insieme, faceva partire la quarta solo quando una delle tre finiva. Hub Film sulla stick il 25/09: 502 e 503 pronte
-# a 11 e 12 s invece di 5 e 9 (modello sugli orari del log, che lo riproduce entro un secondo).
-# Si decide sulla STIMA e non sul numero di pagine gia' lette: la prima versione (cedere dopo tre pagine) faceva
-# tenere il turno per quattro pagine a una riga da 3 titoli su 20, e le righe arrivate dopo la aspettavano (Mac,
-# Home del 25/09 01:35, home.503). Una riga normale ne ha per 1-3 pagine e finisce; una che il filtro svuota si
-# riconosce dalla prima pagina e lascia passare le altre.
-PAGINE_PER_TURNO = 3
 # LOTTO 356 -- il titolo lento non ferma la pagina. La pagina aspetta i suoi titoli finche' non ha risposto
 # QUOTA_PAGINA di loro, poi concede ai restanti al piu' altrettanto tempo (mai meno di ATTESA_CODA_MINIMA): chi non
 # ha risposto passa IN ATTESA, la pagina risponde, e il preparatore va avanti. La richiesta lenta intanto finisce
@@ -254,25 +247,10 @@ def _misura_pagina(voci, cronometrati, giudizi, registro):
 
 # --- il preparatore ------------------------------------------------------------------------------------------
 
-def _pagine_mancanti(mancano, lette, presi):
-	"""Le pagine che, alla resa vista finora (`presi` titoli pronti in `lette` pagine), bastano per `mancano` titoli.
-	None se la resa non si sa ancora: nessuna pagina letta, o nessun titolo preso."""
-	if not presi: return None
-	return -(-mancano * lette // presi)
-
 def _finestra(mancano, lette, presi):
 	"""Quante pagine leggere insieme: quelle che, alla resa vista finora, bastano per `mancano` titoli (1..FINESTRA_PAGINE)."""
-	stima = _pagine_mancanti(mancano, lette, presi)
-	if stima is None: return FINESTRA_PAGINE if lette else 1
-	return max(1, min(FINESTRA_PAGINE, stima))
-
-def _lungo(mancano, lette, presi):
-	"""Il lavoro ne ha ancora per piu' di un turno? Mai prima di aver letto una pagina: due lavori pari non si cedono
-	il turno a vicenda senza leggere niente. Dopo, lungo se la stima supera PAGINE_PER_TURNO, o se non si sa (zero
-	titoli presi: una ricerca che il filtro svuota)."""
-	if not lette: return False
-	stima = _pagine_mancanti(mancano, lette, presi)
-	return stima is None or stima > PAGINE_PER_TURNO
+	if not presi: return FINESTRA_PAGINE if lette else 1
+	return max(1, min(FINESTRA_PAGINE, -(-mancano * lette // presi)))
 
 class Lavoro:
 	__slots__ = ('priorita', 'genere', 'chiave', 'dati')
@@ -392,8 +370,8 @@ class Preparatore:
 	def _cedi(self, lista, priorita, anche_uguali):
 		"""Prima di ogni finestra di pagine: il lavoro continua, cede il turno, o e' stato superato.
 
-		Si cede sempre a chi ha priorita' piu' alta. A chi ha la STESSA solo se il lavoro e' lungo (_lungo, lotto 353;
-		prima dopo ogni finestra): una riga normale finisce prima che cominci la successiva.
+		Si cede sempre a chi ha priorita' piu' alta. A chi ha la STESSA solo dopo aver letto almeno una finestra
+		in questo turno: altrimenti due lavori pari si cederebbero il turno a vicenda senza mai leggere niente.
 		"""
 		soglia = priorita if anche_uguali else priorita - 1
 		with self._cond:
@@ -562,7 +540,7 @@ class Preparatore:
 		Si GIUDICA solo finche' serve: appena i preparati bastano, le pagine lette in piu' non si giudicano e non si
 		salvano, e il passo dopo le rilegge. Leggere costa poco, giudicare no (una scheda e un verdetto per titolo,
 		0,6-1 s a pagina nella misura 351), e ritardava la risposta: Mac, 25/09 01:35, home.502 aveva 44 titoli su 40
-		alla pagina 3 e ha giudicato anche la 4 (lotto 353).
+		alla pagina 3 e ha giudicato anche la 4 (lotto 353, la parte che resta).
 		"""
 		from caches import widgets_cache as W
 		s = lista.sorgente()
@@ -573,7 +551,7 @@ class Preparatore:
 		ultima = None   # la sorgente la dichiara alla prima lettura di questo lavoro
 		lette, presi = 0, 0
 		while pronti < serve and not fine:
-			self._cedi(lista, priorita, anche_uguali=_lungo(serve - pronti, lette, presi))
+			self._cedi(lista, priorita, anche_uguali=lette > 0)
 			fino = pagina + 1 if ultima is None else min(pagina + _finestra(serve - pronti, lette, presi), ultima)
 			finestra = list(range(pagina + 1, fino + 1))
 			inizio = _ora()
