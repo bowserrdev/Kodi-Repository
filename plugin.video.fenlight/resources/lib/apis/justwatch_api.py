@@ -64,6 +64,7 @@ _finestra = [0.0, 0]   # inizio della finestra corrente, pagine gia' chieste in 
 
 def _posto_per_una_pagina():
 	"""Aspetta, se serve, che nella finestra ci sia posto per una pagina, e lo prende."""
+	inizio = _time()
 	with _ritmo:
 		adesso = _time()
 		if adesso - _finestra[0] >= FINESTRA: _finestra[:] = [adesso, 0]
@@ -71,6 +72,9 @@ def _posto_per_una_pagina():
 			_sleep(_finestra[0] + FINESTRA - adesso)
 			_finestra[:] = [_time(), 0]
 		_finestra[1] += 1
+	# Lotto 351: l'attesa (sotto il lucchetto, o dietro chi ci dorme) entra nella misura del preparatore.
+	from modules.http_client import annota
+	annota('finestra', 'www.themoviedb.org', _time() - inizio)
 
 def _get_session():
 	# Pigra (lotto 52: niente rete all'import) e sotto lucchetto: la chiamano i thread del preparatore insieme.

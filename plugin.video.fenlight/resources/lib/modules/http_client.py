@@ -45,6 +45,15 @@ MAX_REDIRECTS = 5
 # 12 e' la stessa velocita' di nessun tetto con 20 descrittori in meno al picco; 8 costa un terzo del tempo.
 # Referti in strumenti/diagnostica/referti/riempimento-341-C*.
 CONNESSIONI_PER_HOST = 12
+# LOTTO 352 -- i server per cui il tetto e' un altro. IMDb: ogni scheda di film e' TMDb e POI IMDb GraphQL, in fila, e
+# IMDb e' la richiesta lenta (0,24-0,44 s di mediana contro 0,05-0,10 di TMDb, misura 351 del 25/09). Con 12 posti
+# le 20 schede di una pagina del preparatore (preparatore.RETE_IN_PARALLELO) andavano in DUE ondate: 0,8-2,3 s di
+# attese di un posto sommate per pagina, su pagine da 0,7-1,1 s. Con 20 l'ondata e' una.
+CONNESSIONI_PER_SERVER = {'api.graphql.imdb.com': 20}
+
+def connessioni_per(host):
+	"""Il tetto delle connessioni in uso verso `host`."""
+	return CONNESSIONI_PER_SERVER.get(host, CONNESSIONI_PER_HOST)
 # Una connessione ferma da piu' di questi secondi si chiude. Fra una pagina e l'altra di un lavoro passano
 # frazioni di secondo, quindi durante il traffico il riuso resta intero; finito il traffico, i socket spariscono
 # invece di occupare descrittori finche' il server non li chiude lui (sul Mac il processo ne ha 256: 24/09, 60
@@ -339,8 +348,26 @@ def _tetto(scheme, host, port):
 	chiave = (scheme, host, port)
 	with _tetti_lock:
 		t = _tetti.get(chiave)
-		if t is None: t = _tetti[chiave] = _Tetto(CONNESSIONI_PER_HOST)
+		if t is None: t = _tetti[chiave] = _Tetto(connessioni_per(host))
 	return t
+
+# LOTTO 351 -- IL REGISTRO DELLA MISURA. Il preparatore vuole sapere, per ogni pagina, se il suo tempo e' quello di
+# TMDb (troppe richieste per la velocita' del server) o quello di un titolo lento (una fonte che risponde tardi).
+# Nel log non c'era niente che distinguesse i due casi. Mentre un registro e' acceso ogni richiesta dell'interprete
+# vi annota ('richiesta', host, secondi), dall'invio alla risposta, redirect compresi, e ogni attesa di un posto
+# sotto il tetto dell'host ('posto', host, secondi). E' uno per interprete e non per thread: le richieste di un
+# titolo partono anche dai gruppi di thread suoi (bluray_api ne ha due), e devono contare lo stesso.
+# list.append e' atomica: niente lucchetto.
+_registro = [None]
+
+def registra(registro):
+	"""Da qui in avanti le richieste si annotano in `registro` (una lista); None smette."""
+	_registro[0] = registro
+
+def annota(genere, host, secondi):
+	"""Un'attesa che non passa di qui (il ritmo del sito di TMDb in justwatch_api) entra nel registro acceso."""
+	registro = _registro[0]
+	if registro is not None: registro.append((genere, host, secondi))
 
 class NessunaConnessioneLibera(NetworkError):
 	"""Tutte le connessioni verso l'host sono rimaste occupate per l'intero timeout. Non e' un guasto
@@ -369,8 +396,10 @@ class _Pool:
 	def prendi(self, scheme, host, port, timeout, nuova=False):
 		"""(connessione, riciclata). Aspetta un posto libero fino a `timeout`, poi NessunaConnessioneLibera.
 		`nuova` salta le ferme: la si chiede dopo che una riciclata e' morta."""
+		inizio = _adesso()
 		if not _tetto(scheme, host, port).prendi(timeout):
-			raise NessunaConnessioneLibera('%s: %d connessioni occupate per %s s' % (host, CONNESSIONI_PER_HOST, timeout))
+			raise NessunaConnessioneLibera('%s: %d connessioni occupate per %s s' % (host, connessioni_per(host), timeout))
+		annota('posto', host, _adesso() - inizio)
 		key, conn, scadute = (scheme, host, port), None, []
 		with self._lock:
 			bucket = self._free.get(key)
@@ -600,7 +629,11 @@ class Session:
 		if params:
 			query = _encode_params(params)
 			if query: url = '%s%s%s' % (url, '&' if '?' in url else '?', query)
-		return self._send(method, url, body, sent, timeout, allow_redirects, MAX_REDIRECTS, validate)
+		registro = _registro[0]
+		if registro is None: return self._send(method, url, body, sent, timeout, allow_redirects, MAX_REDIRECTS, validate)
+		inizio = _adesso()
+		try: return self._send(method, url, body, sent, timeout, allow_redirects, MAX_REDIRECTS, validate)
+		finally: registro.append(('richiesta', _split_url(url)[1], _adesso() - inizio))
 
 	# --- interno --------------------------------------------------------------------------------
 	def _send(self, method, url, body, headers, timeout, allow_redirects, budget, validate=None):

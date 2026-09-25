@@ -31,9 +31,10 @@ LE PRIORITA':
     P0  un passo che una costruzione sta aspettando (e le consegne, che sono istantanee)
     P1  l'anticipo della riga a fuoco
     P2  lavoro di fondo: verdetti in attesa, schede da rinnovare
-Fra una finestra di pagine e l'altra un lavoro CEDE il turno a chiunque aspetti con priorita' uguale o
-piu' alta, e torna in coda: il suo stato e' tutto nel database. Cosi' una ricerca lunga non tiene ferme
-le altre righe, e fra righe in attesa si procede a turno.
+Fra una finestra di pagine e l'altra un lavoro CEDE il turno a chiunque aspetti con priorita' piu' alta, e a
+chi aspetta con priorita' UGUALE se, alla resa vista finora, gli mancano piu' di PAGINE_PER_TURNO pagine; poi torna
+in coda: il suo stato e' tutto nel database. Cosi' una ricerca lunga non tiene ferme le altre righe, e le righe
+normali, che finiscono in poche pagine, si servono in ordine d'arrivo invece che a turno (lotto 353).
 Una costruzione piu' recente per la stessa POSIZIONE con un'altra lista (la ricerca mentre si digita)
 SUPERA la vecchia: la vecchia smette al primo turno, e chi la aspettava lo sa.
 
@@ -65,6 +66,26 @@ RETE_IN_PARALLELO = 20
 # giudicherebbe 400 per trovarne pochi. Le pagine in piu' non si buttano, ma costano comunque i loro giudizi.
 FINESTRA_PAGINE = 3
 P0, P1, P2 = 0, 1, 2
+# LOTTO 353 -- quando un lavoro cede il turno a chi aspetta con la sua stessa priorita': quando, alla resa vista
+# finora, gli mancano piu' di PAGINE_PER_TURNO pagine. Prima cedeva dopo ogni finestra (la regola "a turno"): con tre
+# righe in attesa ognuna riceveva una pagina a giro e finivano tutte tardi, e Kodi, che costruisce al piu' tre righe
+# insieme, faceva partire la quarta solo quando una delle tre finiva. Hub Film sulla stick il 25/09: 502 e 503 pronte
+# a 11 e 12 s invece di 5 e 9 (modello sugli orari del log, che lo riproduce entro un secondo).
+# Si decide sulla STIMA e non sul numero di pagine gia' lette: la prima versione (cedere dopo tre pagine) faceva
+# tenere il turno per quattro pagine a una riga da 3 titoli su 20, e le righe arrivate dopo la aspettavano (Mac,
+# Home del 25/09 01:35, home.503). Una riga normale ne ha per 1-3 pagine e finisce; una che il filtro svuota si
+# riconosce dalla prima pagina e lascia passare le altre.
+PAGINE_PER_TURNO = 3
+# LOTTO 356 -- il titolo lento non ferma la pagina. La pagina aspetta i suoi titoli finche' non ha risposto
+# QUOTA_PAGINA di loro, poi concede ai restanti al piu' altrettanto tempo (mai meno di ATTESA_CODA_MINIMA): chi non
+# ha risposto passa IN ATTESA, la pagina risponde, e il preparatore va avanti. La richiesta lenta intanto finisce
+# da se' e lascia scheda e verdetto nella cache; quando e' finita il giro delle attese riprende il titolo dalla
+# cache e lo mette fra i pronti: entra nel passo dopo, in coda a cio' che la riga mostra (regola del 16/09).
+# Misurato il 25/09 sul Mac: una richiesta a blu-ray.com da 4,7 s (pagina da 6,2 s invece di ~1,7) e una a IMDb da
+# 4,0 s (pagina da 4,1 invece di ~0,7), e con un preparatore solo le aspettavano tutte le righe. La regola e'
+# relativa e non un tempo fisso: una pagina lenta TUTTA (connessioni fredde, stick) non perde nessuno.
+QUOTA_PAGINA = 0.75
+ATTESA_CODA_MINIMA = 1.0
 # I passi pronti in piu' che la riga a fuoco tiene davanti a se'.
 ANTICIPO_PASSI = 1
 
@@ -188,12 +209,70 @@ def giudica(media_type, id_type, ident, filtrata, ctx, ammetti=None):
 		_log('giudizio %s %s fallito: %r' % (media_type, ident, e))
 		return SCARTO, None, None
 
+# --- la misura di una pagina (lotto 351) ------------------------------------------------------------------------
+
+def _cronometrato(*argomenti):
+	"""giudica(), e quanto ci ha messo. giudica non solleva: ogni difetto di un titolo diventa uno SCARTO."""
+	inizio = _ora()
+	esito = giudica(*argomenti)
+	return esito, _ora() - inizio
+
+def _mediana(valori):
+	ordinati = sorted(valori)
+	return ordinati[len(ordinati) // 2] if ordinati else 0.0
+
+def _misura_pagina(voci, cronometrati, giudizi, registro):
+	"""La riga MISURA: il tempo dei giudizi di una pagina, e dove e' andato.
+
+	Serve a una domanda sola: la pagina aspetta TMDb o un titolo lento? Se il titolo piu' lento dura quasi quanto la
+	pagina e la mediana e' bassa, e' la coda (un titolo); se tutti durano quasi quanto la pagina e le attese di un
+	posto crescono, e' la velocita' di un host. Per host: richieste, mediana e massimo, e la somma delle attese di un
+	posto sotto il tetto dell'host (http_client.connessioni_per) e della finestra del sito di TMDb (justwatch_api).
+	"""
+	if not cronometrati: return 'giudizi 0'
+	tempi = [secondi for _esito, secondi in cronometrati]
+	lento = max(range(len(tempi)), key=tempi.__getitem__)
+	(esito, firma, _meta), _s = cronometrati[lento]
+	chi = 'tmdb=%s' % firma[1] if firma else '%s %s' % (voci[lento][0], voci[lento][2])
+	ordinati = sorted(tempi)
+	parti = ['giudizi %d in %.2f s: min %.2f med %.2f p90 %.2f max %.2f (%s %s)' % (len(tempi), giudizi, ordinati[0],
+		_mediana(tempi), ordinati[min(len(ordinati) - 1, int(len(ordinati) * 0.9))], ordinati[-1], chi, esito)]
+	host = {}
+	for genere, nome, secondi in list(registro):
+		h = host.setdefault(nome, {'richiesta': [], 'posto': 0.0, 'finestra': 0.0})
+		if genere == 'richiesta': h['richiesta'].append(secondi)
+		else: h[genere] += secondi
+	for nome in sorted(host, key=lambda k: -len(host[k]['richiesta'])):
+		h = host[nome]
+		r = h['richiesta']
+		testo = '%s %d rich.' % (nome, len(r))
+		if r: testo += ' med %.2f max %.2f' % (_mediana(r), max(r))
+		if h['posto'] >= 0.01: testo += ' attesa posto %.2f s' % h['posto']
+		if h['finestra'] >= 0.01: testo += ' attesa finestra %.2f s' % h['finestra']
+		parti.append(testo)
+	return ' | '.join(parti)
+
 # --- il preparatore ------------------------------------------------------------------------------------------
+
+def _pagine_mancanti(mancano, lette, presi):
+	"""Le pagine che, alla resa vista finora (`presi` titoli pronti in `lette` pagine), bastano per `mancano` titoli.
+	None se la resa non si sa ancora: nessuna pagina letta, o nessun titolo preso."""
+	if not presi: return None
+	return -(-mancano * lette // presi)
 
 def _finestra(mancano, lette, presi):
 	"""Quante pagine leggere insieme: quelle che, alla resa vista finora, bastano per `mancano` titoli (1..FINESTRA_PAGINE)."""
-	if not presi: return FINESTRA_PAGINE if lette else 1
-	return max(1, min(FINESTRA_PAGINE, -(-mancano * lette // presi)))
+	stima = _pagine_mancanti(mancano, lette, presi)
+	if stima is None: return FINESTRA_PAGINE if lette else 1
+	return max(1, min(FINESTRA_PAGINE, stima))
+
+def _lungo(mancano, lette, presi):
+	"""Il lavoro ne ha ancora per piu' di un turno? Mai prima di aver letto una pagina: due lavori pari non si cedono
+	il turno a vicenda senza leggere niente. Dopo, lungo se la stima supera PAGINE_PER_TURNO, o se non si sa (zero
+	titoli presi: una ricerca che il filtro svuota)."""
+	if not lette: return False
+	stima = _pagine_mancanti(mancano, lette, presi)
+	return stima is None or stima > PAGINE_PER_TURNO
 
 class Lavoro:
 	__slots__ = ('priorita', 'genere', 'chiave', 'dati')
@@ -219,6 +298,14 @@ class Preparatore:
 		# segnalato per l'apertura attuale. Vedi _segnala_interruttore.
 		self._attese_lavoro = 0
 		self._interruttore_segnalato = False
+		# LOTTO 356 -- le firme dei titoli rimasti oltre la scadenza di una pagina, con la richiesta ancora in volo: il
+		# giro delle attese non li rigiudica finche' non tornano (sarebbero richieste doppie).
+		self._in_volo = set()
+		# LOTTO 351 -- la riga MISURA di ogni pagina, con la strumentazione accesa (modules/perf). Vedi _misura_pagina.
+		try:
+			from modules.perf import enabled
+			self._misura = enabled()
+		except Exception: self._misura = False
 
 	# --- ingresso (dal thread delle notifiche) ---
 	def accoda(self, lavoro):
@@ -305,8 +392,8 @@ class Preparatore:
 	def _cedi(self, lista, priorita, anche_uguali):
 		"""Prima di ogni finestra di pagine: il lavoro continua, cede il turno, o e' stato superato.
 
-		Si cede sempre a chi ha priorita' piu' alta. A chi ha la STESSA solo dopo aver letto almeno una finestra
-		in questo turno: altrimenti due lavori pari si cederebbero il turno a vicenda senza mai leggere niente.
+		Si cede sempre a chi ha priorita' piu' alta. A chi ha la STESSA solo se il lavoro e' lungo (_lungo, lotto 353;
+		prima dopo ogni finestra): una riga normale finisce prima che cominci la successiva.
 		"""
 		soglia = priorita if anche_uguali else priorita - 1
 		with self._cond:
@@ -471,8 +558,11 @@ class Preparatore:
 		A FINESTRE: quando la sorgente dichiara la sua ultima pagina se ne possono leggere fino a
 		FINESTRA_PAGINE insieme, poi si giudicano in ordine. Quante, lo dice la RESA misurata in questo lavoro:
 		una riga normale da' un titolo per voce e si legge una pagina per volta, una ricerca che il filtro svuota
-		(il 16/09 "more": un titolo ogni cinque pagine, 180 ms l'una) ne legge tre. Le pagine lette oltre il bisogno
-		non si buttano: i loro titoli restano preparati per il passo dopo.
+		(il 16/09 "more": un titolo ogni cinque pagine, 180 ms l'una) ne legge tre.
+		Si GIUDICA solo finche' serve: appena i preparati bastano, le pagine lette in piu' non si giudicano e non si
+		salvano, e il passo dopo le rilegge. Leggere costa poco, giudicare no (una scheda e un verdetto per titolo,
+		0,6-1 s a pagina nella misura 351), e ritardava la risposta: Mac, 25/09 01:35, home.502 aveva 44 titoli su 40
+		alla pagina 3 e ha giudicato anche la 4 (lotto 353).
 		"""
 		from caches import widgets_cache as W
 		s = lista.sorgente()
@@ -483,12 +573,15 @@ class Preparatore:
 		ultima = None   # la sorgente la dichiara alla prima lettura di questo lavoro
 		lette, presi = 0, 0
 		while pronti < serve and not fine:
-			self._cedi(lista, priorita, anche_uguali=lette > 0)
+			self._cedi(lista, priorita, anche_uguali=_lungo(serve - pronti, lette, presi))
 			fino = pagina + 1 if ultima is None else min(pagina + _finestra(serve - pronti, lette, presi), ultima)
 			finestra = list(range(pagina + 1, fino + 1))
-			for n, (grezzi, ultima) in zip(finestra, self._in_parallelo(s.leggi, [(n,) for n in finestra])):
+			inizio = _ora()
+			letture = self._in_parallelo(s.leggi, [(n,) for n in finestra])
+			lettura = _ora() - inizio
+			for n, (grezzi, ultima) in zip(finestra, letture):
 				grezzi = grezzi or []
-				nuovi_pronti, nuove_attese = self._giudica_pagina(lista, s, grezzi, filtrata, noti, ctx)
+				nuovi_pronti, nuove_attese, misura = self._giudica_pagina(lista, s, grezzi, filtrata, noti, ctx)
 				fine = not sorgenti.continua(n, grezzi, ultima)
 				W.salva_pagina(lista.id, nuovi_pronti, nuove_attese, n, fine)
 				pronti += len(nuovi_pronti)
@@ -496,7 +589,11 @@ class Preparatore:
 				self._batti()
 				_log('pagina %s di %s: letti=%s pronti=%s attese=%s (pronti in tutto %s/%s) fine=%s'
 					% (n, paginator.short(lista.chiave), len(grezzi), len(nuovi_pronti), len(nuove_attese), pronti, serve, fine))
-				if fine: break
+				if misura:
+					# La lettura e' della finestra intera: si scrive sulla sua prima pagina.
+					_log('MISURA pagina %s di %s: lettura %s | %s' % (n, paginator.short(lista.chiave),
+						'%.2f s (%s pagine)' % (lettura, len(finestra)) if n == finestra[0] else 'con la pagina %s' % finestra[0], misura))
+				if fine or pronti >= serve: break
 
 	def _giudica_pagina(self, lista, s, grezzi, filtrata, noti, ctx):
 		voci = []
@@ -505,7 +602,32 @@ class Preparatore:
 			if v is None: continue
 			if v[3] is not None and v[3] in noti: continue
 			voci.append(v)
-		esiti = self._in_parallelo(giudica, [(v[0], v[1], v[2], filtrata, ctx, s.ammetti) for v in voci])
+		registro = None
+		if self._misura:
+			from modules import http_client
+			registro = []
+			http_client.registra(registro)
+		inizio = _ora()
+		try: cronometrati, tardivi = self._giudizi_con_scadenza([(v[0], v[1], v[2], filtrata, ctx, s.ammetti) for v in voci])
+		finally:
+			if registro is not None: http_client.registra(None)
+		giudizi = _ora() - inizio
+		# Un titolo oltre la scadenza aspetta come chi non ha ancora un verdetto. Senza tmdb nella sorgente pero' la sua
+		# firma la dira' solo la scheda, e in attesa non si puo' mettere: lui si aspetta.
+		in_attesa = []
+		for i, futuro in sorted(tardivi.items()):
+			nota = voci[i][3]
+			if nota is None: cronometrati[i] = futuro.result()
+			else:
+				cronometrati[i] = ((ATTESA, (nota[0], int(nota[1])), None), giudizi)
+				in_attesa.append(((nota[0], int(nota[1])), futuro))
+		if in_attesa:
+			self._segui_tardivi(lista, in_attesa)
+			_log('pagina di %s: %s titoli oltre la scadenza (%.2f s), in attesa: %s' % (paginator.short(lista.chiave),
+				len(in_attesa), giudizi, ','.join(str(f[1]) for f, _ in in_attesa)))
+		esiti = [esito for esito, _secondi in cronometrati]
+		misura = _misura_pagina(voci, cronometrati, giudizi, registro) if registro is not None else ''
+		if misura and in_attesa: misura += ' | tardivi %d' % len(in_attesa)
 		pronti, attese = [], []
 		for esito, firma, meta in esiti:
 			if firma is None or firma in noti: continue
@@ -516,7 +638,46 @@ class Preparatore:
 		# pagina, cosi' cio' che e' gia' consegnato non si muove mai.
 		if s.ordine is not None: pronti.sort(key=lambda coppia: s.ordine(coppia[1]))
 		self._attese_lavoro += len(attese)
-		return [firma for firma, _meta in pronti], attese
+		return [firma for firma, _meta in pronti], attese, misura
+
+	def _giudizi_con_scadenza(self, argomenti):
+		"""I giudizi di una pagina, cronometrati, senza aspettare il piu' lento (lotto 356, vedi QUOTA_PAGINA).
+
+		Torna (risultati, tardivi): nei risultati, nell'ordine degli argomenti, None per chi e' oltre la scadenza; i
+		tardivi sono {indice: futuro}, e il futuro continua da se'. Senza una rete vera (in linea, o i finti delle
+		prove) si aspettano tutti, come prima.
+		"""
+		from concurrent.futures import Future, wait, FIRST_COMPLETED
+		if self._rete is None: return [_cronometrato(*a) for a in argomenti], {}
+		futuri = [self._rete.submit(_cronometrato, *a) for a in argomenti]
+		if not futuri or not isinstance(futuri[0], Future): return [f.result() for f in futuri], {}
+		inizio = _ora()
+		quota = -(-len(futuri) * int(QUOTA_PAGINA * 100) // 100)
+		in_corso = set(futuri)
+		while in_corso and len(futuri) - len(in_corso) < quota:
+			_fatti, in_corso = wait(in_corso, return_when=FIRST_COMPLETED)
+		if in_corso: _fatti, in_corso = wait(in_corso, timeout=max(ATTESA_CODA_MINIMA, _ora() - inizio))
+		risultati, tardivi = [], {}
+		for i, futuro in enumerate(futuri):
+			if futuro in in_corso:
+				risultati.append(None); tardivi[i] = futuro
+			else: risultati.append(futuro.result())
+		return risultati, tardivi
+
+	def _segui_tardivi(self, lista, in_attesa):
+		"""I titoli oltre la scadenza restano in volo; quando l'ultimo di questa pagina torna, un giro delle attese
+		li riprende dalla cache (lotto 356)."""
+		dati = {'chiave': lista.chiave, 'parametri': lista.parametri, 'tipo': lista.tipo, 'azione': lista.azione,
+				'esterna': lista.esterna, 'passi': 0, 'ricomponi': '', 'posizione': ''}
+		restano = [len(in_attesa)]
+		def tornato(firma):
+			with self._cond:
+				self._in_volo.discard(firma)
+				restano[0] -= 1
+				ultimo = restano[0] == 0
+			if ultimo: self.accoda(Lavoro(P2, 'attese', lista.chiave, dict(dati)))
+		with self._cond: self._in_volo.update(firma for firma, _f in in_attesa)
+		for firma, futuro in in_attesa: futuro.add_done_callback(lambda _f, firma=firma: tornato(firma))
 
 	def _in_parallelo(self, funzione, argomenti):
 		# L'ORDINE dei risultati e' quello degli argomenti, qualunque sia l'ordine in cui la rete risponde. Le
@@ -585,7 +746,10 @@ class Preparatore:
 		promossi, bocciati = [], []
 		nomi = dict((v, k) for k, v in paginator.TIPI.items())
 		filtrata = lista.filtrata()
-		ordinate = sorted(stato.attese)
+		# Lotto 356: chi ha ancora la richiesta in volo (oltre la scadenza di una pagina) si riprende quando torna.
+		with self._cond: in_volo = set(self._in_volo)
+		ordinate = sorted(f for f in stato.attese if f not in in_volo)
+		if not ordinate: return
 		# Niente `ammetti`: chi aspetta un verdetto la regola della sorgente l'ha gia' passata.
 		esiti = self._in_parallelo(giudica, [(nomi[t], 'tmdb_id', tmdb, filtrata, ctx, None) for t, tmdb in ordinate])
 		for firma, (esito, _f, _meta) in zip(ordinate, esiti):
