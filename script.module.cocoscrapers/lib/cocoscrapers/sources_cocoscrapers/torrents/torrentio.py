@@ -85,7 +85,15 @@ class source(BaseTorrentScraper):
 					log_utils.log('TORRENTIO SKIP [seeders=%s < min=%s]: "%s"' % (seeders, self.min_seeders, name))
 					continue
 				if self.bypass_filter == 'false':
-					if not source_utils.check_title(self.title, self.aliases, name.replace('.(Archie.Bunker', ''), self.hdlr, self.year, self.years):
+					# Il nome del FILE, se Torrentio lo da' (Fen Light, lotto 361). Cercando per id, Torrentio
+					# indica anche quale file del torrent e' l'episodio (behaviorHints.filename + fileIdx); il
+					# nome del torrent invece puo' essere un pacchetto a intervallo -- "One Piece (1108-1120)
+					# Batch", "One Piece (0001-1118) SD" -- che il controllo sull'episodio rifiuta giustamente.
+					# One Piece S22E24, 25/09: 11 stream, tutti l'episodio 1109 per nome di file, 6 scartati
+					# per il nome del torrent. Il file dentro il pacchetto lo sceglie poi resolve_magnet.
+					nome_file = source_utils.clean_name((file.get('behaviorHints') or {}).get('filename') or '')
+					if not source_utils.check_title(self.title, self.aliases, name.replace('.(Archie.Bunker', ''), self.hdlr_match, self.year, self.years) \
+						and not (nome_file and source_utils.check_title(self.title, self.aliases, nome_file, self.hdlr_match, self.year, self.years)):
 						if not self._check_title_raw(raw_title):
 							log_utils.log('TORRENTIO SKIP [title mismatch]: "%s"' % name)
 							continue

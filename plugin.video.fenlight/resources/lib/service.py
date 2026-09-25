@@ -1278,6 +1278,13 @@ class FenLightMonitor(xbmc.Monitor):
 
 	def _start_remaining_services(self):
 		DatabaseMaintenance().run()
+		# LOTTO 359 -- le meta scritte con la regola vecchia delle trame. Dopo make_databases (le tabelle devono
+		# esserci) e in un filo suo: la prima volta chiede a IMDb una trentina di blocchi, e non deve trattenere
+		# il resto dell'avvio. Dalla seconda sessione e' una lettura di PRAGMA.
+		def _trame():
+			from modules.metadata import migra_trame
+			migra_trame()
+		self._filo('FL:trame', _trame).start()
 		SyncSettings().run()
 		self._filo('FL:fonts', CustomFonts().run).start()
 		# BLUR SPENTO (23/08, richiesta dell'utente). Non differito: proprio non parte. Lo sfondo

@@ -48,7 +48,9 @@ def imdb_data(imdb_id, lang):
 	if not imdb_id or imdb_id == 'tt0000000': return {}
 	ietf_lang = '%s-%s' % (lang, lang.upper())
 	# v2: query now also returns title_type (used to filter out music videos in advanced search).
-	string = 'imdb_data_v2_%s_%s' % (lang, imdb_id)
+	# v3 (lotto 359): la trama porta la sua lingua, `plot_lang`. IMDb risponde in inglese quando non ha la
+	# traduzione, e fino al 358 niente lo distingueva: la trama inglese passava davanti a quella italiana di TMDb.
+	string = 'imdb_data_v3_%s_%s' % (lang, imdb_id)
 	params = {'imdb_id': imdb_id, 'lang': ietf_lang}
 	return cache_object(get_imdb_graphql, string, params, False, 720, cache_empty=False)
 
@@ -56,7 +58,7 @@ def get_imdb_graphql(params):
 	data = {}
 	try:
 		query = {
-			'query': 'query GetData($id: ID!) { title(id: $id) { titleType { id } plot { plotText { plainText } } ratingsSummary { aggregateRating voteCount } releaseYear { year } '
+			'query': 'query GetData($id: ID!) { title(id: $id) { titleType { id } plot { plotText { plainText } language { id } } ratingsSummary { aggregateRating voteCount } releaseYear { year } '
 					 'directors: credits(first: 5, filter: { categories: ["director"] }) { edges { node { name { nameText { text } } } } } '
 					 'writers: credits(first: 5, filter: { categories: ["writer"] }) { edges { node { name { nameText { text } } } } } } }',
 			'variables': {'id': params['imdb_id']}
@@ -69,7 +71,10 @@ def get_imdb_graphql(params):
 		title = r.json()['data']['title']
 		try:
 			plot = title['plot']['plotText']['plainText']
-			if plot: data['plot'] = plot
+			if plot:
+				data['plot'] = plot
+				try: data['plot_lang'] = title['plot']['language']['id'] or ''
+				except: data['plot_lang'] = ''
 		except: pass
 		try:
 			ratings = title['ratingsSummary']
@@ -97,38 +102,142 @@ def get_imdb_graphql(params):
 	except: pass
 	return data
 
-def imdb_episode_ratings(imdb_id, season):
-	# IMDb is always-on (no setting gate); episode ratings/votes come straight from IMDb.
-	if not imdb_id or imdb_id == 'tt0000000': return {}
-	string = 'imdb_ep_ratings_%s_%s' % (imdb_id, season)
-	params = {'imdb_id': imdb_id, 'season': str(season)}
-	return cache_object(get_imdb_episode_ratings, string, params, False, 720, cache_empty=False)
+# EPISODI: VOTO E REGISTA AGGANCIATI PER ID (lotto 358, ANIME.md). Fino al 357 c'era una funzione sola,
+# imdb_episode_ratings(imdb_id, stagione), che chiedeva a IMDb la stagione e restituiva i voti per
+# (stagione, episodio) NELLA NUMERAZIONE IMDb. Chi la usava la interrogava con i numeri di TMDb, e per gli
+# anime con quelli di TVDB: tre numerazioni diverse, e su 22 anime il voto era quello di un altro episodio.
+# Adesso le domande sono due, e chi chiama sceglie quale:
+#   - imdb_episodi_stagione: la stagione come la numera IMDb, con id e date, per il rivelatore;
+#   - imdb_episodi_per_id: gli episodi di cui si conosce gia' l'id (da Trakt), in qualunque stagione IMDb
+#     li metta.
+# Nessuna delle due ha una cache propria: la cache della stagione (metacache) e' la loro cache. Prima i
+# voti stavano 30 giorni in una cache a parte, dentro stagioni che per le serie in corso scadono in 4.
+# Tutte e due distinguono None (IMDb non ha risposto) da {} (ha risposto e non ne ha).
+_CAMPI_EPISODIO = ('id series { episodeNumber { episodeNumber seasonNumber } } releaseDate { year month day } '
+					'ratingsSummary { aggregateRating voteCount } plot { plotText { plainText } language { id } } '
+					'directors: credits(first: 3, filter: { categories: ["director"] }) { edges { node { name { nameText { text } } } } }')
+# IMDb rifiuta la richiesta INTERA se un solo id e' malformato ("is not a valid ID"), e piu' di 250 id
+# ("Too many ids. Maximum: 250"). Un id ben formato che non esiste torna invece con i campi vuoti.
+_ID_EPISODIO = re.compile(r'tt\d{7,}$')
+_MAX_ID = 250
 
-def get_imdb_episode_ratings(params):
-	data = {}
+def _voce_episodio(node):
+	"""Un episodio IMDb come dizionario: id, coppia nella numerazione IMDb, data, voto, voti, registi."""
+	voce = {'id': node.get('id'), 'coppia': None, 'data': None}
 	try:
-		query = {
-			'query': 'query GetEps($id: ID!, $season: [String!]) { title(id: $id) { episodes { episodes(first: 250, filter: { includeSeasons: $season }) '
-					 '{ edges { node { series { episodeNumber { episodeNumber seasonNumber } } ratingsSummary { aggregateRating voteCount } } } } } } }',
-			'variables': {'id': params['imdb_id'], 'season': [params['season']]}
-		}
-		r = _get_session().post(graphql_url, json=query, headers=graphql_headers, timeout=timeout)
-		if r.status_code != 200:
-			logger('FenLight IMDb', 'GraphQL episode ratings %s S%s -> HTTP %s' % (params['imdb_id'], params['season'], r.status_code))
-			return data
-		edges = r.json()['data']['title']['episodes']['episodes']['edges']
-		for e in edges:
-			try:
-				node = e['node']
-				ep_num = node['series']['episodeNumber']
-				s, ep = ep_num['seasonNumber'], ep_num['episodeNumber']
-				if s is None or ep is None: continue
-				ratings = node.get('ratingsSummary') or {}
-				rating, votes = ratings.get('aggregateRating'), ratings.get('voteCount')
-				if rating: data['%s_%s' % (s, ep)] = {'rating': rating, 'votes': votes or 0}
-			except: pass
+		numero = node['series']['episodeNumber']
+		voce['coppia'] = (int(numero['seasonNumber']), int(numero['episodeNumber']))
 	except: pass
-	return data
+	try:
+		uscita = node['releaseDate']
+		voce['data'] = '%04d-%02d-%02d' % (uscita['year'], uscita['month'], uscita['day'])
+	except: pass
+	try:
+		trama = node['plot']
+		voce['plot'] = trama['plotText']['plainText'] or ''
+		voce['plot_lang'] = (trama.get('language') or {}).get('id') or ''
+	except: voce['plot'], voce['plot_lang'] = '', ''
+	voti = node.get('ratingsSummary') or {}
+	voce['rating'], voce['votes'] = voti.get('aggregateRating'), voti.get('voteCount') or 0
+	try: registi = [e['node']['name']['nameText']['text'] for e in node['directors']['edges']]
+	except: registi = []
+	voce['directors'] = list(dict.fromkeys(n for n in registi if n))
+	return voce
+
+def _graphql_dati(query, variables, cosa, lang=None):
+	"""Il campo 'data' della risposta GraphQL, o None se IMDb non ha risposto come doveva.
+
+	`lang` ('it') chiede le trame in quella lingua dove IMDb le ha (lotto 359): la lingua di quella che arriva
+	sta comunque in `plot.language`.
+	"""
+	intestazioni = dict(graphql_headers, **{'X-Imdb-User-Language': '%s-%s' % (lang, lang.upper())}) if lang else graphql_headers
+	try:
+		r = _get_session().post(graphql_url, json={'query': query, 'variables': variables}, headers=intestazioni, timeout=timeout)
+		if r.status_code != 200:
+			logger('FenLight IMDb', 'GraphQL %s -> HTTP %s' % (cosa, r.status_code))
+			return None
+		return r.json().get('data')
+	except Exception as e:
+		logger('FenLight IMDb', 'GraphQL %s -> %s' % (cosa, type(e).__name__))
+		return None
+
+def imdb_episodi_stagione(imdb_id, season, lang=None):
+	"""Gli episodi della stagione `season` COME LI NUMERA IMDb: {(stagione, episodio): voce}.
+
+	{} se IMDb risponde ma non ha niente (o la serie non ha un id IMDb), None se non ha risposto.
+	"""
+	if not imdb_id or imdb_id == 'tt0000000': return {}
+	query = ('query GetEps($id: ID!, $season: [String!]) { title(id: $id) { episodes { episodes(first: 250, '
+			 'filter: { includeSeasons: $season }) { edges { node { %s } } } } } }' % _CAMPI_EPISODIO)
+	dati = _graphql_dati(query, {'id': imdb_id, 'season': [str(season)]}, 'episodi %s S%s' % (imdb_id, season), lang)
+	if dati is None: return None
+	try: edges = dati['title']['episodes']['episodes']['edges'] or ()
+	except: return {}
+	fuori = {}
+	for e in edges:
+		try: voce = _voce_episodio(e['node'])
+		except: continue
+		if voce['coppia'] is not None: fuori[voce['coppia']] = voce
+	return fuori
+
+def imdb_episodi_per_id(ids, lang=None):
+	"""Gli episodi IMDb con questi id, dovunque IMDb li metta: {id: voce}.
+
+	A blocchi di 250 richieste l'una. None se anche un solo blocco non e' arrivato: un risultato a meta'
+	non si distinguerebbe da "IMDb non conosce questi episodi".
+	"""
+	validi = list(dict.fromkeys(i for i in ids if i and _ID_EPISODIO.match(str(i))))
+	fuori = {}
+	for inizio in range(0, len(validi), _MAX_ID):
+		blocco = validi[inizio:inizio + _MAX_ID]
+		dati = _graphql_dati('query GetEpsById($ids: [ID!]!) { titles(ids: $ids) { %s } }' % _CAMPI_EPISODIO,
+							{'ids': blocco}, 'episodi per id (%d)' % len(blocco), lang)
+		if dati is None: return None
+		for node in dati.get('titles') or ():
+			try:
+				if node and node.get('id'): fuori[node['id']] = _voce_episodio(node)
+			except: pass
+	return fuori
+
+def imdb_lingue_trama(ids, lang):
+	"""{id: lingua della trama IMDb ('' se non ne ha)} per molti titoli, a blocchi di 250. None se un blocco manca.
+
+	Serve solo alla migrazione del lotto 359 (metadata.migra_trame): chiede la lingua, non il testo, quindi
+	le risposte restano piccole.
+	"""
+	validi = list(dict.fromkeys(i for i in ids if i and _ID_EPISODIO.match(str(i))))
+	fuori = {}
+	for inizio in range(0, len(validi), _MAX_ID):
+		blocco = validi[inizio:inizio + _MAX_ID]
+		dati = _graphql_dati('query GetPlotLang($ids: [ID!]!) { titles(ids: $ids) { id plot { language { id } } } }',
+							{'ids': blocco}, 'lingue delle trame (%d)' % len(blocco), lang)
+		if dati is None: return None
+		for node in dati.get('titles') or ():
+			try:
+				if node and node.get('id'): fuori[node['id']] = ((node.get('plot') or {}).get('language') or {}).get('id') or ''
+			except: pass
+	return fuori
+
+def aggancio_sospetto(episodi_imdb, date_tmdb):
+	"""Il rivelatore del lotto 358: IMDb numera questa stagione diversamente da TMDb?
+
+	`episodi_imdb` e `date_tmdb` sono {(stagione, episodio): data 'AAAA-MM-GG' o None}, la stessa stagione
+	vista dalle due parti. Allarme se le coppie non sono le stesse, oppure se ANCHE UN SOLO episodio ha le due
+	date distanti piu' di 2 giorni. Misurato su 224 stagioni di 50 serie normali (ANIME.md): prende 24
+	stagioni sbagliate su 32, e le 8 perse sono 7 errori di Trakt (dove la posizione e' giusta) e un caso con
+	due episodi usciti lo stesso giorno. Con la soglia al 5% degli episodi ne perdeva una in piu'.
+
+	Decide soltanto SE chiedere gli id a Trakt: quando sbaglia costa una chiamata in piu', o lascia
+	l'aggancio per posizione di prima. Pura: le costanti stanno dentro, per tests/harness.load_pure.
+	"""
+	from datetime import date
+	SOGLIA_GIORNI = 2
+	if set(episodi_imdb) != set(date_tmdb): return True
+	for coppia, data_tmdb in date_tmdb.items():
+		try: scarto = abs((date.fromisoformat(str(episodi_imdb[coppia])[:10]) - date.fromisoformat(str(data_tmdb)[:10])).days)
+		except: continue
+		if scarto > SOGLIA_GIORNI: return True
+	return False
 
 
 def imdb_more_like_this(imdb_id):

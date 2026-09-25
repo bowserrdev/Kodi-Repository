@@ -321,8 +321,8 @@ class SourcesPlayback(BaseDialog):
 
 	def set_resolver_properties(self):
 		if self.meta_get('media_type') == 'movie': self.text = self.meta_get('plot')
-		else: self.text = '[B]%02dx%02d - %s[/B][CR][CR]%s' % (self.meta_get('season'), self.meta_get('episode'), self.meta_get('ep_name', 'N/A').upper(), self.meta_get('plot', '') 
-															or self.meta_get('tvshow_plot', ''))
+		else: self.text = '[B]%02dx%02d - %s[/B][CR][CR]%s' % (self.meta_get('season'), self.meta_get('episode'), self.meta_get('ep_name', 'N/A').upper(),
+															self.meta_get('plot', ''))  # mai la trama della serie (lotto 359)
 		self.setProperty('window_mode', self.window_mode)
 		self.setProperty('text', self.text)
 

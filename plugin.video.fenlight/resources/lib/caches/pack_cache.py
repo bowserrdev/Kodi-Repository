@@ -110,7 +110,23 @@ def manutenzione():
 	except: return 0
 
 
-def dimensione_episodio(files, season, episode):
+def contiene_episodio(files, season, episode, absolute=None):
+	"""Il pacchetto contiene un file riproducibile per questo episodio? True, False, o None se non si sa.
+
+	E' LA STESSA DOMANDA che fa resolve_magnet quando si sceglie la sorgente: stesso nome di file (lo
+	`short_name` di TorBox), stessa funzione (`seas_ep_filter`, con l'assoluto per gli anime). Se qui
+	risponde False, la riproduzione di quel pacchetto non troverebbe il file e fallirebbe: non e' una
+	stima, e' il risultato anticipato. None quando l'elenco non c'e' o non ha video: non si sa, si tiene.
+	Misurato il 25/09 su Fullmetal Alchemist Brotherhood S1E58: 72 pacchetti su 80 con l'elenco noto non
+	contenevano l'episodio (file singoli di altri episodi, stagioni a meta', un'altra divisione in stagioni).
+	"""
+	if not files: return None
+	try:
+		from modules.source_utils import seas_ep_filter
+		return any(seas_ep_filter(season, episode, nome, absolute=absolute) for nome, byte in files)
+	except: return None
+
+def dimensione_episodio(files, season, episode, absolute=None):
 	"""Byte del file che corrisponde a questo episodio, o None.
 
 	La corrispondenza la fa `seas_ep_filter`, la stessa che usa `resolve_magnet` per scegliere quale
@@ -120,6 +136,6 @@ def dimensione_episodio(files, season, episode):
 	try:
 		from modules.source_utils import seas_ep_filter
 		for nome, byte in files:
-			if seas_ep_filter(season, episode, nome): return byte
+			if seas_ep_filter(season, episode, nome, absolute=absolute): return byte
 	except: pass
 	return None

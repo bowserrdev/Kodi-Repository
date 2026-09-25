@@ -119,11 +119,11 @@ class Sources():
 		if 'autoplay' in self.params: self.autoplay = params_get('autoplay', 'false') == 'true'
 		else: self.autoplay = auto_play(self.media_type)
 		self.get_meta()
-		if self.media_type == 'episode' and not any([self.custom_season, self.custom_episode]):
-			_ep_map = self.meta.get('tvdb_to_tmdb_ep') or {}
-			_tmdb_val = _ep_map.get((self.season, self.episode))
-			if _tmdb_val and _tmdb_val[0] == self.season and _tmdb_val[1] != self.episode:
-				self.custom_episode = _tmdb_val[1]
+		# LOTTO 360 -- qui c'era una traduzione TVDB -> TMDb dell'episodio da cercare (custom_episode dalla mappa
+		# tvdb_to_tmdb_ep). Era MORTA per caso: impostava self.custom_episode DOPO get_meta, che l'aveva gia' copiato
+		# nella meta, e get_episode legge la meta. Viva sarebbe stata sbagliata: gli scraper per id (Torrentio,
+		# comet, mediafusion) leggono gli anime in numerazione TVDB -- Hunter x Hunter `2:5` e' l'episodio 63,
+		# `2:63` e' il 121 (misura del 25/09, ANIME.md). La ricerca parte dai numeri che si vedono, sempre.
 		self.determine_scrapers_status()
 		self.sleep_time, self.provider_sort_ranks, self.scraper_settings = 100, provider_sort_ranks(), scraping_settings()
 		self.include_prerelease_results, self.ignore_results_filter, self.limit_resolve = include_prerelease_results(), ignore_results_filter(), limit_resolve()
@@ -915,10 +915,36 @@ class Sources():
 	def make_search_info(self):
 		title, year, ep_name = self.get_search_title(), self.get_search_year(), self.get_ep_name()
 		aliases = make_alias_dict(self.meta, title)
+		aliases = self.alias_per_episodio(aliases, title)
 		expiry_times = get_cache_expiry(self.media_type, self.meta, self.season)
 		self.search_info = {'media_type': self.media_type, 'title': title, 'year': year, 'tmdb_id': self.tmdb_id, 'imdb_id': self.meta.get('imdb_id'), 'aliases': aliases,
 							'season': self.get_season(), 'episode': self.get_episode(), 'tvdb_id': self.meta.get('tvdb_id'), 'ep_name': ep_name, 'expiry_times': expiry_times,
-							'total_seasons': self.meta.get('total_seasons', 1)}
+							'total_seasons': self.meta.get('total_seasons', 1), 'absolute': self.get_absolute()}
+
+	def alias_per_episodio(self, aliases, title):
+		# Gli alias di un'altra parte della serie non valgono per questo episodio (source_utils.alias_della_stagione).
+		# Solo le serie col layout TVDB, dove TMDb e TVDB tengono sotto un titolo solo piu' parti con nome proprio;
+		# il nome e' quello della stagione TMDb dell'episodio, attraverso la mappa.
+		try:
+			if self.media_type != 'episode' or self.meta.get('tmdb_season_data_original') is None: return aliases
+			from modules.source_utils import alias_della_stagione
+			stagione, episodio = int(self.get_season()), int(self.get_episode())
+			stagione_tmdb = (self.meta.get('tvdb_to_tmdb_ep') or {}).get((stagione, episodio), (stagione, episodio))[0]
+			nome = next((s.get('name') for s in self.meta['tmdb_season_data_original'] if s.get('season_number') == stagione_tmdb), None)
+			return alias_della_stagione(aliases, (title, self.meta.get('title'), self.meta.get('original_title'), self.meta.get('english_title')), nome)
+		except: return aliases
+
+	def get_absolute(self):
+		# Il numero assoluto TVDB dell'episodio (lotto 361), solo per le serie in numerazione TVDB: le
+		# release anime si chiamano "One Piece - 1178", non "S23E23". Per le altre serie None, e il
+		# riconoscimento resta quello di sempre.
+		# Tutto dentro il try, e il tipo si legge dalla meta: resolve_sources la chiama anche su oggetti
+		# nati da altri percorsi, e un'eccezione qui annullerebbe la risoluzione della sorgente.
+		try:
+			if self.meta.get('media_type') != 'episode' or self.meta.get('tmdb_season_data_original') is None: return None
+			from apis.skyhook_api import numero_assoluto
+			return numero_assoluto(self.meta.get('tvdb_id'), self.get_season(), self.get_episode())
+		except: return None
 
 	def _get_module(self, module_type, function):
 		if module_type == 'external': module = function.source(*self.external_args)
@@ -1221,19 +1247,23 @@ class Sources():
 				if self.meta['media_type'] == 'episode':
 					if hasattr(self, 'search_info'):
 						title, season, episode, pack = self.search_info['title'], self.search_info['season'], self.search_info['episode'], 'package' in item
-					else: title, season, episode, pack = self.get_ep_name(), self.get_season(), self.get_episode(), 'package' in item
-				else: title, season, episode, pack = self.get_search_title(), None, None, False
-				if cache_provider in debrid_providers: url = self.resolve_cached(cache_provider, item['url'], item['hash'], title, season, episode, pack)
+						absolute = self.search_info.get('absolute')
+					else:
+						title, season, episode, pack = self.get_ep_name(), self.get_season(), self.get_episode(), 'package' in item
+						absolute = self.get_absolute()
+				else: title, season, episode, pack, absolute = self.get_search_title(), None, None, False, None
+				if cache_provider in debrid_providers: url = self.resolve_cached(cache_provider, item['url'], item['hash'], title, season, episode, pack, absolute)
 			elif item.get('scrape_provider', None) in default_internal_scrapers:
 				url = self.resolve_internal(item['scrape_provider'], item['id'], item['url_dl'], item.get('direct_debrid_link', False))
 			else: url = item['url']
 		except: pass
 		return url
 
-	def resolve_cached(self, debrid_provider, item_url, _hash, title, season, episode, pack):
+	def resolve_cached(self, debrid_provider, item_url, _hash, title, season, episode, pack, absolute=None):
 		debrid_function = self.debrid_importer(debrid_provider)
 		store_to_cloud = store_resolved_to_cloud(debrid_provider, pack)
-		try: url = debrid_function().resolve_magnet(item_url, _hash, store_to_cloud, title, season, episode)
+		# `absolute` (lotto 361): dentro un pacchetto anime il file si chiama "One Piece - 1178", non S23E23.
+		try: url = debrid_function().resolve_magnet(item_url, _hash, store_to_cloud, title, season, episode, absolute=absolute)
 		except: url = None
 		return url
 

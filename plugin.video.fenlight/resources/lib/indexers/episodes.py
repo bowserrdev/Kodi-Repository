@@ -103,7 +103,7 @@ def build_episode_list(params):
 				_ph1 = _perf()
 				info_tag = listitem.getVideoInfoTag()
 				info_tag.setMediaType('episode'), info_tag.setTitle(display), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(title), info_tag.setGenres(genre)
-				info_tag.setPlaycount(playcount), info_tag.setSeason(season), info_tag.setEpisode(episode), info_tag.setPlot(item_get('plot') or tvshow_plot)
+				info_tag.setPlaycount(playcount), info_tag.setSeason(season), info_tag.setEpisode(episode), info_tag.setPlot(item_get('plot') or '')
 				info_tag.setDuration(item_get('duration')), info_tag.setIMDBNumber(imdb_id), info_tag.setUniqueIDs({'imdb': imdb_id, 'tmdb': string(tmdb_id), 'tvdb': string(tvdb_id)})
 				info_tag.setFirstAired(premiered)
 				info_tag.setTvShowStatus(show_status)
@@ -142,7 +142,9 @@ def build_episode_list(params):
 	watched_title = 'Trakt' if watched_indicators == 1 else 'Fen Light'
 	meta = tvshow_meta('tmdb_id', params.get('tmdb_id'), tmdb_api_key(), mpaa_region(), current_date)
 	meta_get = meta.get
-	tmdb_id, tvdb_id, imdb_id, tvshow_plot, orig_title = meta_get('tmdb_id'), meta_get('tvdb_id'), meta_get('imdb_id'), meta_get('plot'), meta_get('original_title')
+	# Niente piu' tvshow_plot (lotto 359): era il ripiego sulla trama della SERIE per l'episodio senza trama.
+	# La catena delle trame degli episodi sta in metadata.trama_episodio, e finisce in 'niente'.
+	tmdb_id, tvdb_id, imdb_id, orig_title = meta_get('tmdb_id'), meta_get('tvdb_id'), meta_get('imdb_id'), meta_get('original_title')
 	title, show_year, rootname, show_duration, show_status = meta_get('title'), meta_get('year') or '2050', meta_get('rootname'), meta_get('duration'), meta_get('status')
 	cast, mpaa, trailer, genre, studio, country = meta_get('cast', []), meta_get('mpaa'), string(meta_get('trailer')), meta_get('genre'), meta_get('studio'), meta_get('country')
 	season = params['season']
@@ -302,7 +304,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 				unaired = True
 			else: unaired = False
 			orig_title, rootname, trailer, genre, studio = meta_get('original_title'), meta_get('rootname'), string(meta_get('trailer')), meta_get('genre'), meta_get('studio')
-			cast, mpaa, tvshow_plot, show_status = meta_get('cast', []), meta_get('mpaa'), meta_get('plot'), meta_get('status')
+			cast, mpaa, show_status = meta_get('cast', []), meta_get('mpaa'), meta_get('status')
 			show_poster = meta_get('poster') or poster_empty
 			show_fanart = meta_get('fanart') or fanart_empty
 			show_clearlogo = meta_get('clearlogo') or ''
@@ -373,7 +375,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			_ph2 = _perf()
 			info_tag = listitem.getVideoInfoTag()
 			info_tag.setMediaType('episode'), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(title), info_tag.setTitle(display), info_tag.setGenres(genre)
-			info_tag.setPlaycount(playcount), info_tag.setSeason(season), info_tag.setEpisode(episode), info_tag.setPlot(item_get('plot') or tvshow_plot)
+			info_tag.setPlaycount(playcount), info_tag.setSeason(season), info_tag.setEpisode(episode), info_tag.setPlot(item_get('plot') or '')
 			info_tag.setDuration(item_get('duration')), info_tag.setIMDBNumber(imdb_id), info_tag.setUniqueIDs({'imdb': imdb_id, 'tmdb': string(tmdb_id), 'tvdb': string(tvdb_id)})
 			info_tag.setFirstAired(premiered)
 			info_tag.setCountries(meta_get('country', [])), info_tag.setTrailer(trailer), info_tag.setTvShowStatus(show_status)

@@ -264,6 +264,13 @@ def meta_prefetch(media_type, id_type, media_ids, current_time=None, scadute=Non
 		for resolved_type, ids in groups.items():
 			for row_id, meta in meta_cache.get_many(media_type, resolved_type, list(ids), current_time, scadute).items():
 				if not _is_blank(meta) and meta.get('meta_language', 'en') != lang: continue
+				# Una meta superata vale come una scaduta (lotto 357). Chi puo' andare in rete non la
+				# riceve e ricade su tvshow_meta, che la ricostruisce. Chi non puo' (`scadute`, la
+				# costruzione di una riga preparata, lotto 333) la riceve per titolo e immagini e ne chiede
+				# il rinnovo al servizio: quelle righe non leggono il layout degli episodi.
+				if media_type == 'tvshow' and meta_superata(meta):
+					if scadute is None: continue
+					if row_id not in scadute: scadute.append(row_id)
 				results['%s|%s' % (resolved_type, row_id)] = _unpack_ep_maps(meta) if media_type == 'tvshow' else meta
 	except: pass
 	return results
@@ -273,6 +280,112 @@ def movie_meta_prefetch(id_type, media_ids, current_time=None, scadute=None):
 
 def tvshow_meta_prefetch(id_type, media_ids, current_time=None, scadute=None):
 	return meta_prefetch('tvshow', id_type, media_ids, current_time, scadute)
+
+# LE CATENE DELLE TRAME (lotto 359, ANIME.md). Pure: le prova tests/test_359.py caricandole dal sorgente.
+# La lingua di IMDb e' un dato (`plot.language.id`, 'it-IT' / 'en-US'), quella di TMDb e' la lingua chiesta.
+def trama_titolo(imdb_trama, imdb_lingua, tmdb_trama, tmdb_inglese, lang):
+	"""Film e serie: IMDb nella lingua dell'utente -> TMDb nella lingua dell'utente -> IMDb inglese ->
+	TMDb inglese -> niente. Torna (trama, lingua della trama); ('', '') se non c'e' niente.
+
+	Fino al 358 era `trama IMDb or trama TMDb`: IMDb risponde in inglese quando non ha la traduzione, e quella
+	trama inglese passava davanti all'italiana di TMDb (1739 meta su 7705 nella cache del Mac).
+	"""
+	def _in(lingua_imdb, voluta): return str(lingua_imdb or '').split('-')[0].lower() == voluta
+	for trama, lingua in ((imdb_trama if _in(imdb_lingua, lang) else '', lang), (tmdb_trama, lang),
+						  (imdb_trama if _in(imdb_lingua, 'en') else '', 'en'), (tmdb_inglese, 'en')):
+		if trama: return trama, lingua
+	return '', ''
+
+def trama_episodio(tmdb_trama, imdb_trama, imdb_lingua, tmdb_inglese, skyhook_trama, lang):
+	"""Episodi: TMDb nella lingua dell'utente -> IMDb nella lingua dell'utente -> IMDb inglese -> TMDb inglese
+	-> skyhook inglese -> niente. MAI la trama della serie: meglio niente che quella (decisione dell'utente).
+	`skyhook_trama` la passa solo chi mostra l'episodio di skyhook, cioe' gli anime col layout TVDB.
+	"""
+	def _in(lingua_imdb, voluta): return str(lingua_imdb or '').split('-')[0].lower() == voluta
+	for trama in (tmdb_trama, imdb_trama if _in(imdb_lingua, lang) else '', imdb_trama if _in(imdb_lingua, 'en') else '',
+				  tmdb_inglese, skyhook_trama):
+		if trama: return trama
+	return ''
+
+def _trama_tmdb_inglese(data):
+	# La trama inglese di TMDb viaggia gia' nei dettagli (append_to_response=translations): nessuna richiesta.
+	# Piu' voci 'en' (US, GB...): prima quella americana, che e' l'originale di TMDb.
+	try:
+		voci = [t for t in data['translations']['translations'] if t.get('iso_639_1') == 'en' and (t.get('data') or {}).get('overview')]
+		voci.sort(key=lambda t: t.get('iso_3166_1') != 'US')
+		return voci[0]['data']['overview'] if voci else ''
+	except: return ''
+
+# LA MIGRAZIONE DELLE TRAME (lotto 359). Le meta scritte prima portano la trama scelta con la regola vecchia,
+# `IMDb or TMDb`, e non dicono in che lingua e': nella cache del Mac 1739 su 7705 hanno la trama IMDb inglese.
+# Invalidarle tutte ne rifarebbe 7700 per cambiarne 1750; si chiede invece a IMDb la LINGUA della trama (un dato,
+# non una deduzione dal testo) e scadono solo quelle da rifare. Scadere non e' sparire (lotto 334): le righe
+# preparate le servono ancora e ne chiedono il rinnovo, quindi si rinnova solo cio' che si guarda.
+TRAME_REV = 359
+
+def da_rifare_per_trama(lingua_imdb, trama_vuota, lang):
+	"""Una meta scritta prima del 359 va rifatta? Pura, per la prova.
+
+	Con la regola vecchia una trama IMDb, se c'era, vinceva sempre. Quindi: IMDb nella lingua dell'utente =
+	la meta ha gia' la voce 1 della catena nuova, si tiene. IMDb in un'altra lingua = la meta ha la trama
+	IMDb straniera, si rifa' (TMDb nella lingua dell'utente puo' batterla). IMDb senza trama = la meta ha
+	la TMDb dell'utente, che e' anche la scelta nuova, a meno che sia vuota.
+	"""
+	lingua = str(lingua_imdb or '').split('-')[0].lower()
+	if not lingua: return trama_vuota
+	return lingua != lang
+
+def migra_trame():
+	"""Porta le meta in cache alle catene del lotto 359. La chiama il servizio, una volta per sessione.
+
+	Dopo la prima riuscita costa una lettura di PRAGMA. Se IMDb non risponde non si scrive la revisione, e la
+	sessione dopo riprova: le meta scritte nel frattempo portano `trama_lingua` e si saltano.
+	"""
+	import json, re
+	from caches.base_cache import connect_database
+	from modules.kodi_utils import logger
+	try:
+		dbcon = connect_database('metacache_db')
+		if dbcon.execute('PRAGMA user_version').fetchone()[0] >= TRAME_REV: return
+		lang = meta_language()
+		titoli, stagioni, per_imdb = [], [], {}
+		if lang != 'en':
+			for db_type, tmdb_id, imdb_id, testo in dbcon.execute("SELECT db_type, tmdb_id, imdb_id, meta FROM metadata WHERE db_type IN ('movie', 'tvshow')").fetchall():
+				try: meta = json.loads(testo)
+				except: continue
+				if 'blank_entry' in meta or 'trama_lingua' in meta or meta.get('meta_language', 'en') != lang: continue
+				riga = (db_type, tmdb_id, not meta.get('plot'))
+				if imdb_id and re.match(r'tt\d{7,}$', imdb_id): per_imdb.setdefault(imdb_id, []).append(riga)
+				elif riga[2]: titoli.append(riga[:2])
+			if per_imdb:
+				from apis.imdb_api import imdb_lingue_trama
+				lingue = imdb_lingue_trama(list(per_imdb), lang)
+				if lingue is None:
+					logger('Fen Light', 'trame: IMDb non ha risposto, migrazione rimandata alla prossima sessione')
+					return
+				for imdb_id, righe in per_imdb.items():
+					titoli.extend(r[:2] for r in righe if da_rifare_per_trama(lingue.get(imdb_id), r[2], lang))
+			# Le stagioni: quelle con un episodio senza trama, che mostrava la trama della serie.
+			for chiave, testo in dbcon.execute('SELECT tmdb_id, meta FROM season_metadata').fetchall():
+				try: episodi = json.loads(testo)
+				except: continue
+				if any(isinstance(e, dict) and not e.get('plot') for e in episodi or ()): stagioni.append((chiave,))
+		dbcon.execute('BEGIN')
+		try:
+			# La condizione su trama_lingua: una meta riscritta dal codice nuovo mentre la migrazione leggeva non
+			# si fa scadere di nuovo.
+			dbcon.executemany('UPDATE metadata SET expires = 0 WHERE db_type = ? AND tmdb_id = ? AND meta NOT LIKE \'%"trama_lingua"%\'', titoli)
+			dbcon.executemany('UPDATE season_metadata SET expires = 0 WHERE tmdb_id = ?', stagioni)
+			dbcon.execute('PRAGMA user_version = %d' % TRAME_REV)
+			dbcon.execute('COMMIT')
+		except Exception:
+			dbcon.execute('ROLLBACK')
+			raise
+		logger('Fen Light', 'trame: migrazione %d fatta, %d schede e %d stagioni da rinnovare (su %d schede controllate su IMDb)'
+				% (TRAME_REV, len(titoli), len(stagioni), len(per_imdb)))
+	except Exception as e:
+		try: logger('Fen Light', 'trame: migrazione FALLITA: %s' % e)
+		except: pass
 
 def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_time=None):
 	# imdb_api NON si importa qui (lotto 82): l'import era pigro solo di nome, in cima alla funzione,
@@ -316,7 +429,8 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 		imdb_data_result = imdb_data(imdb_id, lang)
 		rating, votes = data_get('vote_average', ''), data_get('vote_count', '')
 		tagline, premiered = data_get('tagline', ''), data_get('release_date', '')
-		plot = imdb_data_result.get('plot') or data_get('overview', '')
+		plot, trama_lingua = trama_titolo(imdb_data_result.get('plot'), imdb_data_result.get('plot_lang'), data_get('overview', ''),
+										_trama_tmdb_inglese(data), lang)
 		poster_path = data_get('poster_path', '')
 		if poster_path: poster = tmdb_image_url % (poster_token(), poster_path)
 		else: poster = ''
@@ -431,6 +545,7 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 				'duration': duration, 'rootname': rootname, 'country': country, 'country_codes': country_codes, 'mpaa': mpaa,'writer': writer, 'all_trailers': all_trailers,
 				'director': director, 'directors': directors, 'writers': writers, 'alternative_titles': alternative_titles, 'plot': plot, 'studio': studio, 'extra_info': extra_info,
 				'mediatype': 'movie', 'tvdb_id': 'None', 'clearlogo': clearlogo, 'landscape': landscape, 'spoken_language': spoken_language, 'meta_language': lang}
+		meta['trama_lingua'] = trama_lingua
 		# LOTTO 347 -- la scheda delle serie la portava gia', quella dei film no: 0 su 5292 nel database del Mac. Il
 		# filtro doppiaggio la legge (regola D0: la lingua originale e' un doppiaggio per definizione).
 		meta['original_language'] = data_get('original_language', '')
@@ -464,7 +579,21 @@ def movie_meta(id_type, media_id, api_key, mpaa_region, current_date, current_ti
 # funzionava ma non sarebbe servito la volta dopo -- e la volta dopo e' arrivata col 147.
 #   145 -> giuntura per identita' al posto del rimappaggio posizionale
 #   147 -> "anime" non e' piu' "lingua asiatica" ma "animazione E lingua asiatica"
-_RIMAPPAGGIO_V = 147
+#   357 -> intersezione con TMDb (gli episodi senza corrispondente non si mostrano), aggancio per id
+#          anche in stagione 0, veto per contraddizione, seconda chiave assoluta convalidata
+#   358 -> la meta porta `ep_imdb`, gli id IMDb degli episodi, per agganciare voto e regista per id
+_RIMAPPAGGIO_V = 358
+
+def meta_superata(meta):
+	"""Questa meta di serie porta un layout TVDB costruito da una versione precedente del rimappaggio?
+
+	UN predicato solo, per TUTTE le letture. Fino al lotto 357 il controllo stava dentro tvshow_meta, e
+	la lettura a lotti (meta_prefetch, usata dai widget) non lo faceva: 'continua a guardare' riceveva la
+	meta vecchia di L'attacco dei giganti, episodes_meta leggeva i suoi `ep_esclusi_tvdb` con il
+	significato nuovo ("non si mostrano") e salvava la stagione 4 senza i due episodi finali, che la meta
+	nuova invece mostra. Due letture dello stesso dato con due regole diverse sono due risposte diverse.
+	"""
+	return bool(meta) and meta.get('tmdb_season_data_original') is not None and meta.get('rimappaggio_v') != _RIMAPPAGGIO_V
 
 def e_anime(lingua, generi_id):
 	"""Questa serie va trattata col rimappaggio TVDB?
@@ -501,6 +630,10 @@ _EP_MAP_KEYS = ('tvdb_to_tmdb_ep', 'tmdb_to_tvdb_ep')
 # il cui except lo ingoierebbe, e la serie verrebbe riscaricata a ogni avvio senza lasciare traccia:
 # e' esattamente il guasto del lotto 53, ripetuto su un tipo diverso.
 _EP_SET_KEYS = ('ep_esclusi_tvdb', 'ep_esclusi_trakt')
+# Gli id IMDb degli episodi anime (lotto 358): chiave tupla (stagione, episodio) di TMDb, valore una stringa
+# 'tt...'. Stesso problema della chiave, valore che resta com'e': non passa da _EP_MAP_KEYS, il cui
+# inverso trasformerebbe 'tt123' in una tupla di caratteri.
+_EP_ID_KEYS = ('ep_imdb',)
 
 def _pack_ep_maps(meta):
 	# Ritorna una COPIA superficiale con le mappe serializzabili: il dizionario passato al chiamante
@@ -520,6 +653,13 @@ def _pack_ep_maps(meta):
 		# niente" da "questa serie non ha un rimappaggio".
 		if value is None: continue
 		try: converted = sorted('%s|%s' % tuple(v) for v in value)
+		except: continue
+		if packed is None: packed = dict(meta)
+		packed[key] = converted
+	for key in _EP_ID_KEYS:
+		value = meta.get(key)
+		if not isinstance(value, dict) or not value: continue
+		try: converted = {('%s|%s' % k if isinstance(k, tuple) else k): v for k, v in value.items()}
 		except: continue
 		if packed is None: packed = dict(meta)
 		packed[key] = converted
@@ -543,7 +683,32 @@ def _unpack_ep_maps(meta):
 		if not isinstance(value, list): continue
 		try: meta[key] = set(tuple(int(part) for part in v.split('|')) for v in value)
 		except: meta[key] = set()
+	for key in _EP_ID_KEYS:
+		value = meta.get(key)
+		if not isinstance(value, dict) or not value: continue
+		try:
+			first = next(iter(value))
+			if not isinstance(first, str) or '|' not in first: continue
+			meta[key] = {tuple(int(part) for part in k.split('|')): v for k, v in value.items()}
+		except: pass
 	return meta
+
+# Le chiavi del layout TVDB: si tengono o si buttano insieme, mai a pezzi.
+_CHIAVI_LAYOUT = ('season_data', 'tmdb_season_data_original', 'total_seasons', 'total_aired_eps', 'tvdb_to_tmdb_ep',
+				  'tmdb_to_tvdb_ep', 'ep_esclusi_tvdb', 'ep_esclusi_trakt', 'ep_imdb', 'rimappaggio_v')
+
+def _mappa_in_cache(id_type, media_id, current_time=None):
+	"""La scheda in cache di questa serie SE porta il layout TVDB, anche scaduta o superata; altrimenti None.
+
+	Serve solo quando l'indice degli episodi non arriva (vedi tvshow_meta): la mappa di ieri e' migliore del
+	layout TMDb, che per un anime e' sbagliato. get_many e non get, perche' get non restituisce le scadute.
+	"""
+	try:
+		righe = meta_cache.get_many('tvshow', id_type, [str(media_id)], current_time, [])
+		vecchia = next(iter(righe.values()), None)
+		if not vecchia or vecchia.get('tmdb_season_data_original') is None: return None
+		return _unpack_ep_maps(vecchia)
+	except: return None
 
 def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_time=None):
 	# Vedi movie_meta: i due import stavano qui, cioe' si pagavano anche quando la funzione esce da
@@ -566,7 +731,7 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 	# Il 145 controllava la presenza di `ep_esclusi_tvdb`: funzionava, ma era un discriminante ad hoc
 	# che non sarebbe servito la volta dopo -- e la volta dopo e' arrivata subito. Un numero di
 	# versione copre anche le prossime.
-	if meta and meta.get('tmdb_season_data_original') is not None and meta.get('rimappaggio_v') != _RIMAPPAGGIO_V: meta = None
+	if meta_superata(meta): meta = None
 	if meta: return _unpack_ep_maps(meta)
 	from apis.imdb_api import imdb_data
 	from apis.skyhook_api import get_skyhook_season_data, episodi_per_giuntura, costruisci_mappa_episodi
@@ -591,7 +756,8 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 		imdb_data_result = imdb_data(imdb_id, lang)
 		rating, votes = data_get('vote_average', ''), data_get('vote_count', '')
 		tagline, premiered = data_get('tagline', ''), data_get('first_air_date', '')
-		plot = imdb_data_result.get('plot') or data_get('overview', '')
+		plot, trama_lingua = trama_titolo(imdb_data_result.get('plot'), imdb_data_result.get('plot_lang'), data_get('overview', ''),
+										_trama_tmdb_inglese(data), lang)
 		season_data, total_seasons = data_get('seasons'), data_get('number_of_seasons')
 		poster_path = data_get('poster_path', '')
 		if poster_path: poster = tmdb_image_url % (poster_token(), poster_path)
@@ -724,28 +890,47 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 			meta['imdb_votes'] = imdb_data_result.get('votes')
 			meta['media_subtype'] = imdb_data_result.get('title_type')
 		meta['original_language'] = data_get('original_language', '')
+		meta['trama_lingua'] = trama_lingua
 		_is_anime = e_anime(data_get('original_language', ''), [g.get('id') for g in (data_get('genres') or [])])
-		_skyhook_seasons = get_skyhook_season_data(tvdb_id, season_data, current_date.strftime('%Y-%m-%d')) if _is_anime else None
 		# IL LAYOUT TVDB E LA MAPPA SI DECIDONO INSIEME (lotto 145). Prima erano due decisioni
 		# indipendenti: si adottavano le stagioni di TVDB anche quando la mappa usciva vuota, e il
 		# risultato era un disallineamento garantito -- senza nemmeno un sintomo che distinguesse
 		# "non serviva mappare" da "non sono riuscito a mappare".
 		# Adesso o si ha entrambe le cose o non si tocca niente e si resta su TMDb, che e' coerente
 		# con se' stesso.
+		# Dal lotto 357 la giuntura viene PRIMA del layout, perche' il layout ne ha bisogno: le
+		# stagioni TVDB mostrano solo gli episodi che hanno un corrispondente su TMDb. Nessuna
+		# richiesta in piu': episodi_per_giuntura e get_skyhook_season_data leggono lo stesso payload
+		# skyhook, in cache.
 		_rimappaggio_incompleto = False
-		if _is_anime and _skyhook_seasons:
+		_ep_tvdb = episodi_per_giuntura(tvdb_id) if _is_anime else None
+		# L'INDICE IGNOTO (correzione del 25/09). None da skyhook o da Trakt vuol dire "non ha risposto", non
+		# "non c'e'": per un anime la scheda non si puo' decidere, e il layout TMDb sarebbe una risposta
+		# sbagliata, non una prudente. Visto su One Piece: nata a Kodi in chiusura, senza indice Trakt, e' finita
+		# sul layout TMDb per 24 ore -- stagioni TMDb, numeri TMDb verso Torrentio, visti riscritti in numerazione
+		# TMDb dal rebuild ("continua a guardare" a S21E1071). Vedi _indice_ignoto qui sotto.
+		_indice_ignoto = _is_anime and _ep_tvdb is None
+		if _ep_tvdb:
 			# L'import di trakt_api sta QUI e non in testa al modulo, e non e' solo per il costo:
 			# trakt_api importa metadata a livello di modulo, quindi in testa sarebbe circolare.
 			from apis.trakt_api import trakt_episode_index
-			_ep_tvdb = episodi_per_giuntura(tvdb_id)
-			_ep_trakt = trakt_episode_index(tmdb_id) if _ep_tvdb else None
+			_ep_trakt = trakt_episode_index(tmdb_id)
+			_oggi = current_date.strftime('%Y-%m-%d')
 			if _ep_trakt is None:
-				# None NON e' una lista vuota: e' "non si e' potuto sapere". Si rinuncia al
-				# rimappaggio per ora e si accorcia la scadenza, cosi' un guasto di rete momentaneo
-				# non congela la serie sul layout sbagliato per sei mesi.
-				_rimappaggio_incompleto = True
+				# None NON e' una lista vuota: e' "non si e' potuto sapere". Fino al 25/09 qui si rinunciava al
+				# rimappaggio e si salvava il layout TMDb per un giorno; ora decide _indice_ignoto.
+				_indice_ignoto = True
+				_skyhook_seasons = None
 			else:
-				_giuntura = costruisci_mappa_episodi(_ep_tvdb, _ep_trakt, current_date.strftime('%Y-%m-%d'))
+				_giuntura = costruisci_mappa_episodi(_ep_tvdb, _ep_trakt, _oggi)
+				_skyhook_seasons = get_skyhook_season_data(tvdb_id, season_data, _oggi, _giuntura['esclusi_tvdb'])
+				# LA FRONTIERA APERTA (lotto 357): c'e' un episodio uscito da poco che nessuno dei due
+				# cataloghi ha ancora collegato, quindi oggi non si mostra. Stessa scadenza breve di un
+				# indice Trakt non letto: il collegamento puo' arrivare domani, e non deve aspettare la
+				# scadenza normale della serie. Solo se il layout TVDB si adotta: altrimenti la serie resta
+				# su TMDb e non c'e' niente da nascondere ne' da ricontrollare.
+				if _giuntura['frontiera'] and _skyhook_seasons: _rimappaggio_incompleto = True
+			if _skyhook_seasons:
 				meta['tmdb_season_data_original'] = season_data
 				meta['season_data'] = _skyhook_seasons
 				meta['total_seasons'] = max((s['season_number'] for s in _skyhook_seasons if s['season_number'] > 0), default=total_seasons)
@@ -755,10 +940,31 @@ def tvshow_meta(id_type, media_id, api_key, mpaa_region, current_date, current_t
 				# costruzione (un id TVDB sta da una parte sola). Prima la mappa posizionale non lo
 				# era, e questa riga scartava in silenzio -- 12 voci su 78 nella cache vera del Mac.
 				meta['tmdb_to_tvdb_ep'] = {v: k for k, v in _giuntura['mappa'].items()}
-				# Il terzo esito, che prima non esisteva. Vedi utils.traduci_episodio.
+				# Il terzo esito, che prima non esisteva. Vedi utils.traduci_episodio. Dal lotto 357 gli
+				# esclusi TVDB non solo non si traducono: NON SI MOSTRANO (li filtra anche episodes_meta).
 				meta['ep_esclusi_tvdb'] = _giuntura['esclusi_tvdb']
 				meta['ep_esclusi_trakt'] = _giuntura['esclusi_trakt']
+				# Gli id IMDb degli episodi (lotto 358), per coppia TMDb: arrivano sulla stessa riga Trakt
+				# della giuntura, quindi nessuna richiesta in piu'. Servono a episodes_meta per agganciare
+				# voto e regista per id, perche' IMDb numera gli anime in una terza maniera.
+				meta['ep_imdb'] = {(int(_r[0]), int(_r[1])): _r[5] for _r in _ep_trakt
+									if len(_r) > 5 and _r[5] and _r[0] is not None and _r[1] is not None}
 				meta['rimappaggio_v'] = _RIMAPPAGGIO_V
+		if _indice_ignoto:
+			# Se in cache c'e' una scheda di questa serie con la mappa, anche scaduta, se ne tiene la mappa: e'
+			# quella giusta di ieri, e scade fra un giorno per riprovare. Se non c'e', la scheda si consegna
+			# segnata e NON si salva: chi la legge dopo riprova la rete. I lettori che scrivono righe locali
+			# (rebuild dei visti, avanzamento) la riconoscono e lasciano intatta la serie.
+			_vecchia = _mappa_in_cache(id_type, media_id, current_time)
+			from modules.kodi_utils import logger
+			if not _vecchia:
+				meta['rimappaggio_mancante'] = True
+				logger('FenLight META', 'tvshow %s=%s: indice episodi non disponibile, scheda NON salvata (si riprova)' % (id_type, media_id))
+				return meta
+			for _chiave in _CHIAVI_LAYOUT:
+				if _chiave in _vecchia: meta[_chiave] = _vecchia[_chiave]
+			_rimappaggio_incompleto = True
+			logger('FenLight META', 'tvshow %s=%s: indice episodi non disponibile, tenuta la mappa della scheda precedente' % (id_type, media_id))
 		_registra_uscita('tvshow', data, meta.get('imdb_year') or meta.get('year'))
 		_scadenza = tvshow_expiry(current_date, meta)
 		if _rimappaggio_incompleto: _scadenza = min(_scadenza, EXPIRES_1_DAYS)
@@ -817,7 +1023,13 @@ def season_prop_string(media_id, season, lang=None):
 	if lang is None: lang = meta_language()
 	# _v3 col lotto 150: le voci gia' in cache sono state costruite senza regista, sceneggiatori,
 	# voto e guest star, perche' l'arricchimento TMDb non li copiava.
-	return '%s_%s_%s_v3' % (media_id, season, lang) if lang != 'en' else '%s_%s_v3' % (media_id, season)
+	# _v4 col lotto 357: gli elenchi anime in cache contengono gli episodi senza corrispondente su
+	# TMDb, che da qui in avanti non si mostrano.
+	# _v5 nello stesso lotto: alcune voci _v4 sono nate da una meta SUPERATA letta a lotti (vedi
+	# meta_superata) e nascondono episodi che la meta nuova mostra -- L'attacco dei giganti S4 a 28
+	# episodi invece di 30, sul Mac.
+	# _v6 col lotto 358: voto e regista degli episodi agganciati per id IMDb, per tutte le serie.
+	return '%s_%s_%s_v6' % (media_id, season, lang) if lang != 'en' else '%s_%s_v6' % (media_id, season)
 
 def episodes_meta_prefetch(pairs):
 	# UNA lettura per tutte le stagioni che la costruzione andra' a chiedere (lotto 102), sulla stessa
@@ -834,6 +1046,91 @@ def episodes_meta_prefetch(pairs):
 		if keys: results = meta_cache.get_seasons_many(keys)
 	except: pass
 	return results
+
+def _applica_voce_imdb(episodio, voce):
+	# Regola 4 del lotto 358: voto IMDb se ne ha uno, regista IMDb se ne ha; se no restano quelli di TMDb.
+	if not voce: return
+	if voce.get('rating'): episodio['rating'], episodio['votes'] = voce['rating'], voce.get('votes') or 0
+	if voce.get('directors'): episodio['director'] = voce['directors']
+	# La trama IMDb non si applica qui: e' una voce della catena del lotto 359, che la sceglie in _trame_episodi.
+	if voce.get('plot'): episodio['_imdb_trama'] = (voce['plot'], voce.get('plot_lang') or '')
+
+def _trame_episodi(episodi, coppie_tmdb, media_id, lang):
+	"""La catena delle trame degli episodi (lotto 359, ANIME.md regole 2 e 4), applicata sul posto.
+
+	Arrivano qui con `plot` = la trama TMDb nella lingua dell'utente, e le altre voci della catena in chiavi
+	di passaggio: `_imdb_trama` (da _applica_voce_imdb) e `_sky_trama` (solo anime). La TMDb inglese si
+	chiede SOLO per le stagioni TMDb che hanno ancora un episodio senza trama, e mai se l'utente e' gia' in
+	inglese. Torna False se serviva e non e' arrivata: chi chiama accorcia la scadenza.
+	"""
+	def _manca(ep):
+		imdb = ep.get('_imdb_trama') or ('', '')
+		return not trama_episodio(ep.get('plot') or '', imdb[0], imdb[1], '', '', lang)
+	inglese, completo = {}, True
+	if lang != 'en':
+		for stagione in sorted(set(c[0] for ep, c in zip(episodi, coppie_tmdb) if _manca(ep))):
+			dati = season_episodes_details(media_id, stagione, 'en')
+			if not isinstance(dati, dict) or not isinstance(dati.get('episodes'), list):
+				completo = False
+				continue
+			for te in dati['episodes']: inglese[(te.get('season_number'), te.get('episode_number'))] = te.get('overview') or ''
+	for ep, c in zip(episodi, coppie_tmdb):
+		imdb = ep.pop('_imdb_trama', None) or ('', '')
+		ep['plot'] = trama_episodio(ep.get('plot') or '', imdb[0], imdb[1], inglese.get(tuple(c), ''), ep.pop('_sky_trama', ''), lang)
+	return completo
+
+def _togli_passaggi(episodi):
+	# Le chiavi di passaggio non devono finire in cache, qualunque cosa sia andata storta prima.
+	for ep in episodi:
+		ep.pop('_imdb_trama', None); ep.pop('_sky_trama', None)
+
+def _imdb_sugli_episodi(meta, stagione, episodi, coppie_tmdb, lang=None):
+	"""Voto e regista IMDb sugli episodi di una stagione, agganciati per id dove serve (lotto 358).
+
+	`coppie_tmdb` e' la coppia TMDb di ogni episodio, nello stesso ordine: per una serie normale e' la sua,
+	per un anime col layout TVDB quella della mappa. Torna False se non si e' potuto sapere -- IMDb, o Trakt
+	quando serviva, non hanno risposto -- e chi chiama accorcia la scadenza della stagione.
+
+	Due strade, ANIME.md regole 1-3:
+	  - anime col layout TVDB: sempre per id. Gli id stanno nella meta (`ep_imdb`), dalla stessa chiamata
+	    Trakt della giuntura;
+	  - le altre: la stagione come la numera IMDb. Se il rivelatore tace, per (stagione, episodio) come
+	    sempre; se scatta, gli id della stagione da Trakt. Un episodio senza id tiene i dati TMDb: in una
+	    stagione con l'allarme la posizione non vale piu'.
+	"""
+	if not episodi: return True
+	from apis.imdb_api import imdb_episodi_stagione, imdb_episodi_per_id, aggancio_sospetto
+	if meta.get('tmdb_season_data_original') is not None:
+		_ids = meta.get('ep_imdb') or {}
+		_tt = [_ids.get(_c) for _c in coppie_tmdb]
+		_voci = imdb_episodi_per_id([_t for _t in _tt if _t], lang) if any(_tt) else {}
+		if _voci is None: return False
+	else:
+		_imdb_id = meta.get('imdb_id')
+		if not _imdb_id or _imdb_id == 'tt0000000': return True
+		_per_coppia = imdb_episodi_stagione(_imdb_id, stagione, lang)
+		if _per_coppia is None: return False
+		_date_tmdb = {_c: _ep.get('premiered') for _c, _ep in zip(coppie_tmdb, episodi)}
+		if not aggancio_sospetto({_c: _v['data'] for _c, _v in _per_coppia.items()}, _date_tmdb):
+			for _ep, _c in zip(episodi, coppie_tmdb): _applica_voce_imdb(_ep, _per_coppia.get(_c))
+			return True
+		from apis.trakt_api import trakt_imdb_stagione
+		_ids = trakt_imdb_stagione(_imdb_id, stagione)
+		if _ids is None: return False
+		_tt = [_ids.get(_c[1]) for _c in coppie_tmdb]
+		# Quelli che la stagione IMDb ha gia' portato non si richiedono: spesso lo scarto e' di uno o due
+		# episodi spostati, e gli altri sono gia' qui con il loro id.
+		_voci = {_v['id']: _v for _v in _per_coppia.values() if _v.get('id')}
+		_mancanti = [_t for _t in _tt if _t and _t not in _voci]
+		if _mancanti:
+			_altre = imdb_episodi_per_id(_mancanti, lang)
+			if _altre is None: return False
+			_voci.update(_altre)
+		from modules.kodi_utils import logger
+		logger('FenLight IMDb', 'stagione %s S%s: numerazione IMDb diversa da TMDb, aggancio per id (%d su %d episodi, %d richiesti)'
+				% (_imdb_id, stagione, sum(1 for _t in _tt if _t), len(_tt), len(_mancanti)))
+	for _ep, _t in zip(episodi, _tt): _applica_voce_imdb(_ep, _voci.get(_t) if _t else None)
+	return True
 
 def episodes_meta(season, meta, prefetch=None):
 	# imdb_api e skyhook_api NON si importano piu' qui (lotto 102). Erano "pigri" solo di nome: in
@@ -900,15 +1197,7 @@ def episodes_meta(season, meta, prefetch=None):
 		if data is not None: return data
 	data = metacache_get_season(prop_string)
 	if data is not None: return data
-	from apis.imdb_api import imdb_episode_ratings
 	from apis.skyhook_api import get_skyhook_episodes
-	_imdb_ep_ratings = imdb_episode_ratings(meta.get('imdb_id'), season)
-	def _apply_imdb_ep_ratings(eps):
-		if not _imdb_ep_ratings or not eps: return
-		for _e in eps:
-			_r = _imdb_ep_ratings.get('%s_%s' % (_e.get('season'), _e.get('episode')))
-			if _r:
-				_e['rating'], _e['votes'] = _r['rating'], _r['votes']
 	_skyhook_eps = get_skyhook_episodes(meta.get('tvdb_id'), season, meta)
 	# LA DOMANDA E' "QUESTA SERIE USA IL LAYOUT TVDB", non "che lingua parla" (lotto 147).
 	# Con la lingua c'era un buco introdotto dal 145: se l'indice Trakt non si era potuto leggere,
@@ -917,11 +1206,19 @@ def episodes_meta(season, meta, prefetch=None):
 	# `tmdb_season_data_original` esiste se e solo se il layout TVDB e' stato adottato davvero: e' la
 	# condizione esatta, e non va piu' tenuta in accordo con il criterio anime.
 	if _skyhook_eps is not None and meta.get('tmdb_season_data_original') is not None:
+		# L'INTERSEZIONE CON TMDb (lotto 357): un episodio TVDB senza corrispondente su TMDb non si
+		# mostra. E' la stessa regola che stagioni_da_skyhook applica ai conteggi, con lo stesso dato:
+		# se qui si mostrasse, l'elenco avrebbe un episodio in piu' del numero scritto sulla stagione.
+		_nascosti = meta.get('ep_esclusi_tvdb') or ()
+		_skyhook_eps = [_ep for _ep in _skyhook_eps if (_ep['season'], _ep['episode']) not in _nascosti]
 		try:
 			_expiry = EXPIRES_182_DAYS if (meta.get('status', '') in finished_show_check or meta.get('total_seasons', 1) > int(season)) else EXPIRES_4_DAYS
 		except: _expiry = EXPIRES_4_DAYS
+		_ep_map = meta.get('tvdb_to_tmdb_ep') or {}
+		# La trama di skyhook e' l'ULTIMA voce della catena degli episodi (lotto 359): si mette da parte, e
+		# `plot` resta alla trama TMDb nella lingua dell'utente, se c'e'.
+		for _ep in _skyhook_eps: _ep['_sky_trama'], _ep['plot'] = _ep.get('plot') or '', ''
 		try:
-			_ep_map = meta.get('tvdb_to_tmdb_ep') or {}
 			_tmdb_seasons = {_ep_map.get((ep['season'], ep['episode']), (ep['season'], ep['episode']))[0] for ep in _skyhook_eps}
 			_tmdb_ep_data = {}
 			for _ts in _tmdb_seasons:
@@ -973,7 +1270,15 @@ def episodes_meta(season, meta, prefetch=None):
 			#     In piu' all_episodes_meta lancia un thread per stagione, e ognuno riscriveva la meta
 			#     INTERA dalla propria copia: l'ultimo che scriveva cancellava il lavoro degli altri.
 		except: pass
-		_apply_imdb_ep_ratings(_skyhook_eps)
+		# L'IMDb VIENE DOPO TMDb: il regista e il voto TMDb qui sopra sono il ripiego, e IMDb li
+		# sostituisce solo dove li ha (lotto 358, regola 4).
+		_coppie = [_ep_map.get((_ep['season'], _ep['episode']), (_ep['season'], _ep['episode'])) for _ep in _skyhook_eps]
+		try: _imdb_completo = _imdb_sugli_episodi(meta, season, _skyhook_eps, _coppie, lang)
+		except: _imdb_completo = False
+		try: _trame_complete = _trame_episodi(_skyhook_eps, _coppie, media_id, lang)
+		except: _trame_complete = False
+		_togli_passaggi(_skyhook_eps)
+		if not (_imdb_completo and _trame_complete): _expiry = min(_expiry, EXPIRES_1_DAYS)
 		metacache_set_season(prop_string, _skyhook_eps, _expiry)
 		return _skyhook_eps
 	try:
@@ -986,7 +1291,15 @@ def episodes_meta(season, meta, prefetch=None):
 			details = season_episodes_details(media_id, season, lang)['episodes']
 			total_episodes = len(details)
 			data = list(_process())
-			_apply_imdb_ep_ratings(data)
+			# Non si e' potuto sapere (IMDb, o Trakt con l'allarme, non ha risposto): la stagione si tiene
+			# con i dati TMDb, ma per un giorno solo. Una stagione conclusa resterebbe senza voti IMDb sei mesi.
+			_coppie = [(_e['season'], _e['episode']) for _e in data]
+			try: _imdb_completo = _imdb_sugli_episodi(meta, season, data, _coppie, lang)
+			except: _imdb_completo = False
+			try: _trame_complete = _trame_episodi(data, _coppie, media_id, lang)
+			except: _trame_complete = False
+			_togli_passaggi(data)
+			if not (_imdb_completo and _trame_complete): expiration = min(expiration, EXPIRES_1_DAYS)
 		except: data, expiration = [], EXPIRES_4_DAYS
 	except: data, expiration = [], EXPIRES_4_DAYS
 	metacache_set_season(prop_string, data, expiration)

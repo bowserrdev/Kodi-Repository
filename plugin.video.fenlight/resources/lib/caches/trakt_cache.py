@@ -20,6 +20,8 @@ WATCHED_INSERT = 'INSERT OR IGNORE INTO watched VALUES (?, ?, ?, ?, ?, ?)'
 WATCHED_UPSERT = 'INSERT OR REPLACE INTO watched VALUES (?, ?, ?, ?, ?, ?)'
 WATCHED_LAST_PLAYED = 'SELECT MAX(last_played) FROM watched WHERE db_type = ?'
 WATCHED_DELETE = 'DELETE FROM watched WHERE db_type = ?'
+# Stessa cancellazione, tranne le serie da lasciare intatte (correzione del 25/09, vedi _set_bulk_watched).
+WATCHED_DELETE_TRANNE = 'DELETE FROM watched WHERE db_type = ? AND CAST(media_id AS TEXT) NOT IN (%s)'
 PROGRESS_UPSERT = 'INSERT OR REPLACE INTO progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 PROGRESS_DELETE_ONE = 'DELETE FROM progress WHERE db_type = ? AND media_id = ? AND season = ? AND episode = ?'
 PROGRESS_SELECT_ALL = ('SELECT media_id, season, episode, resume_point, curr_time, last_played, resume_id, title, '
@@ -103,7 +105,7 @@ class TraktWatched:
 			return set((str(r[0]), str(r[1]), str(r[2])) for r in rows)
 		except: return None
 
-	def _changed_media_ids(self, db_type, insert_list):
+	def _changed_media_ids(self, db_type, insert_list, intatte=None):
 		"""Quali titoli cambiano stato con questa scrittura. None se non e' stato possibile stabilirlo.
 
 		Serve al refresh mirato (lotto 59): l'API di Trakt dice solo che "qualcosa fra gli episodi
@@ -115,18 +117,23 @@ class TraktWatched:
 		"""
 		before = self._watched_keys(db_type)
 		if before is None: return None
+		if intatte: before = set(k for k in before if k[0] not in intatte)
 		after = set()
 		for row in insert_list:
 			try: after.add((str(row[1]), str(row[2]), str(row[3])))
 			except: return None
 		return set(key[0] for key in (before ^ after))
 
-	def _set_bulk_watched(self, db_type, insert_list):
+	def _set_bulk_watched(self, db_type, insert_list, intatte=None):
 		# Stesso DELETE+INSERT della tabella progress, stessa finestra sporca, stessa cura: qui i
 		# lettori sono gli indicatori di visto delle liste. Vedi _atomic.
+		# `intatte`: id (stringa) delle serie le cui righe NON si toccano, perche' in questo giro la loro mappa
+		# episodi non si sa (utils.mappa_verso_righe_locali). Non si cancellano e non contano come cambiate.
+		intatte = set(str(i) for i in (intatte or ()))
 		def _work():
-			changed = self._changed_media_ids(db_type, insert_list)
-			self._delete(WATCHED_DELETE, (db_type,))
+			changed = self._changed_media_ids(db_type, insert_list, intatte)
+			if intatte: self._delete(WATCHED_DELETE_TRANNE % ', '.join('?' for _ in intatte), (db_type,) + tuple(sorted(intatte)))
+			else: self._delete(WATCHED_DELETE, (db_type,))
 			self._executemany(WATCHED_INSERT, insert_list)
 			return changed
 		return self._atomic(_work)
@@ -134,8 +141,8 @@ class TraktWatched:
 	def set_bulk_movie_watched(self, insert_list):
 		return self._set_bulk_watched('movie', insert_list)
 
-	def set_bulk_tvshow_watched(self, insert_list):
-		return self._set_bulk_watched('episode', insert_list)
+	def set_bulk_tvshow_watched(self, insert_list, intatte=None):
+		return self._set_bulk_watched('episode', insert_list, intatte)
 
 	def _local_progress(self, db_type):
 		"""Le righe locali nella forma che vuole progress_sync: {chiave -> Local}.
@@ -153,7 +160,7 @@ class TraktWatched:
 				str(r[3]), r[4], r[5], r[6] or 0, r[7], r[8] or progress_sync.SYNCED, r[9] or 0)
 		return out
 
-	def _reconcile_progress(self, db_type, insert_list):
+	def _reconcile_progress(self, db_type, insert_list, intatte=None):
 		"""Allinea la tabella allo snapshot di Trakt applicando la tabella delle transizioni.
 
 		Sostituisce la riscrittura in blocco (DELETE di tutto + INSERT della vista di Trakt + secondo
@@ -164,9 +171,13 @@ class TraktWatched:
 
 		La transazione resta, e ora costa quasi niente perche' le scritture sono poche.
 		"""
+		intatte = set(str(i) for i in (intatte or ()))
 		def _work():
 			local = self._local_progress(db_type)
 			if local is None: return None
+			# Le serie la cui mappa non si sa in questo giro (correzione del 25/09): le loro righe escono dal
+			# confronto, quindi la macchina a stati non le riscrive e non le cancella.
+			if intatte: local = {k: v for k, v in local.items() if k[0] not in intatte}
 			remote = {}
 			for row in insert_list or ():
 				remote[(str(row[1]), _norm(row[2]), _norm(row[3]))] = progress_sync.Remote(
@@ -206,8 +217,8 @@ class TraktWatched:
 	def set_bulk_movie_progress(self, insert_list):
 		return self._reconcile_progress('movie', insert_list)
 
-	def set_bulk_tvshow_progress(self, insert_list):
-		return self._reconcile_progress('episode', insert_list)
+	def set_bulk_tvshow_progress(self, insert_list, intatte=None):
+		return self._reconcile_progress('episode', insert_list, intatte)
 
 	def add_tvshow_watched(self, insert_list):
 		# used by the incremental sync: keeps the existing rows and refreshes last_played on rewatches

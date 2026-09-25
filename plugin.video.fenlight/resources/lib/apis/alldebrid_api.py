@@ -124,7 +124,7 @@ class AllDebridAPI:
 		result = self._get(url, url_append)
 		return result.get('message', '') == 'Magnet was successfully deleted'
 
-	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode):
+	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode, absolute=None):
 		try:
 			file_url, media_id, transfer_id = None, None, None
 			extensions = supported_video_extensions()
@@ -147,11 +147,11 @@ class AllDebridAPI:
 			valid_results = [i for i in transfer_info['links'] if any(i.get('filename').lower().endswith(x) for x in extensions) and not i.get('link', '') == '']
 			if valid_results:
 				if season:
-					correct_files = [i for i in valid_results if seas_ep_filter(season, episode, i['filename'])]
+					correct_files = [i for i in valid_results if seas_ep_filter(season, episode, absolute=absolute, release_title=i['filename'])]
 					if correct_files:
 						extras = [i for i in EXTRAS if not i == title.lower()]
 						episode_title = re.sub(r'[^A-Za-z0-9-]+', '.', title.replace('\'', '').replace('&', 'and').replace('%', '.percent')).lower()
-						try: media_id = [i['link'] for i in correct_files if not any(x in re.sub(episode_title, '', seas_ep_filter(season, episode, i['filename'], split=True)) \
+						try: media_id = [i['link'] for i in correct_files if not any(x in re.sub(episode_title, '', seas_ep_filter(season, episode, absolute=absolute, release_title=i['filename'], split=True)) \
 											for x in extras)][0]
 						except: media_id = None
 				else: media_id = max(valid_results, key=lambda x: x.get('size')).get('link', None)

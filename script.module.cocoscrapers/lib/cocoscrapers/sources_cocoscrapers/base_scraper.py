@@ -69,6 +69,11 @@ class BaseTorrentScraper:
 		self.title = data['tvshowtitle'].replace('&', 'and').replace('Special Victims Unit', 'SVU').replace('/', ' ').replace('$', 's')
 		self.episode_title = data['title']
 		self.hdlr = 'S%02dE%02d' % (int(data['season']), int(data['episode']))
+		# Il numero assoluto (Fen Light, lotto 361): c'e' solo per le serie in numerazione TVDB. `hdlr`
+		# resta la stringa delle query; per RICONOSCERE l'episodio nel nome si usa `hdlr_match`, che
+		# accetta anche l'assoluto. Vedi source_utils.episodio_regex.
+		self.absolute = data.get('absolute') or None
+		self.hdlr_match = source_utils.episodio_regex(data['season'], data['episode'], self.absolute)
 		self.year = data['year']
 		self.aliases = data['aliases']
 		self.season_x = data['season']
@@ -81,6 +86,8 @@ class BaseTorrentScraper:
 		self.title = data['title'].replace('&', 'and').replace('/', ' ').replace('$', 's')
 		self.episode_title = None
 		self.hdlr = data['year']
+		self.absolute = None
+		self.hdlr_match = self.hdlr
 		self.year = data['year']
 		self.aliases = data['aliases']
 		self.years = [str(int(self.year) - 1), str(self.year), str(int(self.year) + 1)]
