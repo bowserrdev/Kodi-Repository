@@ -5,6 +5,7 @@
 
 from json import dumps as jsdumps, loads as jsloads
 import os.path
+from time import monotonic
 import xbmc
 import xbmcaddon
 import xbmcgui
@@ -48,9 +49,22 @@ def getKodiVersion(full=False):
 	if full: return xbmc.getInfoLabel("System.BuildVersion")
 	else: return int(xbmc.getInfoLabel("System.BuildVersion")[:2])
 
+# Fen Light, lotto 363 -- LE IMPOSTAZIONI SI LEGGONO AL PIU' OGNI 5 SECONDI PER INTERPRETE. Prima ogni setting()
+# leggeva la proprieta' di finestra `cocoscrapers_settings` (passa dal lock della GUI di Kodi) e decodificava in
+# JSON tutte le impostazioni. log_utils.log la chiama 2-3 volte per RIGA, e una ricerca scrive tre righe per
+# risultato grezzo: misurato il 25/09 sul Mac, 47 us di cpu per riga col debug acceso, cioe' il triplo del parsing
+# del risultato. Un'impostazione cambiata da un altro interprete (il servizio riscrive la proprieta') arriva entro
+# VALIDITA; una cambiata qui (setSetting) si rilegge subito.
+VALIDITA = 5.0
+_impostazioni = [None, 0.0]
+
 def setting(id, fallback=None):
-	try: settings_dict = jsloads(homeWindow.getProperty('cocoscrapers_settings'))
-	except: settings_dict = make_settings_dict()
+	adesso = monotonic()
+	settings_dict = _impostazioni[0]
+	if settings_dict is None or adesso - _impostazioni[1] > VALIDITA:
+		try: settings_dict = jsloads(homeWindow.getProperty('cocoscrapers_settings'))
+		except: settings_dict = make_settings_dict()
+		if settings_dict is not None: _impostazioni[0], _impostazioni[1] = settings_dict, adesso
 	if settings_dict is None: settings_dict = settings_fallback(id)
 	value = settings_dict.get(id, '')
 	if fallback is None: return value
@@ -61,6 +75,7 @@ def settings_fallback(id):
 	return {id: addonObject.getSetting(id)}
 
 def setSetting(id, value):
+	_impostazioni[0] = None
 	return addonObject.setSetting(id, value)
 
 def make_settings_dict(): # service runs upon a setting change

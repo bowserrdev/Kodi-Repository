@@ -3,7 +3,7 @@
 from threading import Thread
 from caches.main_cache import cache_object
 from caches.settings_cache import get_setting, set_setting
-from modules.source_utils import supported_video_extensions, seas_ep_filter, EXTRAS
+from modules.source_utils import supported_video_extensions, seas_ep_filter, file_dell_episodio, EXTRAS
 from modules.kodi_utils import make_session, kodi_dialog, ok_dialog, notification
 
 # Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
@@ -116,7 +116,7 @@ class OffcloudAPI:
 			torrent_files = [{'url': item, 'filename': item.split('/')[-1], 'size': 0} for item in torrent_files if item.lower().endswith(tuple(extensions))]
 			if not torrent_files: return None
 			if season:
-				torrent_files = [i for i in torrent_files if seas_ep_filter(season, episode, absolute=absolute, release_title=i['filename'])]
+				torrent_files = file_dell_episodio(torrent_files, season, episode, absolute, lambda i: i['filename'], lambda i: i['url'])
 				if not torrent_files: return None
 			else:
 				if self._m2ts_check(torrent_files): self.delete_torrent(torrent_id) ; return None

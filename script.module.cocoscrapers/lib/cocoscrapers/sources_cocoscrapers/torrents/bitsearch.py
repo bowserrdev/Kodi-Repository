@@ -1,296 +1,104 @@
 # -*- coding: utf-8 -*-
 
 import re
-from difflib import SequenceMatcher
+from json import loads as jsloads
+from threading import Thread
 from urllib.parse import quote_plus
-from cocoscrapers.modules import client, source_utils, log_utils, cleantitle
-from cocoscrapers.sources_cocoscrapers.base_scraper import BaseTorrentScraper
+from cocoscrapers.modules import client, source_utils, log_utils
+from cocoscrapers.sources_cocoscrapers.base_scraper import BaseTestoScraper
 
+# Fen Light, lotto 408 (SORGENTI.md): l'API JSON di bitsearch.eu al posto della pagina HTML (bitsearch.to, due parser, uno di
+# riserva per quando la pagina cambiava). Le categorie (https://bitsearch.eu/api) non si chiedono al server: la maggior parte
+# dei torrent sta in "Altro > Video" (Ratatouille 60 su 100, contro 24 in "Film"; Stranger Things S02 66 contro 19 in "Serie"),
+# e l'API accetta una categoria per richiesta. Servono al contrario: fuori subito cio' che non puo' essere un video.
+# Ordine per seeders (i piu' diffusi sono i piu' probabili in cache su TorBox) e fino a PAGINE pagine da 100: ogni ordine da'
+# una fetta diversa (Ratatouille 2007: 50-58 release col titolo giusto per ordine, 105 unendoli, 27/09).
+_API_URL = 'https://bitsearch.eu/api/v1/search?q=%s&sort=seeders&limit=100&page=%d'
+PAGINE = 3
+# Fuori le categorie che non possono essere video: 5 software, 6 giochi, 7 musica, 8 audiolibri, 9 ebook, 10 XXX. Le
+# sottocategorie di 1 "Altro" no: le assegna bitsearch dal contenuto e sbagliano ("Ratatouille.2007.1080p.BluRay.x265-RARBG" in
+# "Programmi", altri film in "Immagini" e "Database", 27/09); decide il classificatore sui file
+_CATEGORIE_NON_VIDEO = (5, 6, 7, 8, 9, 10)
 _HASH_RE = re.compile(r'^[0-9a-fA-F]{40}$')
-_BTIH_RE = re.compile(r'btih[:=]([0-9a-fA-F]{40})', re.I)
-_TORRENT_LINK_RE = re.compile(r'href="/torrent/[^"]+"', re.I)
-_YEAR_RE = re.compile(r'(?:19|20)\d{2}')
-_QUALITY_RE = re.compile(r'2160p|216op|4k|1080p|1o8op|108op|1o80p|720p|72op|480p|48op', re.I)
-_VIDEO_RE = re.compile(
-	r'(\.(?:mkv|mp4|avi|m2ts|ts|mov|wmv|mpg|mpeg|divx)\b|'
-	r'\b(?:bluray|bdrip|brrip|web-dl|webdl|webrip|dvdrip|dvd9|dvd5|hdrip|hdtv|tvrip|remux|workprint|x264|x265|h264|h265|hevc|xvid)\b)',
-	re.I)
-_TITLE_MARKER_RE = re.compile(
-	r'2160p|216op|4k|1080p|1o8op|108op|1o80p|720p|72op|480p|48op|'
-	r'\.(?:mkv|mp4|avi|m2ts|ts|mov|wmv|mpg|mpeg|divx)\b|'
-	r'\b(?:uhd|hdr|sdr|dv|dovi|bluray|blu-ray|bdrip|brrip|bdremux|web-dl|webdl|webrip|dvdrip|dvd9|dvd5|hdrip|hdtv|tvrip|remux|workprint|x264|x265|h264|h265|hevc|xvid)\b',
-	re.I)
-_TOKEN_RE = re.compile(r'[a-z0-9]+', re.I)
+SCADENZA = 10
+# Limitati o giu' (richiesta dell'utente, 27/09): il limite gratuito e' di 200 richieste al giorno per IP e risponde 429: si
+# cambia IP, cioe' si ripete dal proxy configurato (rotante: un IP nuovo a ogni richiesta), fino a CAMBI_IP volte. Ogni altra
+# risposta (5xx, 403, JSON rotto) o nessuna risposta (timeout, connessione) vuol dire API giu': ci si ferma per tutta la
+# ricerca, niente altre richieste ne' dirette ne' dal proxy.
+CAMBI_IP = 3
 
 
-class source(BaseTorrentScraper):
+def _video(hit):
+	return hit.get('category') not in _CATEGORIE_NON_VIDEO
+
+
+class source(BaseTestoScraper):
+	"""Lotto 412: le query, i thread e la sequenza nella base per testo; qui le pagine dell'API, limitati o giu', e la lettura."""
 	priority = 3
-	pack_capable = True
 	hasMovies = True
 	hasEpisodes = True
+	# lotto 408: anche i film con l'anno. Solo il titolo, un titolo comune ("The One", "Guardians": 10.000 risultati) seppelliva le
+	# release giuste; con l'anno ne arrivano di piu' per tutti i titoli provati
+	anno_nei_film = True
 
-	def __init__(self):
-		super().__init__()
-		self.base_link = 'https://bitsearch.to'
-		self.search_link = '/search?q=%s&sort=size'
-		self.min_seeders = 0
-		self._headers = {'Accept-Language': 'en-US,en;q=0.9'}
+	def _reset(self):
+		super()._reset()
+		self._giu = False          # lo stato "API giu'" vale per una ricerca
+
+	def _chiedi(self, query, pagina):
+		"""(risultati, altre pagine?) di una pagina; [] se limitati senza scampo o se l'API e' giu'."""
+		if self._giu: return [], False
+		url, proxy = _API_URL % (quote_plus(query), pagina), None
+		for cambio in range(CAMBI_IP + 1):
+			risposta = client.request(url, proxy=proxy, timeout=7, scadenza=SCADENZA, output='extended')
+			if risposta is None:
+				return self._fermati('nessuna risposta (timeout o connessione)', query)
+			testo, stato, _intestazioni = risposta
+			if stato == '429':
+				# client.request ripete gia' dal proxy un 429 diretto: qui arriva il 429 del proxy, si chiede un altro IP
+				proxy = client._get_configured_proxy()
+				if not proxy:
+					log_utils.log('BITSEARCH limitato (429) e nessun proxy configurato: "%s" p%d' % (query, pagina))
+					return [], False
+				log_utils.log('BITSEARCH limitato (429), cambio IP %d/%d: "%s" p%d' % (cambio + 1, CAMBI_IP, query, pagina))
+				continue
+			if stato != '200':
+				return self._fermati('HTTP %s' % stato, query)
+			try: dati = jsloads(testo)
+			except: return self._fermati('risposta non JSON', query)
+			risultati = [h for h in dati.get('results') or [] if _video(h)]
+			log_utils.log('BITSEARCH "%s" p%d: %s risultati, %s fuori categoria' % (query, pagina, len(dati.get('results') or []),
+						  len(dati.get('results') or []) - len(risultati)))
+			return risultati, bool((dati.get('pagination') or {}).get('hasNext'))
+		log_utils.log('BITSEARCH limitato anche dopo %d cambi di IP: "%s" p%d' % (CAMBI_IP, query, pagina))
+		return [], False
+
+	def _fermati(self, motivo, query):
+		if not self._giu: log_utils.log('BITSEARCH API giu\' (%s) su "%s": nessun\'altra richiesta in questa ricerca' % (motivo, query))
+		self._giu = True
+		return [], False
+
+	def _fetch_hits(self, query):
+		"""Le pagine di una ricerca: la prima, poi le altre insieme se la prima dice che ce ne sono."""
+		risultati, altre = self._chiedi(query, 1)
+		if altre and PAGINE > 1:
+			pagine = {}
+			fili = [Thread(target=lambda n: pagine.__setitem__(n, self._chiedi(query, n)[0]), args=(n,)) for n in range(2, PAGINE + 1)]
+			[f.start() for f in fili]
+			[f.join() for f in fili]
+			for n in sorted(pagine): risultati += pagine[n]
+		return risultati
 
 	@staticmethod
-	def _fetch_rows(page_url, headers):
+	def _leggi(hit):
+		"""Una voce della risposta -> candidato (lotto 409: i controlli li fa la classe base)."""
+		hash = (hit.get('infohash') or '').lower()
+		if not _HASH_RE.match(hash): return None
+		name = source_utils.clean_name(hit.get('title') or '')
+		try: seeders = int(hit.get('seeders') or 0)
+		except: seeders = 0
 		try:
-			response = client.request(page_url, timeout=7, headers=headers, output='extended')
-			if not response:
-				log_utils.log('BITSEARCH fetch failed: %s' % page_url)
-				return []
-			results, status, response_headers = response
-			if status != '200':
-				log_utils.log('BITSEARCH fetch status=%s url=%s' % (status, page_url))
-				return []
-			if not results or '/torrent/' not in results:
-				log_utils.log('BITSEARCH no torrent markers: len=%s url=%s' % (len(results or ''), page_url))
-				return []
-
-			matches = list(_TORRENT_LINK_RE.finditer(results))
-			if matches:
-				rows = []
-				for idx, match in enumerate(matches):
-					end = matches[idx + 1].start() if idx + 1 < len(matches) else len(results)
-					rows.append(results[match.start():end])
-				return rows
-
-			cards = re.split(r'<div class="[^"]*(?:bg-white|shadow|border)[^"]*"', results)
-			rows = [c for c in cards[1:] if '/torrent/' in c]
-			log_utils.log('BITSEARCH fallback card split: %s rows len=%s url=%s' % (len(rows), len(results), page_url))
-			return rows
-		except:
-			source_utils.scraper_error('BITSEARCH')
-			return []
-
-	@staticmethod
-	def _parse_row(row):
-		try:
-			hash_match = re.search(r'/download/torrent/([A-F0-9]{40})', row, re.I)
-			if hash_match:
-				hash = hash_match.group(1).lower()
-			else:
-				hash_match = _BTIH_RE.search(row)
-				hash = hash_match.group(1).lower() if hash_match else ''
-			if not _HASH_RE.match(hash): return None
-			name_match = re.search(r'href="/torrent/[^"]+"[^>]*>\s*(.*?)\s*</a>', row, re.DOTALL)
-			if not name_match: return None
-			name = source_utils.clean_name(client.cleanHTML(name_match.group(1)).strip())
-			url = 'magnet:?xt=urn:btih:%s&dn=%s' % (hash, name)
-			try:
-				s = re.search(r'text-green-600[^>]*>.*?<span class="font-medium">(\d+)</span>', row, re.DOTALL)
-				seeders = int(s.group(1)) if s else 0
-			except: seeders = 0
-			try:
-				sz = re.search(r'(\d+(?:[.,]\d+)*\s*(?:GB|MB|TB|GiB|MiB)\b)', row)
-				dsize, isize = source_utils._size(sz.group(1).strip()) if sz else (0, '')
-			except: dsize, isize = 0, ''
-			return url, hash, name, seeders, dsize, isize
-		except: return None
-
-	def _check_movie_result(self, name):
-		try:
-			result_years = _YEAR_RE.findall(name)
-			if not result_years:
-				return False, 'year missing'
-			if not any(y in self.years for y in result_years):
-				return False, 'year out of range'
-			if not _VIDEO_RE.search(name):
-				return False, 'video marker missing'
-
-			title_list = []
-			for item in source_utils.aliases_to_array(self.aliases):
-				try:
-					title_list.append(item.replace('&', 'and'))
-				except:
-					pass
-			title_list.append(self.title.replace('&', 'and'))
-
-			name_title = _YEAR_RE.sub(' ', name.replace('&', 'and'))
-			name_title = _TITLE_MARKER_RE.split(name_title, 1)[0]
-			clean_result = cleantitle.get(name_title)
-			result_tokens = [t.lower() for t in _TOKEN_RE.findall(name_title)]
-			clean_titles = []
-			title_token_lists = []
-			for t in title_list:
-				clean_title = cleantitle.get(t)
-				if not clean_title: continue
-				clean_titles.append(clean_title)
-				title_tokens = [x.lower() for x in _TOKEN_RE.findall(t.replace('&', 'and'))]
-				if title_tokens: title_token_lists.append(title_tokens)
-				t_lower = t.strip().lower()
-				for article in ('the ', 'a ', 'an '):
-					if t_lower.startswith(article):
-						clean_titles.append(cleantitle.get(t[len(article):]))
-						article_tokens = [x.lower() for x in _TOKEN_RE.findall(t[len(article):])]
-						if article_tokens: title_token_lists.append(article_tokens)
-
-			for title_tokens in title_token_lists:
-				if len(title_tokens) == 1:
-					token = title_tokens[0]
-					if result_tokens == title_tokens or (result_tokens and result_tokens[-1] == token):
-						return True, ''
-					continue
-				for idx in range(0, len(result_tokens) - len(title_tokens) + 1):
-					if result_tokens[idx:idx + len(title_tokens)] == title_tokens:
-						return True, ''
-			if self.year in result_years and _VIDEO_RE.search(name):
-				fuzzy_titles = [t for t in clean_titles if t and len(t) >= 8]
-				if not fuzzy_titles:
-					return False, 'title mismatch'
-				best_ratio = max(SequenceMatcher(None, t, clean_result).ratio() for t in fuzzy_titles)
-				if best_ratio >= 0.62:
-					log_utils.log('BITSEARCH KEPT [exact year + video fuzzy title %.2f]: "%s"' % (best_ratio, name))
-					return True, ''
-				return False, 'title mismatch fuzzy=%.2f' % best_ratio
-			return False, 'title mismatch'
-		except:
-			source_utils.scraper_error('BITSEARCH')
-			return False, 'title/year check error'
-
-	def get_sources(self, page_url):
-		rows = self._fetch_rows(page_url, self._headers)
-		log_utils.log('BITSEARCH page "%s": %s rows' % (page_url, len(rows)))
-		parse_failures = 0
-		for row in rows:
-			try:
-				parsed = self._parse_row(row)
-				if not parsed:
-					parse_failures += 1
-					continue
-				url, hash, name, seeders, dsize, isize = parsed
-				if not name or not hash: continue
-				log_utils.log('BITSEARCH RAW: "%s" | hash=%s | seeders=%s' % (name, hash, seeders))
-				if self.episode_title:
-					if not source_utils.check_title(self.title, self.aliases, name, self.hdlr_match, self.year):
-						log_utils.log('BITSEARCH SKIP [title mismatch]: "%s"' % name)
-						continue
-				else:
-					valid, reason = self._check_movie_result(name)
-					if not valid:
-						log_utils.log('BITSEARCH SKIP [%s]: "%s"' % (reason, name))
-						continue
-				name_info = source_utils.info_from_name(name, self.title, self.year, self.hdlr, self.episode_title)
-				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables):
-					log_utils.log('BITSEARCH SKIP [undesirable tag]: "%s"' % name)
-					continue
-				if not self.episode_title and self._is_episode_result(name):
-					log_utils.log('BITSEARCH SKIP [episode in movie search]: "%s"' % name)
-					continue
-				if self.min_seeders > seeders:
-					log_utils.log('BITSEARCH SKIP [seeders=%s < min=%s]: "%s"' % (seeders, self.min_seeders, name))
-					continue
-				log_utils.log('BITSEARCH KEPT: "%s" | hash=%s' % (name, hash))
-				self._append_result(self._build_result('bitsearch', hash, name, name_info, url, seeders, dsize, isize))
-			except:
-				source_utils.scraper_error('BITSEARCH')
-		if parse_failures:
-			log_utils.log('BITSEARCH parse failures: %s/%s url=%s' % (parse_failures, len(rows), page_url))
-
-	def get_sources_packs(self, link):
-		rows = self._fetch_rows(link, self._headers)
-		log_utils.log('BITSEARCH pack page "%s": %s rows' % (link, len(rows)))
-		parse_failures = 0
-		for row in rows:
-			try:
-				parsed = self._parse_row(row)
-				if not parsed:
-					parse_failures += 1
-					continue
-				url, hash, name, seeders, dsize, isize = parsed
-				if not name or not hash: continue
-				if self.min_seeders > seeders: continue
-
-				episode_start, episode_end, last_season = 0, 0, None
-				if not self.search_series:
-					if not self.bypass_filter:
-						valid, episode_start, episode_end = source_utils.filter_season_pack(
-							self.title, self.aliases, self.year, self.season_x, name)
-						if not valid:
-							log_utils.log('BITSEARCH SKIP [filter_season_pack]: "%s"' % name)
-							continue
-					package = 'season'
-				else:
-					if not self.bypass_filter:
-						valid, last_season = source_utils.filter_show_pack(
-							self.title, self.aliases, self.imdb, self.year, self.season_x, name, self.total_seasons)
-						if not valid:
-							log_utils.log('BITSEARCH SKIP [filter_show_pack]: "%s"' % name)
-							continue
-					else: last_season = self.total_seasons
-					package = 'show'
-
-				name_info = source_utils.info_from_name(name, self.title, self.year, season=self.season_x, pack=package)
-				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables):
-					log_utils.log('BITSEARCH SKIP [undesirable tag]: "%s"' % name)
-					continue
-
-				log_utils.log('BITSEARCH KEPT (pack=%s): "%s" | hash=%s' % (package, name, hash))
-				self._append_result(self._build_pack_result(
-					'bitsearch', hash, name, name_info, url, seeders, dsize, isize,
-					package, episode_start, episode_end, last_season, self.search_series))
-			except:
-				source_utils.scraper_error('BITSEARCH')
-		if parse_failures:
-			log_utils.log('BITSEARCH pack parse failures: %s/%s url=%s' % (parse_failures, len(rows), link))
-
-	def sources(self, data, hostDict):
-		self._reset()
-		if not data: return self._results
-		try:
-			is_tv = 'tvshowtitle' in data
-			if is_tv: self._init_episode_data(data)
-			else: self._init_movie_data(data)
-			self._init_filters()
-			pages = []
-			for idx, st in enumerate(self.search_titles):
-				st_clean = re.sub(r'[^A-Za-z0-9\s\.-]+', '', st).strip()
-				if not st_clean:
-					continue
-				q = '%s %s' % (st_clean, self.hdlr) if is_tv else st_clean
-				base = '%s%s' % (self.base_link, self.search_link % quote_plus(q))
-				log_utils.log('BITSEARCH query[%s]: %s' % (idx, base))
-				pages.append(base)
-				if st == self._paginate_title:
-					pages += [base + '&page=%s' % p for p in range(2, 5)]
-				# Le release anime numerano in assoluto ("One Piece - 1178"): cercando solo S23E23 non
-				# si trovano. Vedi source_utils.episodio_regex.
-				if is_tv and self.absolute:
-					pages.append('%s%s' % (self.base_link, self.search_link % quote_plus('%s %s' % (st_clean, self.absolute))))
-			self._run_threads(self.get_sources, list(dict.fromkeys(pages)))
-		except:
-			source_utils.scraper_error('BITSEARCH')
-		self._log_stats('BITSEARCH')
-		return self._results
-
-	def sources_packs(self, data, hostDict, search_series=False, total_seasons=None, bypass_filter=False):
-		self._reset()
-		if not data: return self._results
-		try:
-			self._init_pack_data(data)
-			self._init_filters()
-			self.search_series = search_series
-			self.total_seasons = total_seasons
-			self.bypass_filter = bypass_filter
-
-			queries = []
-			for st in self.search_titles:
-				q = re.sub(r'[^A-Za-z0-9\s\.-]+', '', st).strip()
-				if not q:
-					continue
-				if search_series:
-					queries += [q + ' Season', q + ' Complete']
-				else:
-					queries += [q + ' S%s' % self.season_xx, q + ' Season %s' % self.season_x]
-			links = list(dict.fromkeys(['%s%s&category=3' % (self.base_link, self.search_link % quote_plus(q)) for q in queries]))
-			for lnk in links:
-				log_utils.log('BITSEARCH pack query: %s' % lnk)
-			self._run_threads(self.get_sources_packs, links)
-		except:
-			source_utils.scraper_error('BITSEARCH')
-		self._log_stats('BITSEARCH', pack=True)
-		return self._results
+			dsize = round(int(hit.get('size') or 0) / 1073741824.0, 2)
+			isize = '%.2f GB' % dsize if dsize else ''
+		except: dsize, isize = 0, ''
+		return {'hash': hash, 'name': name, 'url': source._magnet(hash, name), 'seeders': seeders, 'dsize': dsize, 'isize': isize}

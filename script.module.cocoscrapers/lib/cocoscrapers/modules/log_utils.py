@@ -5,6 +5,8 @@
 
 from datetime import datetime
 import inspect
+import os
+from threading import Lock
 from cocoscrapers.modules.control import transPath, setting as getSetting, lang, joinPath, existsPath
 
 LOGDEBUG = 0
@@ -17,7 +19,54 @@ LOGNONE = 5 # not used
 debug_list = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'FATAL']
 DEBUGPREFIX = '[COLOR red][ COCOSCRAPERS %s ][/COLOR]'
 LOGPATH = transPath('special://logpath/')
+# Fen Light, lotto 363 -- il file del log resta aperto per tutta l'invocazione invece di essere aperto e chiuso a
+# ogni riga (tre righe per risultato grezzo in una ricerca). Il blocco tiene intere le righe dei thread degli
+# scraper; se il file sparisce (lo svuota "clear log file" da un altro interprete) si riapre.
+LOG_FILE = joinPath(LOGPATH, 'cocoscrapers.log')
+_file_log = [None]
+_blocco_log = Lock()
 
+def _scrivi_in_coda(line):
+	with _blocco_log:
+		f = _file_log[0]
+		if f is None or f.closed or not os.path.exists(LOG_FILE):
+			f = _file_log[0] = open(LOG_FILE, 'a', encoding='utf-8')
+		f.write(line.rstrip('\r\n') + '\n')
+		f.flush()
+
+
+_SEGRETE = ('icv.userdata', 'comet.userdata', 'mediafusion.userdata', 'proxy.url')
+_segreti = []
+
+def _valori_segreti():
+	"""Fen Light, lotto 411: i valori da non scrivere mai, letti una volta per interprete. Gli URL di ICV, Comet e MediaFusion
+	portano `userdata` (per ICV la chiave di TorBox), quello del proxy le credenziali; finivano nel log dalle righe "query",
+	da `Request-Error url=` di client e dai traceback di requests, e upload_LogFile carica il log su paste.kodi.tv."""
+	if not _segreti:
+		from urllib.parse import quote, urlsplit
+		valori = set()
+		for chiave in _SEGRETE:
+			v = (getSetting(chiave) or '').strip().strip('/')
+			if len(v) < 6: continue
+			valori.update((v, quote(v, safe='')))
+			if chiave == 'proxy.url':
+				# la password anche da sola ("utente:password" in un messaggio senza l'indirizzo intero)
+				try: password = urlsplit(v).password
+				except ValueError: password = None
+				if password and len(password) >= 6: valori.add(password)
+		_segreti.extend(sorted((x for x in valori if len(x) >= 6), key=len, reverse=True) or [None])
+	return [x for x in _segreti if x]
+
+def nascondi(msg):
+	"""Il messaggio senza i valori segreti delle impostazioni (lotto 411)."""
+	for v in _valori_segreti():
+		if v in msg: msg = msg.replace(v, '<nascosto>')
+	return msg
+
+
+def attivo():
+	"""Fen Light, lotto 409: se il log e' acceso. Chi scrive una riga per ogni risultato lo chiede una volta per ricerca."""
+	return getSetting('debug.enabled') == 'true'
 
 def log(msg, caller=None, level=LOGINFO):
 	debug_enabled = getSetting('debug.enabled') == 'true'
@@ -30,6 +79,7 @@ def log(msg, caller=None, level=LOGINFO):
 			msg = '%s (NORMALIZED by log_utils.log())' % normalize(msg)
 		if isinstance(msg, bytes):
 			msg = '%s (ENCODED by log_utils.log())' % msg.decode('utf-8', errors='replace')
+		msg = nascondi(msg)   # lotto 411: nessuna credenziale nel log, da qualunque riga arrivi
 
 		if caller == 'scraper_error': pass
 		elif caller is not None and level != LOGERROR:
@@ -41,17 +91,15 @@ def log(msg, caller=None, level=LOGINFO):
 			msg = 'From func name: %s.%s() Line # :%s\n                       msg : %s' % (caller[0], caller[1], caller[2], msg)
 
 		if debug_location == '1':
-			log_file = joinPath(LOGPATH, 'cocoscrapers.log')
-			if not existsPath(log_file):
-				f = open(log_file, 'w')
-				f.close()
 			reverse_log = getSetting('debug.reversed') == 'true'
 			if not reverse_log:
-				with open(log_file, 'a', encoding='utf-8') as f: # "with" auto cleans up and closes
-					line = '[%s %s] %s: %s' % (datetime.now().date(), str(datetime.now().time())[:8], DEBUGPREFIX % debug_list[level], msg)
-					f.write(line.rstrip('\r\n') + '\n')
-					# f.writelines([line1, line2]) ## maybe an option for the 2 lines without using "\n"
+				adesso = datetime.now()
+				_scrivi_in_coda('[%s %s] %s: %s' % (adesso.date(), str(adesso.time())[:8], DEBUGPREFIX % debug_list[level], msg))
 			else:
+				log_file = LOG_FILE
+				if not existsPath(log_file):
+					f = open(log_file, 'w')
+					f.close()
 				with open(log_file, 'r+', encoding='utf-8') as f:
 					line = '[%s %s] %s: %s' % (datetime.now().date(), str(datetime.now().time())[:8], DEBUGPREFIX % debug_list[level], msg)
 					log_file = f.read()

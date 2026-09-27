@@ -83,7 +83,11 @@ def open_media_info(params):
 		while getCondVisibility('Window.IsVisible(movieinformation)') and count < 20:
 			sleep(50)
 			count += 1
+	# 26/09: anche il film ha il suo percorso (lo stesso delle liste). Senza, il pulsante Riproduci della scheda eseguiva
+	# PlayMedia() con il percorso vuoto ("Keymapping error: no such action 'playmedia()'") e non partiva nulla.
 	if media_type != 'movie': listitem.setPath('plugin://plugin.video.fenlight/?mode=build_season_list&tmdb_id=%s' % str(meta_get('tmdb_id') or tmdb_id))
+	else:
+		listitem.setPath('plugin://plugin.video.fenlight/?mode=playback.media&media_type=movie&tmdb_id=%s' % str(meta_get('tmdb_id') or tmdb_id))
 	Dialog().info(listitem)
 
 def browse_media(params):

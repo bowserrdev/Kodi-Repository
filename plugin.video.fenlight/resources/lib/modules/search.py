@@ -224,7 +224,9 @@ def launch_discover(params):
 	# discover_imdb_sort_from_url). Explicit non-rating sorts and Random keep the pure TMDb order.
 	if '[random]' not in user_fragments and 'sort_by=' not in user_fragments:
 		fragments += '&sort_by=vote_average.desc'
-	tmdb_url = 'https://api.themoviedb.org/3/discover/%s?language=en-US&region=US&with_original_language=en%s' % ('movie' if is_movie else 'tv', fragments)
+	# 26/09: niente filtro fisso sulla lingua originale (inglese). Era un filtro che l'utente non sceglie: con un attore coreano
+	# (Song Kang-ho) Scopri non poteva trovare nulla. I filtri di Scopri sono solo quelli scelti.
+	tmdb_url = 'https://api.themoviedb.org/3/discover/%s?language=en-US&region=US%s' % ('movie' if is_movie else 'tv', fragments)
 	mode = 'build_movie_list' if is_movie else 'build_tvshow_list'
 	action = 'tmdb_movies_discover' if is_movie else 'tmdb_tv_discover'
 	content_path = build_url({'mode': mode, 'action': action, 'url': tmdb_url, 'name': 'Discover'})

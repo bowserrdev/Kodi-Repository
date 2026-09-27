@@ -6,7 +6,7 @@ from threading import Thread
 from caches.main_cache import cache_object
 from caches.settings_cache import get_setting, set_setting
 from modules.utils import copy2clip
-from modules.source_utils import supported_video_extensions, seas_ep_filter, EXTRAS
+from modules.source_utils import supported_video_extensions, seas_ep_filter, file_dell_episodio, EXTRAS
 from modules import kodi_utils
 
 # Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
@@ -235,11 +235,9 @@ class RealDebridAPI:
 			selected_files = sorted(selected_files, key=lambda x: x[1]['bytes'], reverse=True)
 			match = False
 			if season:
-				correct_files = []
-				correct_file_check = False
-				for value in selected_files:
-					correct_file_check = seas_ep_filter(season, episode, absolute=absolute, release_title=value[1]['path'])
-					if correct_file_check: correct_files.append(value[1]); break
+				# Lotto 362: il primo (il piu' grande: selected_files e' ordinata per byte) fra i file dell'episodio,
+				# scelti come in tutti i resolver (file_dell_episodio).
+				correct_files = file_dell_episodio([value[1] for value in selected_files], season, episode, absolute, lambda i: i['path'].split('/')[-1], lambda i: i['path'])[:1]
 				if len(correct_files) == 0: match = False
 				else:
 					for i in correct_files:

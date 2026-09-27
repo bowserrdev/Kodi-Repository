@@ -39,7 +39,30 @@ def _get_configured_proxy():
 
 def request(url, close=True, redirect=True, error=False, proxy=None, post=None, headers=None, mobile=False,
 			XHR=False, limit=None, referer=None, cookie=None, compression=True, output='', timeout='30',
-			verifySsl=True, flare=True, ignoreErrors=None, as_bytes=False):
+			verifySsl=True, flare=True, ignoreErrors=None, as_bytes=False, scadenza=None, _fine=None):
+	# `scadenza` (lotto 368, SORGENTI.md): secondi per la risposta INTERA. `timeout` vale fra un pacchetto e l'altro,
+	# e un servizio che trasmette a pochi KB/s (Knaben, 26/09: 440 KB in 45-90 s) non lo supera mai.
+	# LOTTO 380: la scadenza copre TUTTO (intestazioni, ritentativo dal proxy, un pezzo che tarda fino al timeout di
+	# lettura): la richiesta gira in un thread e chi chiama aspetta al massimo `scadenza`. Prima si guardava solo
+	# all'arrivo di un pezzo, e Knaben arrivava a 13 s con scadenza 10 (passata del 26/09).
+	if scadenza and _fine is None:
+		argomenti = dict(locals())          # prima di ogni altro nome: sono gli argomenti e basta
+		import threading as _fili, time as _orologio   # nomi propri: `time` qui sarebbe locale per tutta la funzione
+		argomenti['_fine'] = _orologio.time() + float(scadenza)
+		esito = []
+		# thread normale, come quelli degli scraper: Kodi fa girare il plugin in un sotto-interprete, dove i daemon sono
+		# delicati; chi resta indietro finisce da solo entro il timeout di lettura
+		lavoro = _fili.Thread(target=lambda: esito.append(request(**argomenti)))
+		lavoro.start()
+		lavoro.join(float(scadenza))
+		if lavoro.is_alive():
+			try:
+				from cocoscrapers.modules import log_utils
+				log_utils.log('CLIENT: %s oltre la scadenza di %s s, risposta abbandonata' % (urlparse(url).netloc, scadenza))
+			except:
+				pass
+			return None
+		return esito[0] if esito else None
 	try:
 		if not url: return None
 		if url.startswith('//'): url = 'http:' + url
@@ -73,8 +96,21 @@ def request(url, close=True, redirect=True, error=False, proxy=None, post=None, 
 				proxies={'http': request_proxy, 'https': request_proxy} if request_proxy else None,
 				timeout=(2, int(timeout)),
 				verify=verifySsl,
-				allow_redirects=redirect
+				allow_redirects=redirect,
+				stream=bool(scadenza)
 			)
+
+		def _entro_la_scadenza(response):
+			import time
+			fine = _fine or time.time() + float(scadenza)
+			pezzi = []
+			for pezzo in response.iter_content(2048):      # pezzi piccoli: l'orologio si guarda spesso anche a pochi KB/s
+				pezzi.append(pezzo)
+				if time.time() > fine:
+					response.close()
+					return False
+			response._content = b''.join(pezzi)
+			return True
 
 		response = _send(proxy)
 		if response.status_code == 429 and not proxy:
@@ -86,6 +122,13 @@ def request(url, close=True, redirect=True, error=False, proxy=None, post=None, 
 				except:
 					pass
 				response = _send(fallback_proxy)
+		if scadenza and not _entro_la_scadenza(response):
+			try:
+				from cocoscrapers.modules import log_utils
+				log_utils.log('CLIENT: %s oltre la scadenza di %s s, risposta abbandonata' % (urlparse(url).netloc, scadenza))
+			except:
+				pass
+			return None
 
 		# output='extended' is always returned regardless of status so callers can inspect the code
 		if output == 'extended':

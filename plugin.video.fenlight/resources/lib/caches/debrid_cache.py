@@ -57,4 +57,9 @@ class DebridCache:
 			return True
 		except: return False
 
+	def togli_scadute(self):
+		"""Lotto 369: i verdetti "in cache" scaduti (24 h), all'avvio del servizio. Senza VACUUM."""
+		try: return connect_database('debridcache_db').execute(CLEAN, (get_timestamp(),)).rowcount
+		except: return 0
+
 debrid_cache = DebridCache()

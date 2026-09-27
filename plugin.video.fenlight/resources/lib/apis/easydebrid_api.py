@@ -4,7 +4,7 @@ import json
 from urllib.parse import urlencode
 from caches.settings_cache import get_setting, set_setting
 from modules.kodi_utils import make_session, kodi_dialog, notification, ok_dialog, confirm_dialog
-from modules.source_utils import supported_video_extensions, seas_ep_filter, EXTRAS
+from modules.source_utils import supported_video_extensions, seas_ep_filter, file_dell_episodio, EXTRAS
 # from modules.kodi_utils import logger
 
 base_url = 'https://easydebrid.com/api/v1/'
@@ -67,7 +67,7 @@ class EasyDebridAPI:
 			torrent_files = [item for item in torrent_files if item['filename'].lower().endswith(tuple(extensions))]
 			if not torrent_files: return None
 			if season:
-				torrent_files = [i for i in torrent_files if seas_ep_filter(season, episode, absolute=absolute, release_title=i['filename'])]
+				torrent_files = file_dell_episodio(torrent_files, season, episode, absolute, lambda i: i['filename'])
 				if not torrent_files: return None
 			else:
 				if self._m2ts_check(torrent_files): return None

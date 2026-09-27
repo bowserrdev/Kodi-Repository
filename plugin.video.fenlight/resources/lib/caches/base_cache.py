@@ -180,7 +180,10 @@ table_creators = {
 		# l'infohash E' il contenuto, quindi la lista dei file non puo' cambiare. Sta accanto a
 		# `debrid_data` ma ha vita opposta: quella scade a 24 h perche' l'ESSERE IN CACHE cambia,
 		# questa non scade mai. Cresce a limite: ci pensa pack_cache.manutenzione().
-		'CREATE TABLE IF NOT EXISTS pack_files (hash text primary key, files text, quando integer)',),
+		'CREATE TABLE IF NOT EXISTS pack_files (hash text primary key, files text, quando integer)',
+		# LOTTO 365 -- il verdetto del classificatore per hash e domanda (caches/pack_cache.py). NON in
+		# integrity_check: una tabella mancante li' fa cancellare il database; pack_cache la crea anche al primo uso.
+		'CREATE TABLE IF NOT EXISTS verdetti (hash text not null, chiave text not null, esito integer, file text, byte integer, quando integer, unique (hash, chiave))',),
 	'lists_db': (
 		'CREATE TABLE IF NOT EXISTS lists (id text unique, data text, expires integer)',),
 	'external_db': (

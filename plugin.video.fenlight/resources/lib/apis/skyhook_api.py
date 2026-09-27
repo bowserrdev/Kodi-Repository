@@ -176,6 +176,13 @@ def costruisci_mappa_episodi(episodi_tvdb, episodi_trakt, oggi):
 	1. AGGANCIO PER ID, IN TUTTE LE STAGIONI. L'id e' un'identita' e non dipende dalle coordinate, quindi
 	   vale anche per la stagione 0 e fra stagioni diverse: Dragon Ball Kai TVDB S1E98 e' TMDb S0E1.
 	   Fino al lotto 357 la stagione 0 restava fuori anche da qui, e quegli episodi si perdevano.
+	2b. CONTRADDIZIONE DI TITOLO (lotto 384), solo stagioni > 0, applicata PRIMA della regola 1. L'id che TMDb dichiara puo'
+	   essere sbagliato: Pokemon TMDb 1x65 "Holiday Hi-Jynx" (05/10/1998) porta l'id di TVDB 1x69, mentre titolo e data sono
+	   quelli di TVDB 1x65; Full Metal Panic! Fumoffu S2 e' scalato di uno per l'OVA che TMDb tiene nella stagione. Se i due
+	   titoli agganciati per id NON si somigliano e allo stesso numero l'altra parte ha un titolo QUASI IDENTICO, l'episodio
+	   prende quel numero, riservato prima degli agganci per id: chi ci puntava per id resta libero e la regola 3 lo rimette
+	   al suo numero. Il titolo da solo non decide mai (il 6% dei titoli giusti e' tradotto in modo diverso, collaudo del
+	   26/09 su 11.318 episodi): serve la contraddizione da una parte e la conferma dall'altra.
 	2. VETO PER CONTRADDIZIONE, solo stagioni > 0. Se dei due episodi agganciati uno e' uscito e l'altro
 	   no, a piu' di un giorno di distanza, non sono lo stesso episodio: l'aggancio si rifiuta ed
 	   entrambi tornano liberi. Battle Through the Heavens: Trakt (5,210), uscito il 12/09, porta l'id
@@ -210,7 +217,8 @@ def costruisci_mappa_episodi(episodi_tvdb, episodi_trakt, oggi):
 			if stagione < 0: continue
 			try: assoluto = int(riga[4]) if len(riga) > 4 and riga[4] else None
 			except: assoluto = None
-			fuori[(stagione, numero)] = (id_tvdb or None, data or None, assoluto)
+			titolo = riga[6] if len(riga) > 6 else None      # lotto 384: il titolo inglese, per il veto di titolo
+			fuori[(stagione, numero)] = (id_tvdb or None, data or None, assoluto, titolo or None)
 		return fuori
 	def _giorno(data):
 		try: return date.fromisoformat(str(data)[:10])
@@ -223,6 +231,26 @@ def costruisci_mappa_episodi(episodi_tvdb, episodi_trakt, oggi):
 		g1, g2 = _giorno(data_tvdb), _giorno(data_trakt)
 		if g1 is None or g2 is None or abs((g1 - g2).days) <= 1: return False
 		return _uscito(data_tvdb, oggi) != _uscito(data_trakt, oggi)
+	def _parole_titolo(t):
+		import re, unicodedata
+		return re.sub(r'[^a-z0-9 ]', ' ', unicodedata.normalize('NFKD', t or '').encode('ascii', 'ignore').decode().lower().replace('&', ' and ')).split()
+	def _somiglianza(a, b):
+		# 0..1 fra due titoli di episodio, None se uno manca o e' generico ("Episode 12"): il massimo fra la somiglianza dei
+		# caratteri e la quota di parole in comune sul titolo piu' corto (lotto 384)
+		import re, difflib
+		pa, pb = _parole_titolo(a), _parole_titolo(b)
+		generico = re.compile(r'^(?:episode|episodio|ep|tba|tbd|untitled)?\s*\d*$')
+		if not pa or not pb or generico.match(' '.join(pa)) or generico.match(' '.join(pb)): return None
+		if pa == pb: return 1.0
+		comuni = len(set(pa) & set(pb)) / float(min(len(set(pa)), len(set(pb))))
+		somiglianza = max(difflib.SequenceMatcher(None, ' '.join(pa), ' '.join(pb)).ratio(), comuni)
+		# i numeri dicono QUALE parte: "A Goddess Comes to Japan (Part 1)" non e' "(Part 2)"
+		if set(x for x in pa if x.isdigit()) != set(x for x in pb if x.isdigit()): somiglianza = min(somiglianza, 0.5)
+		return somiglianza
+	def _titolo_contraddice(titolo_tvdb, titolo_agganciato, titolo_stesso_numero):
+		# gli agganciati non si somigliano (< 0,6) e quello allo stesso numero e' quasi identico (>= 0,9)
+		s1, s2 = _somiglianza(titolo_tvdb, titolo_agganciato), _somiglianza(titolo_tvdb, titolo_stesso_numero)
+		return s1 is not None and s2 is not None and s1 < 0.6 and s2 >= 0.9
 	tvdb, trakt = _per_coppia(episodi_tvdb), _per_coppia(episodi_trakt)
 	per_id = {}
 	for coppia in sorted(trakt):
@@ -231,7 +259,24 @@ def costruisci_mappa_episodi(episodi_tvdb, episodi_trakt, oggi):
 		# comportamenti sbagliati e' meglio quello uguale su tutti i dispositivi.
 		if ident is not None and ident not in per_id: per_id[ident] = coppia
 	mappa, presi_tvdb, presi_trakt, per_identita = {}, set(), set(), []
+	# REGOLA 2b (lotto 384). Gli episodi il cui aggancio per id e' contraddetto dal titolo, mentre allo stesso numero l'altra
+	# parte ha il titolo quasi identico, si riservano quel numero PRIMA degli agganci per id: l'aggancio sbagliato che ci
+	# puntava resta libero e la regola 3 lo rimette al suo numero. Senza la riserva l'episodio restava senza posto, cioe'
+	# nascosto (Full Metal Panic! Fumoffu 2x8: il suo posto era preso dall'aggancio sbagliato di 2x9).
+	# Il titolo che conferma dev'essere UNICO nella stagione TVDB: Pokemon 12x45 e 12x46 si chiamano entrambi "Unlocking the
+	# Red Chain of Events!" (un doppio episodio), e li' il titolo non dice quale dei due.
+	riservati = set()
 	for coppia in sorted(tvdb):
+		altra = per_id.get(tvdb[coppia][0]) if tvdb[coppia][0] is not None else None
+		if (altra is not None and altra != coppia and coppia[0] > 0 and altra[0] > 0 and coppia in trakt
+				and _titolo_contraddice(tvdb[coppia][3], trakt[altra][3], trakt[coppia][3])
+				and not any(c != coppia and c[0] == coppia[0] and (_somiglianza(tvdb[coppia][3], tvdb[c][3]) or 0) >= 0.9 for c in tvdb)):
+			riservati.add(coppia)
+	# presi prima del ciclo: un aggancio per id che viene PRIMA nell'ordine non deve poter occupare un posto riservato
+	presi_tvdb.update(riservati)
+	presi_trakt.update(riservati)
+	for coppia in sorted(tvdb):
+		if coppia in riservati: continue
 		ident = tvdb[coppia][0]
 		if ident is None: continue
 		altra = per_id.get(ident)
@@ -308,6 +353,7 @@ def episodi_per_giuntura(tvdb_id):
 	if data is None: return None
 	try:
 		righe = data.get('episodes') or []
-		return [(e.get('seasonNumber'), e.get('episodeNumber'), e.get('tvdbId'), e.get('airDate'), e.get('absoluteEpisodeNumber'))
+		# lotto 384: il titolo al settimo posto (il sesto e' l'id IMDb dal lato Trakt), per il veto di titolo della giuntura
+		return [(e.get('seasonNumber'), e.get('episodeNumber'), e.get('tvdbId'), e.get('airDate'), e.get('absoluteEpisodeNumber'), None, e.get('title'))
 				for e in righe]
 	except: return None

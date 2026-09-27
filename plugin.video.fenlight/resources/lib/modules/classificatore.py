@@ -124,6 +124,10 @@ _VALORI = dict(_ROMANI_CIFRE, **dict(zip(('one', 'two', 'three', 'four', 'five',
 
 _FINALI_TRASLITTERATE = frozenset(('ij', 'ji', 'iy', 'yi', 'jy', 'yj'))
 
+def _esatte(a, b):
+	# lotto 414: uguali senza refusi; "Part II" e "part.2" restano lo stesso titolo
+	return a == b or _ROMANI_CIFRE.get(a, a) == _ROMANI_CIFRE.get(b, b)
+
 @lru_cache(maxsize=262144)
 def _uguali(a, b):
 	if a == b: return True
@@ -261,8 +265,11 @@ class Domanda:
 	"""Cio' che si cerca. Film: titoli (titolo + alias), anno, durata in secondi. Episodio: stagione, episodio,
 	assoluto (solo per la numerazione TVDB)."""
 
-	def __init__(self, tipo, titoli=(), anno=None, durata=0, stagione=None, episodio=None, assoluto=None, ultimo_anno=None):
+	def __init__(self, tipo, titoli=(), anno=None, durata=0, stagione=None, episodio=None, assoluto=None, ultimo_anno=None, esatto=False):
 		self.tipo = 'movie' if tipo == 'movie' else 'episode'
+		# lotto 414: la lingua della fonte chiede il titolo senza la tolleranza di una lettera ("Contrattempo" non e' "Contratiempo":
+		# per l'identita' e' un refuso, per la lingua e' lo spagnolo)
+		self._uguali = _esatte if esatto else _uguali
 		# lotto 386: i titoli in ogni scrittura (prima solo quelli latini: i film russi, cinesi, giapponesi, coreani si perdevano)
 		self.titoli = [t for t in dict.fromkeys(t for t in titoli if t) if parole(t)]
 		self._titoli_parole = [p for p in (parole(t) for t in self.titoli) if p]
@@ -340,7 +347,7 @@ class Domanda:
 				# parola sola in testa e' spesso l'inizio di un altro titolo ("Guardians.Of.The.Galaxy.Vol.2.2017" per Guardians, 2017,
 				# 53 fonti tenute). Il titolo di una parola resta alla regola stretta, titolo_nel_nome
 				if len([x for x in tw if x not in ARTICOLI]) < 2: continue
-				if len(w) >= len(tw) and all(_uguali(a, b) for a, b in zip(w, tw)): return True
+				if len(w) >= len(tw) and all(self._uguali(a, b) for a, b in zip(w, tw)): return True
 		return False
 
 	def _varianti(self, nome, g):
@@ -365,7 +372,7 @@ class Domanda:
 
 	def parola_del_titolo(self, nome):
 		"""Lotto 381. Il nome porta almeno una parola distintiva di un titolo (3 lettere o piu', non vuota ne' generica)."""
-		return any(_uguali(_leet(a), b) for a in gettoni(nome, parentesi=False) for b in self._distintive)
+		return any(self._uguali(_leet(a), b) for a in gettoni(nome, parentesi=False) for b in self._distintive)
 
 	def titolo_nel_nome(self, nome, separatore=True):
 		"""Il titolo cercato nel nome di un FILE (variante del lotto 365 di check_title): etichette in testa e
@@ -384,7 +391,7 @@ class Domanda:
 			# "4x08") si guardano sulla parola com'e'
 			w = [_leet(x) for x in originali]
 			for tw in self.titoli_per(originali):
-				if len(w) < len(tw) or not all(_uguali(a, b) for a, b in zip(w, tw)): continue
+				if len(w) < len(tw) or not all(self._uguali(a, b) for a, b in zip(w, tw)): continue
 				# lotto 375: "Il Cavaliere Oscuro - The Dark Knight IMAX (2008)", l'altro titolo dell'opera si salta
 				resto = _dopo_alias(self, originali[len(tw):])
 				# lotto 387: "Movie", "The Movie", "Film" dopo il titolo lo chiudono se dopo di loro c'e' la fine, un altro titolo
@@ -454,7 +461,7 @@ class Domanda:
 		for originali in self._varianti(testa, g):
 			w = [_leet(x) for x in originali]
 			for tw in self.titoli_per(originali):
-				if len(w) >= len(tw) and all(_uguali(a, b) for a, b in zip(w, tw)) and not _dopo_alias(self, originali[len(tw):]):
+				if len(w) >= len(tw) and all(self._uguali(a, b) for a, b in zip(w, tw)) and not _dopo_alias(self, originali[len(tw):]):
 					anni = _anni(gettoni(coda, parentesi=False))
 					return not anni or not self.anni or anni[0] in self.anni
 		return False
@@ -500,17 +507,17 @@ def _numero_serie(t):
 def _valore(t):
 	return int(_VALORI.get(t, t))
 
-def _ug(a, b):
-	# i numeri per valore ("04" = "4", "vi" = "6"), le parole come _uguali
+def _ug(a, b, uguali=None):
+	# i numeri per valore ("04" = "4", "vi" = "6"), le parole come _uguali (o come la domanda confronta, lotto 414)
 	if _numero_serie(a) and _numero_serie(b): return _valore(a) == _valore(b)
-	return _uguali(a, b)
+	return (uguali or _uguali)(a, b)
 
 def _in_comune(w, tw):
 	k = 0
 	while k < len(tw) and k < len(w) and _ug(w[k], tw[k]): k += 1
 	return k
 
-def _copre(g, tw):
+def _copre(g, tw, uguali=None):
 	# quanti gettoni in testa a g fanno il titolo tw, articoli e preposizioni ignorati da entrambe le parti ("The Lord of
 	# the Rings Two Towers" = "The Lord of the Rings: The Two Towers"); 0 se non lo fanno
 	i = j = 0
@@ -519,7 +526,7 @@ def _copre(g, tw):
 			j += 1
 			continue
 		while i < len(g) and g[i] in VUOTE: i += 1
-		if i >= len(g) or not _ug(_leet(g[i]), tw[j]): return 0
+		if i >= len(g) or not _ug(_leet(g[i]), tw[j], uguali): return 0
 		i, j = i + 1, j + 1
 	return i
 
@@ -539,7 +546,7 @@ def _dopo_alias(domanda, resto):
 	for _ in range(2):
 		for tw in domanda.titoli_per(resto):
 			if len(''.join(x for x in tw if x not in VUOTE)) < 4: continue
-			n = _copre(resto, tw)
+			n = _copre(resto, tw, domanda._uguali)
 			if n:
 				resto = resto[n:]
 				break
