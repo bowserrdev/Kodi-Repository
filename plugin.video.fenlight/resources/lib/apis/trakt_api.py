@@ -1837,7 +1837,7 @@ def trakt_indicators_tv():
 	return _esito
 
 def trakt_episode_index(tmdb_id):
-	"""Gli episodi di una serie su Trakt come `(stagione, numero, id_tvdb, data, None, id_imdb)`.
+	"""Gli episodi di una serie su Trakt come `(stagione, numero, id_tvdb, data, None, id_imdb, titolo)`.
 
 	E' il DIZIONARIO della giuntura del lotto 145, non la sua destinazione. Skyhook conosce solo
 	l'id TVDB; dal lato TMDb non esiste una chiamata che dia l'id TVDB di ogni episodio (c'e' solo
@@ -1875,8 +1875,9 @@ def trakt_episode_index(tmdb_id):
 		for stagione in stagioni:
 			for episodio in stagione.get('episodes') or ():
 				ids = episodio.get('ids') or {}
+				# lotto 384: il titolo al settimo posto, per il veto di titolo della giuntura
 				fuori.append((stagione.get('number'), episodio.get('number'), ids.get('tvdb'),
-								episodio.get('first_aired'), None, ids.get('imdb')))
+								episodio.get('first_aired'), None, ids.get('imdb'), episodio.get('title')))
 		return fuori
 	except: return None
 

@@ -4,6 +4,7 @@
 """
 
 import re
+from functools import lru_cache
 from string import printable
 from cocoscrapers.modules import cleantitle
 from cocoscrapers.modules.undesirables import Undesirables
@@ -166,36 +167,42 @@ def episodio_regex(season, episode, absolute=None):
 			r'%s(?:v\d)?(?![0-9a-z])(?![._ ]?[-~][._ ]?\d)' % num)
 	return r'(?:%s|%s|%s)' % (con_ep, stagione_assoluta, nudo)
 
+@lru_cache(maxsize=64)
+def _titoli_check(title, aliases, year, years):
+	"""Fen Light, lotto 412: i titoli di check_title preparati una volta per ricerca, non per ogni risultato (su 83.521 nomi veri
+	check_title costava 10,7 s, 1,1 milioni di cleantitle.get). `aliases` e `years` come tuple. -> (titoli, puliti, pulito del
+	titolo, espressioni dei titoli che valgono anche in testa al nome)."""
+	title_list = []
+	for item in aliases:
+		try:
+			alias = item.replace('&', 'and').replace(year, '')
+			if years: # for movies only, scraper to pass None for episodes
+				for i in years: alias = alias.replace(i, '')
+			if alias in title_list: continue
+			title_list.append(alias)
+		except:
+			from cocoscrapers.modules import log_utils
+			log_utils.error()
+	title = title.replace('&', 'and').replace(year, '') # year only in meta title if an addon custom query added it
+	if title not in title_list: title_list.append(title)
+	clean_titles = tuple(c for c in (cleantitle.get(i) for i in title_list) if c)
+	clean_title = cleantitle.get(title)
+	in_testa = tuple(re.compile(r'\s*%s(?:\s|[._\-\(\[\]/]|$)' % re.escape(i.strip()), re.I) for i in title_list if i and cleantitle.get(i) != clean_title)
+	return tuple(title_list), clean_titles, clean_title, in_testa
+
 def check_title(title, aliases, release_title, hdlr, year, years=None): # non pack file title check, single eps and movies
 	if years: # for movies only, scraper to pass None for episodes
 		if not any(value in release_title for value in years): return False
 	else: 
 		if not re.search(r'%s' % hdlr, release_title, re.I): return False
-	aliases = aliases_to_array(aliases)
-	title_list = []
-	title_list_append = title_list.append
-	if aliases:
-		for item in aliases:
-			try:
-				alias = item.replace('&', 'and').replace(year, '')
-				if years: # for movies only, scraper to pass None for episodes
-					for i in years: alias = alias.replace(i, '')
-				if alias in title_list: continue
-				title_list_append(alias)
-			except:
-				from cocoscrapers.modules import log_utils
-				log_utils.error()
 	try:
-		
-		title = title.replace('&', 'and').replace(year, '') # year only in meta title if an addon custom query added it
-		if title not in title_list: title_list_append(title)
+		title_list, clean_titles, clean_title, in_testa = _titoli_check(title, tuple(aliases_to_array(aliases) or ()), year, tuple(years) if years else None)
 		release_title = re.sub(r'([(])(?=((19|20)[0-9]{2})).*?([)])', '\\2', release_title) #remove parenthesis only if surrounding a 4 digit date
 		t = re.split(r'%s' % hdlr, release_title, 1, re.I)[0].replace(year, '').replace('&', 'and')
 		if years:
 			for i in years: t = t.split(i)[0]
 		t = re.split(r'2160p|216op|4k|1080p|1o8op|108op|1o80p|720p|72op|480p|48op', t, 1, re.I)[0]
 		cleantitle_t = cleantitle.get(t)
-		clean_titles = [cleantitle.get(i) for i in title_list if cleantitle.get(i)]
 		if all(i != cleantitle_t for i in clean_titles):
 			title_segments = []
 			aka_segments = re.split(r'(?:^|[.\s_-]+)a\.?k\.?a\.?(?:[.\s_-]+|$)', t, flags=re.I)
@@ -203,12 +210,7 @@ def check_title(title, aliases, release_title, hdlr, year, years=None): # non pa
 			title_segments.append(re.split(r'[\(\[]', t, 1)[0])
 			title_segments.extend(re.findall(r'[\(\[]([^)\]]+)[\)\]]', t))
 			segment_match = any(cleantitle.get(i) and cleantitle.get(i) in clean_titles for i in title_segments if i)
-			clean_title = cleantitle.get(title)
-			start_match = any(
-				i and cleantitle.get(i) != clean_title and
-				re.match(r'\s*%s(?:\s|[._\-\(\[\]/]|$)' % re.escape(i.strip()), t, re.I)
-				for i in title_list
-			)
+			start_match = any(e.match(t) for e in in_testa)
 			if not segment_match and not start_match: return False
 
 # filter to remove episode ranges that should be picked up in "filter_season_pack()" ex. "s01e01-08"
@@ -639,7 +641,12 @@ def release_title_format(release_title):
 def clean_name(release_title):
 	try:
 		release_title = re.sub(r'【.*?】', '', release_title)
-		release_title = strip_non_ascii_and_unprintable(release_title).lstrip('+.-:/ ').replace(' ', '.')
+		# Fen Light, lotto 387: le lettere di ogni scrittura restano. Prima strip_non_ascii_and_unprintable toglieva tutto
+		# cio' che non era ASCII: "Сталкер 1979" arrivava come "1979", "Kraina Bogów" come "Kraina Bogw", "우영우 E01~E10" come
+		# "E01~E10", e il setaccio degli episodi scartava le release coreane e cinesi prima della cache (prova del 27/09).
+		# Si tolgono solo i caratteri di controllo; la larghezza piena si normalizza (NFKC: "ＳＰＹ" = "SPY"), ogni spazio
+		# (anche quello ideografico) diventa un punto come prima.
+		release_title = re.sub(r'\s', '.', solo_stampabili(release_title)).lstrip('+.-:/')
 		releasetitle_startswith = release_title.lower().startswith
 		if releasetitle_startswith('rifftrax'): return release_title # removed by "undesirables" anyway so exit
 		for i in unwanted_tags:
@@ -654,6 +661,28 @@ def clean_name(release_title):
 		from cocoscrapers.modules import log_utils
 		log_utils.error()
 		return release_title
+
+def ripara_codifica(text):
+	"""Fen Light, lotto 387: l'UTF-8 letto come cp1252 ("ÐŸÐ°Ñ€Ð°Ð½Ð¾Ñ€Ð¼Ð°Ð»ÑŒÐ½Ð¾Ðµ" = "Паранормальное", nomi di DMM). Si ripara
+	solo se i byte si rileggono come UTF-8 senza errori (un nome troncato perde solo l'ultima lettera): "São" resta com'e'."""
+	if not text or not re.search(r'[ÂÃÐÑ][\u0080-\u00bf\u0152-\u2122]', text): return text
+	b = bytearray()
+	for c in text.replace('\ufffd', ''):
+		if ord(c) < 256: b.append(ord(c))
+		else:
+			try: b += c.encode('cp1252')
+			except UnicodeEncodeError: return text
+	try: return b.decode('utf-8')
+	except UnicodeDecodeError as e:
+		if e.start < len(b) - 3: return text
+		try: return b[:e.start].decode('utf-8')
+		except UnicodeDecodeError: return text
+
+def solo_stampabili(text):
+	"""Fen Light, lotto 387: il testo senza caratteri di controllo (categorie Unicode C*), in forma NFKC, con la codifica
+	riparata (ripara_codifica) prima della normalizzazione."""
+	from unicodedata import normalize, category
+	return ''.join(c for c in normalize('NFKC', ripara_codifica(text or '')) if not category(c).startswith('C'))
 
 def strip_non_ascii_and_unprintable(text):
 	try:

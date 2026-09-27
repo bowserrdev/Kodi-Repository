@@ -1,90 +1,126 @@
 # -*- coding: utf-8 -*-
-"""LOTTO 207 -- la dimensione VERA del singolo episodio dentro un pacchetto.
+"""L'ELENCO DEI FILE di un torrent e il VERDETTO su di esso (lotti 207 e 365, SORGENTI.md).
 
-Il problema. Un pacco non si riproduce: si riproduce un episodio che sta dentro. La dimensione
-che FenLight mostrava e filtrava era `pack_size / numero di episodi secondo TMDb`, e non e' una
-misura: e' un'invenzione. Misurato sui 31 pacchetti di sola stagione 1 realmente in cache sulla
-stick, cade entro il +/-10% dal vero **8 volte su 31**. Il divisore giusto e' 41 per alcuni
-torrent della stessa stagione e 20 per altri, perche' meta' dei gruppi mette i due segmenti di un
-episodio in un file solo e meta' no: l'informazione non esiste nei metadati.
+Lotto 207 -- la dimensione vera del singolo episodio dentro un pacchetto. La taglia che FenLight mostrava era
+`pack_size / numero di episodi secondo TMDb`: un'invenzione, entro il +/-10% dal vero 8 volte su 31 sulla stick.
+TorBox espone l'elenco dei file nella richiesta che gia' facciamo (`checkcached?format=list&list_files=true`).
 
-Dove sta invece. TorBox la espone, e nella richiesta che gia' facciamo:
-`POST torrents/checkcached?format=list&list_files=true` restituisce per ogni hash in cache
-l'elenco dei file con `short_name` e `size` in byte -- gli stessi campi che `resolve_magnet` usa
-gia' con `seas_ep_filter`. Nessuna euristica nuova: qui si conserva l'elenco cosi' com'e' e la
-corrispondenza episodio la fa la stessa funzione che la fa al momento di risolvere.
+Perche' una tabella e non `debrid_cache`. Sono due dati con due vite opposte. "Questo hash e' in cache" scade a
+24 h perche' cambia davvero. "Questo hash contiene questi file" non scade mai: l'infohash e' l'impronta del
+contenuto, se i file cambiassero cambierebbe l'hash. Si richiedono solo gli hash mai visti.
 
-Perche' una tabella e non `debrid_cache`. Sono due dati con due vite opposte. "Questo hash e' in
-cache" scade a 24 h perche' cambia davvero. "Questo hash contiene questi file" non scade mai:
-l'infohash e' l'impronta del contenuto, se i file cambiassero cambierebbe l'hash. Tenerla
-permanente e' cio' che permette di NON richiedere i file al rinnovo delle 24 ore: si richiedono
-solo gli hash mai visti, e quasi sempre non ce n'e' nessuno.
-
-Peso. 574 KB per i 55 torrent in cache di una serie molto cercata (misura reale). Il tetto sotto
-tiene la tabella limitata buttando le righe toccate meno di recente.
+Lotto 365 -- il contenuto decide per tutti i media. Da qui:
+- l'elenco (formato v2) tiene per ogni file (percorso, nome, byte): il percorso serve a riconoscere le cartelle
+  `Sample/`, `Featurettes/`. Si tengono i video e gli archivi/eseguibili; un torrent SENZA video si scrive lo
+  stesso, con i suoi file: e' il suo verdetto ("non si riproduce"), e prima si richiedeva a ogni ricerca;
+- le righe v1 del lotto 207 (nome, byte) si leggono ancora: valgono per l'episodio nei pacchetti;
+- il tetto e' a PESO (MAX_BYTE), non a righe: con film ed episodi singoli le righe crescono in fretta, ma un
+  torrent a file singolo pesa ~150 byte;
+- `verdetti`: l'esito del classificatore (modules/classificatore.py) per hash e domanda. L'elenco non cambia,
+  quindi nemmeno il verdetto per la stessa domanda; la chiave contiene la versione delle regole.
 """
 import json
+import zlib
 from caches.base_cache import connect_database
 
-# Sopra questo numero di righe la manutenzione taglia le meno recenti. 800 righe sono nell'ordine
-# dei 5-8 MB, contro i 53 MB che external.db occupa gia' sulla stessa stick.
-MAX_RIGHE = 800
-ESTENSIONI = ('.mkv', '.mp4', '.avi', '.m4v', '.ts', '.m2ts', '.mov', '.wmv', '.mpg', '.mpeg')
+# Prova del 25/09 sera: con 8 MB in chiaro la tabella teneva 785 elenchi (10,4 KB di media), cioe' gli ultimi 3
+# minuti di ricerche; una ricerca di film ne impara ~250. Ora gli elenchi si scrivono compressi (zlib: 1,2 KB di
+# media, 8,6 volte meno; leggerli costa 18 us sul Mac, solo alla prima classificazione) e il tetto e' 16 MB
+# compressi, ~14.000 elenchi. I verdetti non muoiono piu' con l'elenco: hanno il loro tetto, MAX_VERDETTI.
+MAX_BYTE = 16 * 1024 * 1024
+MAX_VERDETTI = 50000
 
 LEGGI = 'SELECT hash, files FROM pack_files WHERE hash in (%s)'
 SCRIVI = 'INSERT OR REPLACE INTO pack_files (hash, files, quando) VALUES (?, ?, ?)'
 TOCCA = 'UPDATE pack_files SET quando=? WHERE hash in (%s)'
-CONTA = 'SELECT count(*) FROM pack_files'
-POTA = 'DELETE FROM pack_files WHERE hash NOT IN (SELECT hash FROM pack_files ORDER BY quando DESC LIMIT ?)'
+PESO = 'SELECT coalesce(sum(length(files)), 0) FROM pack_files'
+PER_ETA = 'SELECT hash, length(files) FROM pack_files ORDER BY quando DESC'
+VERDETTI_CREA = ('CREATE TABLE IF NOT EXISTS verdetti (hash text not null, chiave text not null, esito integer, '
+				 'file text, byte integer, quando integer, unique (hash, chiave))')
+VERDETTI_LEGGI = 'SELECT hash, esito, file, byte FROM verdetti WHERE chiave = ? AND hash in (%s)'
+VERDETTI_SCRIVI = 'INSERT OR REPLACE INTO verdetti (hash, chiave, esito, file, byte, quando) VALUES (?, ?, ?, ?, ?, ?)'
+VERDETTI_CONTA = 'SELECT count(*) FROM verdetti'
+VERDETTI_POTA = 'DELETE FROM verdetti WHERE rowid NOT IN (SELECT rowid FROM verdetti ORDER BY quando DESC LIMIT ?)'
+_verdetti_pronti = [False]
 
 
 def _adesso():
 	from time import time
 	return int(time())
 
+def _video():
+	from modules.classificatore import VIDEO
+	return VIDEO
+
+def _archivi():
+	from modules.classificatore import ARCHIVI
+	return ARCHIVI
+
+
+def _a_blocchi(dbcon, sql, lista, prima=()):
+	"""Una query IN (...) a blocchi da 500: dal lotto 365 arrivano gli hash di TUTTI i risultati (migliaia), e
+	SQLite vecchi hanno un tetto di 999 parametri per query."""
+	righe = []
+	for i in range(0, len(lista), 500):
+		parte = lista[i:i + 500]
+		righe.extend(dbcon.execute(sql % ', '.join('?' for _ in parte), list(prima) + parte).fetchall())
+	return righe
 
 def noti(hash_list):
-	"""Gli hash di cui conosciamo gia' l'elenco dei file. Una query sola per tutta la lista."""
+	"""Gli hash di cui conosciamo gia' l'elenco dei file."""
 	if not hash_list: return set()
 	try:
 		dbcon = connect_database('debridcache_db')
-		righe = dbcon.execute(LEGGI % (', '.join('?' for _ in hash_list)), list(hash_list)).fetchall()
-		return set(r[0] for r in righe)
+		return set(r[0] for r in _a_blocchi(dbcon, LEGGI, list(hash_list)))
 	except: return set()
 
 
+def _in_tuple(voci):
+	"""Una riga letta -> [(percorso, nome, byte)]. La v1 (nome, byte) diventa (nome, nome, byte)."""
+	fuori = []
+	for v in voci:
+		if len(v) == 3: fuori.append((v[0], v[1], v[2]))
+		elif len(v) == 2: fuori.append((v[0], v[0], v[1]))
+	return fuori
+
 def leggi(hash_list):
-	"""hash -> [(nome, byte), ...] per gli hash richiesti. Silenzioso su qualunque errore."""
+	"""hash -> [(percorso, nome, byte), ...] per gli hash richiesti. Silenzioso su qualunque errore."""
 	if not hash_list: return {}
 	try:
 		dbcon = connect_database('debridcache_db')
-		righe = dbcon.execute(LEGGI % (', '.join('?' for _ in hash_list)), list(hash_list)).fetchall()
 		fuori = {}
-		for h, blob in righe:
-			try: fuori[h] = json.loads(blob)
+		for h, blob in _a_blocchi(dbcon, LEGGI, list(hash_list)):
+			try: fuori[h] = _in_tuple(json.loads(zlib.decompress(blob) if isinstance(blob, bytes) else blob))
 			except: pass
 		if fuori:
 			# `quando` serve solo alla potatura: segna che questi hash servono ancora.
-			try: dbcon.execute(TOCCA % (', '.join('?' for _ in fuori)), [_adesso()] + list(fuori))
+			try: _a_blocchi(dbcon, TOCCA, list(fuori), (_adesso(),))
 			except: pass
 		return fuori
 	except: return {}
 
 
+def da_torbox(voce):
+	"""Una voce di TorBox (con `files`) -> [(percorso, nome, byte)] da conservare: video e archivi; se non ci sono
+	video, tutti i file (al piu' 20: bastano a dire cos'e', una colonna sonora, dei sottotitoli)."""
+	video, archivi = _video(), _archivi()
+	tutti = [((i.get('name') or i.get('short_name') or ''), (i.get('short_name') or ''), int(i.get('size') or 0))
+			 for i in (voce.get('files') or [])]
+	tenuti = [f for f in tutti if f[1].lower().endswith(video) or f[1].lower().endswith(archivi)]
+	if not any(f[1].lower().endswith(video) for f in tenuti): tenuti = tutti[:20]
+	return tenuti
+
 def scrivi(voci):
-	"""voci: iterabile di dizionari con 'hash' e 'files' come li restituisce TorBox."""
+	"""voci: iterabile di dizionari con 'hash' e 'files' come li restituisce TorBox. Ritorna quanti scritti."""
 	righe = []
 	quando = _adesso()
 	for v in voci or []:
 		try:
 			h = (v.get('hash') or '').lower()
 			if not h: continue
-			# Solo i file video: il resto (nfo, sottotitoli, campioni) non si riproduce e occuperebbe
-			# spazio per niente.
-			f = [[i['short_name'], int(i['size'])] for i in (v.get('files') or [])
-				 if i.get('short_name', '').lower().endswith(ESTENSIONI)]
+			f = da_torbox(v)
 			if not f: continue
-			righe.append((h, json.dumps(f, separators=(',', ':')), quando))
+			righe.append((h, zlib.compress(json.dumps([list(x) for x in f], separators=(',', ':')).encode('utf-8'), 6), quando))
 		except: continue
 	if not righe: return 0
 	try:
@@ -95,47 +131,79 @@ def scrivi(voci):
 
 
 def manutenzione():
-	"""Tiene la tabella sotto MAX_RIGHE buttando le righe toccate meno di recente.
+	"""Tiene gli elenchi sotto MAX_BYTE buttando i meno usati di recente, e i verdetti sotto MAX_VERDETTI.
 
-	Non e' una scadenza: una riga vecchia non e' sbagliata, e' solo poco richiesta. Se torna a
-	servire si riscarica in una chiamata. Niente VACUUM: riscriverebbe l'intero file per liberare
-	qualche pagina che SQLite riuserebbe da sola (lotto 205, i 13,5 secondi di external.db).
+	Non e' una scadenza: una riga vecchia non e' sbagliata, e' solo poco richiesta. Se torna a servire si
+	riscarica. Niente VACUUM: riscriverebbe l'intero file per liberare qualche pagina che SQLite riuserebbe
+	da sola (lotto 205, i 13,5 secondi di external.db).
 	"""
 	try:
 		dbcon = connect_database('debridcache_db')
-		n = dbcon.execute(CONTA).fetchone()[0]
-		if n <= MAX_RIGHE: return 0
-		dbcon.execute(POTA, (MAX_RIGHE,))
-		return n - MAX_RIGHE
+		_crea_verdetti(dbcon)
+		if dbcon.execute(VERDETTI_CONTA).fetchone()[0] > MAX_VERDETTI: dbcon.execute(VERDETTI_POTA, (MAX_VERDETTI,))
+		if dbcon.execute(PESO).fetchone()[0] <= MAX_BYTE: return 0
+		somma, via = 0, []
+		for h, peso in dbcon.execute(PER_ETA).fetchall():
+			somma += peso or 0
+			if somma > MAX_BYTE: via.append(h)
+		for i in range(0, len(via), 500):
+			parte = via[i:i + 500]
+			dbcon.execute('DELETE FROM pack_files WHERE hash in (%s)' % ', '.join('?' for _ in parte), parte)
+		return len(via)
+	except: return 0
+
+
+def _crea_verdetti(dbcon):
+	# La tabella nasce con make_databases (base_cache), ma debridcache.db esistenti ne sono senza fino al riavvio:
+	# si crea qui al primo uso. NON sta nel controllo di integrita': li' una tabella mancante fa cancellare il db.
+	if _verdetti_pronti[0]: return
+	dbcon.execute(VERDETTI_CREA)
+	_verdetti_pronti[0] = True
+
+def leggi_verdetti(hash_list, chiave):
+	"""hash -> (esito, percorso del file nel torrent, byte) per la domanda `chiave`."""
+	if not hash_list: return {}
+	try:
+		dbcon = connect_database('debridcache_db')
+		_crea_verdetti(dbcon)
+		return dict((h, (bool(esito), nome, byte)) for h, esito, nome, byte in _a_blocchi(dbcon, VERDETTI_LEGGI, list(hash_list), (chiave,)))
+	except: return {}
+
+def scrivi_verdetti(chiave, verdetti):
+	"""verdetti: {hash: (esito, file, motivo)} del classificatore; si scrivono solo quelli decisi."""
+	righe, quando = [], _adesso()
+	for h, (esito, f, motivo) in (verdetti or {}).items():
+		if esito is None: continue
+		# lotto 387: il PERCORSO (cartella radice compresa), non solo il nome del file: le regole sulla radice (lotti 378,
+		# 385, 386) valgono anche dalla seconda ricerca. Prima alla ripetuta si perdevano i nomi offuscati riconosciuti dalla
+		# radice ("fsi-oldboy.1080p.mkv") e I sette samurai teneva "The Magnificent Seven 1960"
+		righe.append((h, chiave, 1 if esito else 0, f[0] if f else None, f[2] if f else None, quando))
+	if not righe: return 0
+	try:
+		dbcon = connect_database('debridcache_db')
+		_crea_verdetti(dbcon)
+		dbcon.executemany(VERDETTI_SCRIVI, righe)
+		return len(righe)
 	except: return 0
 
 
 def contiene_episodio(files, season, episode, absolute=None):
 	"""Il pacchetto contiene un file riproducibile per questo episodio? True, False, o None se non si sa.
 
-	E' LA STESSA DOMANDA che fa resolve_magnet quando si sceglie la sorgente: stesso nome di file (lo
-	`short_name` di TorBox), stessa funzione (`seas_ep_filter`, con l'assoluto per gli anime). Se qui
-	risponde False, la riproduzione di quel pacchetto non troverebbe il file e fallirebbe: non e' una
-	stima, e' il risultato anticipato. None quando l'elenco non c'e' o non ha video: non si sa, si tiene.
-	Misurato il 25/09 su Fullmetal Alchemist Brotherhood S1E58: 72 pacchetti su 80 con l'elenco noto non
-	contenevano l'episodio (file singoli di altri episodi, stagioni a meta', un'altra divisione in stagioni).
+	La stessa scelta di resolve_magnet (file_dell_episodio, lotto 362). `files`: tuple il cui penultimo campo e'
+	il nome e l'ultimo i byte (v1 o v2).
 	"""
 	if not files: return None
 	try:
-		from modules.source_utils import seas_ep_filter
-		return any(seas_ep_filter(season, episode, nome, absolute=absolute) for nome, byte in files)
+		from modules.source_utils import file_dell_episodio
+		return bool(file_dell_episodio(files, season, episode, absolute, lambda f: f[-2], lambda f: f[0] if len(f) > 2 else ''))
 	except: return None
 
 def dimensione_episodio(files, season, episode, absolute=None):
-	"""Byte del file che corrisponde a questo episodio, o None.
-
-	La corrispondenza la fa `seas_ep_filter`, la stessa che usa `resolve_magnet` per scegliere quale
-	file del pacco sbloccare. Se scegliesse un file diverso da quello di cui mostriamo la
-	dimensione, mostreremmo la dimensione di un altro episodio.
-	"""
+	"""Byte del file che corrisponde a questo episodio, o None (la stessa scelta del resolver)."""
 	try:
-		from modules.source_utils import seas_ep_filter
-		for nome, byte in files:
-			if seas_ep_filter(season, episode, nome, absolute=absolute): return byte
+		from modules.source_utils import file_dell_episodio
+		scelti = file_dell_episodio(files, season, episode, absolute, lambda f: f[-2], lambda f: f[0] if len(f) > 2 else '')
+		if scelti: return scelti[0][-1]
 	except: pass
 	return None

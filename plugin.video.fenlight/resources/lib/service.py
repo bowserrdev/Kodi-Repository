@@ -198,6 +198,14 @@ class DatabaseMaintenance:
 		logger('Fen Light', 'DatabaseMaintenance Service Starting')
 		from caches.base_cache import make_databases
 		make_databases()
+		# LOTTO 369 -- le righe scadute dei risultati per provider e del "in cache" del debrid. Prima si pulivano solo a
+		# mano (clean_databases) o ricercando lo stesso titolo: un titolo cercato una volta restava per sempre.
+		try:
+			from caches.external_cache import external_cache
+			from caches.debrid_cache import debrid_cache
+			logger('Fen Light', 'DatabaseMaintenance: tolte %d righe scadute dei risultati, %d del debrid'
+				   % (external_cache.togli_scadute(), debrid_cache.togli_scadute()))
+		except: pass
 		return logger('Fen Light', 'DatabaseMaintenance Service Finished')
 
 class SyncSettings:

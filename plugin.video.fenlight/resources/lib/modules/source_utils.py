@@ -149,6 +149,24 @@ def alias_della_stagione(aliases, titoli, nome_stagione):
 		return False
 	return [a for a in aliases if not _allunga(a)]
 
+def titolo_della_stagione(titoli, nome_stagione):
+	"""LOTTO 379 -- il nome della stagione TMDb come titolo in piu' per quella stagione, se dice qualcosa di suo: "Bleach:
+	Thousand-Year Blood War" per Bleach S17. Senza il titolo della serie davanti glielo si mette ("The Past Arc" ->
+	"Bleach The Past Arc"). Nome generico ("Season 17", "Stagione 1", il titolo della serie) o sconosciuto: None."""
+	import re, unicodedata
+	if not nome_stagione: return None
+	def _n(testo):
+		try: testo = ''.join(c for c in unicodedata.normalize('NFKD', str(testo)) if unicodedata.category(c) != 'Mn')
+		except: testo = str(testo or '')
+		return re.sub(r'[^a-z0-9]', '', testo.lower())
+	titoli = [t for t in titoli if t]
+	nome = _n(nome_stagione)
+	basi = set(b for b in (_n(t) for t in titoli) if b)
+	if not nome or not titoli or nome in basi or re.match(r'^(?:season|stagione|staffel|saison|temporada|serie|series|parte?|specials?|speciali)?\d*$', nome):
+		return None
+	if any(nome.startswith(b) for b in basi): return nome_stagione
+	return '%s %s' % (titoli[0], nome_stagione)
+
 def internal_results(provider, sources):
 	set_property(int_window_prop % provider, json.dumps(sources))
 
@@ -180,40 +198,91 @@ def supported_video_extensions():
 	supported_video_extensions = supported_media().split('|')
 	return [i for i in supported_video_extensions if not i in ('','.zip','.rar','.iso')]
 
-def seas_ep_filter(season, episode, release_title, split=False, return_match=False, absolute=None):
+# LOTTO 376: le parole dopo cui "5.1" e "7.1" sono canali audio, non stagione ed episodio
+_AUDIO = ('aac', 'ac3', 'eac3', 'dts', 'dd', 'ddp', 'ma', 'truehd', 'atmos', 'flac', 'opus', 'mp3', 'pcm', 'lpcm', 'hdr', 'sdr', 'dv',
+		  'audio', 'ch', 'hevc', 'avc', 'x264', 'x265', 'h264', 'h265')
+_GUARDIA_AUDIO = ''.join(r'(?<!%s\.)' % t for t in _AUDIO)
+
+def seas_ep_filter(season, episode, release_title, split=False, return_match=False, absolute=None, solo_assoluto=False, forte=False):
 	# `absolute` (lotto 361): il numero assoluto TVDB, solo per le serie in numerazione TVDB. Le release
 	# anime numerano cosi' ("One Piece - 1178" e' S23E23), e dentro un pacchetto della stagione il file
 	# giusto non si trovava mai. Stesse forme e stesse guardie di cocoscrapers.source_utils.episodio_regex.
 	str_season, str_episode = string(season), string(episode)
 	season_fill, episode_fill = str_season.zfill(2), str_episode.zfill(2)
 	str_ep_plus_1, str_ep_minus_1 = string(episode+1), string(episode-1)
+	crudo = release_title
 	release_title = re.sub(r'[^A-Za-z0-9-]+', '.', unquote(release_title).replace('\'', '')).lower()
-	string1 = r'(s<<S>>[.-]?e[p]?[.-]?<<E>>[.-])'
-	string2 = r'(season[.-]?<<S>>[.-]?episode[.-]?<<E>>[.-])|([s]?<<S>>[x.]<<E>>[.-])'
+	# LOTTO 362 -- `(?:ab)?`: gli episodi in due segmenti ("S03E04ab - The Nasty Patty - The Idiot Box", SpongeBob e
+	# simili) sono l'episodio intero. Prima non si riconoscevano: l'episodio c'era nel pacchetto e la riproduzione
+	# non lo trovava. "e04a" o "e04b" da soli restano fuori: sono mezzo episodio.
+	# LOTTO 385 -- `v2`: la revisione di una release anime ("[Judas] Boku no Hero Academia - S07E01v2") e' l'episodio
+	string1 = r'(s<<S>>[.-]?e[p]?[.-]?<<E>>(?:ab|v\d)?[.-])'
+	# LOTTO 376 -- `S.E` vuole un confine a sinistra: "s01e02.(02)" non e' 2x2. Con l'episodio a una cifra (<<E1>>, "The
+	# Office - 1.1 - Downsize") e' anche un formato audio: vale fuori da un elenco di canali e non dopo un codec ("ac3.5.1"
+	# non e' 5x1, "[5.1, 7.1, 5.1]" non e' 1x5 ne' 5x1). "2x5", "s2.5" e "2.05" restano.
+	string2 = (r'(season[.-]?<<S>>[.-]?episode[.-]?<<E>>[.-])|((?<![a-z0-9])(?:s<<S>>[x.]<<E>>|<<S>>x<<E>>|<<S>>\.<<EF>>)(?:ab)?[.-])|'
+			   r'((?<![a-z0-9])(?<!\d\.)' + _GUARDIA_AUDIO + r'<<S>>\.<<E1>>[.-](?!\d))')
 	string3 = r'(s<<S>>e<<E1>>[.-]?e?<<E2>>[.-])'
 	string4 = r'([.-]<<S>>[.-]?<<E>>[.-])'
 	string5 = r'(episode[.-]?<<E>>[.-])'
-	string6 = r'([.-]e[p]?[.-]?<<E>>[.-])'
-	string7 = r'(^(?=.*\.e?0*<<E>>\.)(?:(?!((?:s|season)[.-]?\d+[.-x]?(?:ep?|episode)[.-]?\d+)|\d+x\d+).)*$)'
+	# LOTTO 376 -- le forme "solo episodio" anche in testa al nome ("E01 A Rickle in Time", "05 Volk i Lev.mkv")
+	string6 = r'((?:^|[.-])e[p]?[.-]?<<E>>[.-])'
+	# LOTTO 385 -- non in un nome con la coppia stagione.episodio "N.NN": "office_02_22-1.m4v" e' S02E22, non l'episodio 2
+	string7 = r'(^(?=(?:.*\.)?e?0*<<E>>\.)(?:(?!((?:s|season)[.-]?\d+[.-x]?(?:ep?|episode)[.-]?\d+)|\d+x\d+|(?<![0-9])\d{1,2}\.\d{2}(?![0-9a-z])).)*$)'
+	try: _assoluto = int(absolute) if absolute else 0
+	except (TypeError, ValueError): _assoluto = 0
+	# `solo_assoluto` (lotto 362): solo le forme dell'assoluto, per sapere se un file numera in assoluto
+	# (file_dell_episodio). Senza assoluto non ce ne sono.
+	if solo_assoluto and _assoluto <= 0: return False
 	string_list = []
 	string_list_append = string_list.append
 	string_list_append(string1.replace('<<S>>', season_fill).replace('<<E>>', episode_fill))
 	string_list_append(string1.replace('<<S>>', str_season).replace('<<E>>', episode_fill))
 	string_list_append(string1.replace('<<S>>', season_fill).replace('<<E>>', str_episode))
 	string_list_append(string1.replace('<<S>>', str_season).replace('<<E>>', str_episode))
-	string_list_append(string2.replace('<<S>>', season_fill).replace('<<E>>', episode_fill))
-	string_list_append(string2.replace('<<S>>', str_season).replace('<<E>>', episode_fill))
-	string_list_append(string2.replace('<<S>>', season_fill).replace('<<E>>', str_episode))
-	string_list_append(string2.replace('<<S>>', str_season).replace('<<E>>', str_episode))
+	string_list_append(string2.replace('<<S>>', season_fill).replace('<<E>>', episode_fill).replace('<<EF>>', episode_fill).replace('<<E1>>', str_episode if int(episode) < 10 else episode_fill))
+	string_list_append(string2.replace('<<S>>', str_season).replace('<<E>>', episode_fill).replace('<<EF>>', episode_fill).replace('<<E1>>', str_episode if int(episode) < 10 else episode_fill))
+	string_list_append(string2.replace('<<S>>', season_fill).replace('<<E>>', str_episode).replace('<<EF>>', episode_fill).replace('<<E1>>', str_episode if int(episode) < 10 else episode_fill))
+	string_list_append(string2.replace('<<S>>', str_season).replace('<<E>>', str_episode).replace('<<EF>>', episode_fill).replace('<<E1>>', str_episode if int(episode) < 10 else episode_fill))
+	# LOTTO 385 -- "1x001": NxE con gli zeri davanti ("Dragon Ball 1x001 Goku Conosce Bulma")
+	string_list_append(r'((?<![a-z0-9])0*%sx0*%s(?:v\d)?[.-])' % (str_season, str_episode))
 	string_list_append(string3.replace('<<S>>', season_fill).replace('<<E1>>', str_ep_minus_1.zfill(2)).replace('<<E2>>', episode_fill))
 	string_list_append(string3.replace('<<S>>', season_fill).replace('<<E1>>', episode_fill).replace('<<E2>>', str_ep_plus_1.zfill(2)))
-	string_list_append(string4.replace('<<S>>', season_fill).replace('<<E>>', episode_fill))
-	string_list_append(string4.replace('<<S>>', str_season).replace('<<E>>', episode_fill))
-	string_list_append(string5.replace('<<E>>', str_episode))
-	string_list_append(string6.replace('<<E>>', episode_fill))
-	string_list_append(string7.replace('<<E>>', episode_fill))
-	try: _assoluto = int(absolute) if absolute else 0
-	except (TypeError, ValueError): _assoluto = 0
+	if _assoluto <= 0:
+		# LOTTO 362 -- la forma compatta ("406" = S4E06) solo senza assoluto. Con l'assoluto un numero di tre o
+		# quattro cifre E' un assoluto: per Naruto Shippuden S4E6 (assoluto 77) prendeva "Naruto Shippuden - 406",
+		# per One Piece S8E8 (138) "One Piece - 808", e "0406" era S04E06.
+		string_list_append(string4.replace('<<S>>', season_fill).replace('<<E>>', episode_fill))
+		string_list_append(string4.replace('<<S>>', str_season).replace('<<E>>', episode_fill))
+		# Lotto 362 (prova del 25/09): la sigla scene incollata, "bb204-clue.mkv" = Breaking Bad S02E04. Almeno due
+		# lettere davanti, cosi' "x264" non e' S2E64.
+		string_list_append(r'((?:^|[.-])[a-z]{2,5}%s%s[.-])' % (str_season, episode_fill))
+	# lotto 396: la parola della stagione col numero, poi l'episodio ("GRIMM.Saison1.E06", "Season.1.E06", "Stagione 2 Ep 04"); non
+	# un intervallo ("Season.1.E06-E10")
+	string_list_append(r'((?<![a-z0-9])(?:season|saison|stagione|temporada)\.?0*%s\.(?:ep?|episode|episodio)\.?0*%s(?![0-9])(?!\.?[-~]\.?e?\d))' % (str_season, str_episode))
+	# LOTTO 386 -- la forma rovesciata "E05 S03" ("The Sopranos E05 S03 2001 BDRip") dice anche la stagione
+	string_list_append(r'((?<![a-z0-9])e0*%s[.-]?s0*%s(?![0-9]))' % (str_episode, str_season))
+	# LOTTO 387 -- "S1 - 03", "S2 - E04": la stagione, un trattino, l'episodio (lo stile di SubsPlease e di quasi tutti i
+	# gruppi anime). Prima era solo una forma debole ("- 03"), e nel ripescaggio non bastava. Non un intervallo ("S1 - 03-05")
+	# LOTTO 388: la fine di un intervallo e' un numero che non continua con una lettera ("- 01 - (1080p ...)" non e' 01-1080)
+	# lotto 391: anche "Season 2 - 08" e "2nd Season - 08" (Vinland Saga, Fruits Basket 1st Season)
+	string_list_append(r'((?<![a-z0-9])(?:s0*%s|season\.?0*%s|%s(?:st|nd|rd|th)\.season)\.?-\.?(?:ep?\.?)?0*%s(?:v\d)?(?![0-9])(?!\.?[-~]\.?\d+(?![a-z0-9])))'
+					   % (str_season, str_season, str_season, str_episode))
+	if not forte:
+		# `forte` (lotto 366): solo le forme che dicono anche la STAGIONE, piu' quelle dell'assoluto. Le forme "solo
+		# episodio" ("Episode 05", "EP05", "- 05") non bastano a ribaltare un "no" del nome: in un pacchetto della
+		# terza stagione "Hajime no Ippo Rising - 05" passava per S2E5 (test del 25/09).
+		string_list_append(string5.replace('<<E>>', str_episode))
+		string_list_append(string6.replace('<<E>>', episode_fill))
+		# LOTTO 387 -- "EP 5" a una cifra senza zero ("DEATH NOTE EP 5 - Tactics"); solo con "ep": "E.5.1" e' audio
+		if int(episode) < 10: string_list_append(r'((?:^|[.-])ep[.-]?%s[.-])' % str_episode)
+		string_list_append(string7.replace('<<E>>', episode_fill))
+	if solo_assoluto:
+		string_list = []
+		string_list_append = string_list.append
+	# lotto 391: un nome che dichiara un'ALTRA stagione ("Fruits Basket 2nd Season - 08") numera per stagione: le forme
+	# dell'assoluto valgono solo dove _assoluto_credibile le ammette, come nella scelta del file (file_dell_episodio)
+	if _assoluto > 0 and not solo_assoluto and not _assoluto_credibile(crudo, release_title, season, episode, _assoluto): _assoluto = 0
 	if _assoluto > 0:
 		# Il titolo qui e' gia' normalizzato: minuscolo, ogni separatore diventato '.', i trattini tenuti.
 		# "one.piece.-.1178..1080p" si prende; "1156-1180" no (intervallo: e' preceduto o seguito da '-');
@@ -222,7 +291,13 @@ def seas_ep_filter(season, episode, release_title, split=False, return_match=Fal
 		# Con la stagione davanti, solo la 1 o quella cercata: in un pacchetto completo di Bleach l'assoluto 19
 		# (S1E19) non deve prendere il file "Bleach.S17E19".
 		string_list_append(r'(s0*(?:1|%d)[.-]?e%s[.-])' % (int(season), _num))
-		string_list_append(r'((?<![hx])(?<!\d-)(?<!\d\.-)\.(?:ep?|episode)?\.?%s(?:v\d)?\.(?!-\.?\d))' % _num)
+		# Lotto 362 (prova del 25/09): la guardia contro "h.264"/"x.264" vale solo per il numero NUDO. Messa davanti
+		# anche a "e158" scartava "Bleach.E158": "bleach" finisce con la h.
+		# LOTTO 376: anche in testa al nome ("42 - My Hero.mkv"), e "e030" seguito da un trattino ("Dragon.Ball.E030-Polish")
+		# lotto 388: "Banana Fish - 01 - (1080p ...)": la fine di un intervallo e' un numero che non continua con una lettera
+		string_list_append(r'((?:^|(?<![hx])(?<!\d-)(?<!\d\.-)\.)%s(?:v\d)?\.(?!-\.?\d+(?![a-z0-9])))' % _num)
+		# lotto 389: anche col trattino, "EP-05" (Scam 1992)
+		string_list_append(r'((?:^|\.)(?:ep?|episode)[.-]?%s(?:v\d)?(?:\.(?!-\.?\d+(?![a-z0-9]))|-(?![\d.])))' % _num)
 		# Il file che si chiama SOLO col numero ("58.mp4", "EP58.mkv"): il pacchetto italiano di Fullmetal Alchemist
 		# Brotherhood "S01e01-63" ha 01.mp4 ... 63.mp4, e senza questa forma la riproduzione non trovava mai il file.
 		# Solo con l'assoluto: in una serie normale "01.mp4" in un pacchetto di piu' stagioni sarebbe ambiguo.
@@ -232,6 +307,99 @@ def seas_ep_filter(season, episode, release_title, split=False, return_match=Fal
 	if split: return release_title.split(re.search(reg_pattern, release_title).group(), 1)[1]
 	if return_match: return re.search(reg_pattern, release_title).group()
 	return bool(re.search(reg_pattern, release_title))
+
+# LOTTO 371 -- il contesto del numero (SORGENTI.md). Un numero con un'etichetta davanti non e' un episodio ("Dragon Ball
+# Movie 04" passava per la 1x4 di Dragon Ball), e nemmeno un menu di disco.
+# LOTTO 382: anche separata da " - " ("Dragon Ball Special - 01")
+_ETICHETTE = re.compile(r'(?:^|[.\-])(?:movie|movies|film|ova|oav|special|specials|sp|vol|volume|reel)[.\-]{0,3}\d+(?=[.\-]|$)')
+_MENU = re.compile(r'(?:^|[.\-])menu(?:[.\-]|$)')
+# La stagione dichiarata nel NOME del file (sul nome gia' normalizzato: minuscolo, separatori -> '.'): "s03e13",
+# "s3.-.07", "3x04", "[3.08]" (diventato ".3.08."), "season.3". Lotto 385: "[5.01.02]" (due episodi) dichiara la 5, non la 1.
+_STAGIONE_NEL_NOME = (re.compile(r'(?<![a-z0-9])s(\d{1,3})[.\-]?e[p]?[.\-]?\d'), re.compile(r'(?<![a-z0-9])(\d{1,2})x\d{2,4}(?![0-9])'),
+					  re.compile(r'(?:^|\.)(?<![0-9]\.)(\d{1,2})\.\d{2}(?:\.\d{2})*(?=\.[a-z]|$)'), re.compile(r'(?<![a-z0-9])s(\d{1,2})(?![a-z0-9])'),
+					  re.compile(r'(?<![a-z0-9])(?:season|stagione|saison|temporada)[.\-]?(\d{1,2})(?![0-9])'),
+					  # lotto 391: l'ordinale ("Fruits Basket 2nd Season - 08")
+					  re.compile(r'(?<![a-z0-9])(\d{1,2})(?:st|nd|rd|th)\.season'))
+# ...e in una CARTELLA ("Season 01 - Saiyan Saga", "S02", "Stagione 2"), con gli intervalli ("S01-S09", "Season 1 to 9").
+_STAGIONE_IN_CARTELLA = re.compile(r'(?:^|[^a-z0-9])(?:s|season|seasons|stagione|stagioni|saison|temporada)[ ._\-]?0*(\d{1,2})'
+								   r'(?:[ ._\-]*(?:-|to|a|~|&|\+)[ ._\-]*(?:s|season)?[ ._\-]?0*(\d{1,2}))?(?![0-9e])', re.I)
+
+def _normalizza_nome(nome):
+	return re.sub(r'[^A-Za-z0-9-]+', '.', unquote(nome or '').replace('\'', '')).lower()
+
+def stagioni_dichiarate(nome_normalizzato, percorso=''):
+	"""Lotto 371. Le stagioni che il nome del file dichiara; se non ne dichiara, quelle della cartella piu' vicina che
+	le dichiara (un intervallo vale come piu' stagioni). Insieme vuoto: nessuna dichiarazione."""
+	for r in _STAGIONE_NEL_NOME:
+		m = r.findall(nome_normalizzato)
+		if m: return set(int(x) for x in m)
+	for cartella in reversed((percorso or '').replace('\\', '/').split('/')[:-1]):
+		m = _STAGIONE_IN_CARTELLA.findall(cartella)
+		if not m: continue
+		fuori = set()
+		for a, b in m:
+			a = int(a); b = int(b) if b else a
+			fuori.update(range(a, b + 1) if a <= b and b - a < 40 else [a])
+		return fuori
+	return set()
+
+_DISCO = re.compile(r'/(?:bdmv|video_ts)/')
+_COPPIA = re.compile(r'(?<![a-z0-9])s\d{1,3}[.\-]?e[p]?[.\-]?(\d{1,4})(?![0-9])')
+
+def _assoluto_credibile(crudo, grezzo, season, episode, ass):
+	"""LOTTO 376 -- un nome che dichiara un'ALTRA stagione (non la nostra, non la 1) numera per stagione: l'assoluto vale
+	solo come campo a se', fra parentesi ("S05E01 (186)"), subito dopo il SxxEyy ("S05E01 186") o come numero del SxxEyy
+	scritto con tre cifre ("S02 E036"). Nella passata del 26/09 "S11E01 - 206 - ... 110 Years Ago" passava per l'assoluto 110
+	di Bleach, "S04 E05" e "S2 Ep 05" per l'assoluto 5. Chi corrisponde nella forma della nostra stagione passa sempre."""
+	# solo le dichiarazioni esplicite (s03, 3x04, season 3): "episode.44.17.times" non dichiara la stagione 44
+	dichiarate = set(int(x) for i, r in enumerate(_STAGIONE_NEL_NOME) if i != 2 for x in r.findall(grezzo))
+	if not dichiarate or 1 in dichiarate or int(season) in dichiarate: return True
+	if seas_ep_filter(season, episode, grezzo, forte=True): return True
+	if any(len(e) >= 3 and int(e) == ass for e in _COPPIA.findall(grezzo)): return True
+	# lotto 386: fra parentesi solo accanto a una coppia ("S05E01 (186)"): "[Boku no Hero Academia S7][05]" non e' l'assoluto 5
+	if _COPPIA.search(grezzo) and re.search(r'[(\[]\s*0*%d\s*[)\]]' % ass, crudo or ''): return True
+	return bool(re.search(r'(?<![a-z0-9])s\d{1,3}[.\-]?e[p]?[.\-]?\d{1,4}[.\-]+0*%d(?![0-9])' % ass, grezzo))
+
+def file_dell_episodio(elementi, season, episode, absolute=None, nome=lambda x: x, percorso=None):
+	"""I file di un torrent che sono l'episodio cercato, nell'ordine in cui arrivano (lotto 362).
+
+	E' seas_ep_filter su ogni file, piu' una regola che il singolo nome non puo' sapere: SE qualche file
+	corrisponde nella forma ASSOLUTA, il torrent numera in assoluto e valgono solo quelli. In un pacchetto
+	di Naruto Shippuden (001-500), cercando S4E6 = assoluto 77, "- 006" passava per l'episodio 6 della
+	stagione, e il resolver prendeva il primo nell'ordine del debrid: partiva l'episodio 6. Tutti i
+	resolver e pack_cache passano di qui, cosi' elenco e riproduzione scelgono allo stesso modo.
+
+	LOTTO 371 -- il numero si legge nel suo contesto. Una forma "solo episodio" ("E06", "Episode 11", "- 05") vale solo
+	se la stagione dichiarata (nel nome, se no nella cartella: `percorso`) e' quella cercata: nella prova del 26/09 Il
+	Trono di Spade 1x6 sceglieva "S08 E06", I Soprano 1x11 "Season 3 Episode 11", Dragon Ball Z 8x6 "- 006" dalla
+	cartella "S01-35". Senza una stagione sola dichiarata, con l'assoluto il numero nudo e' l'assoluto (vale solo se
+	coincide). I file con un'etichetta ("Movie 04", "OVA 3") e i menu non sono episodi, tranne per la stagione 0.
+	"""
+	try: stagione, ep, ass = int(season), int(episode), int(absolute or 0)
+	except (TypeError, ValueError): stagione, ep, ass = season, episode, 0
+	trovati, forme_assolute = [], []
+	for i in elementi:
+		grezzo = _normalizza_nome(nome(i))
+		if stagione != 0 and (_ETICHETTE.search(grezzo) or _MENU.search(grezzo)): continue
+		# LOTTO 376: in un disco ("BDMV/STREAM/00005.m2ts", "VIDEO_TS") il numero e' quello del flusso, non dell'episodio
+		if percorso and _DISCO.search('/' + (percorso(i) or '').replace('\\', '/').lower()): continue
+		if seas_ep_filter(season, episode, grezzo, absolute=absolute, forte=True):
+			if ass and not _assoluto_credibile(nome(i), grezzo, season, episode, ass): continue
+			trovati.append(i)
+			continue
+		if not seas_ep_filter(season, episode, grezzo, absolute=absolute): continue
+		# qui solo le forme "solo episodio": decide la stagione dichiarata
+		dichiarate = stagioni_dichiarate(grezzo, percorso(i) if percorso else '')
+		if dichiarate == set([stagione]): trovati.append(i)
+		elif dichiarate:
+			if stagione in dichiarate and not ass: trovati.append(i)
+		# LOTTO 376: senza stagione dichiarata il numero in testa al nome non basta ("The Sopranos/05 Another Toothpick" e'
+		# il quinto di QUALE stagione?): la 'x' davanti toglie le forme ancorate all'inizio
+		elif (not ass or ass == ep) and seas_ep_filter(season, episode, 'x' + grezzo, absolute=absolute): trovati.append(i)
+	if absolute and len(trovati) > 1:
+		assoluti = [i for i in trovati if seas_ep_filter(season, episode, _normalizza_nome(nome(i)), absolute=absolute, solo_assoluto=True)]
+		if assoluti: return assoluti
+	return trovati
 
 def find_season_in_release_title(release_title):
 	release_title = re.sub(r'[^A-Za-z0-9-]+', '.', unquote(release_title).replace('\'', '')).lower()

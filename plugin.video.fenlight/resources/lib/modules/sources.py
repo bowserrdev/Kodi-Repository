@@ -621,15 +621,22 @@ class Sources():
 		except: return results
 
 	def sort_preferred_language(self, results):
+		# Lotto 414 (SORGENTI.md): prima le doppiate nella lingua scelta, poi le solo sottotitolate, poi le altre, ognuna
+		# nell'ordine di prima. Doppiata: la lingua scritta nel nome come audio, la lingua originale dell'opera o un titolo della
+		# lingua nel nome (modules/lingua_fonte.py, la stessa risposta della copertura del verificatore)
 		try:
-			import re
-			lang = preferred_language()
-			if not lang: return results
-			pattern = re.compile(r'(?<![a-z])' + re.escape(lang) + r'(?![a-z])')
-			lang_results = [i for i in results if pattern.search(i.get('name', '').lower())]
-			if not lang_results: return results
-			return lang_results + [i for i in results if i not in lang_results]
+			lingua = self._lingua_fonte()
+			if not lingua: return results
+			livelli = [lingua.livello(i.get('name') or '', i.get('nome_file')) for i in results]
+			if not any(livelli): return results
+			return [results[k] for k in sorted(range(len(results)), key=lambda k: -livelli[k])]
 		except: return results
+
+	def _lingua_fonte(self):
+		# preparata una volta per ricerca da prepara (lo stesso search_info, lo stesso oggetto): la chiedono il verificatore,
+		# l'elenco, la sonda dell'autoplay e "Access Filtered Results"
+		from modules.lingua_fonte import prepara
+		return prepara(getattr(self, 'search_info', None), preferred_language())
 
 	def prepare_internal_scrapers(self):
 		if self.active_external and len(self.active_internal_scrapers) == 1: return
@@ -919,7 +926,15 @@ class Sources():
 		expiry_times = get_cache_expiry(self.media_type, self.meta, self.season)
 		self.search_info = {'media_type': self.media_type, 'title': title, 'year': year, 'tmdb_id': self.tmdb_id, 'imdb_id': self.meta.get('imdb_id'), 'aliases': aliases,
 							'season': self.get_season(), 'episode': self.get_episode(), 'tvdb_id': self.meta.get('tvdb_id'), 'ep_name': ep_name, 'expiry_times': expiry_times,
-							'total_seasons': self.meta.get('total_seasons', 1), 'absolute': self.get_absolute()}
+							'total_seasons': self.meta.get('total_seasons', 1), 'absolute': self.get_absolute(), 'ultimo_anno': self.ultimo_anno(),
+							'director': self.meta.get('director') or [], 'original_language': self.meta.get('original_language') or ''}
+
+	def ultimo_anno(self):
+		# Lotto 372: l'anno dell'ultimo episodio andato in onda, per riconoscere le serie omonime ("Titolo (2005)" fuori
+		# dagli anni della serie). Solo per gli episodi; se non si sa, la regola non si applica.
+		if self.media_type != 'episode': return None
+		try: return int(((self.meta.get('extra_info') or {}).get('last_episode_to_air') or {}).get('air_date', '')[:4])
+		except: return None
 
 	def alias_per_episodio(self, aliases, title):
 		# Gli alias di un'altra parte della serie non valgono per questo episodio (source_utils.alias_della_stagione).
@@ -931,7 +946,16 @@ class Sources():
 			stagione, episodio = int(self.get_season()), int(self.get_episode())
 			stagione_tmdb = (self.meta.get('tvdb_to_tmdb_ep') or {}).get((stagione, episodio), (stagione, episodio))[0]
 			nome = next((s.get('name') for s in self.meta['tmdb_season_data_original'] if s.get('season_number') == stagione_tmdb), None)
-			return alias_della_stagione(aliases, (title, self.meta.get('title'), self.meta.get('original_title'), self.meta.get('english_title')), nome)
+			titoli = (title, self.meta.get('title'), self.meta.get('original_title'), self.meta.get('english_title'))
+			aliases = alias_della_stagione(aliases, titoli, nome)
+			# lotto 379: il nome della stagione e' un titolo di questa stagione ("Bleach: Thousand-Year Blood War")
+			import re
+			from modules.source_utils import titolo_della_stagione
+			in_piu = titolo_della_stagione(titoli, nome)
+			_n = lambda t: re.sub(r'[^a-z0-9]', '', (t or '').lower())
+			if in_piu and not any(_n(a.get('title')) == _n(in_piu) for a in aliases):
+				aliases = list(aliases) + [{'title': in_piu, 'country': ''}]
+			return aliases
 		except: return aliases
 
 	def get_absolute(self):
@@ -1263,9 +1287,24 @@ class Sources():
 		debrid_function = self.debrid_importer(debrid_provider)
 		store_to_cloud = store_resolved_to_cloud(debrid_provider, pack)
 		# `absolute` (lotto 361): dentro un pacchetto anime il file si chiama "One Piece - 1178", non S23E23.
-		try: url = debrid_function().resolve_magnet(item_url, _hash, store_to_cloud, title, season, episode, absolute=absolute)
+		# `domanda` (lotto 365): con TorBox il file lo sceglie il classificatore, con la stessa domanda dell'elenco.
+		argomenti = {'absolute': absolute}
+		if debrid_provider == 'TorBox':
+			domanda = self._domanda_contenuto()
+			if domanda is not None: argomenti['domanda'] = domanda
+		try: url = debrid_function().resolve_magnet(item_url, _hash, store_to_cloud, title, season, episode, **argomenti)
 		except: url = None
 		return url
+
+	def _domanda_contenuto(self):
+		# La domanda del classificatore (lotto 365) dagli stessi dati con cui si e' cercato: search_info. Senza (una
+		# riproduzione nata da un altro percorso) niente domanda, e il resolver sceglie come prima.
+		try:
+			info = getattr(self, 'search_info', None)
+			if not info: return None
+			from modules.classificatore import domanda_da_info
+			return domanda_da_info(info, (self.meta or {}).get('duration'))
+		except: return None
 
 	def resolve_internal(self, scrape_provider, item_id, url_dl, direct_debrid_link=False):
 		url = None

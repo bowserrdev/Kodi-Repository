@@ -2,7 +2,6 @@
 
 import time
 import requests
-import queue as queue_module
 from threading import Thread, Lock
 from cocoscrapers.modules import source_utils, log_utils
 from cocoscrapers.modules.control import setting as getSetting
@@ -24,6 +23,10 @@ _HEADERS = {
 _CHALLENGE_URL = '%s/api/challenge' % _BASE_URL
 # Il client del sito rinnova a 120s; stiamo sotto per non correre sul filo.
 _CHALLENGE_TTL = 90
+
+# Lotto 374: le pagine chieste, tutte insieme (0-10, le stesse di prima). Nella passata del 26/09 la pagina 10 era ancora
+# piena in 86 ricerche su 208: alzarle e' una scelta a parte (piu' fonti, piu' lettura sulla stick).
+PAGINE = 11
 
 _challenge_lock = Lock()
 _challenge_cache = {}
@@ -67,22 +70,23 @@ class source(BaseTorrentScraper):
 	pack_capable = True
 	hasMovies = True
 	hasEpisodes = True
-	_queue = queue_module.SimpleQueue()
 
 	def __init__(self):
 		super().__init__()
 		self.min_seeders = 0
 		proxy = getSetting('proxy.url') if getSetting('proxy.enabled') == 'true' else None
 		self._proxy = proxy if proxy else None
-		log_utils.log('DMM proxy — enabled: "%s" url: "%s" active: "%s"' % (
-    		getSetting('proxy.enabled'), getSetting('proxy.url'), str(self._proxy)))
+		# Fen Light, 28/09: l'indirizzo del proxy porta le credenziali, nel log va solo se e' attivo
+		log_utils.log('DMM proxy — enabled: "%s" active: %s' % (getSetting('proxy.enabled'), bool(self._proxy)))
 
 	def _get(self, url, params, headers, use_proxy=False):
 		try:
 			page = params.get('page', '?')
 			if use_proxy and self._proxy:
 				proxies = {'http': self._proxy, 'https': self._proxy}
-				resp = requests.Session().get(url, params=params, headers=headers, timeout=(2, 15), proxies=proxies)
+				# lotto 374: la sessione si chiude subito (11 pagine insieme; Kodi sul Mac ha 256 descrittori)
+				with requests.Session() as sessione:
+					resp = sessione.get(url, params=params, headers=headers, timeout=(2, 15), proxies=proxies)
 			else:
 				resp = _session.get(url, params=params, headers=headers, timeout=(2, 15))
 			if resp.status_code == 429:
@@ -145,52 +149,40 @@ class source(BaseTorrentScraper):
 		if not _get_challenge(self._proxy)[0]:
 			log_utils.log('DMM: challenge non ottenibile, ricerca annullata')
 			return results
-		page_results = _fetch_page(0)
-		if page_results is None:
-			log_utils.log('DMM pagination stopped on failed page: 0')
-			return results
-		results += page_results
 		if not self._proxy:
-			log_utils.log('DMM pagination stopped after page 0: no proxy configured')
-			return results
+			# direttamente DMM concede una richiesta, poi 429
+			log_utils.log('DMM: no proxy configured, page 0 only')
+			return _fetch_page(0) or results
 
-		# Batch a dimensione predefinita: 5 + 3 + 3 = max 11 pagine totali (pagina 0 inclusa).
-		# Primo batch da 4 (pagine 1-4) per completare le 5 pagine iniziali, poi batch da 3.
-		batch_sizes = [4, 3, 3]
-		page = 1
-		for batch_size in batch_sizes:
-			pages = list(range(page, page + batch_size))
-			batch_results = [None] * len(pages)
+		# LOTTO 374 (SORGENTI.md) -- le PAGINE partono insieme. Prima: pagina 0, poi 1-4, 5-7, 8-10 in tre ondate, ognuna
+		# ferma sulla piu' lenta (~1 s a ondata via proxy, ~4 s in tutto). Sono le stesse pagine di prima: una pagina oltre
+		# la fine e' solo una risposta vuota. I risultati si uniscono in ordine di pagina, come prima.
+		esiti = [None] * PAGINE
 
-			def _fetch_batch_page(idx, batch_page):
-				batch_results[idx] = _fetch_page(batch_page)
+		def _una(idx):
+			esiti[idx] = _fetch_page(idx)
 
-			threads = [Thread(target=_fetch_batch_page, args=(idx, batch_page)) for idx, batch_page in enumerate(pages)]
-			[t.start() for t in threads]
-			[t.join() for t in threads]
-
-			batch_total = sum(len(page_result or []) for page_result in batch_results)
-			log_utils.log('DMM batch pages %s-%s raw results: %s for imdb: %s' % (
-				pages[0], pages[-1], batch_total, imdb_id))
-			if batch_total == 0:
-				log_utils.log('DMM pagination stopped on empty batch: pages %s-%s' % (pages[0], pages[-1]))
-				break
-			for page_result in batch_results:
-				if page_result:
-					results += page_result
-			page += batch_size
+		threads = [Thread(target=_una, args=(idx,)) for idx in range(PAGINE)]
+		[t.start() for t in threads]
+		[t.join() for t in threads]
+		for page_result in esiti:
+			if page_result:
+				results += page_result
+		log_utils.log('DMM pages 0-%s raw results: %s (%s pages with results) for imdb: %s' % (
+			PAGINE - 1, len(results), sum(1 for e in esiti if e), imdb_id))
 		return results
 
 	@staticmethod
-	def _parse_item(item):
+	def _leggi(item):
+		"""Una voce della risposta -> candidato (lotto 409: i controlli li fa la classe base). `raw`: il titolo prima di
+		clean_name, per gli alias non latini."""
+		raw = item.get('title') or item.get('filename') or item.get('name') or ''
 		hash = (item.get('hash') or '').lower()
-		name = source_utils.clean_name(
-			item.get('title') or item.get('filename') or item.get('name') or '')
-		seeders = 0
+		name = source_utils.clean_name(raw)
 		size_mb = float(item.get('fileSize') or 0)
 		dsize, isize = source_utils._size('%.2f MB' % size_mb) if size_mb else (0, '')
-		url = 'magnet:?xt=urn:btih:%s&dn=%s' % (hash, name)
-		return hash, name, seeders, dsize, isize, url
+		return {'hash': hash, 'name': name, 'url': source._magnet(hash, name), 'seeders': 0, 'dsize': dsize,
+				'isize': isize, 'raw': raw}
 
 	def sources(self, data, hostDict):
 		self._reset()
@@ -205,48 +197,13 @@ class source(BaseTorrentScraper):
 				self._init_movie_data(data)
 				api_type, season = 'movie', None
 			self._init_filters()
-			files = self._fetch_pages(data['imdb'], api_type, season)
+			# lotto 411: le pagine valgono anche per i pacchetti della stessa ricerca (_condivisa)
+			files = self._condivisa((data['imdb'], api_type, season), lambda: self._fetch_pages(data['imdb'], api_type, season))
 		except:
 			source_utils.scraper_error('DMM')
-		finally:
-			if is_tv:
-				self._queue.put_nowait(files)
-				self._queue.put_nowait(files)
 
 		log_utils.log('DMM: %s raw results for "%s" (imdb=%s)' % (len(files), self.title, data.get('imdb', '?')))
-		for item in files:
-			try:
-				raw_title = item.get('title') or item.get('filename') or item.get('name') or ''
-				page = item.get('_dmm_page', '?')
-				log_utils.log('DMM RAW page=%s: raw="%s" | hash=%s | fileSize=%s' % (
-					page, raw_title, item.get('hash', '?'), item.get('fileSize', '?')))
-				hash, name, seeders, dsize, isize, url = self._parse_item(item)
-				if not name or not hash:
-					log_utils.log('DMM SKIP [empty after clean_name] raw="%s"' % raw_title)
-					continue
-				log_utils.log('DMM PARSED page=%s: "%s" | hash=%s | size=%s' % (page, name, hash, isize or '?'))
-				if self.min_seeders > seeders:
-					log_utils.log('DMM SKIP [seeders=%s < min=%s]: "%s"' % (seeders, self.min_seeders, name))
-					continue
-				if not source_utils.check_title(self.title, self.aliases, name, self.hdlr_match, self.year, self.years):
-					if not self._check_title_raw(raw_title):
-						log_utils.log('DMM SKIP [title mismatch]: "%s"' % name)
-						continue
-					log_utils.log('DMM KEPT [non-ASCII title]: "%s"' % raw_title)
-				name_info = source_utils.info_from_name(name, self.title, self.year, self.hdlr, self.episode_title)
-				if source_utils.remove_lang(name_info, self.check_foreign_audio):
-					log_utils.log('DMM SKIP [language filter]: "%s"' % name)
-					continue
-				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables):
-					log_utils.log('DMM SKIP [undesirable tag]: "%s"' % name)
-					continue
-				if not self.episode_title and self._is_episode_result(name):
-					log_utils.log('DMM SKIP [episode in movie search]: "%s"' % name)
-					continue
-				log_utils.log('DMM KEPT: "%s" | hash=%s' % (name, hash))
-				self._append_result(self._build_result('dmm', hash, name, name_info, url, seeders, dsize, isize))
-			except:
-				source_utils.scraper_error('DMM')
+		self._valuta_tutti(files, self._leggi)
 
 		self._log_stats('DMM')
 		return self._results
@@ -255,64 +212,17 @@ class source(BaseTorrentScraper):
 		self._reset()
 		if not data: return self._results
 		try:
-			self._init_pack_data(data)
+			self._init_pack_data(data, search_series, total_seasons, bypass_filter)
 			self._init_filters()
-			imdb = data['imdb']
-			files = self._queue.get(timeout=12)
+			# lotto 411: le stesse pagine della ricerca dell'episodio, o chieste qui se l'episodio era gia' in cache
+			files = self._condivisa((data['imdb'], 'tv', self.season_x), lambda: self._fetch_pages(data['imdb'], 'tv', self.season_x))
 		except:
 			source_utils.scraper_error('DMM')
 			self._log_stats('DMM', pack=True)
 			return self._results
 
 		log_utils.log('DMM packs: %s raw results for "%s"' % (len(files), self.title))
-		for item in files:
-			try:
-				raw_title = item.get('title') or item.get('filename') or item.get('name') or ''
-				page = item.get('_dmm_page', '?')
-				log_utils.log('DMM RAW PACK page=%s: raw="%s" | hash=%s | fileSize=%s' % (
-					page, raw_title, item.get('hash', '?'), item.get('fileSize', '?')))
-				hash, name, seeders, dsize, isize, url = self._parse_item(item)
-				if not name or not hash:
-					log_utils.log('DMM SKIP [empty after clean_name] raw="%s"' % raw_title)
-					continue
-				if self.min_seeders > seeders:
-					log_utils.log('DMM SKIP [seeders=%s < min=%s]: "%s"' % (seeders, self.min_seeders, name))
-					continue
-
-				episode_start, episode_end, last_season = 0, 0, None
-				if not search_series:
-					if not bypass_filter:
-						valid, episode_start, episode_end = source_utils.filter_season_pack(
-							self.title, self.aliases, self.year, self.season_x, name)
-						if not valid:
-							log_utils.log('DMM SKIP [filter_season_pack]: "%s"' % name)
-							continue
-					package = 'season'
-				else:
-					if not bypass_filter:
-						valid, last_season = source_utils.filter_show_pack(
-							self.title, self.aliases, imdb, self.year, self.season_x, name, total_seasons)
-						if not valid:
-							log_utils.log('DMM SKIP [filter_show_pack]: "%s"' % name)
-							continue
-					else:
-						last_season = total_seasons
-					package = 'show'
-
-				name_info = source_utils.info_from_name(name, self.title, self.year, season=self.season_x, pack=package)
-				if source_utils.remove_lang(name_info, self.check_foreign_audio):
-					log_utils.log('DMM SKIP [language filter]: "%s"' % name)
-					continue
-				if self.undesirables and source_utils.remove_undesirables(name_info, self.undesirables):
-					log_utils.log('DMM SKIP [undesirable tag]: "%s"' % name)
-					continue
-
-				log_utils.log('DMM KEPT (pack=%s): "%s" | hash=%s' % (package, name, hash))
-				self._append_result(self._build_pack_result(
-					'dmm', hash, name, name_info, url, seeders, dsize, isize,
-					package, episode_start, episode_end, last_season, search_series))
-			except:
-				source_utils.scraper_error('DMM')
+		self._valuta_tutti(files, self._leggi, pacchetti=True)
 
 		self._log_stats('DMM', pack=True)
 		return self._results

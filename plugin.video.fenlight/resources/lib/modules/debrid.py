@@ -121,20 +121,14 @@ def TB_check(hash_list, cached_hashes):
         len(hash_list), len(cached_hashes), len(unchecked_hashes)))
 	if unchecked_hashes:
 		results = TorBoxAPI().check_cache(unchecked_hashes)
-		if results:
-			cached_append = cached_hashes.append
+		# lotto 387: un verdetto solo da una risposta buona; una d'errore (429, success false) non scrive "non in cache"
+		from scrapers.verifica_cache import risposta_buona
+		if risposta_buona(results):
+			results = set((i.get('hash') or '').lower() for i in results['data'] if isinstance(i, dict))
+			logger('TB_check', 'TB returned %s cached hashes' % len(results))
 			process_list = []
-			process_append = process_list.append
-			try:
-				results = [i['hash'].lower() for i in results['data']]
-				logger('TB_check', 'TB returned %s cached hashes' % len(results))
-				for h in unchecked_hashes:
-					cached = 'False'
-					if h in results:
-						cached_append(h)
-						cached = 'True'
-					process_append((h, cached))
-			except:
-				for i in unchecked_hashes: process_append((i, 'False'))
+			for h in unchecked_hashes:
+				if h in results: cached_hashes.append(h)
+				process_list.append((h, 'True' if h in results else 'False'))
 			add_to_local_cache(process_list, 'tb')
 	return cached_hashes

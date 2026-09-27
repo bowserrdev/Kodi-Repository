@@ -2,7 +2,7 @@ from threading import Thread
 from urllib.parse import urlencode
 from caches.settings_cache import get_setting, set_setting
 from caches.main_cache import cache_object
-from modules.source_utils import supported_video_extensions, seas_ep_filter, EXTRAS
+from modules.source_utils import supported_video_extensions, seas_ep_filter, file_dell_episodio, EXTRAS
 from modules.kodi_utils import make_session, kodi_dialog, ok_dialog, notification, confirm_dialog
 # from modules.kodi_utils import logger
 
@@ -132,7 +132,7 @@ class TorBoxAPI:
 		if not result['success']: return ''
 		return result['data'].get('torrent_id', '')
 
-	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode, absolute=None):
+	def resolve_magnet(self, magnet_url, info_hash, store_to_cloud, title, season, episode, absolute=None, domanda=None):
 		try:
 			file_url, match, torrent_id = None, False, None
 			extensions = supported_video_extensions()
@@ -141,11 +141,24 @@ class TorBoxAPI:
 			if not torrent['success']: return None
 			torrent_id = torrent['data']['torrent_id']
 			torrent_files = self.torrent_info(torrent_id)
-			selected_files = [{'url': '%d,%d' % (torrent_id, item['id']), 'filename': item['short_name'], 'size': item['size']} \
+			if domanda is not None:
+				# LOTTO 365 -- la stessa scelta dell'elenco delle sorgenti: il classificatore, con la stessa domanda,
+				# sull'elenco fresco. Prima: per l'episodio il PRIMO file che corrispondeva (un campione puo' essere
+				# il primo), per il film il piu' grande (in una collezione, il film piu' lungo e non quello cercato).
+				from modules.classificatore import classifica
+				voci = [i for i in torrent_files['data']['files']]
+				elenco = [((i.get('name') or i.get('short_name') or ''), (i.get('short_name') or ''), int(i.get('size') or 0)) for i in voci]
+				esito, scelto, motivo = classifica(elenco, domanda)
+				if esito is False: return None
+				if esito:
+					file_url = self.unrestrict_link('%d,%d' % (torrent_id, voci[elenco.index(scelto)]['id']))
+					if not store_to_cloud: Thread(target=self.delete_torrent, args=(torrent_id,)).start()
+					return file_url
+			selected_files = [{'url': '%d,%d' % (torrent_id, item['id']), 'filename': item['short_name'], 'path': item.get('name') or '', 'size': item['size']} \
 							for item in torrent_files['data']['files'] if item['short_name'].lower().endswith(tuple(extensions))]
 			if not selected_files: return None
 			if season:
-				selected_files = [i for i in selected_files if seas_ep_filter(season, episode, absolute=absolute, release_title=i['filename'])]
+				selected_files = file_dell_episodio(selected_files, season, episode, absolute, lambda i: i['filename'], lambda i: i['path'])
 			else:
 				if self._m2ts_check(selected_files): return None
 				selected_files = [i for i in selected_files if not any(x in i['filename'] for x in extras_filtering_list)]
@@ -168,7 +181,7 @@ class TorBoxAPI:
 			if not torrent['success']: return None
 			torrent_id = torrent['data']['torrent_id']
 			torrent_files = self.torrent_info(torrent_id)
-			torrent_files = [{'link': '%d,%d' % (torrent_id, item['id']), 'filename': item['short_name'], 'size': item['size']} \
+			torrent_files = [{'link': '%d,%d' % (torrent_id, item['id']), 'filename': item['short_name'], 'path': item.get('name') or '', 'size': item['size']} \
 							for item in torrent_files['data']['files'] if item['short_name'].lower().endswith(tuple(extensions))]
 			Thread(target=self.delete_torrent, args=(torrent_id,)).start()
 			return torrent_files or None

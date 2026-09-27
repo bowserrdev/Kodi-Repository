@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 from caches.main_cache import cache_object
 from caches.settings_cache import get_setting, set_setting
 from modules.utils import copy2clip
-from modules.source_utils import supported_video_extensions, seas_ep_filter, EXTRAS
+from modules.source_utils import supported_video_extensions, seas_ep_filter, file_dell_episodio, EXTRAS
 from modules import kodi_utils
 
 # Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
@@ -63,8 +63,8 @@ class PremiumizeAPI:
 				self.token = str(response['access_token'])
 				set_setting('pm.token', self.token)
 			except:
-				 ok_dialog(text='Error')
-				 break
+				ok_dialog(text='Error')
+				break
 		try: progressDialog.close()
 		except: pass
 		if self.token:
@@ -105,7 +105,6 @@ class PremiumizeAPI:
 		try:
 			file_url = None
 			correct_files = []
-			append = correct_files.append
 			extensions = supported_video_extensions()
 			result = self.instant_transfer(magnet_url)
 			if not 'status' in result or result['status'] != 'success': return None
@@ -113,15 +112,15 @@ class PremiumizeAPI:
 			if len(valid_results) == 0: return
 			if season:
 				episode_title = re.sub(r'[^A-Za-z0-9-]+', '.', title.replace('\'', '').replace('&', 'and').replace('%', '.percent')).lower()
-				for item in valid_results:
-					if seas_ep_filter(season, episode, absolute=absolute, release_title=item['path'].split('/')[-1]): append(item)
-					if len(correct_files) == 0: continue
-					for i in correct_files:
-						compare_link = seas_ep_filter(season, episode, absolute=absolute, release_title=i['path'], split=True)
-						compare_link = re.sub(episode_title, '', compare_link)
-						if not any(x in compare_link for x in EXTRAS):
-							file_url = i['link']
-							break
+				# Lotto 362: la scelta dei file dell'episodio e' quella comune (file_dell_episodio); il ciclo di prima
+				# rifaceva il confronto a ogni file e arrivava allo stesso primo file senza extra.
+				correct_files.extend(file_dell_episodio(valid_results, season, episode, absolute, lambda i: i['path'].split('/')[-1], lambda i: i['path']))
+				for i in correct_files:
+					compare_link = seas_ep_filter(season, episode, absolute=absolute, release_title=i['path'], split=True)
+					compare_link = re.sub(episode_title, '', compare_link)
+					if not any(x in compare_link for x in EXTRAS):
+						file_url = i['link']
+						break
 			else:
 				file_url = max(valid_results, key=lambda x: int(x.get('size'))).get('link', None)
 				if not any(file_url.lower().endswith(x) for x in extensions): file_url = None

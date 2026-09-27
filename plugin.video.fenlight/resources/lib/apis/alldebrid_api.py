@@ -5,7 +5,7 @@ from threading import Thread
 from caches.main_cache import cache_object
 from caches.settings_cache import get_setting, set_setting
 from modules.utils import copy2clip
-from modules.source_utils import supported_video_extensions, seas_ep_filter, EXTRAS
+from modules.source_utils import supported_video_extensions, seas_ep_filter, file_dell_episodio, EXTRAS
 from modules import kodi_utils
 
 # Rete pigra (lotto 52): 'requests' e/o la Session erano a livello di modulo, quindi si
@@ -147,7 +147,7 @@ class AllDebridAPI:
 			valid_results = [i for i in transfer_info['links'] if any(i.get('filename').lower().endswith(x) for x in extensions) and not i.get('link', '') == '']
 			if valid_results:
 				if season:
-					correct_files = [i for i in valid_results if seas_ep_filter(season, episode, absolute=absolute, release_title=i['filename'])]
+					correct_files = file_dell_episodio(valid_results, season, episode, absolute, lambda i: i['filename'])
 					if correct_files:
 						extras = [i for i in EXTRAS if not i == title.lower()]
 						episode_title = re.sub(r'[^A-Za-z0-9-]+', '.', title.replace('\'', '').replace('&', 'and').replace('%', '.percent')).lower()
