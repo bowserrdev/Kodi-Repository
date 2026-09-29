@@ -23,6 +23,10 @@
 # i byte letti, rete lenta, parser che si perde: si restituisce None e si riproduce. Questo modulo
 # puo' solo scartare cio' che ha POSITIVAMENTE misurato come troppo grande; tutto il resto passa.
 BYTE_INTESTAZIONE = 131072      # 128 KB: coprono Tracks di un matroska e il moov di un mp4 faststart
+# LOTTO 416 (SOTTOTITOLI.md) -- ci si ferma presto, ma mai prima di 64 KB: sono i byte che servono ai sottotitoli
+# sincronizzati (SeekHead per trovare i Cues, e la prima meta' dell'hash OpenSubtitles). Il costo e' quasi tutto il
+# ttfb (343 ms su questo cdn), i 64 KB in piu' ne aggiungono una trentina.
+MIN_TESTA = 65536
 TIMEOUT = 6                     # per singola operazione di socket
 # Tetto sul TOTALE, redirect compresi. Senza, quattro salti da 6 s farebbero aspettare l'utente 24
 # secondi prima ancora di provare a riprodurre: un controllo che deve costare mezzo secondo non puo'
@@ -39,7 +43,7 @@ CODEC_MP4 = {b'hvc1': 'hevc', b'hev1': 'hevc', b'dvh1': 'hevc', b'dvhe': 'hevc',
 
 
 def _scarica(url):
-	"""(byte, dimensione_totale, host_finale). Segue i redirect a mano."""
+	"""(byte, dimensione_totale, host_finale, url_finale). Segue i redirect a mano."""
 	import http.client
 	from time import perf_counter
 	from modules.http_client import _split_url
@@ -68,8 +72,8 @@ def _scarica(url):
 				pezzo = resp.read(min(PEZZO, BYTE_INTESTAZIONE - len(dati)))
 				if not pezzo: break
 				dati += pezzo
-				if _basta(dati): break
-			return dati, _totale(resp), host
+				if len(dati) >= MIN_TESTA and _basta(dati): break
+			return dati, _totale(resp), host, url
 		finally:
 			try: conn.close()
 			except: pass
@@ -279,8 +283,48 @@ MIN_LATO, MAX_LATO = 16, 16384
 MIN_DURATA, MAX_DURATA = 1.0, 86400.0
 
 
+def leggi_intervallo(url, inizio, n, tempo_massimo=TEMPO_MASSIMO):
+	"""I byte [inizio, inizio+n) del file, seguendo i redirect a mano come _scarica. None se la rete non risponde in
+	tempo o il server non onora la Range (un 200 con il file intero non si legge: sarebbe il film). Lotto 416: i Cues
+	e la seconda meta' dell'hash dei sottotitoli sincronizzati."""
+	import http.client
+	from time import perf_counter
+	from modules.http_client import _split_url
+	if n <= 0: return b''
+	scaduto = perf_counter() + tempo_massimo
+	for _ in range(4):
+		if perf_counter() >= scaduto: return None
+		scheme, host, port, percorso = _split_url(url)
+		cls = http.client.HTTPSConnection if scheme == 'https' else http.client.HTTPConnection
+		conn = cls(host, port, timeout=min(TIMEOUT, max(1, scaduto - perf_counter())))
+		try:
+			conn.request('GET', percorso, headers={'Range': 'bytes=%d-%d' % (inizio, inizio + n - 1),
+												   'Accept-Encoding': 'identity', 'User-Agent': 'Mozilla/5.0',
+												   'Connection': 'close'})
+			resp = conn.getresponse()
+			if resp.status in (301, 302, 303, 307, 308):
+				dove = resp.getheader('Location')
+				if not dove: return None
+				url = dove if not dove.startswith('/') else '%s://%s:%s%s' % (scheme, host, port, dove)
+				continue
+			if resp.status != 206: return None
+			dati = b''
+			while len(dati) < n:
+				if perf_counter() >= scaduto: return None
+				pezzo = resp.read(min(PEZZO * 4, n - len(dati)))
+				if not pezzo: break
+				dati += pezzo
+			return dati
+		except Exception:
+			return None
+		finally:
+			try: conn.close()
+			except: pass
+	return None
+
+
 def leggi(url):
-	"""{'codec','larghezza','altezza','durata','dimensione','host'} -- ogni campo puo' mancare.
+	"""{'codec','larghezza','altezza','durata','dimensione','host','testa','url'} -- ogni campo puo' mancare.
 
 	Se avvia() ha gia' messo in moto la richiesta per questo stesso url, qui si aspetta solo il
 	tempo che manca. Se non l'ha fatto, o se e' fallita, si legge adesso: l'anticipo e' un risparmio,
@@ -296,11 +340,16 @@ def leggi(url):
 
 
 def _leggi_ora(url):
+	# LOTTO 416 -- `testa` (i byte letti, almeno MIN_TESTA) e `url` (quello finale, dopo i redirect) servono ai
+	# sottotitoli sincronizzati: SeekHead e Tracks del matroska, prima meta' dell'hash, e dove chiedere i Cues.
 	esito = {'codec': None, 'larghezza': None, 'altezza': None, 'durata': None,
-			 'dimensione': None, 'host': None}
+			 'dimensione': None, 'host': None, 'testa': None, 'url': None}
 	try:
-		dati, totale, host = _scarica(url)
+		r = _scarica(url)
+		dati, totale, host = r[:3]
 		esito['dimensione'], esito['host'] = totale, host
+		esito['url'] = r[3] if len(r) > 3 else url
+		esito['testa'] = dati or None
 		if not dati: return esito
 		if dati[:4] == b'\x1a\x45\xdf\xa3': codec, larghezza, altezza, durata = _mkv(dati)
 		elif len(dati) > 12 and dati[4:8] in (b'ftyp', b'moov', b'styp'): codec, larghezza, altezza, durata = _mp4(dati)

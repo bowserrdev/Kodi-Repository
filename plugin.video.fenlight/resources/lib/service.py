@@ -224,8 +224,10 @@ class CustomFonts:
 		window.clearProperty(current_skin_prop)
 		font_utils = FontUtils()
 		while not monitor.abortRequested():
-			# In riproduzione non si tocca la skin: execute_custom_fonts riscrive Font.xml e puo'
-			# innescare un ricaricamento. Prima girava comunque, solo piu' di rado.
+			# In riproduzione non si tocca niente. execute_custom_fonts adatta i font dei dialoghi di Fen Light
+			# (resources/skins/Default/1080i) a quelli della skin in uso: legge il Font.xml della skin e riscrive
+			# i dialoghi, non Font.xml, e solo quando skin o font sono cambiati e il testo cambia davvero (lotto 422).
+			# Prima girava comunque, solo piu' di rado.
 			if window.getProperty(pause_services_prop) == 'true' or is_playing():
 				wait_for_abort(20); continue
 			font_utils.execute_custom_fonts()
@@ -628,8 +630,6 @@ class WidgetPaginator:
 		# lentezza. Vedi LASTBUILD_PROP in paginator.py per il caso reale che lo ha reso necessario.
 		no_build_timeout = 20
 		token_written = {}   # key -> (istante del TRIGGER, scope, id contenitore, nome proprieta')
-		# key -> (istante in cui la chiave e' comparsa in coda, movimento gia' ordinato?). Vedi lotto 166.
-		rehead_moved = {}
 		# LOTTO 216, le due memorie di lavoro del riposizionamento di 'continua a guardare'. Stanno in
 		# RAM e non in una proprieta' apposta: perderle (servizio riavviato a meta') non puo' produrre
 		# un esito sbagliato, solo un giro in piu'. Il debito, che invece non si puo' perdere, sta
@@ -770,54 +770,12 @@ class WidgetPaginator:
 						else:
 							paginator.log('cw testa nuova key=%s: in testa e ferma, debito chiuso' % paginator.short(ckey))
 						cw_head.done(ckey); cw_moved.pop(ckey, None); cw_focus.pop(ckey, None)
-				# LOTTO 138 -- la riga si riporta in cima ANCHE se il widget non e' a fuoco.
-				# Sta QUI, sopra il cancello del fuoco, e la posizione e' il punto del lotto. Nel 137 la
-				# consumazione stava dentro il ramo del widget a fuoco, quindi con il fuoco sull'icona della
-				# Home la riga restava scorsa sull'elemento vecchio finche' non ci si passava sopra -- e
-				# allora si riposizionava di scatto. L'utente lo ha detto meglio di cosi': una modifica
-				# fatta su Trakt compare a prescindere da dove sia il fuoco, e questo deve fare lo stesso.
-				# Dal lotto 216 questa coda ha un committente solo, reconcile_position: 'continua a
-				# guardare' ha una regola sua e un consumatore suo, qui sopra.
-				# Il comando e' Control.Move e non SetFocus: SetFocus PORTEREBBE il fuoco sul widget, che
-				# strappando l'utente dall'icona della Home sarebbe un danno peggiore del difetto.
-				# Control.Move manda GUI_MSG_MOVE_OFFSET, che CGUIControlGroup consegna al controllo per ID
-				# senza toccare il fuoco (Kodi 21.1: `return SendControlMessage(message)`), e che
-				# CGUIBaseContainer esegue come N chiamate a MoveUp DENTRO UN SOLO messaggio -- quindi una
-				# scorsa sola, non N animazioni.
-				# L'offset e' esattamente `current-1`: MoveUp avvolge alla fine della lista SOLO se e' gia'
-				# sul primo elemento, e con questo conto l'ultimo passo ci arriva esatto senza eccedere.
-				# Un contenitore non ancora popolato (NumItems 0) resta in coda: la finestra puo' non essere
-				# a schermo, e allora si riposiziona quando ci torna.
-				# LOTTO 166 -- la chiave esce dalla coda quando il contenitore E' ARRIVATO, non quando gli
-				# si ordina di partire. Prima rehead_done() stava PRIMA di Control.Move: dal lotto 165 la
-				# skin tiene il row nascosto finche' la chiave e' in coda, quindi svuotarla li' scopriva il
-				# row nell'istante esatto in cui cominciava uno scorrimento di 400 ms (List_Core,
-				# <scrolltime>400</scrolltime>) -- cioe' il difetto che il 165 doveva togliere, intatto.
-				# Adesso: si ordina il movimento una volta sola (rehead_moved), e si consuma la chiave solo
-				# quando il cursore e' davvero in testa E lo scorrimento e' finito (Container(N).Scrolling).
-				# Il tetto di REHEAD_TIMEOUT esiste perche' con il 165 una chiave incastrata non e' piu'
-				# solo una riga fuori posto: terrebbe il row invisibile. Scaduto il tempo si molla, e il
-				# peggio che resta e' il comportamento di prima.
-				if window.getProperty(paginator.REHEAD_PROP):
-					for rkey in paginator.rehead_pending():
-						rscope, _, rcid = rkey.rpartition('.')
-						if rscope != scope or not rcid.isdigit(): continue
-						rnum = int(get_infolabel('Container(%s).NumItems' % rcid) or 0)
-						rcur = int(get_infolabel('Container(%s).CurrentItem' % rcid) or 0)
-						quando, mosso = rehead_moved.setdefault(rkey, (time(), False))
-						azione = paginator.rehead_step(rnum, rcur, xbmc.getCondVisibility('Container(%s).Scrolling' % rcid),
-														mosso, time() - quando)
-						if azione == 'aspetta': continue
-						if azione == 'muovi':
-							xbmc.executebuiltin('Control.Move(%s,%s)' % (rcid, 1 - rcur))
-							rehead_moved[rkey] = (quando, True)
-							paginator.log('watcher testa nuova key=%s: riga riportata in cima (era %s/%s)'
-											% (paginator.short(rkey), rcur, rnum))
-							continue
-						if azione == 'mollo':
-							paginator.log('watcher testa nuova key=%s: mollo dopo %s s (fermo a %s/%s)'
-											% (paginator.short(rkey), paginator.REHEAD_TIMEOUT, rcur, rnum))
-						paginator.rehead_done(rkey); rehead_moved.pop(rkey, None)
+				# LOTTO 418 -- qui c'era il riposizionamento delle righe che avevano cambiato lista: la coda
+				# fenlight.pg.rehead, un Control.Move(id, 1-cur) e la chiave tolta a scorrimento finito (lotti
+				# 138, 165, 166). Dipendeva dall'ordine fra la costruzione, questo giro da 0,3 s e l'arrivo della
+				# lista in Kodi, e sulla Firestick Discover ripartiva dall'elemento N. Adesso la riga che cambia
+				# lista la distrugge il plugin prima di costruire (router._svuota_prima): passa da un solo
+				# elemento e Kodi la rimette sul primo da se'. Qui resta solo 'continua a guardare', qui sopra.
 				# LOTTO 286 -- il fuoco si confronta con System.CurrentControlID, letto in testa al giro,
 				# invece di chiederlo con Control.HasFocus: quella passava da getCondVisibility, cioe' dalla
 				# porta del FrameMove, una o due volte ogni 0,3 s. Equivalenza, Kodi 21.1: senza modali

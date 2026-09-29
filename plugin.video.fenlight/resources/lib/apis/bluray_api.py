@@ -297,19 +297,22 @@ def _parole(testo):
 	testo = ''.join(c for c in testo if not unicodedata.combining(c)).lower().replace('&', ' and ')
 	return set(_PAROLA_RE.findall(testo)) - _ARTICOLI
 
-def _stesso_anno(voce, year, serie):
+def _stesso_anno(voce, year):
 	anno = str(voce.get('year') or '')
-	# Una serie ha anche i cofanetti di piu' stagioni, con l'intervallo: 'Breaking Bad: The Complete Series' e' '2008-2013'.
-	return anno == str(year) or (serie and anno.startswith('%s-' % year))
+	# Un cofanetto porta l'intervallo di anni di cio' che contiene: le stagioni di una serie ('Breaking Bad: The Complete
+	# Series' e' '2008-2013') e anche i film. LOTTO 417 -- prima l'intervallo valeva solo per le serie, e un film che sta
+	# solo in raccolta restava senza disco: Vampire Princess Miyu (1988) ha una decina di DVD usciti, tutti '1988-1989'.
+	# L'intervallo deve COMINCIARE con l'anno: una raccolta che parte prima e' un altro titolo della serie.
+	return anno == str(year) or anno.startswith('%s-' % year)
 
-def _voci_del_titolo(items, title, year, serie=False):
-	"""Le sole voci che sono QUEL titolo: anno uguale e tutte le sue parole presenti.
+def _voci_del_titolo(items, title, year):
+	"""Le sole voci che sono QUEL titolo: anno uguale (o intervallo che comincia da quell'anno) e tutte le sue parole.
 
 	Il nome della voce puo' averne di piu' ('Oppenheimer 4K (Limited Edition) (2023)', 'Demon Slayer - Kimetsu no
 	Yaiba - The Movie: Infinity Castle'), non di meno.
 	"""
 	cercate = _parole(title)
-	return [i for i in items if isinstance(i, dict) and _stesso_anno(i, year, serie) and cercate <= _parole(i.get('title'))]
+	return [i for i in items if isinstance(i, dict) and _stesso_anno(i, year) and cercate <= _parole(i.get('title'))]
 
 def _date_e_nomi(voci):
 	"""Le voci nella forma che legge _on_sale: [(data_o_None, nome)]. 'No release date' diventa None."""
@@ -382,7 +385,7 @@ def _in_vendita(voce, verify_released, today):
 	"""L'edizione e' gia' uscita? La stessa regola di _on_sale, per UNA voce."""
 	return _on_sale(_date_e_nomi([voce]), verify_released, today)
 
-def tracce_audio(title, year, media_type, paesi_per_lingua, verify_released=False):
+def tracce_audio(title, year, paesi_per_lingua, verify_released=False):
 	"""D3: quali lingue hanno una traccia audio su un disco (Blu-ray o DVD) gia' uscito nei paesi di quella lingua.
 
 	`paesi_per_lingua` e' {'it': ('IT',), 'es': ('ES', 'MX'), ...}. Restituisce l'insieme delle lingue certificate
@@ -398,7 +401,6 @@ def tracce_audio(title, year, media_type, paesi_per_lingua, verify_released=Fals
 		for paese in paesi_per_lingua[lingua]:
 			if paese.upper() not in paesi: paesi.append(paese.upper())
 	keyword = '%s %s' % (title, year)
-	serie = media_type != 'movie'
 	ricerche = [(section, paese) for section in _CATALOGUES for paese in paesi]
 	risposte = [None] * len(ricerche)
 	def cerca(i, lavoro):
@@ -411,7 +413,7 @@ def tracce_audio(title, year, media_type, paesi_per_lingua, verify_released=Fals
 		if not isinstance(items, list):
 			cause.append(_causa('ricerca %s/%s' % (section, paese), items))
 			continue
-		voci = _voci_del_titolo(items, title, year, serie)
+		voci = _voci_del_titolo(items, title, year)
 		if not voci:
 			if not _mobile_alive(section, paese): cause.append('%s/%s: sentinella muta' % (section, paese))
 			continue

@@ -543,8 +543,6 @@ default_settings = [
 #==================== Auto Subtitles
 {'setting_id': 'autosub.enabled', 'setting_type': 'boolean', 'setting_default': 'false'},
 {'setting_id': 'autosub.api_key', 'setting_type': 'string', 'setting_default': 'empty_setting'},
-{'setting_id': 'autosub.username', 'setting_type': 'string', 'setting_default': 'empty_setting'},
-{'setting_id': 'autosub.password', 'setting_type': 'string', 'setting_default': 'empty_setting'},
 
 
 #=========================================================================================#

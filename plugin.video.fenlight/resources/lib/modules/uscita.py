@@ -283,7 +283,7 @@ def doppiato(media_type, tmdb_id, meta, lingue, ctx, domanda=None):
 	jw = lingue_audio(media_type, tmdb_id, meta.get('imdb_id'), titolo, aperte, paesi_jw, _offerte_per_justwatch(riassunto))
 	if jw: return certifica(jw)   # D2
 	from apis.bluray_api import tracce_audio
-	disco = tracce_audio(titolo, anno_titolo, media_type, dict((l, LINGUE[l]['bluray']) for l in aperte), verifica)
+	disco = tracce_audio(titolo, anno_titolo, dict((l, LINGUE[l]['bluray']) for l in aperte), verifica)
 	if disco: return certifica(disco)   # D3
 	if jw is None or disco is None: return None
 	oggi = ctx.data.isoformat()

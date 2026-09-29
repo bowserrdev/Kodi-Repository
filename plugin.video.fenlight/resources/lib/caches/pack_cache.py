@@ -42,6 +42,18 @@ VERDETTI_SCRIVI = 'INSERT OR REPLACE INTO verdetti (hash, chiave, esito, file, b
 VERDETTI_CONTA = 'SELECT count(*) FROM verdetti'
 VERDETTI_POTA = 'DELETE FROM verdetti WHERE rowid NOT IN (SELECT rowid FROM verdetti ORDER BY quando DESC LIMIT ?)'
 _verdetti_pronti = [False]
+# LOTTO 416 -- l'hash OpenSubtitles dei video (SOTTOTITOLI.md). Tabella a parte: nelle tuple di pack_files il penultimo
+# campo e' il nome (contiene_episodio, dimensione_episodio) e un campo in coda li romperebbe. Scritta nello stesso giro
+# di scrivi(): TorBox lo da' in `files[].opensubtitles_hash`, gratis. Solo per gli hash letti DOPO il lotto: per gli
+# altri resta il calcolo a Range (modules/sottotitoli_rete.py).
+OSHASH_CREA = ('CREATE TABLE IF NOT EXISTS oshash_file (hash text not null, nome text not null, oshash text, quando integer, '
+			   'unique (hash, nome))')
+OSHASH_SCRIVI = 'INSERT OR REPLACE INTO oshash_file (hash, nome, oshash, quando) VALUES (?, ?, ?, ?)'
+OSHASH_LEGGI = 'SELECT oshash FROM oshash_file WHERE hash = ? AND nome = ?'
+OSHASH_CONTA = 'SELECT count(*) FROM oshash_file'
+OSHASH_POTA = 'DELETE FROM oshash_file WHERE rowid NOT IN (SELECT rowid FROM oshash_file ORDER BY quando DESC LIMIT ?)'
+MAX_OSHASH = 200000
+_oshash_pronti = [False]
 
 
 def _adesso():
@@ -112,7 +124,7 @@ def da_torbox(voce):
 
 def scrivi(voci):
 	"""voci: iterabile di dizionari con 'hash' e 'files' come li restituisce TorBox. Ritorna quanti scritti."""
-	righe = []
+	righe, hashes = [], []
 	quando = _adesso()
 	for v in voci or []:
 		try:
@@ -121,13 +133,51 @@ def scrivi(voci):
 			f = da_torbox(v)
 			if not f: continue
 			righe.append((h, zlib.compress(json.dumps([list(x) for x in f], separators=(',', ':')).encode('utf-8'), 6), quando))
+			video = _video()
+			for i in v.get('files') or []:
+				nome, oh = i.get('short_name') or '', i.get('opensubtitles_hash')
+				if oh and nome.lower().endswith(video): hashes.append((h, nome, oh, quando))
 		except: continue
 	if not righe: return 0
 	try:
 		dbcon = connect_database('debridcache_db')
 		dbcon.executemany(SCRIVI, righe)
+		if hashes:
+			try:
+				_crea_oshash(dbcon)
+				dbcon.executemany(OSHASH_SCRIVI, hashes)
+			except: pass
 		return len(righe)
 	except: return 0
+
+
+def _crea_oshash(dbcon):
+	# Come _crea_verdetti: i debridcache.db esistenti la ricevono al primo uso, non nel controllo di integrita'.
+	if _oshash_pronti[0]: return
+	dbcon.execute(OSHASH_CREA)
+	_oshash_pronti[0] = True
+
+
+def oshash(info_hash, nome):
+	"""L'hash OpenSubtitles del video `nome` (short_name) del torrent, se TorBox l'ha dato. None altrimenti."""
+	if not info_hash or not nome: return None
+	try:
+		dbcon = connect_database('debridcache_db')
+		_crea_oshash(dbcon)
+		r = dbcon.execute(OSHASH_LEGGI, ((info_hash or '').lower(), nome)).fetchone()
+		return r[0] if r else None
+	except: return None
+
+
+def nome_per_dimensione(info_hash, dimensione):
+	"""Lotto 420 -- il nome del video del torrent che pesa esattamente `dimensione` byte (il Content-Range del file che
+	si riproduce), se e' uno solo. Il resolver non dice quale file ha scelto; la dimensione esatta lo identifica senza
+	uno stato in piu'. None se l'elenco non c'e' o se due video pesano uguale."""
+	if not info_hash or not dimensione: return None
+	h = info_hash.lower()
+	video = _video()
+	nomi = [n for p, n, b in leggi([h]).get(h, ()) if b == dimensione and n.lower().endswith(video)]
+	return nomi[0] if len(nomi) == 1 else None
 
 
 def manutenzione():
@@ -141,6 +191,10 @@ def manutenzione():
 		dbcon = connect_database('debridcache_db')
 		_crea_verdetti(dbcon)
 		if dbcon.execute(VERDETTI_CONTA).fetchone()[0] > MAX_VERDETTI: dbcon.execute(VERDETTI_POTA, (MAX_VERDETTI,))
+		try:
+			_crea_oshash(dbcon)
+			if dbcon.execute(OSHASH_CONTA).fetchone()[0] > MAX_OSHASH: dbcon.execute(OSHASH_POTA, (MAX_OSHASH,))
+		except: pass
 		if dbcon.execute(PESO).fetchone()[0] <= MAX_BYTE: return 0
 		somma, via = 0, []
 		for h, peso in dbcon.execute(PER_ETA).fetchall():

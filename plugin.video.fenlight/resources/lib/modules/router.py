@@ -98,7 +98,7 @@ def _search_debounce_abort(sys, params, action_filtered):
 	# Dallo step 3 fino alla sonda delle 06:05 qui si consegnava STATO_ATTESA. Quella consegna non
 	# arrivava mai a schermo, ma chiamava testa_vuota, che porta BUILT_PROP a 0: da li' in poi il ponte
 	# diceva "contenitore vuoto" mentre a schermo c'erano quaranta elementi della ricerca precedente.
-	# E _search_svuota_prima, che e' la funzione nata per svuotare davvero perche' agisce
+	# E _svuota_prima, che e' la funzione nata per svuotare davvero perche' agisce
 	# sull'invocazione del path VIVO, chiede proprio BUILT_PROP > 0 per sapere se c'e' qualcosa da
 	# togliere: trovava 0 e si fermava. Misurato con la sonda 3098:
 	#     06:05:45.566  testa vuota 1105.502 stato=attesa query="bur"
@@ -108,41 +108,69 @@ def _search_debounce_abort(sys, params, action_filtered):
 	except: pass
 	return True
 
-def _search_svuota_prima(sys, params, action_filtered):
-	"""La ricerca in UN COLPO SOLO: svuota il contenitore prima di costruire, e riordina.
+# LOTTO 418 -- le azioni dell'hub di ricerca: quella che arriva dalla skin e quella in cui il router la
+# riscrive. Stanno qui perche' la riscrittura va fatta PRIMA di qualunque cancello che confronti
+# l'impronta della lista: CTL_KEY_PROP e' stato registrato con l'azione riscritta, e confrontarlo con
+# quella originale darebbe "lista diversa" a ogni passo di paginazione.
+_AZIONI_HUB_RICERCA = {'build_movie_list': ('tmdb_movies_search', 'tmdb_movies_search_filtered'),
+						'build_tvshow_list': ('tmdb_tv_search', 'tmdb_tv_search_filtered')}
 
-	L'UNICO POSTO CHE SVUOTA, e deve restarlo. Nato per le query INCOLLATE -- due sole invocazioni,
-	nessuna da riciclare, il contenitore che tiene i risultati di prima per tutta la costruzione: 21,7 s
-	misurati il 21/09 -- copre da subito anche quelle digitate. All'inizio no: fino alla sonda delle
-	06:05 le invocazioni chiuse dal debounce consegnavano STATO_ATTESA e lo svuotamento della ricerca
-	digitata veniva da li'. Quella consegna pero' rispondeva a un path che Kodi aveva gia' abbandonato,
-	quindi non arrivava mai a schermo mentre il ponte la registrava lo stesso: e' il difetto che la
-	sonda ha trovato. Da allora chi sa che la propria cartella sara' scartata non dichiara piu' niente
-	-- ne' il debounce qui sopra, ne' l'indexer che molla -- e a svuotare resta questa funzione sola,
-	che e' anche l'unica a consegnare STATO_ATTESA in tutto l'addon.
+def _cancelli_riga(sys, params, mode):
+	"""I cancelli di una costruzione di RIGA (chi ha 'pgctl' nel path), in un punto solo e in quest'ordine.
 
-	Il giro: si consegna subito la cartella vuota e si ordina la ricostruzione. ordina_ricarica e'
-	esplicitamente aperta a qualunque processo -- il plugin annota, il servizio scrive il token, il
-	token cambia il path, Kodi rilegge -- quindi non serve niente di nuovo. In cambio la ricostruzione
-	dipende dal servizio: se l'ordine si perde la riga resta vuota e nessuno riprova. E' il prezzo del
-	lotto 325, uno scrittore solo per il token, e non si paga con una rete a tempo.
-
-	COSA IMPEDISCE IL GIRO INFINITO. Quello che fa il lavoro e' BUILT_PROP: la consegna vuota lo porta
-	a 0 (paginator.testa_vuota), quindi la ricostruzione ordinata trova il contenitore gia' vuoto,
-	`tiene_altra_lista` risponde no e si costruisce.
-	Ma BUILT_PROP lo azzera testa_vuota, che scrive solo se un segnaposto e' stato davvero consegnato:
-	su una riga che non lo chiede, la consegna vuota non azzera niente e la ricostruzione ritroverebbe
-	il posto occupato, svuoterebbe e riordinerebbe, per sempre. Quel caso non si copre con una rete: si
-	rende impossibile, non cominciandolo. Chi non avra' un segnaposto non passa di qui.
-	(Ci ero arrivato per gradi, e le due versioni scartate valgono piu' della conclusione: prima una
-	finestra a tempo sul nonce della ricarica, che vale 60 s e resta nel path -- avrebbe coperto anche
-	le query incollate DOPO, dentro quel minuto, cioe' proprio i casi per cui questa funzione esiste;
-	poi una proprieta' "per questa query ho gia' svuotato", esatta ma pur sempre uno stato in piu' per
-	reagire a un guasto invece di escluderlo.)
+	1. la riscrittura dell'azione dell'hub di ricerca, che l'impronta della lista presuppone;
+	2. il debounce della ricerca: una query gia' lasciata non deve distruggere niente, o il ponte
+	   direbbe "vuoto" mentre a schermo ci sono ancora i risultati (sonda 3098 delle 06:05, 21/09);
+	3. la distruzione, per QUALUNQUE riga che cambia lista (lotto 418).
+	Il controllo del gettone scaduto (_stale_token_abort) viene DOPO, nel ramo delle costruzioni: se la
+	riga ha cambiato lista la distruzione dichiara la lista nuova e il gettone vecchio smette di
+	esistere, quindi farlo prima butterebbe un'invocazione (tre invece di due, tests/test_418.py).
+	Torna True se l'invocazione e' gia' stata servita.
 	"""
-	if params.get('action') != action_filtered or not params.get('search_hub'): return False
-	query = params.get('query')
-	if not query: return False
+	coppia = _AZIONI_HUB_RICERCA.get(mode)
+	if coppia:
+		if params.get('action') == coppia[0] and params.get('search_hub'): params['action'] = coppia[1]
+		if _search_debounce_abort(sys, params, coppia[1]): return True
+	return _svuota_prima(sys, params)
+
+def _svuota_prima(sys, params):
+	"""LA DISTRUZIONE DELLA RIGA: se la posizione tiene un'altra lista, la si svuota prima di costruire.
+
+	Kodi non riporta in testa un contenitore che riceve un'altra lista: tiene l'indice, o va sull'ultimo
+	se la lista nuova e' piu' corta (PR.md, voce 4). L'unico caso in cui riparte dal primo e' quando il
+	contenitore passa da UN SOLO elemento. Quindi, invece di costruire sopra la lista vecchia, si
+	consegna subito il solo segnaposto in stato di attesa -- la riga e' distrutta, la skin mostra i
+	segnaposto semitrasparenti -- e si ordina la ricostruzione, che arriva con il cursore sul primo.
+
+	NATA PER LA RICERCA (step 5 di RICERCA.md) e dal lotto 418 per ogni riga: le stagioni della scheda
+	serie, Discover, qualunque posizione che mostra liste diverse nello stesso posto. Prima c'erano tre
+	risposte alla stessa causa -- questa, il riposizionamento del servizio (Control.Move, lotti
+	92/165/167) e l'azzeramento sull'uscita dalla riga di Arctic Fuse -- e le ultime due fallivano:
+	la prima dipendeva dall'ordine di tre attori, la seconda era legata al fuoco invece che alla lista.
+	RIPOSIZIONAMENTO.md.
+
+	L'UNICO POSTO CHE SVUOTA, e deve restarlo: e' anche l'unico a consegnare STATO_ATTESA in tutto
+	l'addon. Chi sa che la propria cartella sara' scartata (il debounce, l'indexer che molla) non
+	dichiara niente al ponte: la sonda delle 06:05 del 21/09 ha mostrato che una consegna a un path gia'
+	abbandonato non arriva mai a schermo mentre il ponte la registra lo stesso.
+
+	IL GIRO. Si dichiara la lista nuova e si ordina la ricostruzione (paginator.distruggi), si consegna il
+	segnaposto, e solo dopo si spedisce l'ordine. ordina_ricarica e' aperta a qualunque processo -- il
+	plugin annota, il servizio scrive il token, il token cambia il path, Kodi rilegge. Se l'ordine si
+	perde la riga resta in attesa e nessuno riprova: e' il prezzo del lotto 325, uno scrittore solo per
+	il token, e non si paga con una rete a tempo.
+	La dichiarazione e' la correzione del lotto 418: prima la posizione restava con l'impronta e i
+	conteggi della lista vecchia, la ricarica si portava dietro il suo '&pages=N', e _stale_token_abort
+	la buttava come superata. Ogni cambio di lista costava tre invocazioni invece di due. E il gettone
+	(che sta nel path) lo riscrive il servizio in un colpo solo: il path cambia una volta, non due.
+
+	COSA IMPEDISCE IL GIRO INFINITO. BUILT_PROP: la consegna del segnaposto lo porta a 0
+	(paginator.testa_vuota), quindi la ricostruzione trova il contenitore vuoto, `tiene_altra_lista`
+	risponde no e si costruisce. Ma testa_vuota scrive solo se un segnaposto e' stato davvero
+	consegnato: su una riga che non lo chiede la ricostruzione ritroverebbe il posto occupato e
+	svuoterebbe per sempre. Quel caso non si copre con una rete: si rende impossibile, non
+	cominciandolo. Chi non ha chiesto il segnaposto non passa di qui.
+	"""
 	from modules.kodi_utils import (vuole_segnaposto, timbra_primo_elemento, end_directory,
 									QUERY_PROP, STATO_ATTESA)
 	if len(sys.argv) < 3 or not vuole_segnaposto(sys.argv[2]): return False
@@ -152,13 +180,13 @@ def _search_svuota_prima(sys, params, action_filtered):
 	if not paginator.tiene_altra_lista(params): return False
 	from time import time
 	key = '%s.%s' % (scope, cid)
-	paginator.log('svuoto prima di costruire key=%s query="%s"' % (key, query))
-	paginator.ordina_ricarica(scope, cid, str(int(time() * 1000)))
-	# L'attesa porta il timbro della query VIVA, non di quella nel path. timbra_primo_elemento sta in
-	# _timbra_query, che questo cancello scavalca: senza questa riga si consegnerebbe un'attesa
-	# anonima, e una scritta che dice "sto cercando" deve sapere PER COSA o resta accesa sull'attesa di
-	# una ricerca gia' lasciata. Nel debounce le due query sono diverse per definizione.
-	timbra_primo_elemento(QUERY_PROP, paginator.query_viva() or query)
+	query = params.get('query') if params.get('search_hub') else None
+	paginator.log('svuoto prima di costruire key=%s%s' % (key, ' query="%s"' % query if query else ''))
+	paginator.distruggi(key, params, str(int(time() * 1000)))
+	# Solo per la ricerca: l'attesa porta il timbro della query VIVA, non di quella nel path. Il timbro
+	# sta in _timbra_query, che questo cancello scavalca: senza questa riga si consegnerebbe un'attesa
+	# anonima, e le righe di ricerca si mostrano solo per la query scritta adesso (lotto 338).
+	if query: timbra_primo_elemento(QUERY_PROP, paginator.query_viva() or query)
 	try: end_directory(int(sys.argv[1]), cacheToDisc=False, segnaposto=STATO_ATTESA)
 	except: pass
 	# L'ordine si spedisce DOPO la consegna, non prima: ordina_ricarica annota e basta, a spedire e' una
@@ -240,6 +268,8 @@ def routing(sys):
 			from modules.paginator import mark_invocation_start
 			mark_invocation_start(_pgctl)
 		except: pass
+		# LOTTO 418 -- i cancelli di una riga, prima di smistare: vedi _cancelli_riga.
+		if _cancelli_riga(sys, params, mode): return
 	# QUI C'ERA IL CANCELLO RIPRODUZIONE (lotto 111, rimosso col lotto 113).
 	# Chiudeva la cartella con succeeded=False quando un widget veniva ricostruito durante la
 	# riproduzione. Funzionava -- 18 invocazioni tagliate su tre film, da 5-6 s a 150-280 ms l'una --
@@ -309,9 +339,6 @@ def routing(sys):
 		# il cambio inquilino non e' un fatto della ricerca, li' si vede soltanto piu' spesso.
 		if _stale_token_abort(sys, params): return
 		if mode == 'build_movie_list':
-			if _get('action') == 'tmdb_movies_search' and _get('search_hub'): params['action'] = 'tmdb_movies_search_filtered'
-			if _search_debounce_abort(sys, params, 'tmdb_movies_search_filtered'): return
-			if _search_svuota_prima(sys, params, 'tmdb_movies_search_filtered'): return
 			_timbra_query(params)
 			_chiudi_discover(params, ('tmdb_movies_search', 'tmdb_movies_search_filtered'))
 			from indexers.movies import Movies
@@ -319,9 +346,6 @@ def routing(sys):
 			movies = Movies(params)
 			return movies.fetch_list()
 		if mode == 'build_tvshow_list':
-			if _get('action') == 'tmdb_tv_search' and _get('search_hub'): params['action'] = 'tmdb_tv_search_filtered'
-			if _search_debounce_abort(sys, params, 'tmdb_tv_search_filtered'): return
-			if _search_svuota_prima(sys, params, 'tmdb_tv_search_filtered'): return
 			_timbra_query(params)
 			_chiudi_discover(params, ('tmdb_tv_search', 'tmdb_tv_search_filtered'))
 			from indexers.tvshows import TVShows

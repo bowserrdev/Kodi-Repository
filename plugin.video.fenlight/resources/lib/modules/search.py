@@ -196,7 +196,7 @@ def select_discover_filter(params):
             win.setProperty(prop_u, url_t % choice['id'])
 
 def launch_discover(params):
-	import xbmc, xbmcgui, xbmcaddon
+	import xbmc, xbmcgui
 	mt = params.get('media_type', 'movie')
 	is_movie = (mt == 'movie')
 	win = xbmcgui.Window(10000)
@@ -249,20 +249,39 @@ def launch_discover(params):
 	from modules.paginator import CTL_PAGES_PROP
 	win.clearProperty(CTL_PAGES_PROP % ('1105', '505'))
 	win.setProperty('FenLight.Discover.ContentPath', content_path)
-	execute_builtin('SetFocus(3050)')
-	# Attendi il caricamento dei risultati: se la ricerca non produce risultati,
-	# riporta il focus sulla barra di ricerca (evita di restare su un elemento invisibile)
-	try: no_results_label = xbmcaddon.Addon('skin.arctic.fuse.3').getLocalizedString(31046)
-	except: no_results_label = ''
+	# DOVE VA IL FUOCO (lotto 418, richiesta dell'utente del 29/09): sul primo risultato se ce ne sono, sulla
+	# barra di ricerca se non ce ne sono. Mentre carica resta sulla barra, dove l'ha appena messo lo svuotamento
+	# qui sopra. Prima lo si parcheggiava su 3050, il pulsante invisibile dell'intestazione "Risultati": a
+	# risultati arrivati ci restava, e sembrava perso fra la barra e la riga.
 	xbmc.sleep(300)
+	# LOTTO 418. Qui si leggeva 'Container(1105,505)': Kodi non conosce la forma (finestra,id), prende 1105 come
+	# id del contenitore e non trova niente. Il conteggio tornava vuoto, cioe' "zero risultati", e il fuoco
+	# finiva SEMPRE sulla barra di ricerca invece che su "Risultati" (3050), dal 15/06. Container(505) si
+	# risolve contro la finestra in primo piano, che e' la 1105: il clic che ci ha chiamati parte da li'.
+	# L'attesa dura anche finche' la riga e' IN ATTESA (il rilevatore 974505, Riga_Attesa in
+	# Includes_Widgets.xml): dal 418 una ricerca nuova distrugge la riga, e fra la distruzione e la
+	# ricostruzione c'e' un istante in cui Kodi non sta aggiornando e la riga contiene solo il segnaposto.
 	for _ in range(150):
 		if not xbmc.getCondVisibility('Window.IsActive(1105)'): return
-		if not xbmc.getCondVisibility('Container(1105,505).IsUpdating'): break
+		if not xbmc.getCondVisibility('Container(505).IsUpdating | Control.IsVisible(974505)'): break
 		xbmc.sleep(100)
-	num = xbmc.getInfoLabel('Container(1105,505).NumItems') or '0'
-	first = xbmc.getInfoLabel('Container(1105,505).ListItemAbsolute(0).Label')
-	if num in ('0', '') or (num == '1' and no_results_label and first == no_results_label):
+	# Niente risultati = riga vuota, o il solo segnaposto: finita l'attesa non puo' essere quello 'in attesa',
+	# quindi e' 'vuoto'. Lo dice il segnaposto stesso (kodi_utils.SEGNAPOSTO_PROP), non la sua etichetta: prima
+	# si confrontava il testo con la stringa tradotta della skin.
+	from modules.kodi_utils import SEGNAPOSTO_PROP
+	num = xbmc.getInfoLabel('Container(505).NumItems') or '0'
+	segnaposto = xbmc.getInfoLabel('Container(505).ListItemAbsolute(0).Property(%s)' % SEGNAPOSTO_PROP) == 'true'
+	if num in ('0', '') or (num == '1' and segnaposto):
 		execute_builtin('SetFocus(3001)')
+		return
+	# Ci sono risultati. Il fuoco si sposta solo se e' ancora dove l'abbiamo lasciato, sulla barra (3000, o 3001
+	# che vi rimanda): se mentre caricava l'utente si e' mosso, non glielo si strappa. Il passaggio e' quello
+	# della freccia giu' dall'intestazione (3050 in Includes_Search.xml): la barra si nasconde e si entra nella
+	# riga. Il primo elemento non si chiede: la ricerca nuova ha distrutto la riga (router._svuota_prima), che
+	# riparte dal primo da se'.
+	if xbmc.getInfoLabel('System.CurrentControlID') in ('3000', '3001'):
+		execute_builtin('SetProperty(Searchbar.IsHidden,True)')
+		execute_builtin('SetFocus(505)')
 
 def clear_discover_filters(params):
 	import xbmcgui
