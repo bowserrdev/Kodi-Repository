@@ -239,12 +239,12 @@ class Movies:
 		#   'lasciata'   la casella ha gia' un'altra query, quindi il path e' cambiato e Kodi ha gia'
 		#                chiesto altro: questa cartella la SCARTA. Dichiararla portava BUILT_PROP a 0
 		#                mentre a schermo c'erano i quaranta elementi di prima, e da li' in poi
-		#                _search_svuota_prima -- che chiede proprio BUILT_PROP > 0 per sapere se c'e'
+		#                _svuota_prima -- che chiede proprio BUILT_PROP > 0 per sapere se c'e'
 		#                qualcosa da togliere -- trovava 0 e si fermava. E' il difetto che la sonda
 		#                delle 06:05 ha trovato nel gemello di questo ramo, router._search_debounce_abort;
 		#   'fallita'    non si sa niente. Un errore non e' una risposta: dichiararlo vuoto scriveva
 		#                "Nessun risultato" su una ricerca che non e' mai arrivata in fondo.
-		# A svuotare davvero resta chi agisce sul path VIVO, cioe' _search_svuota_prima.
+		# A svuotare davvero resta chi agisce sul path VIVO, cioe' _svuota_prima.
 		end_directory(handle, cacheToDisc=False if self.is_external else True,
 					segnaposto=STATO_VUOTO if self.consegna == 'piena' else None)
 		if not self.is_external:

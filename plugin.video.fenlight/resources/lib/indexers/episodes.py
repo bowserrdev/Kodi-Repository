@@ -134,6 +134,17 @@ def build_episode_list(params):
 	handle, is_external, category_name = int(sys.argv[1]), external(), 'Episodes'
 	_t0 = paginator.now()
 	paginator.phase_reset()
+	# LOTTO 418 -- LA RIGA EPISODI DELLA SCHEDA SERIE E' UNA POSIZIONE CONDIVISA: nello stesso contenitore
+	# (531) passano le stagioni una dopo l'altra, e le serie una dopo l'altra. Perche' una stagione nuova
+	# riparta dal primo episodio la riga va distrutta (router._svuota_prima), e per sapere se c'e'
+	# qualcosa da distruggere la costruzione DOPO deve trovare nel ponte la lista che c'era: qui la si
+	# dichiara, in fondo si dichiara quanti elementi ha consegnato. La posizione si legge dai parametri e
+	# non da sys.argv: random_lists chiama questa funzione dall'invocazione di un widget, con parametri
+	# suoi, e quella lista non e' una stagione della scheda. Senza 'pgctl' (season=all, liste casuali,
+	# finestra extra) non si dichiara niente. RIPOSIZIONAMENTO.md.
+	_pos_scope, _pos_cid = paginator.position_of(params)
+	posizione = '%s.%s' % (_pos_scope, _pos_cid) if _pos_scope else None
+	if posizione: paginator.reconcile_position(posizione, params)
 	item_list = []
 	append = item_list.append
 	fanart_empty = kodi_utils.addon_fanart()
@@ -189,6 +200,7 @@ def build_episode_list(params):
 	paginator.phase_report('episodes %s' % category_name,
 						('prep+cm', 'infotag', 'cast+resume', 'setLabel', 'ctxmenu', 'setArt', 'props'))
 	add_items(handle, _items)
+	if posizione: paginator.consegna_posizione(posizione, _items)
 	set_sort_method(handle, content_type)
 	set_content(handle, content_type)
 	set_category(handle, category_name)

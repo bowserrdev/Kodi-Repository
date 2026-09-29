@@ -15,23 +15,36 @@
         <value>label</value>
     </variable>
 
+    <!-- LOTTO 418: IL PATH DELLA RIGA EPISODI, quando la stagione e' una cartella di Fen Light nella finestra
+         Video. Porta la posizione (pgctl), la richiesta del segnaposto (vuota) e il gettone con cui il servizio
+         ordina la ricostruzione (pages/reload): sono i tre pezzi che servono a router._svuota_prima per
+         distruggere la riga quando cambia stagione o serie. Stanno DENTRO il valore della variabile, che
+         esiste solo quando c'e' il path (lotto 155: accodati fuori resterebbero da soli). Solo Fen Light,
+         perche' accodati a un percorso della libreria o di un altro addon lo romperebbero; solo la finestra
+         Video, perche' la vista e' inclusa anche in MyPrograms e una posizione con la finestra sbagliata non
+         la ricaricherebbe nessuno. Gli altri valori restano quelli di Arctic Fuse. -->
     <variable name="View_530_Content">
+        <value condition="Window.IsActive(10025) + String.IsEmpty(Window.Property(SpecialFolderPath)) + Container(520).ListItem.IsFolder + String.StartsWith(Container(520).ListItem.FolderPath,plugin://plugin.video.fenlight/)">$INFO[Container(520).ListItem.FolderPath]&amp;pgctl=10025.530&amp;vuota=segnaposto$INFO[Window(Home).Property(fenlight.pg.w10025.ctl530.pages),&amp;pages=,]</value>
         <value condition="String.IsEmpty(Window.Property(SpecialFolderPath)) + !String.IsEmpty(Container(520).ListItem.FolderPath) + Container(520).ListItem.IsFolder">$INFO[Container(520).ListItem.FolderPath]</value>
         <value condition="!String.IsEmpty(Window.Property(SpecialFolderPath))">$INFO[Window.Property(SpecialFolderPath)]</value>
     </variable>
     <variable name="View_531_Content">
+        <value condition="Window.IsActive(10025) + String.IsEmpty(Window.Property(SpecialFolderPath)) + Container(521).ListItem.IsFolder + String.StartsWith(Container(521).ListItem.FolderPath,plugin://plugin.video.fenlight/)">$INFO[Container(521).ListItem.FolderPath]&amp;pgctl=10025.531&amp;vuota=segnaposto$INFO[Window(Home).Property(fenlight.pg.w10025.ctl531.pages),&amp;pages=,]</value>
         <value condition="String.IsEmpty(Window.Property(SpecialFolderPath)) + !String.IsEmpty(Container(521).ListItem.FolderPath) + Container(521).ListItem.IsFolder">$INFO[Container(521).ListItem.FolderPath]</value>
         <value condition="!String.IsEmpty(Window.Property(SpecialFolderPath))">$INFO[Window.Property(SpecialFolderPath)]</value>
     </variable>
     <variable name="View_532_Content">
+        <value condition="Window.IsActive(10025) + String.IsEmpty(Window.Property(SpecialFolderPath)) + Container(522).ListItem.IsFolder + String.StartsWith(Container(522).ListItem.FolderPath,plugin://plugin.video.fenlight/)">$INFO[Container(522).ListItem.FolderPath]&amp;pgctl=10025.532&amp;vuota=segnaposto$INFO[Window(Home).Property(fenlight.pg.w10025.ctl532.pages),&amp;pages=,]</value>
         <value condition="String.IsEmpty(Window.Property(SpecialFolderPath)) + !String.IsEmpty(Container(522).ListItem.FolderPath) + Container(522).ListItem.IsFolder">$INFO[Container(522).ListItem.FolderPath]</value>
         <value condition="!String.IsEmpty(Window.Property(SpecialFolderPath))">$INFO[Window.Property(SpecialFolderPath)]</value>
     </variable>
     <variable name="View_533_Content">
+        <value condition="Window.IsActive(10025) + String.IsEmpty(Window.Property(SpecialFolderPath)) + Container(523).ListItem.IsFolder + String.StartsWith(Container(523).ListItem.FolderPath,plugin://plugin.video.fenlight/)">$INFO[Container(523).ListItem.FolderPath]&amp;pgctl=10025.533&amp;vuota=segnaposto$INFO[Window(Home).Property(fenlight.pg.w10025.ctl533.pages),&amp;pages=,]</value>
         <value condition="String.IsEmpty(Window.Property(SpecialFolderPath)) + !String.IsEmpty(Container(523).ListItem.FolderPath) + Container(523).ListItem.IsFolder">$INFO[Container(523).ListItem.FolderPath]</value>
         <value condition="!String.IsEmpty(Window.Property(SpecialFolderPath))">$INFO[Window.Property(SpecialFolderPath)]</value>
     </variable>
     <variable name="View_534_Content">
+        <value condition="Window.IsActive(10025) + String.IsEmpty(Window.Property(SpecialFolderPath)) + Container(524).ListItem.IsFolder + String.StartsWith(Container(524).ListItem.FolderPath,plugin://plugin.video.fenlight/)">$INFO[Container(524).ListItem.FolderPath]&amp;pgctl=10025.534&amp;vuota=segnaposto$INFO[Window(Home).Property(fenlight.pg.w10025.ctl534.pages),&amp;pages=,]</value>
         <value condition="String.IsEmpty(Window.Property(SpecialFolderPath)) + !String.IsEmpty(Container(524).ListItem.FolderPath) + Container(524).ListItem.IsFolder">$INFO[Container(524).ListItem.FolderPath]</value>
         <value condition="!String.IsEmpty(Window.Property(SpecialFolderPath))">$INFO[Window.Property(SpecialFolderPath)]</value>
     </variable>
@@ -77,6 +90,10 @@
                 <visible>Control.IsVisible(52$PARAM[id])</visible>
                 <control type="group">
 
+                    <!-- LOTTO 418: il rilevatore della riga episodi in attesa, prima della riga -->
+                    <include content="Riga_Attesa">
+                        <param name="id">53$PARAM[id]</param>
+                    </include>
                     <include content="$PARAM[include]">
                         <param name="id">53$PARAM[id]</param>
                         <top>view_row</top>
@@ -97,23 +114,26 @@
                             <param name="h">view_poster_item_h</param>
                         </include>
 
-                        <onup>SetFocus(53$PARAM[id],0,absolute)</onup>
+                        <!-- LOTTO 418: qui Arctic Fuse azzerava la riga uscendo verso le stagioni
+                             (SetFocus(53x,0,absolute) prima di questo onup). Era legato al fuoco invece che alla
+                             lista: azzerava salendo alla stessa stagione, e non azzerava quando il fuoco arrivava
+                             alle stagioni per un'altra strada (ritorno dal player, Window Init). Adesso la riga
+                             che cambia stagione la distrugge il plugin (router._svuota_prima), e salire non
+                             sposta niente. RIPOSIZIONAMENTO.md. -->
                         <onup>52$PARAM[id]</onup>
 
                         <include content="Action_View_Movement_OnDown">
                             <param name="id">$PARAM[id]</param>
                         </include>
 
-                        <!-- Fen Light: la dissolvenza serve quando cambi stagione e gli episodi a schermo
-                             sono quelli sbagliati. Scattava pero' anche sul refresh IN POSTO (segna come
-                             visto), dove la lista e' identica a prima: 600 ms sono sotto il costo di una
-                             ricostruzione con interprete nuovo (1400/1900 ms misurati), quindi si superava
-                             sempre. Aggiunto NumItems=0: si sfuma solo quando non c'e' davvero niente da
-                             mostrare, la stessa regola dei widget della home (Includes_Widgets.xml:101),
-                             che infatti non lampeggiano mai. -->
-                        <animation type="Conditional" reversible="false" condition="Container(53$PARAM[id]).IsUpdating + Integer.IsEqual(Container(53$PARAM[id]).NumItems,0)">
-                            <effect type="fade" start="100" end="0" time="200" delay="600" />
-                        </animation>
+                        <!-- LOTTO 418: mentre la riga e' in attesa (stagione o serie appena cambiata, il plugin
+                             l'ha distrutta) gli elementi non si vedono, compreso il segnaposto stesso: si vedono
+                             solo i segnaposto semitrasparenti qui sotto. Una ricostruzione della STESSA stagione
+                             (segna come visto) non e' attesa, e la riga resta a schermo com'e'. Prima c'era una
+                             dissolvenza su IsUpdating + NumItems=0 che non poteva distinguere i due casi.
+                             Dissolvenza e non visible: un contenitore nascosto non rilegge il path, e la ricarica
+                             che lo riempie non arriverebbe. Vedi Riga_Attesa in Includes_Widgets.xml. -->
+                        <animation effect="fade" start="100" end="0" time="0" condition="Control.IsVisible(97453$PARAM[id])">Conditional</animation>
 
                         <visible>Container(52$PARAM[id]).ListItem.IsFolder</visible>
                         <onclick condition="Container(53$PARAM[id]).ListItem.IsFolder">Container.Update($INFO[Container(53$PARAM[id]).ListItem.FolderPath])</onclick>
@@ -123,12 +143,15 @@
                         <onfocus>SetProperty(TMDbHelper.WidgetContainer,53$PARAM[id])</onfocus>
                         <onfocus>ClearProperty(Background.ShowOverlay,Home)</onfocus>
                         <onfocus>ClearProperty(InfoPanel.FullSwitch,Home)</onfocus>
+                        <!-- LOTTO 418: il fuoco e' sugli episodi. Lo legge MyVideoNav uscendo verso il player
+                             (Episodi.Rientro), e lo cancella il selettore delle stagioni quando il fuoco risale. -->
+                        <onfocus>SetProperty(Episodi.Fuoco,53$PARAM[id])</onfocus>
 
                     </include>
 
                     <include content="Widget_Busy">
                         <param name="label">$INFO[Container(52$PARAM[id]).ListItem.Label]</param>
-                        <param name="visible">Container(53$PARAM[id]).IsUpdating</param>
+                        <param name="visible">Control.IsVisible(97453$PARAM[id])</param>
                         <param name="include">$PARAM[include]</param>
                         <top>view_row</top>
                         <left>view_pad</left>
@@ -169,6 +192,17 @@
             <height>80</height>
             <onfocus>ClearProperty(TMDbHelper.WidgetContainer)</onfocus>
             <onfocus>ClearProperty(SpecialFolderPath)</onfocus>
+            <!-- LOTTO 418. IL RIENTRO DAL PLAYER TORNA SUGLI EPISODI. Uscendo verso il player con il fuoco sugli
+                 episodi MyVideoNav lo annota (Episodi.Rientro). Al ritorno Kodi riapre la finestra e RICARICA la
+                 cartella delle stagioni: per qualche decina di millisecondi stagioni ed episodi sono nascosti, il
+                 ripristino del fuoco fallisce ("Control 521 ... asked to focus, but it can't", 29/09 02:00:10.936)
+                 e a fine giro Kodi da' il fuoco al controllo predefinito, cioe' qui. Questo onfocus e' quindi il
+                 primo momento in cui le righe sono di nuovo focalizzabili, e il fuoco si passa agli episodi, dove
+                 Kodi ha gia' rimesso la selezione sull'episodio riprodotto (la lista e' la stessa, la ritrova per
+                 path). L'annotazione si consuma qui in ogni caso: salire dagli episodi alle stagioni non la trova. -->
+            <onfocus condition="String.IsEqual(Window.Property(Episodi.Rientro),53$PARAM[id])">SetFocus(53$PARAM[id])</onfocus>
+            <onfocus>ClearProperty(Episodi.Rientro)</onfocus>
+            <onfocus>ClearProperty(Episodi.Fuoco)</onfocus>
             <onfocus condition="![$PARAM[overlay]]">ClearProperty(Background.ShowOverlay,Home)</onfocus>
             <onfocus condition="$PARAM[overlay]">SetProperty(Background.ShowOverlay,True,Home)</onfocus>
             <onfocus condition="![$PARAM[overlay]]">ClearProperty(InfoPanel.FullSwitch,Home)</onfocus>

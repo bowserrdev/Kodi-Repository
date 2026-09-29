@@ -29,7 +29,11 @@
     <include name="Action_Media_Onload">
         <include>Action_BuildViews</include>
         <onload>ClearProperty(InfoPanel.FullSwitch,Home)</onload>
-        <onload>AlarmClock(refocus_window,SetFocus(500),00:00,silent)</onload>
+        <!-- LOTTO 418: non quando la finestra Video rientra dal player con il fuoco da restituire agli episodi
+             della scheda serie (Episodi.Rientro, MyVideoNav.xml). La sveglia scatta poco dopo l'apertura e
+             rimetteva il fuoco sulla vista quando era gia' tornato sull'episodio riprodotto: nel log del Mac
+             del 29/09, fuoco sul 531 alle 03:41:53.482, di nuovo sul 521 alle 53.687. -->
+        <onload condition="String.IsEmpty(Window(10025).Property(Episodi.Rientro))">AlarmClock(refocus_window,SetFocus(500),00:00,silent)</onload>
         <onload>ClearProperty(TMDbHelper.ListItem.BlurImage)</onload>
         <onload>ClearProperty(TMDbHelper.ListItem.BlurImage.Original)</onload>
         <!-- La finestra entra SEMPRE senza il ricordo di un pannello a fuoco. Quella proprieta' la

@@ -183,7 +183,11 @@ table_creators = {
 		'CREATE TABLE IF NOT EXISTS pack_files (hash text primary key, files text, quando integer)',
 		# LOTTO 365 -- il verdetto del classificatore per hash e domanda (caches/pack_cache.py). NON in
 		# integrity_check: una tabella mancante li' fa cancellare il database; pack_cache la crea anche al primo uso.
-		'CREATE TABLE IF NOT EXISTS verdetti (hash text not null, chiave text not null, esito integer, file text, byte integer, quando integer, unique (hash, chiave))',),
+		'CREATE TABLE IF NOT EXISTS verdetti (hash text not null, chiave text not null, esito integer, file text, byte integer, quando integer, unique (hash, chiave))',
+		# LOTTO 416 -- l'hash OpenSubtitles di ogni video di un torrent, dato gratis da TorBox nella stessa risposta
+		# degli elenchi (SOTTOTITOLI.md). A parte e non nelle tuple di pack_files: li' il penultimo campo e' il nome.
+		# NON in integrity_check, come verdetti.
+		'CREATE TABLE IF NOT EXISTS oshash_file (hash text not null, nome text not null, oshash text, quando integer, unique (hash, nome))',),
 	'lists_db': (
 		'CREATE TABLE IF NOT EXISTS lists (id text unique, data text, expires integer)',),
 	'external_db': (
@@ -403,7 +407,11 @@ table_creators = {
 		'  nome text, provider text,'
 		'  quando integer,'
 		'  motivo text,'                     # mai_partito / bloccato
-		'  volte integer)')
+		'  volte integer)',
+		# LOTTO 420 -- i sottotitoli sincronizzati gia' decisi per un file (caches/sottotitoli_cache.py). NON in
+		# integrity_check, come verdetti: una tabella mancante li' fa cancellare il database; la crea anche il primo uso.
+		'CREATE TABLE IF NOT EXISTS sottotitoli (chiave text not null, lingua text not null, file_id integer, srt blob, '
+		'esito text, rifiutati text, quando integer, unique (chiave, lingua))')
 }
 
 media_prop = 'fenlight.%s'

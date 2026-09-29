@@ -2,6 +2,17 @@
 <window>
     <include>View_MediaWindows_ID</include>
     <defaultcontrol always="true">500</defaultcontrol>
+    <!-- LOTTO 418. Il rientro dal player torna sugli episodi della scheda serie, se il fuoco era li'. E' lo
+         stesso schema della ricerca (Custom_1105_Search.xml, lotto 212): il segnale si prende all'USCITA,
+         quando Player.HasMedia e' gia' vero, e la proprieta' e' indirizzata alla 10025 perche' durante un
+         Deinit la finestra corrente puo' essere gia' quella nuova. Qui pero' Kodi forza il fuoco sulla vista
+         (defaultcontrol always, e l'AlarmClock di Action_Media_Onload) e ricarica la cartella, quindi il
+         passaggio agli episodi lo fa il selettore delle stagioni quando riprende il fuoco: vedi
+         View_Combined_List_Horz_Selector_Content in Includes_Views_Combined.xml.
+         Episodi.Fuoco si azzera a ogni apertura: vale solo per il fuoco preso in questa. -->
+    <onunload>ClearProperty(Episodi.Rientro,10025)</onunload>
+    <onunload condition="Player.HasMedia">SetProperty(Episodi.Rientro,$INFO[Window(10025).Property(Episodi.Fuoco)],10025)</onunload>
+    <onload>ClearProperty(Episodi.Fuoco)</onload>
     <include>Action_Blur_Onload</include>
     <include>Action_Media_Onload</include>
     <controls>

@@ -219,6 +219,23 @@ SEGNAPOSTO_LABEL = 'Nessun risultato'
 SEGNAPOSTO_STATO_PROP = 'fenlight.segnaposto.stato'
 STATO_VUOTO = 'vuoto'
 STATO_ATTESA = 'attesa'
+# LOTTO 418 -- COME SI PRESENTA, secondo lo stato. Fino al 418 il segnaposto si presentava sempre come
+# "Nessun risultato", con la faccina triste, anche quando diceva "attesa". Finche' l'attesa la consegnava
+# solo la ricerca, le cui righe in attesa sono nascoste, non si vedeva. Dal 418 la consegna ogni riga che
+# cambia lista, e la skin la maschera un fotogramma DOPO che e' arrivata (la dissolvenza si decide prima
+# che Kodi applichi gli elementi nuovi): quel fotogramma, cambiando stagione, era la faccina (29/09). E
+# Discover decide la sua scritta "Nessun risultato" dall'ETICHETTA del primo elemento, quindi fra la
+# distruzione e la ricostruzione la poteva accendere su una ricerca che stava per consegnare.
+# Un'attesa non e' un "niente": nessuna etichetta, e l'immagine trasparente della skin (common/_none.png,
+# gia' nel bundle Textures.xbt), cosi' quel fotogramma e' una card vuota come i segnaposto semitrasparenti.
+_SEGNAPOSTO_ASPETTO = {
+	STATO_VUOTO: (SEGNAPOSTO_LABEL, {'override_square': 'fallback/no-results-square.png',
+									'override_poster': 'fallback/no-results-poster.png',
+									'override_landscape': 'fallback/no-results-landscape.png'}),
+	STATO_ATTESA: ('', {'override_square': 'common/_none.png',
+						'override_poster': 'common/_none.png',
+						'override_landscape': 'common/_none.png'}),
+}
 # Elementi consegnati da QUESTA invocazione (una invocazione = un processo Python = una cartella).
 _CONSEGNATI = [0]
 # LOTTO 338 -- lo stato di una consegna sta nel PRIMO ELEMENTO che consegna (specifica del 15/09,
@@ -270,17 +287,15 @@ def _aggiungi_segnaposto(handle, stato):
 	import sys
 	if len(sys.argv) < 3 or not vuole_segnaposto(sys.argv[2]): return
 	listitem = make_listitem()
-	listitem.setLabel(SEGNAPOSTO_LABEL)
+	etichetta, immagini = _SEGNAPOSTO_ASPETTO.get(stato, _SEGNAPOSTO_ASPETTO[STATO_VUOTO])
+	listitem.setLabel(etichetta)
 	# I TIMBRI DEL PRIMO ELEMENTO VANNO ANCHE QUI. Il segnaposto e' il primo elemento della consegna a
 	# tutti gli effetti, e senza i timbri sarebbe un vuoto ANONIMO: la skin non potrebbe distinguere
 	# il segnaposto di questa ricerca da quello della precedente, ed e' proprio il confronto su cui si
 	# reggono le linguette, le righe e la rotellina. Non passa da add_items (non e' un elemento
 	# consegnato e non deve entrare nei conti), quindi la copia si fa qui.
-	proprieta = {SEGNAPOSTO_PROP: 'true',
-				SEGNAPOSTO_STATO_PROP: stato,
-				'override_square': 'fallback/no-results-square.png',
-				'override_poster': 'fallback/no-results-poster.png',
-				'override_landscape': 'fallback/no-results-landscape.png'}
+	proprieta = {SEGNAPOSTO_PROP: 'true', SEGNAPOSTO_STATO_PROP: stato}
+	proprieta.update(immagini)
 	proprieta.update(_PRIMO_ELEMENTO)
 	listitem.setProperties(proprieta)
 	# Non cartella e non riproducibile: il clic invoca il plugin con un modo che il router lascia cadere.

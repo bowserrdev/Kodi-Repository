@@ -43,8 +43,9 @@ PERCHE' NON STA IN paginator.py. 'Continua a guardare' non e' un widget paginato
 passi_da_caricare, non ha pagine, nel log dichiara hasmore=False. Questa regola vale per quella riga sola.
 Stava dentro il paginatore per un incidente di percorso -- set_head passava di li' -- e da quella
 convivenza sono arrivati un controllo sull'azione, una proprieta' in piu' e una coda con due
-committenti che non si somigliano. La coda fenlight.pg.rehead resta al suo unico proprietario
-legittimo, reconcile_position, con la sua semantica (e il gate della skin dei lotti 165/167) intatta.
+committenti che non si somigliano. (Quella coda, fenlight.pg.rehead, dal lotto 418 non esiste piu':
+una riga che cambia lista la distrugge router._svuota_prima. Questa regola resta perche' risponde a
+un'altra domanda -- un titolo nuovo in testa alla STESSA lista -- dove non c'e' niente da distruggere.)
 
 PERCHE' IL LAVORO LO FA IL SERVIZIO E NON IL PLUGIN. Quando la build finisce, Kodi non ha ancora
 popolato il contenitore, quindi un comando lanciato dal plugin cadrebbe sulla lista vecchia; e

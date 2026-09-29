@@ -15,6 +15,9 @@
                 <right>view_pad</right>
                 <visible>$PARAM[visible]</visible>
 
+                <!-- LOTTO 418: la rotellina accanto al nome gira quando Kodi aggiorna la riga MA NON mentre ci
+                     sono i segnaposto (busy_visible): quelli dicono gia' "sto caricando". Resta il segnale di
+                     "arriva altro in una riga piena". Vedi Riga_Attesa. -->
                 <include content="View_Line" condition="$PARAM[labelvisible] + ![$PARAM[usewidgetlabel]]">
                     <param name="label">$PARAM[label]</param>
                     <param name="label_fallback">31282</param>
@@ -22,7 +25,7 @@
                     <param name="left">0</param>
                     <param name="visible">!Integer.IsEqual(Container($PARAM[id]).NumItems,0) | Container($PARAM[id]).IsUpdating | $PARAM[busy_visible]</param>
                     <param name="use_spinner">true</param>
-                    <param name="run_spinner">Container($PARAM[id]).IsUpdating</param>
+                    <param name="run_spinner">Container($PARAM[id]).IsUpdating + ![$PARAM[busy_visible]]</param>
                 </include>
                 <include content="View_Line" condition="$PARAM[labelvisible] + [$PARAM[usewidgetlabel]]">
                     <param name="label">$INFO[Container($PARAM[id]).ListItem.Property(widget)]</param>
@@ -31,7 +34,7 @@
                     <param name="left">0</param>
                     <param name="visible">!Integer.IsEqual(Container($PARAM[id]).NumItems,0) | Container($PARAM[id]).IsUpdating | $PARAM[busy_visible]</param>
                     <param name="use_spinner">true</param>
-                    <param name="run_spinner">Container($PARAM[id]).IsUpdating</param>
+                    <param name="run_spinner">Container($PARAM[id]).IsUpdating + ![$PARAM[busy_visible]]</param>
                 </include>
 
                 <include content="Widget_Busy">
@@ -73,6 +76,12 @@
                 <param name="labeltop">$PARAM[labeltop]</param>
                 <param name="labelheight">$PARAM[labelheight]</param>
                 <param name="include">$PARAM[include]</param>
+                <!-- LOTTO 418: il rilevatore della riga in attesa sta QUI, dentro il gruppo dell'etichetta, e
+                     non accanto alla riga: nella Home e negli hub le righe sono figlie dirette del grouplist 602,
+                     e un gruppo in piu' diventerebbe un elemento della colonna. Vedi Riga_Attesa. -->
+                <include content="Riga_Attesa">
+                    <param name="id">$PARAM[id]</param>
+                </include>
                 <include content="Animation_ConditionalFade">
                     <param name="condition">$PARAM[conditional_fade]</param>
                 </include>
@@ -588,6 +597,46 @@
         </control>
     </include>
 
+    <!-- LOTTO 418. LA RIGA IN ATTESA, definita una volta sola. RIPOSIZIONAMENTO.md.
+         Una riga che riceve una lista diversa viene DISTRUTTA dal plugin (router._svuota_prima): riceve un
+         solo elemento, il segnaposto in stato 'attesa', e Kodi rimette il cursore sul primo. Mentre e' cosi'
+         si vedono SOLO i segnaposto semitrasparenti (Widget_Busy), gli elementi si nascondono, e la rotellina
+         tace: i segnaposto dicono gia' "sto caricando", la rotellina resta il segnale di "arriva altro in una
+         riga che ha gia' i suoi elementi" (la paginazione, una ricostruzione in posto).
+         Prima ogni famiglia di righe aveva la sua regola, e due erano sbagliate: gli episodi mostravano i
+         segnaposto a ogni aggiornamento, SOPRA gli episodi ancora a schermo; Discover solo a riga vuota,
+         cioe' la prima volta.
+
+         PERCHE' UN CONTROLLO E NON UN PARAMETRO. La condizione dipende dall'id della riga, e in Kodi un
+         $PARAM si sostituisce in una sola passata: un valore predefinito che contiene $PARAM[id] resta
+         letterale. Passarla a catena vorrebbe dire inoltrare a mano ogni parametro di ogni include in mezzo.
+         Qui la si calcola UNA volta, nella visibilita' di un gruppo vuoto con id 974<id riga>, e tutti la
+         leggono con Control.IsVisible(974<id>): e' lo stesso schema dei rilevatori 971/972/973 delle righe
+         degli hub (Fast_Nav_Detector, Includes_Views.xml).
+         DOVE METTERLO: accanto alla riga, dentro un gruppo che e' visibile quando la riga conta (un
+         controllo nascosto non aggiorna la propria visibilita', e il valore letto resterebbe fermo), MAI
+         come figlio diretto di un grouplist, dove sarebbe un elemento della colonna e al primo 'vero'
+         aggiungerebbe uno spazio. E PRIMA della riga, cosi' nello stesso fotogramma e' gia' aggiornato.
+
+         La condizione, in ordine:
+           la riga e' vuota e Kodi la sta riempiendo (vuota e FERMA no: una riga di un altro addon che ha
+           risposto senza elementi mostrerebbe i segnaposto per sempre, come se caricasse);
+           il primo elemento e' il segnaposto in attesa (la riga e' stata distrutta);
+           c'e' solo il segnaposto e Kodi sta aggiornando ("nessun risultato" che si ricostruisce);
+           oppure il controllo d'identita' della riga e' falso (la ricerca testuale, lotto 419: il primo
+           elemento non porta la query scritta adesso). Chi non lo passa ha 'true'.
+         Cosa NON c'e': "Kodi sta aggiornando" da solo. E' il caso della stessa lista ricostruita, dove gli
+         elementi restano a schermo e niente deve coprirli. -->
+    <include name="Riga_Attesa">
+        <param name="identita">true</param>
+        <definition>
+            <control type="group" id="974$PARAM[id]">
+                <description>rilevatore: la riga $PARAM[id] e' in attesa (lotto 418)</description>
+                <visible>[[Integer.IsEqual(Container($PARAM[id]).NumItems,0) + Container($PARAM[id]).IsUpdating] | String.IsEqual(Container($PARAM[id]).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),attesa) | [Integer.IsEqual(Container($PARAM[id]).NumItems,1) + String.IsEqual(Container($PARAM[id]).ListItemAbsolute(0).Property(fenlight.segnaposto),true) + Container($PARAM[id]).IsUpdating] | ![$PARAM[identita]]]</visible>
+            </control>
+        </definition>
+    </include>
+
     <include name="_Widget_Row">
         <param name="labeltop">widget_label_t</param>
         <param name="labelheight">widget_label_h</param>
@@ -658,7 +707,10 @@
                 <param name="altvisible">$PARAM[altvisible]</param>
                 <param name="detailed">$PARAM[detailed]</param>
                 <param name="busy_isupdating">$PARAM[busy_isupdating]</param>
-                <param name="busy_visible">[Integer.IsEqual(Container($PARAM[id]).NumItems,0) | [Integer.IsEqual(Container($PARAM[id]).NumItems,1) + String.IsEqual(Container($PARAM[id]).ListItemAbsolute(0).Property(fenlight.segnaposto),true) + Container($PARAM[id]).IsUpdating]]</param>
+                <!-- LOTTO 418: la regola dei segnaposto e' quella di tutte le righe che cambiano contenuto, calcolata
+                     una volta dal rilevatore (Riga_Attesa, dentro Widget_Content). Era la stessa a meno dello
+                     stato 'attesa', che dal 418 puo' arrivare anche qui quando si riconfigura un widget. -->
+                <param name="busy_visible">Control.IsVisible(974$PARAM[id])</param>
                 <param name="widgetfade_include">$PARAM[widgetfade_include]</param>
                 <param name="widgetfade_disable">$PARAM[widgetfade_disable]</param>
                 <param name="widget_hideartwork">$PARAM[widget_hideartwork]</param>

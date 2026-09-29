@@ -260,12 +260,20 @@ class FenLightPlayer(xbmc_player):
 
 	def play_video(self, url, obj):
 		self.set_constants(url, obj)
+		self._intestazione, self._sottotitoli = None, None
 		# QUI, e prima di play(): dopo e' troppo tardi per sempre. Se il decoder muore sul file,
 		# chiuderlo fa abortire Kodi dentro Dispose (lotto 203), quindi non c'e' nessun rimedio a
 		# valle -- l'unica difesa e' non aprirlo. Restituendo qui senza aver mai chiamato play(),
 		# play_file trova playback_successful False e passa da solo alla sorgente successiva: la
 		# rotazione non va scritta, esiste gia'.
 		if not self.is_generic and not self._esamina_sorgente(): return
+		# LOTTO 420 -- sottotitoli automatici: hash, Cues e ricerca (rete che non consuma quota) partono ORA, in un thread
+		# loro, e lavorano mentre Kodi apre il file; auto_subtitle_check li raccoglie dopo onAVStarted. Non aspetta niente.
+		if not self.is_generic:
+			try:
+				from modules.auto_subtitles import prepara
+				self._sottotitoli = prepara(self)
+			except: pass
 		volume_checker()
 		# La bandiera si alza QUI, non in onAVStarted (lotto 111). onAVStarted arriva quando audio e
 		# video sono davvero partiti: nel log del 29/08 sono le 16:00:07,5, mentre l'ondata di
@@ -583,6 +591,7 @@ class FenLightPlayer(xbmc_player):
 			from modules import stream_header
 			_h = stream_header.leggi(self.url)
 			_ms = int((perf_counter() - _t) * 1000)
+			self._intestazione = _h          # lotto 420: testa, url finale e dimensione servono ai sottotitoli
 			# La dimensione e il nodo si tengono comunque: valgono per la raccolta anche quando il
 			# verdetto e' "vai".
 			if _h.get('dimensione'): self._dimensione_vera = _h['dimensione']

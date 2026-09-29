@@ -62,6 +62,10 @@
             <control type="group">
                 <height>1080</height>
                 <visible allowhiddenfocus="$PARAM[allowhiddenfocus]">$PARAM[visible]</visible>
+                <!-- LOTTO 418: rilevatore della riga in attesa, vedi Riga_Attesa in Includes_Widgets.xml -->
+                <include content="Riga_Attesa">
+                    <param name="id">$PARAM[id]</param>
+                </include>
                 <include content="$PARAM[include]">
                     <param name="id">$PARAM[id]</param>
                     <param name="control">panel</param>
@@ -70,6 +74,7 @@
                     <preloaditems>0</preloaditems>
                     <top>290</top>
                     <bottom>-40</bottom>
+                    <animation effect="fade" start="100" end="0" time="0" condition="Control.IsVisible(974$PARAM[id])">Conditional</animation>
                     <onup>601</onup>
                     <include>$PARAM[include_action]</include>
                     <onback condition="$EXP[Exp_Navigation_OnParent] + !Player.HasMedia">SetFocus($PARAM[id],0,absolute)</onback>
@@ -133,13 +138,13 @@
                     </include>
                 </include>
                 <include content="Widget_Busy">
-                    <param name="visible">Container($PARAM[id]).IsUpdating + Integer.IsEqual(Container($PARAM[id]).NumItems)</param>
+                    <param name="visible">Control.IsVisible(974$PARAM[id])</param>
                     <param name="include">$PARAM[include]</param>
                     <top>250</top>
                     <left>view_pad</left>
                 </include>
                 <include content="Widget_Busy">
-                    <param name="visible">Container($PARAM[id]).IsUpdating + Integer.IsEqual(Container($PARAM[id]).NumItems)</param>
+                    <param name="visible">Control.IsVisible(974$PARAM[id])</param>
                     <param name="include">$PARAM[include]</param>
                     <top>600</top>
                     <left>view_pad</left>
@@ -164,11 +169,21 @@
         <param name="refocus">SetFocus(601)</param>
         <param name="widgetpath" />
         <definition>
+            <!-- LOTTO 418: il rilevatore della riga in attesa, prima della riga (vedi Riga_Attesa in
+                 Includes_Widgets.xml). Qui puo' stare accanto: le istanze di questo include vivono in gruppi
+                 normali, non in un grouplist, e Widget_Busy qui sotto e' gia' un fratello della riga. -->
+            <include content="Riga_Attesa">
+                <param name="id">$PARAM[id]</param>
+            </include>
             <include content="$PARAM[include]">
                 <param name="id">$PARAM[id]</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <top>510</top>
                 <bottom>-40</bottom>
+                <!-- LOTTO 418: mentre la riga e' in attesa gli elementi non si vedono, compreso il segnaposto
+                     stesso: si vedono solo i segnaposto semitrasparenti. Dissolvenza e non visible: un
+                     contenitore nascosto non rilegge il path, e la ricarica che lo riempie non arriverebbe. -->
+                <animation effect="fade" start="100" end="0" time="0" condition="Control.IsVisible(974$PARAM[id])">Conditional</animation>
                 <onup>$PARAM[onup]</onup>
                 <include content="Action_Widget_OnBack">
                     <param name="id">$PARAM[id]</param>
@@ -236,7 +251,7 @@
 
             </include>
             <include content="Widget_Busy">
-                <param name="visible">Container($PARAM[id]).IsUpdating + Integer.IsEqual(Container($PARAM[id]).NumItems)</param>
+                <param name="visible">Control.IsVisible(974$PARAM[id])</param>
                 <param name="include">$PARAM[include]</param>
                 <top>510</top>
                 <left>view_pad</left>

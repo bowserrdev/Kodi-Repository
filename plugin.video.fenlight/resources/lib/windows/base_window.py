@@ -326,10 +326,17 @@ class FontUtils:
 
 	def replace_font(self, window, replacement_values):
 		file = translate_path(addon_skins_folder + window)
-		with open_file(file) as f: content = f.read()
+		with open_file(file) as f: original = f.read()
+		content = original
 		for item in replacement_values:
 			try: content = re.sub(r'<font>(.*?)</font> <\!-- %s -->' % item[0], '<font>%s</font> <!-- %s -->' % (item[1], item[0]), content)
 			except: pass
+		# LOTTO 422 -- si scrive solo se la sostituzione ha cambiato qualcosa. Il servizio CustomFonts azzera il
+		# ricordo di skin e font a ogni avvio, quindi al primo giro questa funzione girava su tutti i dialoghi e
+		# li riscriveva identici: 20 scritture sulla memoria flash mentre Kodi parte, e file con la data nuova
+		# che deploy_local.py (confronta dimensione e data) segnava come aggiornati a ogni sessione. Con la stessa
+		# skin e lo stesso font il testo non cambia; cambiando skin o font si scrive come prima.
+		if content == original: return
 		with open_file(file, 'w') as f: f.write(content)
 
 	def default_font_info(self):

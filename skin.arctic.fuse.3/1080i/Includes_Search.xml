@@ -14,9 +14,11 @@
          token restava: all'apertura successiva della finestra Kodi caricava il solo '&amp;pages=N'. Qui la
          condizione e' una, quella del path. Il token deve stare nel VALORE di una variabile: nel suffisso di
          un $INFO sarebbe testo letterale (GUIInfoLabel.cpp:339-373). Il nome della proprieta' coincide con
-         paginator.CTL_PAGES_PROP % ('1105', '505'): lo verifica tests/test_162.py. -->
+         paginator.CTL_PAGES_PROP % ('1105', '505'): lo verifica tests/test_162.py.
+         LOTTO 418: 'vuota=segnaposto' e' cio' che permette al plugin di DISTRUGGERE la riga quando arriva una
+         ricerca Discover nuova (router._svuota_prima): senza segnaposto non saprebbe come fermarsi. -->
     <variable name="Search_Discover_Path">
-        <value condition="!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]&amp;pgctl=1105.505$INFO[Window(Home).Property(fenlight.pg.w1105.ctl505.pages),&amp;pages=,]</value>
+        <value condition="!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]&amp;pgctl=1105.505&amp;vuota=segnaposto$INFO[Window(Home).Property(fenlight.pg.w1105.ctl505.pages),&amp;pages=,]</value>
     </variable>
 
 
@@ -83,15 +85,13 @@
                                     <param name="pagine">false</param>
                                     <param name="include">List_Poster_Row</param>
                                     <param name="target">videos</param>
-                                    <!-- LOTTO 167. Il terzo termine e' il gate del lotto 165, che li' era finito
-                                         solo nei template di skinvariables (row 502 e 503) e NON qui: il row
-                                         Discover e' scritto a mano, quindi restava visibile per tutti i 400 ms in
-                                         cui la riga vecchia scorreva verso l'inizio. Da cui la sequenza che
-                                         l'utente ha descritto: "gli elementi della ricerca 1 tornano al primo,
-                                         POI scompaiono, POI compaiono quelli della ricerca 2".
-                                         Con il gate la sequenza diventa quella giusta: la riga vecchia sparisce
-                                         subito, si riposiziona da nascosta, e ricompare gia' sul primo elemento. -->
-                                    <param name="visible">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1)) + !String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.505)</param>
+                                    <!-- LOTTO 418. Qui c'era un terzo termine, il cancello dei lotti 165/167: la riga
+                                         restava nascosta finche' il servizio non l'aveva riportata in cima con un
+                                         Control.Move. Dipendeva dall'ordine fra costruzione, servizio e Kodi, e sulla
+                                         Firestick la riga ripartiva dall'elemento N dopo un'animazione visibile.
+                                         Adesso una ricerca nuova DISTRUGGE la riga (router._svuota_prima): si vedono
+                                         i segnaposto, poi i risultati nuovi dal primo. -->
+                                    <param name="visible">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</param>
                                     <param name="clear_hideartwork_onfocus">true</param>
                                     <param name="hidden_button_enabled">true</param>
                                     <param name="onup">3001</param>
@@ -174,7 +174,9 @@
                             <param name="label_fallback"></param>
                             <param name="haspath">false</param>
                             <param name="textcolor">main_fg_100</param>
-                            <param name="visible">Container(505).IsUpdating</param>
+                            <!-- LOTTO 418: non mentre ci sono i segnaposto (la riga e' in attesa, vedi Riga_Attesa):
+                                 la rotellina resta il segnale della paginazione, i segnaposto dicono gia' "carico". -->
+                            <param name="visible">Container(505).IsUpdating + !Control.IsVisible(974505)</param>
                         </include>
                         <control type="image">
                             <height>1</height>
@@ -238,7 +240,7 @@
     <!-- "LA RIGA N SI E' SVUOTATA E ASPETTA LA CONSEGNA VERA."
          Lo stato `attesa` viaggia sul primo elemento dallo step 2 (kodi_utils.STATO_ATTESA) e fino
          alla revisione del 21/09 non lo leggeva nessuno: la skin confrontava solo con `vuoto`, e
-         "aspetto" finiva confuso con "non lo so". Lo scrive un posto solo, _search_svuota_prima,
+         "aspetto" finiva confuso con "non lo so". Lo scrive un posto solo, _svuota_prima,
          che e' anche l'unico che svuota un contenitore vivo.
          SERVE PERCHE' LE RIGHE NON FINISCONO INSIEME. Se una risponde "niente" in fretta mentre
          l'altra aspetta, e nell'istante in cui si guarda quest'ultima non sta scaricando (fra la
