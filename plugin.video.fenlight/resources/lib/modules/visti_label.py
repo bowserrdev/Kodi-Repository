@@ -73,6 +73,7 @@ class Tracker:
 	def __init__(self, loader=conta_visti, stamp_reader=read_stamp, log=None):
 		self.loader, self.stamp_reader, self.log = loader, stamp_reader, log
 		self.item, self.stamp = None, None
+		self.ultimo = None  # (tmdb_id, stagione, usciti) della stagione servita per ultima: vedi rinfresca
 
 	def update(self, control_id, get_infolabel, window):
 		"""Un giro del watcher. Torna l'etichetta scritta, o None se non c'era niente da fare.
@@ -86,12 +87,25 @@ class Tracker:
 		if not path: return None
 		stamp = self.stamp_reader()
 		if path == self.item and stamp == self.stamp: return None
-		self.item, self.stamp = path, stamp
+		self.item, self.stamp, self.ultimo = path, stamp, None
 		if get_infolabel(item + 'DBType') != 'season': return None
 		tmdb_id, season = get_infolabel(item + 'UniqueID(tmdb)'), get_infolabel(item + 'Season')
 		try: usciti = int(get_infolabel(item + 'Property(totalepisodes)') or 0)
 		except ValueError: usciti = 0
 		if not tmdb_id or not season or not usciti: return None
+		self.ultimo = (tmdb_id, season, usciti)
+		return self._scrivi(tmdb_id, season, usciti, window)
+
+	def rinfresca(self, window):
+		"""Un giro col menu contestuale aperto: come watchlist_label.Tracker.rinfresca, per la stagione servita per
+		ultima, se nel frattempo sono cambiati i visti (lotto 439)."""
+		stamp = self.stamp_reader()
+		if stamp == self.stamp: return None
+		self.stamp = stamp
+		if not self.ultimo: return None
+		return self._scrivi(self.ultimo[0], self.ultimo[1], self.ultimo[2], window)
+
+	def _scrivi(self, tmdb_id, season, usciti, window):
 		visti = self.loader(tmdb_id, season)
 		if visti is None: return None
 		label = LABEL_NON_VISTO if tutti_visti(visti, usciti) else LABEL_VISTO

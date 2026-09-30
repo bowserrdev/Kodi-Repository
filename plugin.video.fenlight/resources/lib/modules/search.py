@@ -11,6 +11,7 @@ close_all_dialog, external = kodi_utils.close_all_dialog, kodi_utils.external
 build_url, kodi_dialog, execute_builtin, select_dialog = kodi_utils.build_url, kodi_utils.kodi_dialog, kodi_utils.execute_builtin, kodi_utils.select_dialog
 notification, kodi_refresh = kodi_utils.notification, kodi_utils.kodi_refresh
 get_icon = kodi_utils.get_icon
+modal_dialog_present = kodi_utils.modal_dialog_present
 clear_history_list = [('Clear Movie Search History', 'movie_queries'),
 					('Clear TV Show Search History', 'tvshow_queries'),
 					('Clear Anime Search History', 'anime_queries'),
@@ -205,6 +206,13 @@ def launch_discover(params):
 	user_fragments = ''.join(win.getProperty('Discover.%s.url' % k) for k in keys)
 	xbmc.log('###AF3_DISCOVER### media_type=%s user_fragments=[%s]' % (mt, user_fragments), xbmc.LOGINFO)
 	if not user_fragments: return notification('Imposta almeno un filtro', 2500)
+	# LOTTO 440 -- LA RICERCA PRENDE POSSESSO PER PRIMA COSA, prima di toccare il fuoco. Il path di Discover si scrive
+	# ~200 ms piu' giu' (dopo lo svuotamento della casella): se il possesso fosse solo il path, in quella finestra una
+	# ricerca precedente ancora in attesa troverebbe il fuoco sulla barra messo da QUESTA, il path ancora suo, e
+	# porterebbe il fuoco sui propri risultati vecchi (Firestick, 30/09 18:34:14.175). Vedi superata() sotto.
+	from time import time as _ora
+	lancio = repr(_ora())
+	win.setProperty('FenLight.Discover.Lancio', lancio)
 	import re
 	from datetime import date
 	today = date.today().strftime('%Y-%m-%d')
@@ -231,9 +239,14 @@ def launch_discover(params):
 	action = 'tmdb_movies_discover' if is_movie else 'tmdb_tv_discover'
 	content_path = build_url({'mode': mode, 'action': action, 'url': tmdb_url, 'name': 'Discover'})
 	xbmc.log('###AF3_DISCOVER### content_path=[%s]' % content_path, xbmc.LOGINFO)
-	execute_builtin('ClearProperty(Search.ActivePanel)')
-	execute_builtin('SetProperty(Background.HideArtwork,True)')
-	execute_builtin('SetFocus(3000)')
+	# LOTTO 440 -- proprieta' e fuoco si danno alla finestra di Discover, non a quella che ha il fuoco quando il comando
+	# gira: questa funzione dura secondi, e nel frattempo l'utente puo' aprire un dialogo (vedi la coda della funzione).
+	# 11105 e' la 1105 della skin: Kodi somma 10000 agli id delle finestre personalizzate, e xbmcgui.Window non traduce.
+	# setFocusId manda GUI_MSG_SETFOCUS a QUELLA finestra (interfaces/legacy/Window.cpp, Omega).
+	discover = xbmcgui.Window(11105)
+	discover.clearProperty('Search.ActivePanel')
+	discover.setProperty('Background.HideArtwork', 'True')
+	discover.setFocusId(3000)
 	xbmc.sleep(100)
 	xbmc.log('###AF3_DISCOVER### clear_edit_result=[%s]' % xbmc.executeJSONRPC(json.dumps({'jsonrpc': '2.0', 'method': 'Input.SendText', 'params': {'text': '', 'done': True}, 'id': 1})), xbmc.LOGINFO)
 	xbmc.sleep(100)
@@ -261,27 +274,42 @@ def launch_discover(params):
 	# L'attesa dura anche finche' la riga e' IN ATTESA (il rilevatore 974505, Riga_Attesa in
 	# Includes_Widgets.xml): dal 418 una ricerca nuova distrugge la riga, e fra la distruzione e la
 	# ricostruzione c'e' un istante in cui Kodi non sta aggiornando e la riga contiene solo il segnaposto.
+	# LOTTO 440 -- CON UN DIALOGO APERTO LA RIGA NON SI LEGGE. Container(505) e Control.IsVisible rispondono per il dialogo
+	# in primo piano (PR.md, voce 12), che la 505 non ce l'ha: l'attesa finiva subito e il fuoco andava a un controllo che
+	# nel dialogo non esiste, togliendolo alla sua lista. Firestick, 30/09 17:26:42: selettore dei generi aperto 21 ms
+	# prima della fine di questo ciclo, e non si navigava piu'. Col dialogo aperto si aspetta che chiuda, dentro lo
+	# stesso tetto; se il tetto scade col dialogo ancora aperto non si tocca niente: l'utente e' altrove.
+	# E UNA RICERCA SUPERATA NON AGISCE PIU' (lotto 440). Questa funzione dura secondi, e nel frattempo l'utente puo' lanciarne
+	# un'altra o cancellare i filtri: da li' la ricerca di questa invocazione non e' piu' quella a schermo. Firestick, 30/09
+	# 17:40:59: la ricerca A, ancora in attesa, trova il fuoco sulla barra messo dalla ricerca B e la riga piena dei propri
+	# risultati, nasconde la barra e porta il fuoco sui risultati VECCHI; alle 17:52 una e' rimasta viva 13 s, oltre la
+	# ricerca dopo. La ricerca corrente e' il path di Discover: chi non lo possiede piu' esce, senza toccare niente.
+	def superata(): return (win.getProperty('FenLight.Discover.Lancio') != lancio
+							or win.getProperty('FenLight.Discover.ContentPath') != content_path)
 	for _ in range(150):
-		if not xbmc.getCondVisibility('Window.IsActive(1105)'): return
-		if not xbmc.getCondVisibility('Container(505).IsUpdating | Control.IsVisible(974505)'): break
+		if not xbmc.getCondVisibility('Window.IsActive(1105)') or superata(): return
+		if not modal_dialog_present() and not xbmc.getCondVisibility('Container(505).IsUpdating | Control.IsVisible(974505)'): break
 		xbmc.sleep(100)
+	if modal_dialog_present() or superata(): return
 	# Niente risultati = riga vuota, o il solo segnaposto: finita l'attesa non puo' essere quello 'in attesa',
 	# quindi e' 'vuoto'. Lo dice il segnaposto stesso (kodi_utils.SEGNAPOSTO_PROP), non la sua etichetta: prima
 	# si confrontava il testo con la stringa tradotta della skin.
 	from modules.kodi_utils import SEGNAPOSTO_PROP
+	# Il fuoco si sposta solo se e' ancora dove l'abbiamo lasciato, sulla barra (3000, o 3001 che vi rimanda): se
+	# mentre caricava l'utente si e' mosso, non glielo si strappa. Vale per entrambi gli esiti (lotto 440: prima il
+	# caso senza risultati lo spostava comunque).
+	if xbmc.getInfoLabel('System.CurrentControlID') not in ('3000', '3001'): return
 	num = xbmc.getInfoLabel('Container(505).NumItems') or '0'
 	segnaposto = xbmc.getInfoLabel('Container(505).ListItemAbsolute(0).Property(%s)' % SEGNAPOSTO_PROP) == 'true'
+	if superata(): return   # ancora una volta, subito prima di agire: fra l'attesa e qui passano letture della GUI
 	if num in ('0', '') or (num == '1' and segnaposto):
-		execute_builtin('SetFocus(3001)')
+		discover.setFocusId(3001)
 		return
-	# Ci sono risultati. Il fuoco si sposta solo se e' ancora dove l'abbiamo lasciato, sulla barra (3000, o 3001
-	# che vi rimanda): se mentre caricava l'utente si e' mosso, non glielo si strappa. Il passaggio e' quello
-	# della freccia giu' dall'intestazione (3050 in Includes_Search.xml): la barra si nasconde e si entra nella
-	# riga. Il primo elemento non si chiede: la ricerca nuova ha distrutto la riga (router._svuota_prima), che
-	# riparte dal primo da se'.
-	if xbmc.getInfoLabel('System.CurrentControlID') in ('3000', '3001'):
-		execute_builtin('SetProperty(Searchbar.IsHidden,True)')
-		execute_builtin('SetFocus(505)')
+	# Ci sono risultati. Il passaggio e' quello della freccia giu' dall'intestazione (3050 in Includes_Search.xml): la
+	# barra si nasconde e si entra nella riga. Il primo elemento non si chiede: la ricerca nuova passa dal segnaposto
+	# (lo schermo decide, lotto 418), e la riga riparte dal primo da se'.
+	discover.setProperty('Searchbar.IsHidden', 'True')
+	discover.setFocusId(505)
 
 def clear_discover_filters(params):
 	import xbmcgui

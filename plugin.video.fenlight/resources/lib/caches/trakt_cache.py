@@ -78,6 +78,53 @@ def chiudi_marcatura(chiave):
 	from time import time
 	try: connect_database('trakt_db').execute(TC_BASE_SET, (chiave, repr(time())))
 	except: pass
+
+# LOTTO 439 -- LE INTENZIONI SULLA WATCHLIST. La copia della watchlist e' di Trakt: cambia solo quando la si
+# riscarica, cioe' dopo la risposta al clic, la sincronizzazione e una rilettura intera (1,4 s sul Mac il 30/09,
+# di piu' sulla stick). Fino ad allora la voce del menu mentiva, e riaprendo il menu si leggeva ancora "Aggiungi".
+# Il dato che mancava e' l'intenzione dell'utente: una riga per titolo, scritta al clic PRIMA di spedire, che
+# vale sopra la copia finche' la copia non le da' ragione (concilia_intenti_watchlist, dopo ogni rilettura) o
+# Trakt non la rifiuta (ritira_intento_watchlist). Una riga il cui invio non ha mai risposto (processo ucciso) si
+# considera persa dopo INTENTO_PERSO_SECONDI, come le marcature in volo: da li' vale la copia.
+# La riga dice cosa l'utente vuole ('1' dentro, '0' fuori) e quando: un secondo clic sullo stesso titolo la
+# sostituisce, e il ritiro del primo non tocca quella del secondo (DELETE condizionato al contenuto).
+INTENTO_WATCHLIST = 'watchlist_intento|%s|%s'
+INTENTO_PERSO_SECONDI = 600
+
+def annota_intento_watchlist(media_type, tmdb_id, dentro):
+	"""L'utente vuole `tmdb_id` dentro (True) o fuori dalla watchlist `media_type` ('movie'|'tvshow'). Torna la riga
+	scritta, da passare a ritira_intento_watchlist, o None."""
+	from time import time
+	valore = '%d|%r' % (bool(dentro), time())
+	try: connect_database('trakt_db').execute(TC_BASE_SET, (INTENTO_WATCHLIST % (media_type, tmdb_id), valore))
+	except: return None
+	return valore
+
+def ritira_intento_watchlist(media_type, tmdb_id, valore):
+	"""Trakt non ha fatto cio' che l'intenzione chiedeva: vale di nuovo la copia. Solo se la riga e' ancora questa."""
+	if not valore: return
+	try: connect_database('trakt_db').execute(TC_BASE_DELETE + ' AND data = ?', (INTENTO_WATCHLIST % (media_type, tmdb_id), valore))
+	except: pass
+
+def intenti_watchlist(media_type):
+	"""{tmdb_id: dentro} delle intenzioni ancora vive per questo tipo. Le perse si tolgono qui."""
+	from time import time
+	vive, adesso = {}, time()
+	try:
+		dbcon = connect_database('trakt_db')
+		for chiave, valore in dbcon.execute('SELECT id, data FROM trakt_data WHERE id GLOB ?', (INTENTO_WATCHLIST % (media_type, '*'),)).fetchall():
+			dentro, quando = valore.split('|')
+			if adesso - float(quando) > INTENTO_PERSO_SECONDI: dbcon.execute(TC_BASE_DELETE + ' AND data = ?', (chiave, valore))
+			else: vive[chiave.rsplit('|', 1)[1]] = dentro == '1'
+	except: pass
+	return vive
+
+def concilia_intenti_watchlist(media_type, ids):
+	"""Dopo una rilettura della copia (`ids`, i tmdb_id): le intenzioni a cui la copia da' ragione non servono piu'."""
+	for tmdb_id, dentro in intenti_watchlist(media_type).items():
+		if (tmdb_id in ids) == dentro:
+			try: connect_database('trakt_db').execute(TC_BASE_DELETE + ' AND data GLOB ?', (INTENTO_WATCHLIST % (media_type, tmdb_id), '%d|*' % dentro))
+			except: pass
 DELETE_LISTS_WITH_MEDIA = 'SELECT id FROM maincache WHERE id LIKE ?'
 
 # Cancellazioni nostre che Trakt non ha ancora recepito, raccolte dalla riconciliazione perche' le

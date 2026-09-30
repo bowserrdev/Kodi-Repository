@@ -23,7 +23,13 @@
          (attesa=1); a segnaposto arrivato la condizione cade e la ricerca nuova si costruisce dal primo.
          attesa=0 nel path normale: qui decide la skin, non router._svuota_prima. Due ricerche di fila senza
          aspettare la prima non lasciano piu' i risultati nuovi sull'N-esimo. -->
-    <expression name="Exp_Discover_AltraLista">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + Integer.IsGreater(Container(505).NumItems,1) + !String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.lista),Window(Home).Property(FenLight.Discover.ContentPath))</expression>
+    <!-- LOTTO 440: l'identita' della riga, scritta una volta. La riga "risponde" se il suo primo elemento porta il timbro
+         della ricerca in corso (ogni consegna lo porta, segnaposto compresi: router, LISTA_PROP). La usano la decisione
+         dell'attesa qui sotto e il pannello informazioni (Search_Info_Panel), che senza questa regola descriveva
+         l'elemento selezionato anche quando la riga conteneva ancora la ricerca di prima (Firestick, 30/09 17:52:33:
+         un titolo della ricerca "Soap" sopra i segnaposto della ricerca "Western"). -->
+    <expression name="Exp_Discover_Riga_Risponde">String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.lista),Window(Home).Property(FenLight.Discover.ContentPath))</expression>
+    <expression name="Exp_Discover_AltraLista">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + Integer.IsGreater(Container(505).NumItems,1) + ![$EXP[Exp_Discover_Riga_Risponde]]</expression>
     <variable name="Search_Discover_Path">
         <value condition="$EXP[Exp_Discover_AltraLista]">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]&amp;pgctl=1105.505&amp;vuota=segnaposto&amp;attesa=1</value>
         <value condition="!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]&amp;pgctl=1105.505&amp;vuota=segnaposto&amp;attesa=0$INFO[Window(Home).Property(fenlight.pg.w1105.ctl505.pages),&amp;pages=,]</value>
@@ -39,7 +45,21 @@
             <include content="Home_Control">
                 <param name="window">$PARAM[window]</param>
                 <param name="overlay">[false]</param>
-                <onfocus>SetFocus(3001)</onfocus>
+                <!-- LOTTO 441, LA RETE DELL'INTESTAZIONE, IN UN POSTO SOLO. Nella ricerca il 300 si raggiunge in un modo
+                     solo voluto: il dirottamento del 3001 quando RefocusMenu e' alzata (l'Indietro dalla tastiera a schermo
+                     o dal pulsante filtri). Ogni altro arrivo e' un incidente, e costa caro: un Select sul 300 esce dalla
+                     ricerca (21/09: 00:51, 03:35, 05:54, fuoco 3005 -> 300 -> Home, causa mai trovata). Il fuoco arrivato
+                     senza richiesta torna allo smistatore 3001, che rimostra la barra e lo passa all'edit.
+                     LA CONDIZIONE E' CIO' CHE TOGLIE IL CICLO. Senza, il 300 rimandava al 3001 anche quando era il 3001 ad
+                     averlo chiesto: con RefocusMenu alzata 3001 -> 300 -> 3001 -> 300..., e Kodi smaltisce i messaggi
+                     aggiunti durante lo smaltimento nello stesso giro (PR.md, voce 29), quindi il ciclo teneva il thread
+                     principale fermo: niente tasti, niente disegno (Firestick, 30/09 18:16:10, Indietro sul pulsante
+                     filtri). Con la condizione i rimandi non chiudono un ciclo per nessun valore di RefocusMenu: il 3001
+                     manda qui solo con la proprieta' alzata, questo rimanda al 3001 solo con la proprieta' bassa. Kodi
+                     valuta le condizioni al momento del fuoco (GUIAction.cpp, ExecuteActions), e il 3001 pulisce la
+                     richiesta DOPO aver dirottato: quando il 300 prende il fuoco richiesto, la proprieta' e' ancora alzata
+                     e il fuoco resta qui. tests/test_441.py e tests/test_fuoco_intestazione.py -->
+                <onfocus condition="String.IsEmpty(Window.Property(RefocusMenu))">SetFocus(3001)</onfocus>
             </include>
 
             <control type="group">
@@ -400,6 +420,10 @@
             </control>
             <control type="group">
                 <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
+                <!-- LOTTO 440: il pannello descrive la riga solo quando la riga e' la risposta alla ricerca in corso
+                     (Exp_Discover_Riga_Risponde), la stessa regola che decide i segnaposto. Trasparente e non nascosto:
+                     un pannello nascosto congela la sua immagine sull'ultimo logo (vedi Hub_Combined_Info). -->
+                <animation effect="fade" start="100" end="0" time="0" condition="![$EXP[Exp_Discover_Riga_Risponde]]">Conditional</animation>
                 <include content="Hub_Combined_Info">
                     <param name="id">505</param>
                 </include>
