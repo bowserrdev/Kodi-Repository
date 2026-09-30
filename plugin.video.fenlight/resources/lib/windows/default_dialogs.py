@@ -42,8 +42,15 @@ class Select(BaseDialog):
 		self.clearProperties()
 		return self.selected
 
+	# LOTTO 440 -- LA SCELTA STA NEL CLIC. Prima onClick annotava in self.control_id l'ultimo controllo cliccato e onAction,
+	# alla selezione, sceglieva se quel controllo era la lista. Ma control_id diceva "l'ultimo cliccato", non "chi riceve
+	# questa azione": OK sulla barra di scorrimento (2065, a destra della lista), che il clic non lo manda, arrivava a
+	# onAction da solo -- AttributeError se era il primo evento (Firestick, 30/09 17:03:27), altrimenti sceglieva
+	# l'elemento della lista con un control_id vecchio. Kodi chiama onClick per il clic su un elemento della lista, e
+	# prima di onAction (interfaces/legacy/WindowXML.cpp, Omega: OnAction fa girare il controllo, che manda
+	# GUI_MSG_CLICKED, poi accoda onAction): la scelta sta li', e onAction chiude soltanto.
 	def onClick(self, controlID):
-		self.control_id = None
+		if controlID == self.window_id: return self._scegli()
 		if controlID in button_ids:
 			if controlID == ok_id:
 				self.selected = sorted(self.chosen_indexes)
@@ -58,24 +65,24 @@ class Select(BaseDialog):
 				self.setProperty('select_button', select_property)
 				try: self.setFocusId(ok_id)
 				except: pass
-		else: self.control_id = controlID
+
+	def _scegli(self):
+		"""Clic su un elemento della lista: con la scelta multipla lo spunta o lo toglie, altrimenti e' la scelta."""
+		position = self.get_position(self.window_id)
+		if self.multi_choice == 'true':
+			chosen_listitem = self.get_listitem(self.window_id)
+			if chosen_listitem.getProperty('check_status') == 'checked':
+				chosen_listitem.setProperty('check_status', '')
+				self.chosen_indexes.remove(position)
+			else:
+				chosen_listitem.setProperty('check_status', 'checked')
+				self.chosen_indexes.append(position)
+		else:
+			self.selected = position
+			self.close()
 
 	def onAction(self, action):
-		chosen_listitem = self.get_listitem(self.window_id)
-		if action in self.selection_actions:
-			if not self.control_id: return
-			position = self.get_position(self.window_id)
-			if self.multi_choice == 'true':
-				if chosen_listitem.getProperty('check_status') == 'checked':
-					chosen_listitem.setProperty('check_status', '')
-					self.chosen_indexes.remove(position)
-				else:
-					chosen_listitem.setProperty('check_status', 'checked')
-					self.chosen_indexes.append(position)
-			else:
-				self.selected = position
-				return self.close()
-		elif action in self.context_actions or action in self.closing_actions: return self.close()
+		if action in self.context_actions or action in self.closing_actions: return self.close()
 
 	def make_menu(self):
 		def builder():

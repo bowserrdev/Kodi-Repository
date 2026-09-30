@@ -16,7 +16,7 @@
 # Il capitolo import di service.py e' chiuso.
 import xbmc, xbmcgui
 # `import json` NON sta piu' qui: vedi WidgetRefresher.condition_check, l'unico punto che lo usa.
-from threading import Thread
+from threading import Thread, Event
 # BlurService NON si importa piu' qui (lotto avvio, 08/09/2026). L'import era di livello modulo,
 # quindi girava a ogni avvio del servizio anche con il blur spento dal 23/08 (vedi la riga
 # commentata in startServices): modules/blur_service.py importa urllib.parse in testa, cioe'
@@ -621,6 +621,17 @@ class WidgetPaginator:
 	# focused it polls its scroll position; when the focus enters the last loaded page it bumps the
 	# widget's page count (a Window(10000) property keyed per widget) and triggers a silent
 	# Container.Refresh, so the plugin appends the next page in place and the focus is preserved.
+	#
+	# LOTTO 438 -- DUE LAVORI, DUE PARTENZE. Lo stesso giro tiene anche le voci vive del menu contestuale
+	# (watchlist e visti della stagione), che sono stato dell'interfaccia: devono esserci appena un elemento
+	# e' a schermo. Il thread quindi parte con il servizio, e fino al via dell'avvio differito (`pronto`,
+	# alzato da _start_remaining_services) fa SOLO le etichette. Prima partiva con l'avvio differito, e il
+	# log del 30/09 00:07 mostra cosa costava: Home piena alle 09.2, menu aperto alle 12.1 con la voce
+	# watchlist vuota (le proprieta' di finestra muoiono con Kodi), watcher vivo solo alle 13.0 -- e col
+	# menu gia' aperto, giustamente, non la tocca. La paginazione resta dove l'aveva messa il lotto 2.
+	def __init__(self, pronto):
+		self.pronto = pronto
+
 	def run(self):
 		logger('Fen Light', 'WidgetPaginator Service Starting')
 		from time import time
@@ -693,7 +704,9 @@ class WidgetPaginator:
 				# paginazione e non per lei. System.CurrentControlID e Container(N) si risolvono entrambi
 				# contro la finestra o il dialogo in primo piano (PR.md, voce 12), quindi home, hub, ricerca,
 				# righe della scheda informazioni e cartelle di Fen Light sono lo stesso caso. Col menu
-				# contestuale aperto no: la proprieta' deve restare quella dell'elemento su cui si e' aperto.
+				# contestuale aperto il fuoco non si legge (le infolabel rispondono per il menu): la proprieta'
+				# resta quella dell'elemento su cui si e' aperto, e si riscrive per LUI se nel frattempo e'
+				# cambiata la watchlist o i visti -- il clic di un attimo prima, riaprendo subito il menu (lotto 439).
 				# Il controllo a fuoco si leggeva comunque qui sotto per la paginazione: e' la stessa lettura,
 				# anticipata. Un errore qui non deve fermare il paginatore.
 				cur_ctrl = ''
@@ -703,9 +716,19 @@ class WidgetPaginator:
 					except Exception as e: logger('Fen Light', 'watchlist_label: errore %s' % e)
 					try: visti_label.update(cur_ctrl, get_infolabel, window)
 					except Exception as e: logger('Fen Light', 'visti_label: errore %s' % e)
+				else:
+					try: watchlist_label.rinfresca(window)
+					except Exception as e: logger('Fen Light', 'watchlist_label: errore %s' % e)
+					try: visti_label.rinfresca(window)
+					except Exception as e: logger('Fen Light', 'visti_label: errore %s' % e)
 				if dialogo != NO_DIALOG:
 					log_change('idle (modal dialog open)')
 					wait_for_abort(0.5); continue
+				# LOTTO 438 -- fino al via dell'avvio differito solo le etichette, sopra. Stesso passo del giro
+				# normale: la voce deve seguire il fuoco anche mentre la Home si sta ancora costruendo.
+				if not self.pronto.is_set():
+					log_change('idle (avvio: solo le voci del menu)')
+					wait_for_abort(0.2); continue
 				# Identify the focused Fen Light widget by container id (skin sets fenlight.active_widget on focus
 				# for every widget) and resolve its key via the universal first-item bridge: the plugin published
 				# first-item-path -> key, and we read that same path from the container here. cur_ctrl e' gia'
@@ -1247,6 +1270,10 @@ class FenLightMonitor(xbmc.Monitor):
 			_pg.abilita_token_locale()
 			self._preparatore = preparatore.avvia()
 		except Exception as e: logger('Fen Light', 'preparatore NON avviato (%s)' % e)
+		# LOTTO 438 -- e subito anche il giro del paginatore, per le voci vive del menu contestuale: la
+		# paginazione aspetta il via (`_paginatore_pronto`) che le da' _start_remaining_services. Vedi WidgetPaginator.
+		self._paginatore_pronto = Event()
+		self._filo('FL:paginator', WidgetPaginator(self._paginatore_pronto).run).start()
 		# IL RESTO ASPETTA CHE LA HOME SIA PIENA (lotto 2, 08/09/2026).
 		#
 		# Perche'. Su Android il Python di Kodi vive dentro un solo processo e i sotto-interpreti si
@@ -1285,7 +1312,7 @@ class FenLightMonitor(xbmc.Monitor):
 		# startServices, prima del preparatore, che ordina ricariche.
 		self._filo('FL:trakt', TraktMonitor().run).start()
 		self._filo('FL:widgetref', WidgetRefresher().run).start()
-		self._filo('FL:paginator', WidgetPaginator().run).start()
+		self._paginatore_pronto.set()   # la paginazione: il thread e' gia' vivo per le voci del menu (lotto 438)
 		self._filo('FL:perf', PerfSampler().run).start()
 		# Aggiornamento della skin senza ReloadSkin. Vive in modules/skin_updater.py e non qui perche'
 		# quel modulo ha il suo .pyc, mentre questo file Kodi lo esegue come __main__ e lo ricompila a

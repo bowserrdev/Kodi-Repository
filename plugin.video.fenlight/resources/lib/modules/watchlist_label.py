@@ -25,14 +25,22 @@ informazioni e cartelle di Fen Light sono lo stesso caso. NON `ListItem.*` senza
 scheda informazioni (DialogVideoInfo) quello e' il titolo della scheda, non l'elemento a fuoco nelle sue
 righe -- misurato sul Mac il 18/09, il watcher ricalcolava sempre il film della scheda. Fino al 18/09
 sera il contenitore era quello della riga seguita dal paginatore, e la scheda, modale, restava fuori.
-L'unico momento in cui la proprieta' NON si tocca e' col menu contestuale aperto: deve restare quella
-dell'elemento su cui il menu si e' aperto (vedi service.py, CONTEXT_MENU_DIALOG).
+Col menu contestuale aperto il fuoco non si legge (le infolabel rispondono per il menu): la proprieta'
+resta quella dell'elemento su cui il menu si e' aperto, e si riscrive per lui se nel frattempo cambia la
+watchlist (Tracker.rinfresca, lotto 439; vedi service.py, CONTEXT_MENU_DIALOG).
 
 QUANDO SI RICALCOLA. Quando cambia l'elemento a fuoco, e quando cambia la watchlist. Il secondo segnale
 e' un file in addon_data scritto da trakt_api.rinnova_watchlist, che e' il punto da cui passa OGNI
 cambio -- clic, sincronizzazione con Trakt, "segna come visto" -- e che gira in interpreti diversi dal
-servizio. Un file e non una proprieta' di finestra perche' il watcher lo legge a ogni giro, e
+servizio; e dal clic stesso, prima della rete (lotto 439): la watchlist che la voce dice e' la copia di
+Trakt con sopra le intenzioni dell'utente non ancora confermate (cached_ids, trakt_cache.INTENTO_WATCHLIST),
+quindi la voce cambia appena il clic parte e non dopo la risposta di Trakt. Un file e non una proprieta' di finestra perche' il watcher lo legge a ogni giro, e
 getProperty prende il lock grafico (vedi settings_cache, lotto 323); aprire un file di pochi byte no.
+
+DA QUANDO. La proprieta' muore con Kodi, quindi chi la scrive deve essere vivo appena un elemento e' a
+schermo: il giro del WidgetPaginator parte con il servizio, e fino alla fine dell'avvio differito fa solo
+le voci del menu (lotto 438). Prima partiva con l'avvio differito: un menu aperto nei primi secondi aveva
+la voce vuota, e restava vuota finche' non si chiudeva, perche' col menu aperto il watcher non la tocca.
 
 L'insieme della watchlist si legge dalla copia in cache, MAI dalla rete: il watcher e' il ciclo del
 paginatore e una chiamata a Trakt lo fermerebbe. Una copia mancante vale "vuota" ma non si ricorda,
@@ -54,7 +62,8 @@ def _stamp_path():
 
 
 def bump():
-	"""La watchlist e' cambiata. Lo chiama rinnova_watchlist, in qualunque interprete giri."""
+	"""La watchlist e' cambiata. Lo chiamano rinnova_watchlist e il clic (intenzione annotata o ritirata), in
+	qualunque interprete girino."""
 	from time import time
 	try:
 		with open(_stamp_path(), 'w', encoding='utf-8') as handle: handle.write(repr(time()))
@@ -67,8 +76,8 @@ def read_stamp():
 	except Exception: return ''
 
 
-def cached_ids(media_type):
-	"""tmdb_id della watchlist dalla copia in cache, senza rete. None se la copia non c'e'."""
+def copia_ids(media_type):
+	"""tmdb_id della copia di Trakt in cache, senza rete e senza intenzioni. None se la copia non c'e'."""
 	from caches.trakt_cache import trakt_cache
 	data = trakt_cache.get('trakt_watchlist_%s' % media_type)
 	# None = copia assente; [] = watchlist vuota, che e' un dato vero e si ricorda (un account nuovo
@@ -77,12 +86,25 @@ def cached_ids(media_type):
 	return {str(i['media_ids']['tmdb']) for i in data if i.get('media_ids', {}).get('tmdb')}
 
 
+def cached_ids(media_type):
+	"""tmdb_id della watchlist come la vuole l'utente: la copia, con sopra le intenzioni che Trakt non ha ancora
+	confermato (lotto 439, caches.trakt_cache.INTENTO_WATCHLIST). None se la copia non c'e'."""
+	ids = copia_ids(media_type)
+	if ids is None: return None
+	from caches.trakt_cache import intenti_watchlist
+	for tmdb_id, dentro in intenti_watchlist(media_type).items():
+		if dentro: ids.add(tmdb_id)
+		else: ids.discard(tmdb_id)
+	return ids
+
+
 class Tracker:
 	"""Stato del watcher: quale elemento ha gia' servito e con quale versione della watchlist."""
 
 	def __init__(self, loader=cached_ids, stamp_reader=read_stamp, log=None):
 		self.loader, self.stamp_reader, self.log = loader, stamp_reader, log
 		self.item, self.stamp, self.sets = None, None, {}
+		self.ultimo = None  # (media_type, tmdb_id) dell'elemento servito per ultimo: vedi rinfresca
 
 	def update(self, control_id, get_infolabel, window):
 		"""Un giro del watcher. Torna l'etichetta scritta, o None se non c'era niente da fare.
@@ -100,11 +122,26 @@ class Tracker:
 		stamp = self.stamp_reader()
 		if path == self.item and stamp == self.stamp: return None
 		if stamp != self.stamp: self.sets.clear(); self.stamp = stamp
-		self.item = path
+		self.item, self.ultimo = path, None
 		media_type = MEDIA_TYPES.get(get_infolabel(item + 'DBType'))
 		if not media_type: return None
 		tmdb_id = get_infolabel(item + 'UniqueID(tmdb)')
 		if not tmdb_id: return None
+		self.ultimo = (media_type, tmdb_id)
+		return self._scrivi(media_type, tmdb_id, window)
+
+	def rinfresca(self, window):
+		"""Un giro col menu contestuale aperto (lotto 439). Il fuoco li' non si legge -- le infolabel rispondono per il
+		menu -- ma l'elemento e' quello su cui il menu si e' aperto, cioe' l'ultimo servito. Se nel frattempo e'
+		cambiata la watchlist (il clic di un attimo prima, riaprendo subito il menu) si riscrive per lui: Kodi
+		rivaluta l'etichetta a ogni disegno, quindi la voce si corregge a menu aperto. Senza cambi non fa niente."""
+		stamp = self.stamp_reader()
+		if stamp == self.stamp: return None
+		self.sets.clear(); self.stamp = stamp
+		if not self.ultimo: return None
+		return self._scrivi(self.ultimo[0], self.ultimo[1], window)
+
+	def _scrivi(self, media_type, tmdb_id, window):
 		ids, copia = self.sets.get(media_type), 'memoria'
 		if ids is None:
 			ids = self.loader(media_type)

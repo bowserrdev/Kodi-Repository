@@ -805,7 +805,11 @@ def remove_from_list(user, slug, data):
 
 def add_to_watchlist(data, refresh=True):
 	result = call_trakt('/sync/watchlist', data=data)
-	if result['existing']['movies'] + result['existing']['shows'] > 0: return notification('Already In List', 3000)
+	# Il titolo c'era gia': Trakt e' nello stato chiesto, quindi si torna il risultato (watchlist_toggle lo legge
+	# come riuscito e l'intenzione resta finche' la copia non le da' ragione, lotto 439). Solo l'errore torna None.
+	if result['existing']['movies'] + result['existing']['shows'] > 0:
+		notification('Already In List', 3000)
+		return result
 	if result['added']['movies'] + result['added']['shows'] == 0: return notification('Error', 3000)
 	notification('Success', 3000)
 	trakt_sync_activities()
@@ -823,6 +827,12 @@ def remove_from_watchlist(data, refresh=True):
 	if refresh and (path_check('trakt_watchlist') or external()): _refresh_watchlist(data)
 	return result
 
+# LOTTO 439 -- quando questa invocazione ha riletto la watchlist di ciascun tipo ('movies'|'shows'). Serve a
+# watchlist_toggle per non rileggerla due volte: la sincronizzazione che segue la risposta di Trakt la rilegge gia'
+# (il timestamp watchlisted_at e' cambiato), e il log del Mac del 30/09 mostrava due letture intere per clic.
+# Vive quanto l'invocazione, che e' un interprete a se' (reuselanguageinvoker spento).
+_WATCHLIST_RILETTA = {}
+
 def rinnova_watchlist(media_type):
 	"""Rilegge da Trakt la watchlist di questo tipo e sostituisce la copia (lotto 334).
 
@@ -830,11 +840,18 @@ def rinnova_watchlist(media_type):
 	watchlist) e la sincronizzazione. Le costruzioni la leggono senza rete, quindi la copia deve esserci.
 	media_type: 'movie' | 'movies' | 'tvshow' | 'shows'.
 	"""
-	trakt_fetch_collection_watchlist('watchlist', 'movies' if media_type in ('movie', 'movies') else 'shows', rinnova=True)
+	key = 'movies' if media_type in ('movie', 'movies') else 'shows'
+	trakt_fetch_collection_watchlist('watchlist', key, rinnova=True)
+	# La copia nuova da' ragione alle intenzioni che Trakt ha recepito: quelle si tolgono, le altre restano sopra
+	# la copia (lotto 439, trakt_cache.INTENTO_WATCHLIST).
+	from modules.watchlist_label import bump, copia_ids
+	tipo = 'movie' if key == 'movies' else 'tvshow'
+	ids = copia_ids(tipo)
+	if ids is not None: trakt_cache.concilia_intenti_watchlist(tipo, ids)
+	_WATCHLIST_RILETTA[key] = time.time()
 	# Dopo la sostituzione, non prima: il watcher rilegge la copia appena vede il segnale, e deve
 	# trovare quella nuova. E' cio' che tiene giusta la voce del menu nelle righe che non si
 	# ricostruiscono -- vedi modules/watchlist_label.py.
-	from modules.watchlist_label import bump
 	bump()
 
 def watchlist_tmdb_ids(media_type='movies'):
@@ -864,16 +881,31 @@ def watchlist_toggle(params):
 	# Watchlist VUOTA e' un dato vero (un account nuovo), non un "non so": prima `if attuali:` la
 	# scambiava per una lettura fallita e ricadeva sull'URL, che con l'etichetta viva non viene piu'
 	# aggiornato. Si ricade sull'URL solo se la copia locale non c'e' e nemmeno Trakt risponde.
+	# L'appartenenza comprende le intenzioni non ancora confermate (lotto 439): un secondo clic prima che Trakt
+	# risponda al primo lo disfa, come la voce che l'utente vede.
+	tipo = 'movie' if key == 'movies' else 'tvshow'
 	dentro = params.get('in_watchlist') == 'true'
+	from modules.watchlist_label import cached_ids, bump
 	try:
-		from modules.watchlist_label import cached_ids
-		attuali = cached_ids('movie' if key == 'movies' else 'tvshow')
+		attuali = cached_ids(tipo)
 		if attuali is None: attuali = watchlist_tmdb_ids(key) or None
 		if attuali is not None: dentro = str(media_id) in attuali
 	except: pass
-	if dentro: remove_from_watchlist(data, refresh=False)
-	else: add_to_watchlist(data, refresh=False)
-	rinnova_watchlist(key)
+	# LOTTO 439 -- L'INTENZIONE PRIMA DELLA RETE. La voce del menu cambiava solo dopo la risposta di Trakt, la
+	# sincronizzazione e la rilettura della watchlist (1,4 s sul Mac, di piu' sulla stick): riaprendo il menu nel
+	# frattempo si leggeva ancora "Aggiungi". Ora la voce segue cio' che l'utente ha chiesto, subito; se Trakt dice
+	# di no l'intenzione si ritira e la voce torna com'era. Vedi trakt_cache.INTENTO_WATCHLIST.
+	intento = trakt_cache.annota_intento_watchlist(tipo, str(media_id), not dentro)
+	bump()
+	inizio, esito = time.time(), None
+	try: esito = remove_from_watchlist(data, refresh=False) if dentro else add_to_watchlist(data, refresh=False)
+	finally:
+		if not esito:
+			trakt_cache.ritira_intento_watchlist(tipo, str(media_id), intento)
+			bump()
+	# La sincronizzazione dentro add/remove la rilegge gia' quando Trakt ha registrato il cambio: una seconda
+	# lettura intera solo se non e' successo (sincronizzazione fallita, o Trakt non l'ha ancora annotato).
+	if _WATCHLIST_RILETTA.get(key, 0) < inizio: rinnova_watchlist(key)
 	# Non piu' un kodi_refresh globale (ricostruirebbe TUTTI i widget per una sola etichetta), ma
 	# nemmeno l'attesa della prossima ricostruzione naturale: mirato, e quindi immediato.
 	_refresh_watchlist(data)
