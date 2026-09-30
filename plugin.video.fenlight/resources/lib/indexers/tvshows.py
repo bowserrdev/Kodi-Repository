@@ -5,7 +5,7 @@ from time import perf_counter as _perf
 from modules import kodi_utils, settings
 from modules import paginator, sorgenti
 from modules.watchlist_label import DYNAMIC_LABEL as DYNAMIC_WATCHLIST_LABEL
-from modules.metadata import tvshow_meta
+from modules.metadata import tvshow_meta, titolo_mostrato
 from modules.metadata import tvshow_meta_prefetch, meta_prefetch_key
 from modules.utils import get_datetime, make_thread_list, get_current_timestamp, paginate_list
 from modules.watched_status import get_database, watched_info_tvshow, get_watched_status_tvshow, get_progress_status_tvshow
@@ -269,7 +269,7 @@ class TVShows:
 			set_properties = listitem.setProperties
 			meta_get = meta.get
 			premiered = meta_get('premiered')
-			trailer, title, year = meta_get('trailer'), meta_get('title'), meta_get('year') or '2050'
+			trailer, title, year = meta_get('trailer'), titolo_mostrato(meta), meta_get('year') or '2050'   # lotto 437: solo etichetta e infotag
 			tvdb_id, imdb_id = meta_get('tvdb_id'), meta_get('imdb_id')
 			poster, fanart, clearlogo, landscape = meta_get('poster') or poster_empty, meta_get('fanart') or self.fanart_empty, meta_get('clearlogo') or '', meta_get('landscape') or ''
 			thumb = poster or landscape or fanart
@@ -423,7 +423,7 @@ class TVShows:
 			# sempre -- l'utente ci e' arrivato da li' -- e se non c'e' resta il nome che c'era.
 			if self.interactive: meta = tvshow_meta_prefetch('tmdb_id', [name_id]).get('tmdb_id|%s' % name_id)
 			else: meta = tvshow_meta('tmdb_id', name_id, tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp())
-			if meta and meta.get('title'): self.category_name = prefix % meta['title']
+			if meta and meta.get('title'): self.category_name = prefix % titolo_mostrato(meta)
 		except: pass
 
 	def _resolve_missing(self, ids):

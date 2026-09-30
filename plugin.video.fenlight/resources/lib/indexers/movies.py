@@ -4,7 +4,7 @@ from time import perf_counter as _perf
 from modules import kodi_utils, settings
 from modules import paginator, sorgenti
 from modules.watchlist_label import DYNAMIC_LABEL as DYNAMIC_WATCHLIST_LABEL
-from modules.metadata import movie_meta, movieset_meta
+from modules.metadata import movie_meta, movieset_meta, titolo_mostrato
 from modules.metadata import movie_meta_prefetch, meta_prefetch_key
 from modules.utils import get_datetime, make_thread_list, get_current_timestamp, paginate_list, jsondate_to_datetime
 from modules.watched_status import get_database, watched_info_movie, get_watched_status_movie, get_bookmarks_movie, get_progress_status_movie
@@ -275,7 +275,7 @@ class Movies:
 			clearprog_params, watched_status_params = '', ''
 			meta_get = meta.get
 			premiered = meta_get('premiered')
-			title, year = meta_get('title'), meta_get('year') or '2050'
+			title, year = titolo_mostrato(meta), meta_get('year') or '2050'   # lotto 437: solo etichetta e infotag
 			tmdb_id, imdb_id = meta_get('tmdb_id'), meta_get('imdb_id')
 			str_tmdb_id = string(tmdb_id)
 			poster, fanart, clearlogo, landscape = meta_get('poster') or poster_empty, meta_get('fanart') or self.fanart_empty, meta_get('clearlogo') or '', meta_get('landscape') or ''
@@ -452,7 +452,7 @@ class Movies:
 		if not name_id or self.params_get('name') or self.params_get('category_name'): return
 		try:
 			meta = movie_meta('tmdb_id', name_id, tmdb_api_key(), mpaa_region(), get_datetime(), get_current_timestamp())
-			if meta and meta.get('title'): self.category_name = 'More Like This based on %s' % meta['title']
+			if meta and meta.get('title'): self.category_name = 'More Like This based on %s' % titolo_mostrato(meta)
 		except: pass
 
 	def _resolve_missing(self, ids):

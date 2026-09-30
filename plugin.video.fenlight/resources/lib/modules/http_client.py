@@ -50,6 +50,16 @@ CONNESSIONI_PER_HOST = 12
 # le 20 schede di una pagina del preparatore (preparatore.RETE_IN_PARALLELO) andavano in DUE ondate: 0,8-2,3 s di
 # attese di un posto sommate per pagina, su pagine da 0,7-1,1 s. Con 20 l'ondata e' una.
 CONNESSIONI_PER_SERVER = {'api.graphql.imdb.com': 20}
+# LOTTO 435 -- I SERVER COL PROXY DI RIPIEGO (impostazione proxy.url, decisione dell'utente del 30/09). Quando uno di loro
+# risponde 429, o con una pagina di sbarramento (blu-ray.com non manda 429: manda 200 con un blocco, e lo riconosce il
+# `validate` del chiamante), la stessa richiesta riparte dal proxy. Solo server il cui limite e' per INDIRIZZO: un
+# indirizzo nuovo ha un limite nuovo. MAI i servizi legati a un account o a una chiave (Trakt, i debrid, MDBList,
+# OpenSubtitles): il loro limite non cambia con l'indirizzo, riprovare consuma solo quota, e i debrid controllano da
+# quali indirizzi si usa un account (condivisione) -- un proxy a IP rotativo puo' farlo sospendere. Nemmeno l'API di
+# TMDb: non ha mai risposto 429 nei nostri log, e chiede di rispettare il limite. Un servizio nuovo si aggiunge qui a
+# mano, quando nei log si vede un suo 429 che il proxy risolverebbe.
+SERVER_COL_PROXY = ('torrentio.strem.fun', 'api.graphql.imdb.com', 'www.imdb.com', 'sg.media-imdb.com',
+					'apis.justwatch.com', 'skyhook.sonarr.tv', 'm.blu-ray.com')
 
 def connessioni_per(host):
 	"""Il tetto delle connessioni in uso verso `host`."""
@@ -373,6 +383,57 @@ class NessunaConnessioneLibera(NetworkError):
 	"""Tutte le connessioni verso l'host sono rimaste occupate per l'intero timeout. Non e' un guasto
 	dell'host: e' coda nostra, e non conta per l'interruttore."""
 
+def _proxy_da_url(url):
+	"""LOTTO 435 -- 'http://utente:password@host:porta' -> (host, porta, 'Basic ...' o None). None se vuoto o non leggibile.
+
+	Solo proxy HTTP (il tunnel CONNECT di http.client); le credenziali possono essere codificate con %XX. A mano e non
+	con urllib.parse: il modulo non deve tirarsi dentro urllib (vedi l'intestazione e il lotto 74).
+	"""
+	url = (url or '').strip()
+	if not url: return None
+	schema, sep, resto = url.partition('://')
+	if not sep: schema, resto = 'http', url
+	if schema.lower() != 'http':
+		_net_log('proxy "%s://..." non supportato: solo http' % schema)
+		return None
+	resto = resto.split('/', 1)[0]
+	credenziali, sep, indirizzo = resto.rpartition('@')
+	host, sep_porta, porta = indirizzo.rpartition(':')
+	if not sep_porta or not host or not porta.isdigit():
+		_net_log('proxy senza host:porta leggibili, ignorato')
+		return None
+	autorizzazione = None
+	if credenziali:
+		from binascii import b2a_base64
+		decodifica = lambda t: _re.sub(r'%([0-9A-Fa-f]{2})', lambda m: chr(int(m.group(1), 16)), t).encode('latin-1')
+		utente, _, password = credenziali.partition(':')
+		try: coppia = decodifica(utente) + b':' + decodifica(password)
+		except UnicodeEncodeError:
+			_net_log('proxy: credenziali con caratteri non codificati, vanno scritte con %XX; proxy ignorato')
+			return None
+		autorizzazione = 'Basic %s' % b2a_base64(coppia, newline=False).decode('ascii')
+	return host, int(porta), autorizzazione
+
+_proxy_letto = [None, None]   # (testo dell'impostazione, proxy interpretato)
+
+def _proxy():
+	"""Il proxy dell'impostazione proxy.url, interpretato; None se spento. Si reinterpreta solo quando il testo cambia.
+	Import ritardato e protetto: il modulo deve restare importabile fuori da Kodi."""
+	try:
+		from modules.settings import proxy_url
+		testo = proxy_url()
+	except Exception: return None
+	letto = _proxy_letto
+	if testo != letto[0]: _proxy_letto[:] = letto = [testo, _proxy_da_url(testo)]
+	return letto[1]
+
+def _limitata(response, validate):
+	"""Il server ci sta limitando: un 429, o una pagina di sbarramento che il chiamante riconosce (`validate`)."""
+	if response.status_code == 429: return True
+	if validate is None or _classify_status(response.status_code) is not None: return False
+	try: return not validate(response)
+	except Exception: return False
+
 class _Pool:
 	# Le connessioni FERME di una sessione, per (schema, host, porta). Sostituisce l'HTTPAdapter(pool_maxsize=8)
 	# che make_session montava su requests.
@@ -381,8 +442,10 @@ class _Pool:
 	# Un posto non reso e' perso per sempre, e al CONNESSIONI_PER_HOST-esimo tutti aspettano: _attempt lo
 	# garantisce con un finally. Il timeout non fa piu' parte della chiave: si imposta sulla connessione al
 	# momento del riuso, cosi' un host ha UN gruppo di connessioni ferme e non uno per ogni timeout usato.
-	def __init__(self):
-		self._free, self._lock = {}, Lock()
+	def __init__(self, proxy=None):
+		# LOTTO 435 -- `proxy` e' (host, porta, Proxy-Authorization o None): le connessioni di questo pool passano da un
+		# tunnel CONNECT. Un pool col proxy non tiene connessioni ferme (vedi release).
+		self._free, self._lock, self._proxy = {}, Lock(), proxy
 		with _pool_lock: _pool_vivi.append(_ref(self))
 
 	def _scadute(self, bucket, adesso):
@@ -411,12 +474,23 @@ class _Pool:
 			conn.timeout = timeout
 			if conn.sock is not None: conn.sock.settimeout(timeout)
 			return conn, True
+		if self._proxy is not None:
+			proxy_host, proxy_port, autorizzazione = self._proxy
+			conn = http.client.HTTPSConnection(proxy_host, proxy_port, timeout=timeout)
+			conn.set_tunnel(host, port, headers={'Proxy-Authorization': autorizzazione} if autorizzazione else None)
+			return conn, False
 		if scheme == 'https':
 			return http.client.HTTPSConnection(host, port, timeout=timeout), False
 		return http.client.HTTPConnection(host, port, timeout=timeout), False
 
 	def release(self, scheme, host, port, timeout, conn):
 		"""La connessione ha finito e resta aperta: torna ferma, e il posto si rende."""
+		if self._proxy is not None:
+			# Il proxy e' a IP rotativo: un tunnel nuovo e' un indirizzo nuovo. Riusare quello che ha appena risposto
+			# vorrebbe dire restare sull'indirizzo che il server potrebbe gia' limitare.
+			_chiudi((conn,))
+			_tetto(scheme, host, port).rendi()
+			return
 		with self._lock:
 			self._free.setdefault((scheme, host, port), []).append((conn, _adesso()))
 		_tetto(scheme, host, port).rendi()
@@ -593,6 +667,12 @@ class Session:
 		self.pool = _Pool()
 		self.headers = {}
 		self.cookies = _CookieJar()
+		self._pool_proxy = {}   # LOTTO 435: un pool per proxy (vedi SERVER_COL_PROXY), creato al primo uso
+
+	def _pool_del_proxy(self, proxy):
+		pool = self._pool_proxy.get(proxy)
+		if pool is None: pool = self._pool_proxy.setdefault(proxy, _Pool(proxy))
+		return pool
 
 	# --- API pubblica, la stessa di requests per i soli usi presenti nel progetto ---------------
 	def get(self, url, **kwargs): return self.request('GET', url, **kwargs)
@@ -642,6 +722,17 @@ class Session:
 		# L'interruttore si consulta PRIMA di aprire il socket: e' qui che sta tutto il guadagno.
 		breaker_check(host)
 		response = self._attempt(method, scheme, host, port, path, body, headers, timeout)
+		# LOTTO 435 -- IL RIPIEGO SUL PROXY viene PRIMA della classificazione: all'interruttore arriva solo l'esito
+		# finale. Se contasse anche il 429 diretto, tre 429 di fila durante un picco aprirebbero l'interruttore
+		# dell'host, e breaker_check bloccherebbe anche la richiesta dal proxy proprio quando serve.
+		# Vale solo per SERVER_COL_PROXY e solo in https (il tunnel CONNECT). Un guasto del PROXY non e' un guasto
+		# dell'host: la risposta resta quella diretta, che conta una volta sola.
+		if host in SERVER_COL_PROXY and scheme == 'https' and _limitata(response, validate):
+			proxy = _proxy()
+			if proxy is not None:
+				_net_log('%s: limite (HTTP %s), riprovo dal proxy' % (host, response.status_code))
+				try: response = self._attempt(method, scheme, host, port, path, body, headers, timeout, self._pool_del_proxy(proxy))
+				except NetworkError as error: _net_log('%s: il proxy non risponde (%s), resta la risposta diretta' % (host, error))
 		# CLASSIFICAZIONE. Un 404 non e' un guasto dell'host: la richiesta e' sbagliata, l'host sta
 		# benissimo, e non deve contare per l'interruttore. Un 500 o un 429 si'.
 		#
@@ -689,7 +780,7 @@ class Session:
 				return self._send(method, location, body, headers, timeout, allow_redirects, budget - 1, validate)
 		return response
 
-	def _attempt(self, method, scheme, host, port, path, body, headers, timeout):
+	def _attempt(self, method, scheme, host, port, path, body, headers, timeout, pool=None):
 		# DUE riprove distinte, e la distinzione conta perche' costano in modo diverso:
 		#
 		# 1) CONNESSIONE RICICLATA MORTA. Un socket tenuto aperto puo' essere stato chiuso dall'altro capo
@@ -705,9 +796,10 @@ class Session:
 		#    la pena riprovare una volta perche' costa poco. Un TIMEOUT invece NON si riprova: ha gia'
 		#    consumato DEFAULT_TIMEOUT e riprovarlo raddoppierebbe il caso peggiore, che su questa stick e'
 		#    esattamente il sintomo da evitare. (Lotto 93, vedi _is_fast_failure.)
+		pool = pool or self.pool
 		fast_retries, nuova = 0, False
 		while True:
-			conn, reused = self.pool.prendi(scheme, host, port, timeout, nuova)
+			conn, reused = pool.prendi(scheme, host, port, timeout, nuova)
 			reso = False   # LOTTO 343: il posto del tetto si rende UNA volta, in qualunque modo si esca
 			try:
 				conn.request(method, path, body=body, headers=headers)
@@ -724,17 +816,17 @@ class Session:
 				if hdrs.get('connection', '').lower() == 'close':
 					try: conn.close()
 					except: pass
-					self.pool.scarta(scheme, host, port)
+					pool.scarta(scheme, host, port)
 				else:
-					self.pool.release(scheme, host, port, timeout, conn)
+					pool.release(scheme, host, port, timeout, conn)
 				reso = True
 				return Response(status, payload, hdrs, '%s://%s%s' % (scheme, host, path))
 			except (http.client.HTTPException, socket.error, OSError) as error:
 				try: conn.close()
 				except: pass
-				self.pool.scarta(scheme, host, port); reso = True
+				pool.scarta(scheme, host, port); reso = True
 				if reused:
-					self.pool.svuota(scheme, host, port, timeout)
+					pool.svuota(scheme, host, port, timeout)
 					nuova = True
 					continue
 				if _is_fast_failure(error) and fast_retries < RETRY_FAST_ERRORS:
@@ -742,7 +834,8 @@ class Session:
 				# Guasto vero: alimenta l'interruttore e si presenta classificato. TemporaryError
 				# deriva da OSError, quindi ogni `except` gia' scritto nei chiamanti lo cattura
 				# esattamente come prima -- cambia solo che ora sappiamo COSA e' successo.
-				breaker_failure(host, type(error).__name__ or 'errore di trasporto')
+				# LOTTO 435 -- solo la strada diretta: un guasto del proxy non dice niente dell'host.
+				if pool is self.pool: breaker_failure(host, type(error).__name__ or 'errore di trasporto')
 				raise TemporaryError('%s: %s' % (host, error)) from error
 			finally:
 				if not reso:
@@ -750,4 +843,4 @@ class Session:
 					# che non si conosce, quindi si chiude, e il posto si rende comunque.
 					try: conn.close()
 					except: pass
-					self.pool.scarta(scheme, host, port)
+					pool.scarta(scheme, host, port)

@@ -111,6 +111,31 @@ def _entry_query(meta, current_date):
 			meta.get('imdb_year') or meta.get('year'),
 			_is_recent_release(meta.get('premiered'), current_date))
 
+# LOTTO 437 -- IL TITOLO MOSTRATO. Quando TMDb non ha il titolo nella lingua dei metadati restituisce l'originale: per
+# un film thai "พี่นาค 3" invece di "Pee Nak 3". Il font della skin (Inter-Unicode) non ha i caratteri thai, hindi,
+# tamil (quadratini), e anche quando li ha il titolo non corrisponde al clearlogo. Misura del 30/09 sulla cache del
+# Mac: 530 schede su 5172 con un titolo senza lettere latine, 522 con un titolo inglese latino gia' in scheda
+# (english_title); le altre sono cifre ("1917", "8 1/2") o un solo film thai.
+# SOLO IL TITOLO MOSTRATO: meta['title'] resta quello di TMDb, perche' lo leggono la ricerca delle sorgenti e i
+# controlli di identita' (sources, lingua_fonte, classificatore), Trakt (slug) e le azioni "visto".
+# Lingue dei metadati in un'altra scrittura: li' il titolo originale e' quello giusto, e non si cambia.
+_LINGUE_NON_LATINE = frozenset(('ja', 'ko', 'zh', 'th', 'ru', 'uk', 'bg', 'el', 'he', 'ar', 'fa', 'hi', 'ta', 'te', 'kn',
+								'ml', 'mr', 'bn', 'ka', 'hy', 'mk', 'be', 'kk', 'my', 'km', 'lo', 'si', 'ur', 'sr'))
+
+def _ha_lettere_latine(testo):
+	return any('a' <= c <= 'z' for c in (testo or '').lower())
+
+def titolo_mostrato(meta):
+	"""Il titolo da mostrare: quello di TMDb, oppure quello inglese se il primo non ha lettere latine e la lingua dei
+	metadati usa l'alfabeto latino. Un titolo di sole cifre ("1917") resta com'e'."""
+	titolo = meta.get('title') or ''
+	if _ha_lettere_latine(titolo): return titolo
+	inglese = meta.get('english_title') or ''
+	if not _ha_lettere_latine(inglese): return titolo
+	from modules.settings import meta_language
+	if meta_language().split('-')[0] in _LINGUE_NON_LATINE: return titolo
+	return inglese
+
 # LOTTO 348 -- qui stavano assicura_scheda e _scheda_per_bluray: scaricavano la scheda di un titolo che dub_resolve
 # riceveva senza. Il preparatore giudica sempre con la scheda in mano (preparatore.giudica), quindi non servono piu'.
 

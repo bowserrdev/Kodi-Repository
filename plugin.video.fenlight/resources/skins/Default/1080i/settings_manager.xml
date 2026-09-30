@@ -462,6 +462,14 @@
                           <property name="setting_description">Choose the maximum active concurrent threads Fen Light will be limited to</property>
                           <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_numeric&amp;setting_id=max_threads)</onclick>
                       </item>
+                      <item>
+                          <visible>Container(2000).HasFocus(10)</visible>
+                          <property name="setting_label">Proxy on Rate Limit</property>
+                          <property name="setting_type">numeric</property>
+                          <property name="setting_value">$INFO[Window(10000).Property(fenlight.proxy.url)]</property>
+                          <property name="setting_description">Optional. Some services limit how many requests one address can make (Torrentio, IMDb, JustWatch, Skyhook, blu-ray.com). When one of them answers "too many requests" or with a block page, the same request is sent again through this proxy. Services tied to your account (Trakt, debrid services, MDBList, OpenSubtitles) never use it. Format: http://user:password@host:port (HTTP proxies only; write special characters in the password as %XX). Leave empty to disable.</property>
+                          <onclick>RunPlugin(plugin://plugin.video.fenlight/?mode=settings_manager.set_string&amp;setting_id=proxy.url)</onclick>
+                      </item>
         <!-- Watched Indicators -->
                       <item>
                           <visible>Container(2000).HasFocus(10)</visible>

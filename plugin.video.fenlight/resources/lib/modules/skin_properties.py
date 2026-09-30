@@ -40,7 +40,7 @@ def set_videoinfo_properties(params):
 	
 def open_media_info(params):
 	from xbmcgui import Dialog
-	from modules.metadata import movie_meta, tvshow_meta
+	from modules.metadata import movie_meta, tvshow_meta, titolo_mostrato
 	from modules.settings import tmdb_api_key, mpaa_region
 	from modules.utils import get_datetime
 	tmdb_id, media_type = params['tmdb_id'], params.get('media_type', 'movie')
@@ -50,12 +50,12 @@ def open_media_info(params):
 	if not meta: return
 	meta_get = meta.get
 	listitem = kodi_utils.make_listitem()
-	listitem.setLabel(meta_get('title') or '')
+	listitem.setLabel(titolo_mostrato(meta))   # lotto 437
 	listitem.setArt({'poster': meta_get('poster') or '', 'fanart': meta_get('fanart') or '', 'clearlogo': meta_get('clearlogo') or '',
 					'landscape': meta_get('landscape') or '', 'thumb': meta_get('poster') or ''})
 	info_tag = listitem.getVideoInfoTag()
 	info_tag.setMediaType('movie' if media_type == 'movie' else 'tvshow')
-	info_tag.setTitle(meta_get('title') or '')
+	info_tag.setTitle(titolo_mostrato(meta))
 	info_tag.setOriginalTitle(meta_get('original_title') or '')
 	info_tag.setPlot(meta_get('plot') or '')
 	try: info_tag.setYear(int(meta_get('year')))

@@ -9,7 +9,7 @@ from time import perf_counter as _perf
 # nei due rami che le usano davvero.
 from modules import kodi_utils, settings, watched_status as ws, paginator
 from modules.tmdb_art import poster_token
-from modules.metadata import tvshow_meta, episodes_meta, all_episodes_meta, tvshow_meta_prefetch, meta_prefetch_key, episodes_meta_prefetch
+from modules.metadata import tvshow_meta, episodes_meta, all_episodes_meta, tvshow_meta_prefetch, meta_prefetch_key, episodes_meta_prefetch, titolo_mostrato
 from modules.utils import jsondate_to_datetime, adjust_premiered_date, make_day, get_datetime, title_key, date_difference, make_thread_list, get_current_timestamp
 # logger = kodi_utils.logger
 
@@ -100,7 +100,7 @@ def build_episode_list(params):
 				if url_aggiorna_riga: cm_append(('[B]Aggiorna widget[/B]', run_plugin % url_aggiorna_riga))
 				_ph1 = _perf()
 				info_tag = listitem.getVideoInfoTag()
-				info_tag.setMediaType('episode'), info_tag.setTitle(display), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(title), info_tag.setGenres(genre)
+				info_tag.setMediaType('episode'), info_tag.setTitle(display), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(titolo), info_tag.setGenres(genre)
 				info_tag.setPlaycount(playcount), info_tag.setSeason(season), info_tag.setEpisode(episode), info_tag.setPlot(item_get('plot') or '')
 				info_tag.setDuration(item_get('duration')), info_tag.setIMDBNumber(imdb_id), info_tag.setUniqueIDs({'imdb': imdb_id, 'tmdb': string(tmdb_id), 'tvdb': string(tvdb_id)})
 				info_tag.setFirstAired(premiered)
@@ -157,6 +157,7 @@ def build_episode_list(params):
 	# La catena delle trame degli episodi sta in metadata.trama_episodio, e finisce in 'niente'.
 	tmdb_id, tvdb_id, imdb_id, orig_title = meta_get('tmdb_id'), meta_get('tvdb_id'), meta_get('imdb_id'), meta_get('original_title')
 	title, show_year, rootname, show_duration, show_status = meta_get('title'), meta_get('year') or '2050', meta_get('rootname'), meta_get('duration'), meta_get('status')
+	titolo = titolo_mostrato(meta)   # lotto 437: il titolo della serie che si MOSTRA; `title` resta per le azioni
 	cast, mpaa, trailer, genre, studio, country = meta_get('cast', []), meta_get('mpaa'), string(meta_get('trailer')), meta_get('genre'), meta_get('studio'), meta_get('country')
 	season = params['season']
 	show_poster = meta_get('poster') or poster_empty
@@ -293,6 +294,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			unwatched = ep_data_get('unwatched', False)
 			_position = ep_data_get('custom_order', _position)
 			tmdb_id, tvdb_id, imdb_id, title, show_year = meta_get('tmdb_id'), meta_get('tvdb_id'), meta_get('imdb_id'), meta_get('title'), meta_get('year') or '2050'
+			titolo = titolo_mostrato(meta)   # lotto 437: il titolo della serie che si MOSTRA; `title` resta per le azioni
 			season_data = meta_get('season_data')
 			if _pre_entry is not None: watched_info = _pre_entry[1]
 			elif _serve_visto: watched_info = watched_info_episode(meta_get('tmdb_id'), watched_db)
@@ -338,7 +340,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 				season_poster = tmdb_poster % (poster_token(), poster_path) if poster_path is not None else show_poster
 			except: season_poster = show_poster
 			str_season_zfill2, str_episode_zfill2 = string(season).zfill(2), string(episode).zfill(2)
-			if display_format == 0: title_string = '%s: ' % title
+			if display_format == 0: title_string = '%s: ' % titolo
 			else: title_string = ''
 			if display_format in (0, 1): seas_ep = '%sx%s - ' % (str_season_zfill2, str_episode_zfill2)
 			else: seas_ep = ''
@@ -394,7 +396,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			if url_aggiorna_riga: cm_append(('[B]Aggiorna widget[/B]', run_plugin % url_aggiorna_riga))
 			_ph2 = _perf()
 			info_tag = listitem.getVideoInfoTag()
-			info_tag.setMediaType('episode'), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(title), info_tag.setTitle(display), info_tag.setGenres(genre)
+			info_tag.setMediaType('episode'), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(titolo), info_tag.setTitle(display), info_tag.setGenres(genre)
 			info_tag.setPlaycount(playcount), info_tag.setSeason(season), info_tag.setEpisode(episode), info_tag.setPlot(item_get('plot') or '')
 			info_tag.setDuration(item_get('duration')), info_tag.setIMDBNumber(imdb_id), info_tag.setUniqueIDs({'imdb': imdb_id, 'tmdb': string(tmdb_id), 'tvdb': string(tvdb_id)})
 			info_tag.setFirstAired(premiered)
@@ -421,7 +423,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			set_properties(_p)
 			_phase_append((_ph1 - _ph0, _pa - _ph1, _pb - _pa, _pc - _pb, _pd - _pc, _ph2 - _pd,
 						_ph3 - _ph2, _ph4 - _ph3, _ph5 - _ph4, _ph6 - _ph5, _ph7 - _ph6, _perf() - _ph7))
-			item_list_append({'list_items': (url_params, listitem, False), 'first_aired': premiered, 'name': '%s - %sx%s' % (title, str_season_zfill2, str_episode_zfill2),
+			item_list_append({'list_items': (url_params, listitem, False), 'first_aired': premiered, 'name': '%s - %sx%s' % (titolo, str_season_zfill2, str_episode_zfill2),
 							'unaired': unaired, 'last_played': ep_data_get('last_played', resinsert), 'sort_order': _position, 'unwatched': ep_data_get('unwatched')})
 			return True
 		# Rilanciata di proposito: la cattura sta in _process, che cosi' puo' distinguere un ERRORE da

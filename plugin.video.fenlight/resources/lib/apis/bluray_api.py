@@ -69,7 +69,7 @@
 # I verdetti negativi scritti prima di questo lotto sono sbagliati per costruzione: li butta
 # dub_cache.migra_verdetti, una volta.
 #
-# LOTTO 344 -- LA RICERCA MOBILE, PER IL FILTRO "USCITO" (FILTRO-USCITA.md, regola U3). La domanda e' un'altra:
+# LOTTO 344 -- LA RICERCA MOBILE, PER IL FILTRO "USCITO" (FILTRO-USCITA.md, regola U3; dal lotto 435 U4). La domanda e' un'altra:
 # non "c'e' un'edizione in questo paese" ma "c'e' un'edizione in un paese qualsiasi". La ricerca desktop con
 # country=all risponde, ma misurato il 24/09 ha un difetto che la rende inservibile per un "si'" senza paese:
 # quando non trova il titolo NON risponde vuoto, riempie la lista con altri film dello stesso anno --
@@ -81,7 +81,7 @@
 # domande: 266 abbinate, 7 scartate, tutte spazzatura. Pesa 0,03-3 KB e si ferma a 10 voci.
 #
 # LOTTO 348 -- LA RICERCA DESKTOP NON C'E' PIU'. La usava solo il filtro doppiaggio per paese (has_home_video_release),
-# sostituito dai filtri "uscito" e "doppiato": restano la ricerca mobile (uscito_su_disco, U3) e le tracce audio delle
+# sostituito dai filtri "uscito" e "doppiato": restano la ricerca mobile (uscito_su_disco, U4 dal lotto 435) e le tracce audio delle
 # schede (tracce_audio, D3). Le note dei lotti 93-340 qui sopra sono la storia di quella strada; valgono ancora le
 # regole che ne sono uscite e che il codice sotto conserva: Accept-Language e due cookie (_HEADERS, _cookies), i
 # cataloghi veri (_CATALOGUES), "uscito" = data passata (_on_sale), la sentinella prima di un "no".
@@ -261,7 +261,7 @@ def _on_sale(entries, verify_released, today):
 
 
 
-# --- LOTTO 344: ricerca mobile, filtro "uscito" (regola U3 di FILTRO-USCITA.md) ------------------------------------
+# --- LOTTO 344: ricerca mobile, filtro "uscito" (regola U4 di FILTRO-USCITA.md dal lotto 435) ------------------------------------
 
 def _mobile_search(keyword, country, section):
 	"""Le voci della ricerca mobile, come le da' il sito: [{'title', 'year', 'reldate', 'flag', 'url'}, ...].
@@ -319,7 +319,7 @@ def _date_e_nomi(voci):
 	return [(_parse_date(i.get('reldate')), i.get('title') or '') for i in voci]
 
 def uscito_su_disco(title, year, verify_released=False):
-	"""U3: esiste un'edizione Blu-ray o DVD gia' uscita, in un paese qualsiasi? True / False / None (inconcludente).
+	"""U4 (U3 fino al lotto 435): esiste un'edizione Blu-ray o DVD gia' uscita, in un paese qualsiasi? True / False / None (inconcludente).
 
 	Blu-ray, poi DVD solo se serve. Basta un catalogo che dica si'; il "no" dev'essere di tutti, e il vuoto di un
 	catalogo vale "no" solo se risponde la sua sentinella (stessa regola del lotto 340). Un catalogo che ha il titolo
