@@ -7,7 +7,13 @@ regala il verdetto quando i dati li ha gia' in mano.
 
   Film   U1  TMDb watch/providers: un'offerta in un paese qualsiasi (flatrate, free, ads, rent, buy)
          U2  TMDb release_dates: un'uscita digitale (4), su disco (5) o in TV (6) il cui giorno e' PASSATO
-         U3  blu-ray.com, ricerca mobile in tutti i paesi, solo se U1 e U2 dicono no
+         U3  LOTTO 435 -- Torrentio: una release digitale PULITA (niente CAM, TS, TC, screener), solo se U1 e U2 dicono
+             no (apis/torrentio_api). Decisione dell'utente del 30/09: conta che esista una sorgente, non che il titolo
+             sia "uscito"; nelle sue liste blu-ray.com non conosceva ~140 film che Torrentio ha
+         U4  blu-ray.com, ricerca mobile in tutti i paesi, solo se Torrentio non ha potuto rispondere o il film non ha
+             un id IMDb. Quando Torrentio non ha risposto il suo "no" e' PROVVISORIO (NO_PROVVISORIO_ORE): blu-ray.com
+             dice no proprio ai film che Torrentio recupera, e con la scadenza per eta' un guasto breve di Torrentio
+             li nasconderebbe per mesi. Senza id IMDb Torrentio non rispondera' mai: il "no" ha la scadenza normale
   Serie  U1, oppure il primo episodio andato in onda in un giorno passato. Niente blu-ray.com: il no di TMDb e'
          il verdetto.
 
@@ -16,7 +22,7 @@ del paese: il digitale americano apre a mezzanotte del Pacifico, le 9 del mattin
 Contare la data dal giorno stesso mostrerebbe il titolo ore prima che esista. Il "no" di un titolo con una data gia'
 annunciata scade proprio alla mezzanotte di quel giorno dopo (caches/dub_cache.scadenza_negativa): la regola e la
 scadenza cambiano insieme, quindi il titolo compare il primo giorno in cui la regola lo ammette, non una settimana dopo.
-Le edizioni di blu-ray.com (U3) seguono la regola di sempre (bluray_api._on_sale): un disco il giorno dell'uscita
+Le edizioni di blu-ray.com (U4) seguono la regola di sempre (bluray_api._on_sale): un disco il giorno dell'uscita
 e' gia' comprabile.
 
 Tre esiti, come il filtro doppiaggio: True, False, None. None e' "non si e' potuto sapere": non si scrive in cache,
@@ -38,6 +44,7 @@ giudizio e solo se nessuna delle due trova in cache cio' che le serve.
 
 OFFERTE = ('flatrate', 'free', 'ads', 'rent', 'buy')
 TIPI_USCITA = (4, 5, 6)   # digitale, disco, TV. 1-3 sono le sale.
+NO_PROVVISORIO_ORE = 1    # lotto 435: la vita del "no" di U4; al giro dopo decide Torrentio
 
 def _giorno(valore):
 	return (valore or '')[:10]
@@ -215,13 +222,22 @@ def verdetto(media_type, tmdb_id, meta, ctx, domanda=None):
 		if esito is None: return None
 		_registra_tmdb(media_type, tmdb_id, esito, prossima, anno)
 		if esito or media_type != 'movie': return esito
-	# Film che TMDb non da' per uscito: U3. blu-ray.com indicizza i titoli inglesi/originali, con l'anno IMDb.
+	# Film che TMDb non da' per uscito. U3: Torrentio, per id IMDb.
+	from apis.torrentio_api import sorgente_pulita
+	imdb_id = meta.get('imdb_id')
+	pulita = sorgente_pulita(imdb_id) if imdb_id else None
+	if pulita is not None:
+		dub_cache.set_released(media_type, tmdb_id, pulita, anno, prossima or '')
+		return pulita
+	# U4: Torrentio non ha potuto rispondere, o il film non ha un id IMDb. blu-ray.com indicizza i titoli
+	# inglesi/originali, con l'anno IMDb.
 	from modules.metadata import _entry_query
 	from apis.bluray_api import uscito_su_disco
 	titolo, anno_disco, verifica = _entry_query(meta, ctx.data)
 	disco = uscito_su_disco(titolo, anno_disco, verifica)
 	if disco is None: return None
-	dub_cache.set_released(media_type, tmdb_id, disco, anno, prossima or '')
+	provvisorio = bool(imdb_id) and not disco   # Torrentio c'era ma non ha risposto: al giro dopo decide lui
+	dub_cache.set_released(media_type, tmdb_id, disco, anno, prossima or '', NO_PROVVISORIO_ORE if provvisorio else None)
 	return disco
 
 # --- LOTTO 347: il doppiato ----------------------------------------------------------------------------------------

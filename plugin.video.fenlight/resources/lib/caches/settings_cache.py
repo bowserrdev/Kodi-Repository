@@ -324,6 +324,7 @@ default_settings = [
 {'setting_id': 'widget_refresh_notification', 'setting_type': 'boolean', 'setting_default': 'true'},
 {'setting_id': 'widget_hide_next_page', 'setting_type': 'boolean', 'setting_default': 'false'},
 {'setting_id': 'release_filter.enabled', 'setting_type': 'boolean', 'setting_default': 'false'},
+{'setting_id': 'proxy.url', 'setting_type': 'string', 'setting_default': 'empty_setting'},
 {'setting_id': 'dub_filter.enabled', 'setting_type': 'boolean', 'setting_default': 'false'},
 {'setting_id': 'dub_filter.languages', 'setting_type': 'action', 'setting_default': 'it', 'settings_options': {'it': 'Italian', 'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German', 'pt': 'Portuguese', 'ja': 'Japanese', 'pl': 'Polish'}},
 #==================== General

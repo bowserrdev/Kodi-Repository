@@ -9,7 +9,7 @@
         <param name="finestra">movieinformation</param>
     </include>
     <onload>SetProperty(TMDbHelper.EnableExtendedProperties,True)</onload>
-    <onload>SetProperty(BaseID,$INFO[ListItem.Label]$INFO[ListItem.FolderPath])</onload>
+    <onload>SetProperty(BaseID,$ESCVAR[Label_DialogInfo_BaseID])</onload>
     <onload>SetProperty(FenLight.TMDb_ID,$INFO[ListItem.UniqueID(tmdb)])</onload>
     <onload>SetProperty(FenLight.DBType,$INFO[ListItem.DBType])</onload>
     <onload>SetProperty(FenLight.Year,$INFO[ListItem.Year])</onload>

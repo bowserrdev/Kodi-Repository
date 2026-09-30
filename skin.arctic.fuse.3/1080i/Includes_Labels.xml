@@ -878,4 +878,15 @@
         <value condition="!$EXP[Exp_TMDbHelper_IsData]">$INFO[ListItem.Plot]</value>
     </variable>
 
+    <!-- LOTTO 436: VALORI COMPOSTI DI TESTO LIBERO PER SetProperty. Nei comandi di Kodi la virgola separa i parametri:
+         un titolo che la contiene ("Shake, Rattle & Roll") spezzava il comando, e il pezzo dopo la virgola finiva preso
+         per il nome di una finestra. Un valore singolo si protegge con $ESCINFO; un valore fatto di piu' pezzi
+         (titolo e anno, titolo e percorso) no, perche' le virgolette finirebbero in mezzo al testo: lo si scrive qui come
+         variabile e lo si passa con $ESCVAR, che protegge il risultato intero (Kodi 21: $ESCVAR[ c'e'). -->
+    <variable name="Label_DialogInfo_Header_Container">
+        <value>$INFO[Container.ListItem.Label]$INFO[Container.ListItem.Year, (,)]</value>
+    </variable>
+    <variable name="Label_DialogInfo_BaseID">
+        <value>$INFO[ListItem.Label]$INFO[ListItem.FolderPath]</value>
+    </variable>
 </includes>

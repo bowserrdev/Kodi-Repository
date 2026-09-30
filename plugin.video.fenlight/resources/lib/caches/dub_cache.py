@@ -76,12 +76,16 @@ CLEAN = 'DELETE FROM dubcache WHERE CAST(expires AS INT) <= ?'
 #   3  LOTTO 349 -- un film senza parlato (muto, corto senza dialoghi) non ha niente da doppiare e passa il filtro
 #      doppiaggio. I "no" del doppiato scritti prima potevano essere di film muti (L'uomo che ride, La danza degli
 #      scheletri, visti sul Mac il 25/09): si buttano i "no" e si ricalcolano; i "si'" restano.
+#   4  LOTTO 435 -- "uscito" chiede a Torrentio prima che a blu-ray.com (U3 -> U4). I "no" dell'uscita scritti prima
+#      li ha dati blu-ray.com, che non conosce ~140 film che Torrentio ha (liste dell'utente, 30/09): si buttano i "no"
+#      di rel_. I relt_ (il "no" di TMDb) restano validi; i "si'" restano, e non si distinguono da quelli di TMDb.
 # Ogni revisione ha la sua cancellazione, e un database fermo a una revisione vecchia le fa tutte, in ordine.
 # substr e non LIKE: in LIKE '_' e' un jolly, e 'dub_%' prenderebbe anche 'dubl_'.
 REVISIONI = (
 	(1, "DELETE FROM dubcache WHERE substr(id, 1, 4) = 'dub_' AND data = 'false'"),
 	(2, "DELETE FROM dubcache WHERE substr(id, 1, 4) = 'dub_' OR substr(id, 1, 5) = 'dubs_'"),
 	(3, "DELETE FROM dubcache WHERE substr(id, 1, 5) = 'dubl_' AND data = 'false'"),
+	(4, "DELETE FROM dubcache WHERE substr(id, 1, 4) = 'rel_' AND data = 'false'"),
 )
 VERDETTI_REV = REVISIONI[-1][0]
 
@@ -132,8 +136,9 @@ class DubCache(BaseCache):
 	def get_released(self, media_type, tmdb_id):
 		return self.get('rel_%s_%s' % (media_type, tmdb_id))
 
-	def set_released(self, media_type, tmdb_id, released, year=None, prossima=''):
-		expiration = EXPIRY_AVAILABLE if released else scadenza_negativa(year, prossima)
+	def set_released(self, media_type, tmdb_id, released, year=None, prossima='', ore=None):
+		"""`ore` impone la vita del verdetto: il "no" provvisorio di U4 (lotto 435, modules/uscita)."""
+		expiration = ore if ore is not None else EXPIRY_AVAILABLE if released else scadenza_negativa(year, prossima)
 		self.set('rel_%s_%s' % (media_type, tmdb_id), bool(released), expiration)
 
 	def get_released_tmdb(self, media_type, tmdb_id):

@@ -133,7 +133,8 @@ def firma_nota(media_type, id_type, ident):
 
 PRONTO, SCARTO, ATTESA = 'pronto', 'scarto', 'attesa'
 # Le fonti esterne dei filtri "uscito" e "doppiato" (lotto 348): se una ha l'interruttore aperto, l'utente lo sa.
-FONTI_FILTRI = ('m.blu-ray.com', 'apis.justwatch.com', 'www.themoviedb.org')
+# LOTTO 435 -- Torrentio (U3); blu-ray.com resta per U4 e D3.
+FONTI_FILTRI = ('torrentio.strem.fun', 'm.blu-ray.com', 'apis.justwatch.com', 'www.themoviedb.org')
 
 class Contesto:
 	"""Le impostazioni che un giudizio legge. Si leggono una volta per lavoro, non per titolo.

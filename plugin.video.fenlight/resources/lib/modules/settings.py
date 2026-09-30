@@ -313,6 +313,13 @@ def widget_hide_next_page():
 def release_filter_enabled():
 	return get_setting('fenlight.release_filter.enabled', 'false') == 'true'
 
+# LOTTO 435 -- il proxy di ripiego quando un server limita le richieste (http_client.SERVER_COL_PROXY):
+# 'http://utente:password@host:porta', vuoto se spento. E' di Fen Light e non di cocoscrapers: Fen Light lavora anche con
+# altri scraper esterni.
+def proxy_url():
+	valore = (get_setting('fenlight.proxy.url', '') or '').strip()
+	return '' if valore == 'empty_setting' else valore
+
 # Sottovoce "doppiato" (lotto 348): si mostra solo un titolo con una traccia audio in una delle lingue scelte. Vale solo
 # sotto il filtro "uscito": acceso da solo non fa niente, e la finestra delle impostazioni lo mostra solo sotto di lui.
 def dub_filter_enabled():

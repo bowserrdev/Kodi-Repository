@@ -2,7 +2,7 @@
 import sys
 from time import perf_counter as _perf
 from modules import kodi_utils, settings, paginator
-from modules.metadata import tvshow_meta
+from modules.metadata import tvshow_meta, titolo_mostrato
 from modules.tmdb_art import poster_token
 from modules.utils import get_datetime, adjust_premiered_date, make_thread_list
 from modules.watched_status import get_database, watched_info_season, get_watched_status_season, get_progress_status_season, episodi_usciti_stagione
@@ -43,7 +43,7 @@ def build_season_list(params):
 				season_name = item_get('name', None)
 				season_special = season_number == 0
 				title = item_get('name', None) or season_name_str % season_number
-				if custom_order is not None: title = '%s - %s' % (show_title, title)
+				if custom_order is not None: title = '%s - %s' % (titolo, title)
 				poster = (poster_path if poster_path.startswith('http') else tmdb_poster % (poster_token(), poster_path)) if poster_path is not None else show_poster
 				thumb = poster or show_landscape or show_fanart
 				try: year = air_date.split('-')[0]
@@ -89,7 +89,7 @@ def build_season_list(params):
 				if url_aggiorna_riga: cm_append(('[B]Aggiorna widget[/B]', run_plugin % url_aggiorna_riga))
 				_p2 = _perf()
 				info_tag = listitem.getVideoInfoTag()
-				info_tag.setMediaType('season'), info_tag.setTitle(title), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(show_title), info_tag.setIMDBNumber(imdb_id)
+				info_tag.setMediaType('season'), info_tag.setTitle(title), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(titolo), info_tag.setIMDBNumber(imdb_id)
 				info_tag.setSeason(season_number), info_tag.setPlot(plot), info_tag.setDuration(episode_run_time), info_tag.setPlaycount(playcount), info_tag.setGenres(genre)
 				info_tag.setUniqueIDs({'imdb': imdb_id, 'tmdb': str_tmdb_id, 'tvdb': str_tvdb_id})
 				info_tag.setTvShowStatus(status), info_tag.setFirstAired(premiered), info_tag.setStudios(studio), info_tag.setYear(int(year))
@@ -119,6 +119,7 @@ def build_season_list(params):
 	meta_get = meta.get
 	tmdb_id, tvdb_id, imdb_id, show_title, show_year = meta_get('tmdb_id'), meta_get('tvdb_id'), meta_get('imdb_id'), meta_get('title'), meta_get('year') or '2050'
 	orig_title, status, show_plot = meta_get('original_title', ''), meta_get('status'), meta_get('plot')
+	titolo = titolo_mostrato(meta)   # lotto 437: il titolo della serie che si MOSTRA; `show_title` resta per le azioni
 	str_tmdb_id, str_tvdb_id, rating, genre = string(tmdb_id), string(tvdb_id), meta_get('rating'), meta_get('genre')
 	cast, mpaa, votes, trailer, studio, country = meta_get('cast', []), meta_get('mpaa'), meta_get('votes'), string(meta_get('trailer')), meta_get('studio'), meta_get('country')
 	# Il cast e' quello della serie: uguale per tutte le stagioni, quindi si compone UNA volta qui
@@ -144,7 +145,7 @@ def build_season_list(params):
 	paginator.log_build('seasons', show_title, _t0, _t1, paginator.now(), len(list_items))
 	paginator.phase_report('seasons %s' % show_title, ('prep+cm', 'props', 'infotag', 'setLabel', 'setArt', 'ctxmenu'))
 	add_items(handle, list_items)
-	category_name = show_title
+	category_name = titolo
 	set_content(handle, content_type)
 	set_category(handle, category_name)
 	# RITIRATO il cacheToDisc=False incondizionato di a1edbba (lotto 50). Il baratto era stato prezzato

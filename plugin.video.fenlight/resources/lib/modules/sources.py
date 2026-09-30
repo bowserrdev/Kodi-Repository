@@ -1207,7 +1207,7 @@ class Sources():
 		except: return False
 
 	def random_continual_handler(self):
-		notification('[B]Next Up:[/B] %s S%02dE%02d' % (self.meta.get('title'), self.meta.get('season'), self.meta.get('episode')), 6500, self.meta.get('poster'))
+		notification('[B]Next Up:[/B] %s S%02dE%02d' % (metadata.titolo_mostrato(self.meta), self.meta.get('season'), self.meta.get('episode')), 6500, self.meta.get('poster'))
 		player = xbmc_player()
 		while player.isPlayingVideo(): sleep(300)
 		self._make_resolve_dialog()
@@ -1231,7 +1231,7 @@ class Sources():
 				except: pass
 			if continue_nextep:
 				if use_window: action = self._make_nextep_dialog(default_action=default_action)
-				else: notification('[B]Next Up:[/B] %s S%02dE%02d' % (self.meta.get('title'), self.meta.get('season'), self.meta.get('episode')), 6500, self.meta.get('poster'))
+				else: notification('[B]Next Up:[/B] %s S%02dE%02d' % (metadata.titolo_mostrato(self.meta), self.meta.get('season'), self.meta.get('episode')), 6500, self.meta.get('poster'))
 				if not action: action = default_action
 				if action == 'cancel': return False
 				elif action == 'pause':
@@ -1254,7 +1254,7 @@ class Sources():
 			results = self.get_sources()
 			if not results: return notification(33092, 3000)
 			else:
-				notification('[B]Next Episode Ready:[/B] %s S%02dE%02d' % (self.meta.get('title'), self.meta.get('season'), self.meta.get('episode')), 6500, self.meta.get('poster'))
+				notification('[B]Next Episode Ready:[/B] %s S%02dE%02d' % (metadata.titolo_mostrato(self.meta), self.meta.get('season'), self.meta.get('episode')), 6500, self.meta.get('poster'))
 				while player.isPlayingVideo(): sleep(300)
 			self.display_results(results)
 		else: return
