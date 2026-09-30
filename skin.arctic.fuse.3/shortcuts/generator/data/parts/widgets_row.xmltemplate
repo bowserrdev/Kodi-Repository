@@ -14,6 +14,8 @@
     <param name="widgetfade_disable">{widget_widgetfade_disable}</param>
     <param name="widgetconstants_affix">{widgetconstants_affix}</param>
     <param name="widgetpath">{widget_path}</param>
+    <!-- LOTTO 428: la finestra della riga, dove l'onfocus scrive TMDbHelper.WidgetContainer (Widget_Row) -->
+    <param name="finestra">{window_id}</param>
     <!-- LOTTO 302: righe congelate negli hub, vedi Widget_Congela_Contenitore in Includes_Widgets.xml -->
     <param name="congela">True</param>
     <param name="congela_prec2">{widget_congela_prec2}</param>

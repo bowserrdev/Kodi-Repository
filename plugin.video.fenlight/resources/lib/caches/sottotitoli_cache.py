@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Lotto 420 (SOTTOTITOLI.md) -- i sottotitoli sincronizzati gia' decisi per un file.
 
-Chiave = hash OpenSubtitles del file (o infohash:dimensione se l'hash non c'e') + lingua. Una riga dice:
+Chiave = infohash:dimensione del file (sorgenti torrent; l'hash OpenSubtitles per le altre) + lingua: una chiave che
+non dipende dalla rete, cosi' una ripresa la ritrova anche se questa volta l'hash non si e' potuto calcolare. Una riga dice:
 - il sottotitolo accettato (file_id) e il suo testo GIA' ALLINEATO, compresso: una ripresa lo applica subito, senza
   ricerca, download ne' allineamento (verifica V3);
 - i file_id gia' rifiutati per quel file, per non riscaricarli (ogni download costa quota).
@@ -54,5 +55,15 @@ def scrivi(chiave, lingua, file_id=None, srt=None, esito=None, rifiutati=()):
 		dbcon.execute(SCRIVI, (chiave, lingua, file_id, zlib.compress(srt.encode('utf-8'), 6) if srt else None,
 							   json.dumps(esito or {}), json.dumps(sorted(rifiutati or ())), int(time())))
 		dbcon.execute(POTA, (MAX_RIGHE,))
+		return True
+	except: return False
+
+
+def svuota():
+	"""Tutti i sottotitoli ricordati (Tools -> Database & Cache Maintenance -> Clear Auto Subtitles Cache, e Clear All
+	Cache). DELETE sulla tabella, non il file del database: playback.db tiene anche le misure delle riproduzioni.
+	-> True se riuscito."""
+	try:
+		_db().execute('DELETE FROM sottotitoli')
 		return True
 	except: return False

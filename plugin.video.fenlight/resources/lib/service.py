@@ -91,8 +91,16 @@ def refresh_official_status():
 		except: pass
 	Thread(target=_work).start()
 
-def decide_refresh(changed, actions, age, coalesce_seconds):
+def decide_refresh(changed, actions, age, coalesce_seconds, finestra_video=False):
 	"""Cosa fare del risultato di una sincronizzazione Trakt. Torna (cosa, ids, azioni).
+
+	finestra_video (lotto 432): la finestra attiva e' quella Video. Li' l'accorpamento non rimanda un cambiamento
+	che si sa mostrare: il rinvio va nella coda dei WIDGET, che nella finestra Video non si consuma (e non deve:
+	e' della Home), e la cartella aperta o il pannello episodi non lo ricevevano mai. Firestick, 23:09:22 del
+	29/09: la correzione di Trakt ('titoli cambiati: 4') finita in coda e consumata 25 s dopo, nell'hub, mentre
+	il pannello mostrava ancora un episodio visto. L'accorpamento esiste per non ricostruire i widget sopra la
+	costruzione d'avvio; nella finestra Video kodi_refresh_ids non va mai sul globale, ridisegna il pannello o
+	la cartella e mette in coda da se' la parte della Home.
 
 	Pura: niente Kodi, niente rete, niente orologio -- l'eta' arriva da fuori. Esiste perche' questa
 	decisione ha gia' prodotto tre guasti (lotti 130, 134 e 139) e non era provabile in nessun modo:
@@ -126,7 +134,10 @@ def decide_refresh(changed, actions, age, coalesce_seconds):
 	# mostrare. E' la versione ESATTA, basata sul contenuto, di cio' che il timbro approssimava.
 	if changed == '-' and not acts: return ('niente', '', '')
 	# Ricostruito da poco: non si giudica di nuovo qui, si RIMANDA con tutto cio' che si sa (lotto 130).
-	if age < coalesce_seconds: return ('rinvio', '' if changed == '-' else (changed or ''), acts)
+	# Nella finestra Video no, se c'e' qualcosa da mostrare: vedi finestra_video qui sopra.
+	mostrabile = bool(acts or (changed and changed != '-'))
+	if age < coalesce_seconds and not (finestra_video and mostrabile):
+		return ('rinvio', '' if changed == '-' else (changed or ''), acts)
 	# '-' vuol dire 'nessun id', non 'nessun lavoro': con le sole azioni si ricostruiscono comunque i
 	# widget che cambiano composizione.
 	ids = '' if changed == '-' else (changed or '')
@@ -319,7 +330,9 @@ class TraktMonitor:
 						if get_setting('fenlight.trakt.refresh_widgets', 'false') == 'true':
 							age = refresh_age()
 							# La decisione sta in decide_refresh, che e' pura e provata. Qui si esegue e basta.
-							cosa, ids, acts = decide_refresh(changed, actions, age, TRAKT_REFRESH_COALESCE)
+							from modules.kodi_utils import getCurrentWindowId
+							cosa, ids, acts = decide_refresh(changed, actions, age, TRAKT_REFRESH_COALESCE,
+															getCurrentWindowId() == 10025)
 							if cosa == 'niente':
 								logger('Fen Light', 'TraktMonitor: nessun titolo cambiato davvero, nessuna ricostruzione')
 							# LOTTO 179. `changed == '-'` vuol dire "lo sappiamo, non e' cambiato nessuno":
@@ -384,7 +397,7 @@ class WidgetRefresher:
 		logger('Fen Light', 'WidgetRefresher Service Starting')
 		from time import time
 		from caches.settings_cache import get_setting
-		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, PENDING_NOCHANGE_PROP, refresh_flag_expired, modal_dialog_open, pending_refresh_is_redundant, playback_running, decide_pending_refresh, search_running
+		from modules.kodi_utils import home, run_plugin, PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_SCOPE_PROP, PENDING_NOCHANGE_PROP, refresh_flag_expired, modal_dialog_open, pending_refresh_is_redundant, playback_running, decide_pending_refresh, search_running, CARTELLA_RINVIO_PROP, esegui_refresh_cartella_rimandato
 		self.playback_running, self.search_running = playback_running, search_running
 		self.modal_dialog_open = modal_dialog_open
 		self.refresh_flag_expired = refresh_flag_expired
@@ -410,6 +423,10 @@ class WidgetRefresher:
 		while not monitor.abortRequested():
 			try:
 				wait_for_abort(1)
+				# LOTTO 425 -- il rinvio della CARTELLA aperta nella finestra Video, separato da quello dei widget
+				# qui sotto, che nella finestra Video non si consuma. Aspetta solo il dialogo (o la riproduzione):
+				# vedi kodi_utils.CARTELLA_RINVIO_PROP. Senza rinvio costa una lettura di proprieta'.
+				if self.window.getProperty(CARTELLA_RINVIO_PROP): esegui_refresh_cartella_rimandato()
 				_kind_rinvio = self.window.getProperty(PENDING_REFRESH_PROP)
 				if _kind_rinvio:
 					if self.pending_since is None: self.pending_since = time()
@@ -643,6 +660,9 @@ class WidgetPaginator:
 		# La voce watchlist del menu contestuale: vedi modules/watchlist_label.py.
 		from modules.watchlist_label import Tracker as WatchlistLabel
 		watchlist_label = WatchlistLabel(log=paginator.log)
+		# E la voce "segna come visto/non visto" della stagione, con lo stesso trucco: modules/visti_label.py.
+		from modules.visti_label import Tracker as VistiLabel
+		visti_label = VistiLabel(log=paginator.log)
 		def log_change(state):
 			nonlocal last_log
 			if state != last_log:
@@ -681,6 +701,8 @@ class WidgetPaginator:
 					cur_ctrl = get_infolabel('System.CurrentControlID')
 					try: watchlist_label.update(cur_ctrl, get_infolabel, window)
 					except Exception as e: logger('Fen Light', 'watchlist_label: errore %s' % e)
+					try: visti_label.update(cur_ctrl, get_infolabel, window)
+					except Exception as e: logger('Fen Light', 'visti_label: errore %s' % e)
 				if dialogo != NO_DIALOG:
 					log_change('idle (modal dialog open)')
 					wait_for_abort(0.5); continue
@@ -774,8 +796,9 @@ class WidgetPaginator:
 				# fenlight.pg.rehead, un Control.Move(id, 1-cur) e la chiave tolta a scorrimento finito (lotti
 				# 138, 165, 166). Dipendeva dall'ordine fra la costruzione, questo giro da 0,3 s e l'arrivo della
 				# lista in Kodi, e sulla Firestick Discover ripartiva dall'elemento N. Adesso la riga che cambia
-				# lista la distrugge il plugin prima di costruire (router._svuota_prima): passa da un solo
-				# elemento e Kodi la rimette sul primo da se'. Qui resta solo 'continua a guardare', qui sopra.
+				# lista passa dal segnaposto d'attesa, deciso dalla skin guardando lo schermo
+				# (router._consegna_attesa; fino al 419 per ricerca, Home e hub il plugin, router._svuota_prima):
+				# passa da un solo elemento e Kodi la rimette sul primo da se'. Qui resta solo 'continua a guardare', qui sopra.
 				# LOTTO 286 -- il fuoco si confronta con System.CurrentControlID, letto in testa al giro,
 				# invece di chiederlo con Control.HasFocus: quella passava da getCondVisibility, cioe' dalla
 				# porta del FrameMove, una o due volte ogni 0,3 s. Equivalenza, Kodi 21.1: senza modali

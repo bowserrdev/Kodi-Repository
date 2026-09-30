@@ -27,6 +27,16 @@ BYTE_INTESTAZIONE = 131072      # 128 KB: coprono Tracks di un matroska e il moo
 # sincronizzati (SeekHead per trovare i Cues, e la prima meta' dell'hash OpenSubtitles). Il costo e' quasi tutto il
 # ttfb (343 ms su questo cdn), i 64 KB in piu' ne aggiungono una trentina.
 MIN_TESTA = 65536
+
+
+def _min_testa():
+	"""MIN_TESTA solo con i sottotitoli automatici accesi: sono loro a usare la testa (SeekHead, hash). Spenti, la lettura
+	si ferma appena l'intestazione ha risposto come prima del 416: ~30 ms in meno prima di play() (code review 30/09)."""
+	try:
+		from caches.settings_cache import get_setting
+		return MIN_TESTA if get_setting('fenlight.autosub.enabled') == 'true' else 0
+	except Exception:
+		return MIN_TESTA
 TIMEOUT = 6                     # per singola operazione di socket
 # Tetto sul TOTALE, redirect compresi. Senza, quattro salti da 6 s farebbero aspettare l'utente 24
 # secondi prima ancora di provare a riprodurre: un controllo che deve costare mezzo secondo non puo'
@@ -67,12 +77,12 @@ def _scarica(url):
 			# A PEZZI, e ci si ferma appena la risposta c'e'. Il Tracks di un matroska sta quasi
 			# sempre nei primi kilobyte: leggerne 128 sempre vuol dire pagare byte che non servono.
 			# Il tetto resta, per i file che l'intestazione ce l'hanno lontana.
-			dati = b''
+			dati, minimo = b'', _min_testa()
 			while len(dati) < BYTE_INTESTAZIONE:
 				pezzo = resp.read(min(PEZZO, BYTE_INTESTAZIONE - len(dati)))
 				if not pezzo: break
 				dati += pezzo
-				if len(dati) >= MIN_TESTA and _basta(dati): break
+				if len(dati) >= minimo and _basta(dati): break
 			return dati, _totale(resp), host, url
 		finally:
 			try: conn.close()

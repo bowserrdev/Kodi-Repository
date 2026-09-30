@@ -864,7 +864,7 @@
 
         <!-- Episodes Plotline -->
         <include content="Info_Plot_Main_Plotline_Content" condition="Skin.String(Plotline.$PARAM[dbtype],Episodes)">
-            <param name="label">$INFO[ListItem.Property(watchedepisodes),$LOCALIZE[16102] , $LOCALIZE[1443] ]$INFO[ListItem.Property(totalepisodes)] $LOCALIZE[20453]</param>
+            <param name="label">$VAR[Label_Episodi_Visti]$INFO[ListItem.Property(totalepisodes)] $LOCALIZE[20453]</param>
             <param name="visible">!String.IsEmpty($PARAM[container]$PARAM[listitem].Property(totalepisodes))</param>
             <param name="colordiffuse">$PARAM[colordiffuse]</param>
             <param name="container">$PARAM[container]</param>

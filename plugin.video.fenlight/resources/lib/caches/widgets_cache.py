@@ -474,7 +474,7 @@ def posizioni_per_id(coppie):
 def posizioni_per_azione(azioni):
 	"""Le posizioni la cui lista e' di uno di questi tipi ('trakt_watchlist:movie', 'continue_watching').
 
-	Il confronto e' per prefisso qualificato, la stessa regola di paginator._action_matches: chi chiede
+	Il confronto e' per prefisso qualificato, la stessa regola di paginator.action_matches: chi chiede
 	'trakt_watchlist' senza qualificatore prende film e serie.
 	"""
 	azioni = [str(a) for a in (azioni or ()) if a]

@@ -4,8 +4,12 @@
     <defaultcontrol always="true">500</defaultcontrol>
     <menucontrol>8000</menucontrol>
     <include>Action_Blur_Onload</include>
-    <include>Action_Media_Onload</include>
+    <include content="Action_Media_Onload">
+        <param name="finestra">programs</param>
+    </include>
     <controls>
-        <include>View_Main</include>
+        <include content="View_Main">
+            <param name="finestra">programs</param>
+        </include>
     </controls>
 </window>

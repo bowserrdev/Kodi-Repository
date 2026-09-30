@@ -101,7 +101,8 @@
                          valore vuoto. tests/test_rimbalzo_orizzontale.py -->
                     <onleft condition="Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">SetProperty(Bumper.Direction,Left,Home)</onleft>
                     <onleft condition="Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">ActivateWindow(1180)</onleft>
-                    <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id])</onfocus>
+                    <!-- LOTTO 428: nella finestra della riga (pgscope), vedi Widget_Row in Includes_Widgets.xml -->
+                    <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id],$PARAM[pgscope])</onfocus>
                     <onfocus>SetProperty(fenlight.active_widget,$PARAM[id],Home)</onfocus>
                     <onfocus>SetProperty(fenlight.active_widget_path,"$PARAM[widgetpath]",Home)</onfocus>
                     <onfocus>SetProperty(Background.ShowOverlay,True,Home)</onfocus>
@@ -168,12 +169,15 @@
         <param name="onup">601</param>
         <param name="refocus">SetFocus(601)</param>
         <param name="widgetpath" />
+        <!-- il controllo d'identita' del rilevatore (Riga_Attesa): lo passa Discover, dove decide la skin -->
+        <param name="identita">true</param>
         <definition>
             <!-- LOTTO 418: il rilevatore della riga in attesa, prima della riga (vedi Riga_Attesa in
                  Includes_Widgets.xml). Qui puo' stare accanto: le istanze di questo include vivono in gruppi
                  normali, non in un grouplist, e Widget_Busy qui sotto e' gia' un fratello della riga. -->
             <include content="Riga_Attesa">
                 <param name="id">$PARAM[id]</param>
+                <param name="identita">$PARAM[identita]</param>
             </include>
             <include content="$PARAM[include]">
                 <param name="id">$PARAM[id]</param>
@@ -207,7 +211,8 @@
                      valore vuoto. tests/test_rimbalzo_orizzontale.py -->
                 <onleft condition="Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">SetProperty(Bumper.Direction,Left,Home)</onleft>
                 <onleft condition="Integer.IsEqual(Container($PARAM[id]).CurrentItem,1)">ActivateWindow(1180)</onleft>
-                <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id])</onfocus>
+                <!-- LOTTO 428: nella finestra della riga (pgscope), vedi Widget_Row in Includes_Widgets.xml -->
+                <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id],$PARAM[pgscope])</onfocus>
                 <onfocus>SetProperty(fenlight.active_widget,$PARAM[id],Home)</onfocus>
                 <onfocus>SetProperty(fenlight.active_widget_path,"$PARAM[widgetpath]",Home)</onfocus>
                 <onfocus condition="$PARAM[clear_hideartwork_onfocus]">ClearProperty(Background.HideArtwork)</onfocus>
@@ -294,6 +299,8 @@
                     <param name="spinner_hide_now">$PARAM[spinner_hide_now]</param>
                     <param name="detailed">true</param>
                     <param name="hidden_button">List_ButtonMenu_Row_HiddenButton_ERow</param>
+                    <!-- LOTTO 429: la finestra della striscia, dove il pulsante nascosto scrive TMDbHelper.WidgetContainer -->
+                    <param name="finestra">$PARAM[finestra]</param>
                     <param name="hidden_button_enabled">true</param>
                     <param name="extended">$PARAM[extended]</param>
                     <onup condition="!Control.IsVisible(301)">$PARAM[onup]</onup>
@@ -869,9 +876,11 @@
                             <!-- Switching Groups -->
                             <control type="group" id="600">
                                 <include content="Hub_Widget_Switcher" condition="String.IsEqual(Skin.String(HomeSwitcher.$PARAM[window].Mode),Wall)">
+                                    <param name="finestra">$PARAM[window]</param>
                                     <param name="include_content">skinvariables-$PARAM[window]widgets-wall-selector</param>
                                 </include>
                                 <include content="Hub_Widget_Switcher" condition="String.IsEqual(Skin.String(HomeSwitcher.$PARAM[window].Mode),Combined)">
+                                    <param name="finestra">$PARAM[window]</param>
                                     <param name="include_content">skinvariables-$PARAM[window]widgets-combined-selector</param>
                                     <param name="top">520</param>
                                     <param name="wall">false</param>
@@ -930,6 +939,8 @@
     <include name="Hub_Settings_Widgets">
         <include content="Hub_Wall_Widget">
             <param name="id">502</param>
+            <!-- LOTTO 428: la finestra di questa riga e' Custom_1109_Settings, non la Home (il predefinito) -->
+            <param name="pgscope">1109</param>
             <param name="content">favourites://</param>
             <param name="include">List_Square_Row</param>
             <param name="sortby">lastused</param>

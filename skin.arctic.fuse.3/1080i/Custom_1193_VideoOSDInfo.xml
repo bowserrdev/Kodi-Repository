@@ -3,7 +3,7 @@
     <include>Action_Blur_Onload</include>
     <onload>ClearProperty(InfoPanel.FullSwitch,Home)</onload>
     <onload>ClearProperty(Background.HideArtwork,Home)</onload>
-    <onload>SetProperty(TMDbHelper.WidgetContainer,50)</onload>
+    <onload>SetProperty(TMDbHelper.WidgetContainer,50,1193)</onload>
     <defaultcontrol always="true">9001</defaultcontrol>
     <onload>SetFocus(9001)</onload>
     <onunload>ClearProperty(VideoOSD.InfoDialog.Path,Home)</onunload>

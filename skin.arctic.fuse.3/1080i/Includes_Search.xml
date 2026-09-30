@@ -16,9 +16,17 @@
          un $INFO sarebbe testo letterale (GUIInfoLabel.cpp:339-373). Il nome della proprieta' coincide con
          paginator.CTL_PAGES_PROP % ('1105', '505'): lo verifica tests/test_162.py.
          LOTTO 418: 'vuota=segnaposto' e' cio' che permette al plugin di DISTRUGGERE la riga quando arriva una
-         ricerca Discover nuova (router._svuota_prima): senza segnaposto non saprebbe come fermarsi. -->
+         ricerca Discover nuova (router._svuota_prima): senza segnaposto non saprebbe come fermarsi.
+         REVISIONE DEL 29/09: LO SCHERMO DECIDE (RIPOSIZIONAMENTO.md, e il commento di View_531_Content in
+         Includes_Views_Combined.xml). Se la riga ha piu' di un elemento e il primo non porta la ricerca in
+         corso (fenlight.lista = il path fino a '&pgctl=', cioe' ContentPath), si chiede il solo segnaposto
+         (attesa=1); a segnaposto arrivato la condizione cade e la ricerca nuova si costruisce dal primo.
+         attesa=0 nel path normale: qui decide la skin, non router._svuota_prima. Due ricerche di fila senza
+         aspettare la prima non lasciano piu' i risultati nuovi sull'N-esimo. -->
+    <expression name="Exp_Discover_AltraLista">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + Integer.IsGreater(Container(505).NumItems,1) + !String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.lista),Window(Home).Property(FenLight.Discover.ContentPath))</expression>
     <variable name="Search_Discover_Path">
-        <value condition="!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]&amp;pgctl=1105.505&amp;vuota=segnaposto$INFO[Window(Home).Property(fenlight.pg.w1105.ctl505.pages),&amp;pages=,]</value>
+        <value condition="$EXP[Exp_Discover_AltraLista]">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]&amp;pgctl=1105.505&amp;vuota=segnaposto&amp;attesa=1</value>
+        <value condition="!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]&amp;pgctl=1105.505&amp;vuota=segnaposto&amp;attesa=0$INFO[Window(Home).Property(fenlight.pg.w1105.ctl505.pages),&amp;pages=,]</value>
     </variable>
 
 
@@ -96,6 +104,8 @@
                                     <param name="hidden_button_enabled">true</param>
                                     <param name="onup">3001</param>
                                     <param name="refocus">SetFocus(3001)</param>
+                                    <!-- lo schermo decide: la riga mostra un'altra ricerca, quindi e' gia' in attesa -->
+                                    <param name="identita">!$EXP[Exp_Discover_AltraLista]</param>
                                 </include>
                                 <control type="group">
 	                                    <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
@@ -107,6 +117,7 @@
 	                            <control type="group" id="600">
 	                                <visible>!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window.Property(Search.ActivePanel))</visible>
 	                                <include content="Hub_Widget_Switcher" condition="!Skin.HasSetting(Search.DisableCombined)">
+	                                    <param name="finestra">1105</param>
 	                                    <param name="spinner_condition">$EXP[Exp_Search_Row_Spinner]</param>
 	                                    <!-- Casella vuota: non c'e' piu' nessuna ricerca, quindi la
 	                                         rotellina non puo' tornare e il ritardo di uscita non ha
@@ -119,6 +130,7 @@
 	                                    <param name="line_visible">!String.IsEmpty(Control.GetLabel(3000).index(1)) + !Integer.IsEqual(Container(601).NumItems,0)</param>
 	                                </include>
 	                                <include content="Hub_Widget_Switcher" condition="Skin.HasSetting(Search.DisableCombined)">
+	                                    <param name="finestra">1105</param>
 	                                    <param name="spinner_condition">$EXP[Exp_Search_Row_Spinner]</param>
 	                                    <!-- Casella vuota: non c'e' piu' nessuna ricerca, quindi la
 	                                         rotellina non puo' tornare e il ritardo di uscita non ha
@@ -538,7 +550,7 @@
 	            <onfocus condition="!String.IsEmpty(Window.Property(Search.ActivePanel))">ClearProperty(Background.HideArtwork)</onfocus>
 	            <onfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onfocus>
 	            <onfocus condition="!String.IsEmpty(Control.GetLabel(3000).index(1)) | !String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(Background.HideArtwork)</onfocus>
-	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(TMDbHelper.WidgetContainer)</onunfocus>
+	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">ClearProperty(TMDbHelper.WidgetContainer,1105)</onunfocus>
 	            <onunfocus condition="String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">SetProperty(Background.HideArtwork,True)</onunfocus>
 
 	            <!-- STRADA B, meta' ricerca testuale (lotto 162). Il token di paginazione appartiene al
@@ -672,7 +684,7 @@
                      piu': ogni riga porta il proprio stato nel primo elemento, e il primo elemento se
                      ne va insieme agli elementi. Non c'era niente da pulire, c'era da non avere uno
                      stato che sopravvive a cio' che descrive. -->
-                <onclick>ClearProperty(TMDbHelper.WidgetContainer)</onclick>
+                <onclick>ClearProperty(TMDbHelper.WidgetContainer,1105)</onclick>
                 <onclick>SetProperty(Background.HideArtwork,True)</onclick>
                 <onclick>SetFocus(3000)</onclick>
                 <!-- setfocus=3000 non e' un doppione del SetFocus qui sopra: e' l'unico che arriva DOPO

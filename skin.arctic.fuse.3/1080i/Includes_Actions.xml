@@ -43,7 +43,7 @@
              Il menu contestuale ora la legge (DialogContextMenu_HeaderLabel) e un ricordo stantio
              li' e' esattamente il difetto del lotto 214. Il fuoco all'ingresso va sul controllo 500,
              cioe' la vista principale, quindi vuota e' anche il valore giusto. -->
-        <onload>ClearProperty(TMDbHelper.WidgetContainer)</onload>
+        <onload>ClearProperty(TMDbHelper.WidgetContainer,$PARAM[finestra])</onload>
     </include>
 
     <variable name="Action_OSD_SkipPrev">

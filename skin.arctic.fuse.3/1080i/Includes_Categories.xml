@@ -313,6 +313,7 @@
                 <param name="font">$PARAM[font]</param>
                 <param name="backing">true</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <param name="hidden_button_prefix">$PARAM[hidden_button_prefix]</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <height>120</height>

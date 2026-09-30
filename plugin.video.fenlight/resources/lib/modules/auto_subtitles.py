@@ -19,11 +19,13 @@ import xbmc
 import xbmcvfs
 
 from caches.settings_cache import get_setting
-from modules.kodi_utils import sleep, notification, get_property, get_jsonrpc, jsonrpc_get_system_setting, logger
+from modules.kodi_utils import sleep, notification, get_jsonrpc, jsonrpc_get_system_setting, logger
 
 MAX_DOWNLOAD = 3            # per file: la regola dei buchi ne usa in media 1,14-1,26 (banco, 29/09)
 MIN_BATTUTE = 50            # meno e' un forzato o un pezzo: il banco non li ha mai trattati come sottotitoli
-ATTESA_PREPARAZIONE = 30    # s dopo onAVStarted; di solito la preparazione ha finito da un pezzo
+ATTESA_PREPARAZIONE = 120   # s dopo onAVStarted: un tetto, non un'attesa. Ogni chiamata di rete della preparazione ha il suo
+                            # (hash 8 s, Cues 2 x 8 s, mp4 15 s, ricerca 15 s a pagina): con 30 s una rete lenta buttava
+                            # tutto il lavoro fatto (code review 30/09). Di solito ha finito prima che il film parta.
 CARTELLA = 'special://temp/fenlight_autosub/'
 # ISO 639-2 bibliografico e terminologico: un mkv puo' dire "ger" o "deu" per la stessa lingua
 _B_T = {'alb': 'sqi', 'arm': 'hye', 'baq': 'eus', 'bur': 'mya', 'chi': 'zho', 'cze': 'ces', 'dut': 'nld', 'fre': 'fra',
@@ -188,7 +190,8 @@ def prepara(player):
         p = {'api': api, 'lingua': lingua, 'url_player': getattr(player, 'url', None), 'url': h.get('url') or getattr(player, 'url', None),
              'testa': h.get('testa'), 'dimensione': h.get('dimensione'), 'durata': h.get('durata'), 'info_hash': item.get('hash'),
              'imdb': meta.get('imdb_id') or '', 'tipo': meta.get('media_type') or 'movie',
-             'stagione': meta.get('season') or '', 'episodio': meta.get('episode') or '', 'scatola': {}}
+             # la stagione 0 (gli speciali) e' una stagione: `or ''` la trasformava in "nessuna" e la ricerca non partiva
+             'stagione': meta.get('season', ''), 'episodio': meta.get('episode', ''), 'scatola': {}}
         p['thread'] = Thread(target=_prepara, args=(p,))
         p['thread'].daemon = True
         p['thread'].start()
@@ -203,15 +206,20 @@ def _prepara(p):
         from modules import sottotitoli_rete
         from caches import sottotitoli_cache
         s['oshash'], s['hash_da'], s['hash_conto'] = sottotitoli_rete.hash_file(p['info_hash'], None, p['url'], p['dimensione'], p['testa'])
-        s['chiave'] = s['oshash'] or ('%s:%s' % (p['info_hash'].lower(), p['dimensione']) if p['info_hash'] and p['dimensione'] else None)
+        # La chiave non deve dipendere dalla rete: l'hash esce da una lettura (la coda del file) che puo' fallire, e una
+        # riga scritta sotto un'altra chiave alla ripresa non si trova (code review 30/09). Torrent + dimensione esatta
+        # ci sono sempre per una sorgente torrent; l'hash solo per le altre.
+        s['chiave'] = ('%s:%s' % (p['info_hash'].lower(), p['dimensione'])) if p['info_hash'] and p['dimensione'] else s['oshash']
         s['cache'] = sottotitoli_cache.leggi(s['chiave'], p['lingua']['2'])
-        if s['cache'] and s['cache'].get('srt'): return          # ripresa: niente Cues, niente ricerca
+        # ripresa: niente Cues, niente ricerca. Un "non allineato" no: e' un ripiego, e se ora il file da' un riferimento
+        # (lotto 421: gli mp4) si allinea davvero
+        if s['cache'] and s['cache'].get('srt') and (s['cache'].get('esito') or {}).get('metodo') != 'non allineato': return
         s['struttura'] = sottotitoli_rete.struttura(p['url'], p['testa'], p['dimensione'], p['lingua']['codici'])
-        if s['struttura'].get('utente'): return                  # c'e' gia' nel file, completa: la sceglie Kodi
+        if s['struttura'].get('utente'): return                  # c'e' gia' nel file, completa: si accende quella
         t0 = perf_counter()
         if p['tipo'] == 'episode':
             s['risultati'] = p['api'].cerca([p['lingua']['2']], serie_imdb=p['imdb'], stagione=p['stagione'], episodio=p['episodio'],
-                                            moviehash=s['oshash']) if p['imdb'] and p['stagione'] and p['episodio'] else []
+                                            moviehash=s['oshash']) if p['imdb'] and p['stagione'] not in ('', None) and p['episodio'] not in ('', None) else []
         else:
             s['risultati'] = p['api'].cerca([p['lingua']['2']], imdb_id=p['imdb'], moviehash=s['oshash'])
         s['ms_ricerca'] = int((perf_counter() - t0) * 1000)
@@ -277,7 +285,7 @@ def _scarica(api, file_id, costo):
 def _sottotitoli(player, p, stato):
     from modules import sottotitoli_sync as S, sottotitoli_tracce as T
     from caches import sottotitoli_cache
-    from apis.opensubtitles_api import candidati, QUOTA_PROP
+    from apis.opensubtitles_api import candidati, quota_finita
     lingua = p['lingua']
 
     # 1. audio gia' nella lingua dell'utente: niente, come prima
@@ -304,55 +312,84 @@ def _sottotitoli(player, p, stato):
     if 'ms_ricerca' in s: rete.append('ricerca %s' % _secondi(s['ms_ricerca']))
     if s.get('errore'): rete.append('preparazione: errore %s' % s['errore'])
 
-    # 2. traccia completa nella lingua dentro il file (contata dai Cues, non dal nome o dal flag): la sceglie Kodi
+    # 2. traccia completa nella lingua dentro il file (contata dai Cues o dalle tracce di un mp4, non dal nome o dal
+    #    flag): si accende quella, niente download
     if st.get('utente'):
         return logger('FenLight SUB', ' | '.join(['traccia completa nel file: %s, niente download%s' % (_descrivi(st['utente']), _accendi_traccia(lingua))] + rete))
     # 3. ripresa: il sottotitolo gia' allineato per questo file
     cache = s.get('cache')
-    if cache and cache.get('srt'):
+    if cache and cache.get('srt') and ((cache.get('esito') or {}).get('metodo') != 'non allineato' or not st.get('rif')):
         e = cache.get('esito') or {}
         esito = 'dalla cache: %s %s' % (cache.get('file_id'), e.get('metodo') or '')
+        if e.get('metodo') == 'non allineato' and st.get('motivo'): esito += ' (ancora senza riferimento: %s)' % st['motivo']
         if not _applica(player, p, cache['srt']): esito += ', non applicato (riproduzione cambiata)'
         return logger('FenLight SUB', ' | '.join([esito] + rete))
-    # 4. dove i Cues non dicono niente, il giudizio di Kodi sulle tracce, senza i forzati
-    if not st.get('cues') and _traccia_per_kodi(stato, lingua):
-        return logger('FenLight SUB', ' | '.join(['traccia nella lingua nel file (flag di Kodi), niente download%s' % _accendi_traccia(lingua)] + rete))
+    # 4. dove non si sono potute contare le battute (niente Cues, mp4 non letto), il giudizio di Kodi, senza i forzati
+    if not st.get('giudicato') and _traccia_per_kodi(stato, lingua):
+        # il motivo per cui i Cues non sono serviti (Cues oltre MAX_CUES, nessun cue dei sottotitoli, non matroska): senza,
+        # dal log non si distingue un file senza indice da uno con l'indice troppo grande (Titanic x265-E, 30/09)
+        return logger('FenLight SUB', ' | '.join(['traccia nella lingua nel file (flag di Kodi, %s), niente download%s'
+                                                  % (st.get('motivo') or 'nessuna struttura', _accendi_traccia(lingua))] + rete))
 
     rifiutati = set((cache or {}).get('rifiutati') or ())
     cand = [(fid, a) for fid, a in candidati(s.get('risultati'), lingua['2']) if fid not in rifiutati]
     if not cand:
         return logger('FenLight SUB', ' | '.join(['nessun candidato (%d risultati, %d gia\' rifiutati)' % (len(s.get('risultati') or []), len(rifiutati))] + rete))
-    if get_property(QUOTA_PROP) == 'finita':
+    if quota_finita():
         return logger('FenLight SUB', ' | '.join(['quota finita: niente download'] + rete))
 
     rif = st.get('rif') or []
     durata = (p['durata'] or 0) * 1000 or None
+    # un "non allineato" in cache arriva fin qui solo se ora c'e' un riferimento (step 3): il suo testo si riusa invece di
+    # riscaricarlo, e se nessuno viene accettato resta lui, salvo che sia stato provato e rifiutato (code review 30/09)
+    vecchio = cache if cache and cache.get('srt') and (cache.get('esito') or {}).get('metodo') == 'non allineato' else None
     costo = {'download': 0, 'allineamento': 0, 'scaricati': 0, 'restanti': None}
     rifiuti = []
 
-    # 5a. senza riferimento: il primo candidato NON allineato, come prima (il ripiego per hash e' del lotto 421)
+    # 5a. senza riferimento: il primo candidato NON allineato, come prima, e il log lo dice. Un riferimento preso da un
+    #     sottotitolo "legato all'hash" e' stato misurato e tolto (lotto 421): sfasato in 11 file su 18, e l'italiano
+    #     allineato su di lui ne eredita lo sfasamento passando l'accettazione
+    #     Il primo con almeno MIN_BATTUTE, come nel caso con riferimento: un "forzato" di 30 battute non diventa il
+    #     sottotitolo del file (code review 30/09).
     if not rif:
-        fid = cand[0][0]
-        righe, motivo = _scarica(p['api'], fid, costo)
-        if not righe:
-            testo = 'senza riferimento (%s): %s non scaricato, %s' % (st.get('motivo') or 'nessuna struttura', fid, motivo or 'vuoto')
-        else:
+        motivo_rif = st.get('motivo') or 'nessuna struttura'
+        testo = None
+        for fid, a in cand:
+            if costo['scaricati'] >= MAX_DOWNLOAD: break
+            righe, motivo = _scarica(p['api'], fid, costo)
+            if righe is None:
+                rifiuti.append('%s non scaricato: %s' % (fid, motivo))
+                if motivo == 'quota finita': break
+                continue
+            if len(righe) < MIN_BATTUTE:
+                rifiutati.add(fid)
+                rifiuti.append('%s rifiutato: %d battute' % (fid, len(righe)))
+                continue
             srt = S.scrivi_srt(righe, [(a, b, i) for i, (a, b, t) in enumerate(righe)])
             sottotitoli_cache.scrivi(s.get('chiave'), lingua['2'], fid, srt, {'metodo': 'non allineato'}, rifiutati)
-            testo = 'senza riferimento (%s): %s applicato non allineato' % (st.get('motivo') or 'nessuna struttura', fid)
+            testo = 'senza riferimento (%s): %s applicato non allineato' % (motivo_rif, fid)
             if not _applica(player, p, srt): testo += ', non applicato (riproduzione cambiata)'
-        return logger('FenLight SUB', ' | '.join([testo, 'download %s' % _secondi(costo['download'])] + rete))
+            break
+        if testo is None:
+            if rifiutati: sottotitoli_cache.scrivi(s.get('chiave'), lingua['2'], None, None, {}, rifiutati)
+            testo = 'senza riferimento (%s): nessun candidato utilizzabile' % motivo_rif
+        logger('FenLight SUB', ' | '.join([testo, 'scaricati %d' % costo['scaricati'], 'download %s' % _secondi(costo['download'])] + rete))
+        for r in rifiuti: logger('FenLight SUB', r)
+        return
 
     # 5b. candidati in ordine: download -> allineamento -> accettazione; regola dei buchi
     primo, riserva = rif[0]['linea'], (T.secondo(rif) or {}).get('linea')
     migliore = None
     for fid, a in cand:
-        if costo['scaricati'] >= MAX_DOWNLOAD: break
-        righe, motivo = _scarica(p['api'], fid, costo)
-        if righe is None:
-            rifiuti.append('%s non scaricato: %s' % (fid, motivo))
-            if motivo == 'quota finita': break
-            continue
+        if vecchio and fid == vecchio.get('file_id'):
+            righe = S.leggi_srt(vecchio['srt'])       # gia' in cache, non allineato: nessun download
+        else:
+            if costo['scaricati'] >= MAX_DOWNLOAD: break
+            righe, motivo = _scarica(p['api'], fid, costo)
+            if righe is None:
+                rifiuti.append('%s non scaricato: %s' % (fid, motivo))
+                if motivo == 'quota finita': break
+                continue
         if len(righe) < MIN_BATTUTE:
             rifiutati.add(fid)
             rifiuti.append('%s rifiutato: %d battute' % (fid, len(righe)))
@@ -382,6 +419,12 @@ def _sottotitoli(player, p, stato):
             fid, metodo, _n(e['rapporto'], 4), int(e['offset']), _n(e['cop']), _n(e['precisione']), _n(e['buchi']),
             ' (secondo riferimento %s)' % _descrivi(T.secondo(rif)) if e['rif'] == 1 else '')
         if not _applica(player, p, srt): testo += ', non applicato (riproduzione cambiata)'
+        testa.append(testo)
+    elif vecchio and vecchio.get('file_id') not in rifiutati:
+        # nessuno accettato (rete, quota, candidati sbagliati) ma il non allineato di prima non e' stato smentito: resta
+        sottotitoli_cache.scrivi(s.get('chiave'), lingua['2'], vecchio.get('file_id'), vecchio['srt'], vecchio.get('esito'), rifiutati)
+        testo = 'nessun candidato accettato: resta %s non allineato' % vecchio.get('file_id')
+        if not _applica(player, p, vecchio['srt']): testo += ', non applicato (riproduzione cambiata)'
         testa.append(testo)
     else:
         sottotitoli_cache.scrivi(s.get('chiave'), lingua['2'], None, None, {}, rifiutati)

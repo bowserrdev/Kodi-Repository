@@ -145,6 +145,8 @@ def build_continue_watching(params):
 			from modules import cw_head
 			cw_head.note_head(_pg_key, final_items)
 		except: pass
+	# Aperta come cartella non c'e' set_head: l'azione si dichiara cosi' (kodi_utils.CARTELLA_AZIONE_PROP).
+	else: kodi_utils.annota_cartella_aperta(kodi_utils.CONTINUE_WATCHING_ACTION)
 	set_content(handle, content)
 	set_category(handle, 'Continue Watching')
 	# ESPERIMENTO DEL LOTTO 61, REVOCATO: cacheToDisc=True qui NON cambia niente. Provato il 24/08 con

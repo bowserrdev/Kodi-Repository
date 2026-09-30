@@ -19,10 +19,32 @@ from modules.kodi_utils import make_session, get_property, set_property, sleep
 
 BASE = 'https://api.opensubtitles.com/api/v1/'
 USER_AGENT = 'FenLight/1.0'
-QUOTA_PROP = 'fenlight.autosub.quota'       # 'finita' fino a riavvio di Kodi, quando /download dice 406 o remaining 0
+QUOTA_PROP = 'fenlight.autosub.quota'       # l'istante (epoch) in cui la quota si rinnova, quando /download dice 406 o remaining 0
 TIMEOUT = 15
 PEZZO_CD = re.compile(r'\bcd\s?\d\b', re.I)
+# OpenSubtitles non ha "pt" ne' "zh": ha le varianti. Chi sceglie portoghese o cinese le vuole tutte e due (code review 30/09)
+VARIANTI = {'pt': ('pt-br', 'pt-pt'), 'zh': ('zh-cn', 'zh-tw')}
 _sessione = [None]
+
+
+def _rinnovo(corpo):
+	"""L'istante (epoch UTC) del rinnovo della quota: `reset_time_utc` della risposta, se c'e'; se no la mezzanotte UTC
+	successiva (le quote di OpenSubtitles sono giornaliere)."""
+	import calendar, time
+	try:
+		v = (corpo or {}).get('reset_time_utc') or ''
+		return float(calendar.timegm(time.strptime(v[:19], '%Y-%m-%dT%H:%M:%S')))
+	except Exception:
+		adesso = time.time()
+		return float((int(adesso) // 86400 + 1) * 86400)
+
+
+def quota_finita():
+	"""True fino al rinnovo della quota. Prima era una bandiera che durava fino al riavvio di Kodi: su una stick sempre
+	accesa i sottotitoli restavano spenti per giorni dopo il rinnovo (code review 30/09)."""
+	from time import time
+	try: return float(get_property(QUOTA_PROP) or 0) > time()
+	except ValueError: return False
 
 
 def _session():
@@ -37,7 +59,7 @@ def candidati(risultati, lingua):
 	fuori = []
 	for x in risultati or []:
 		a = x.get('attributes') or {}
-		if (a.get('language') or '').lower() != lingua.lower(): continue
+		if (a.get('language') or '').lower().split('-')[0] != lingua.lower().split('-')[0]: continue
 		files = a.get('files') or []
 		if len(files) != 1 or not files[0].get('file_id'): continue
 		if a.get('foreign_parts_only') or a.get('ai_translated') or a.get('machine_translated'): continue
@@ -46,14 +68,6 @@ def candidati(risultati, lingua):
 	fuori.sort(key=lambda fa: (bool(fa[1].get('moviehash_match')), bool(fa[1].get('from_trusted')), fa[1].get('votes') or 0,
 							   fa[1].get('ratings') or 0, fa[1].get('download_count') or 0), reverse=True)
 	return fuori
-
-
-def legati_al_file(risultati, escludi=()):
-	"""I sottotitoli di QUALUNQUE lingua legati all'hash del file (ripiego del lotto 421 quando il file non ha un
-	riferimento incorporato). -> [(file_id, attributi)]"""
-	return [(fid, a) for fid, a in ((((x.get('attributes') or {}).get('files') or [{}])[0].get('file_id'), x.get('attributes') or {})
-									for x in risultati or [])
-			if fid and a.get('moviehash_match') and (a.get('language') or '') not in escludi and len(a.get('files') or []) == 1]
 
 
 class OpenSubtitlesAPI:
@@ -82,7 +96,7 @@ class OpenSubtitlesAPI:
 	def cerca(self, lingue, imdb_id=None, serie_imdb=None, stagione=None, episodio=None, moviehash=None, pagine=2):
 		"""Tutti i sottotitoli nelle `lingue` (codici a due lettere) per il film o l'episodio, con `moviehash_match`
 		sui legati al file. Gratis. -> lista di risultati (vuota se la rete non risponde)."""
-		params = {'languages': ','.join(sorted(set(l.lower() for l in lingue if l)))}
+		params = {'languages': ','.join(sorted(set(v for l in lingue if l for v in VARIANTI.get(l.lower(), (l.lower(),)))))}
 		if serie_imdb:
 			params.update({'parent_imdb_id': int(str(serie_imdb).replace('tt', '')), 'season_number': int(stagione), 'episode_number': int(episodio)})
 		elif imdb_id:
@@ -104,17 +118,19 @@ class OpenSubtitlesAPI:
 
 	def scarica(self, file_id):
 		"""(byte dell'srt o None, download restanti o None, motivo). Consuma quota."""
-		if get_property(QUOTA_PROP) == 'finita': return None, 0, 'quota finita'
+		if quota_finita(): return None, 0, 'quota finita'
 		r = self._richiesta('POST', 'download', corpo={'file_id': file_id, 'sub_format': 'srt'})
 		if r is None: return None, None, 'rete'
 		if r.status_code == 406:
-			set_property(QUOTA_PROP, 'finita')
+			try: corpo = r.json()
+			except Exception: corpo = None
+			set_property(QUOTA_PROP, str(_rinnovo(corpo)))
 			return None, 0, 'quota finita'
 		if r.status_code != 200: return None, None, 'download %s' % r.status_code
 		try: d = r.json() or {}
 		except Exception: return None, None, 'risposta illeggibile'
 		restanti = d.get('remaining')
-		if restanti is not None and restanti <= 0: set_property(QUOTA_PROP, 'finita')
+		if restanti is not None and restanti <= 0: set_property(QUOTA_PROP, str(_rinnovo(d)))
 		if not d.get('link'): return None, restanti, 'senza link'
 		try:
 			x = _session().get(d['link'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=TIMEOUT)

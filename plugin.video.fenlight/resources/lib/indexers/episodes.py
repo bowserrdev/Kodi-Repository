@@ -46,7 +46,6 @@ URL_PLAYBACK_CHOICE = _BASE + 'mode=playback_choice&media_type=episode&meta=%s&s
 URL_ERASE_BOOKMARK = _BASE + 'mode=watched_status.erase_bookmark&media_type=episode&tmdb_id=%s&season=%s&episode=%s&refresh=true'
 URL_SEASON_LIST = _BASE + 'mode=build_season_list&tmdb_id=%s'
 URL_ALL_EPISODES = _BASE + 'mode=build_episode_list&tmdb_id=%s&season=all'
-URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets&user=true'
 poster_empty = kodi_utils.empty_poster
 run_plugin, unaired_label, tmdb_poster = 'RunPlugin(%s)', '[COLOR red][I]%s[/I][/COLOR]', 'https://image.tmdb.org/t/p/%s%s'
 upper = string.upper
@@ -97,9 +96,8 @@ def build_episode_list(params):
 					else: cm_append(('[B]Segna come visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_episode', 'action': 'mark_as_watched',
 													'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'season': season, 'episode': episode,  'title': title})))
 					if progress: cm_append(('[B]Azzera avanzamento[/B]', run_plugin % (URL_ERASE_BOOKMARK % (tmdb_id, season, episode))))
-				# "Refresh" e' il superset di "Reload": tenuta solo quella, come nei film.
-				if is_external:
-					cm_append(('[B]Aggiorna widget[/B]', run_plugin % URL_REFRESH_WIDGETS))
+				# "Aggiorna widget" ricostruisce la riga dell'elemento (lotto 424, kodi_utils.url_aggiorna_riga).
+				if url_aggiorna_riga: cm_append(('[B]Aggiorna widget[/B]', run_plugin % url_aggiorna_riga))
 				_ph1 = _perf()
 				info_tag = listitem.getVideoInfoTag()
 				info_tag.setMediaType('episode'), info_tag.setTitle(display), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(title), info_tag.setGenres(genre)
@@ -132,13 +130,15 @@ def build_episode_list(params):
 				yield (url_params, listitem, False)
 			except: pass
 	handle, is_external, category_name = int(sys.argv[1]), external(), 'Episodes'
+	url_aggiorna_riga = kodi_utils.url_aggiorna_riga() if is_external else ''   # lotto 424
 	_t0 = paginator.now()
 	paginator.phase_reset()
 	# LOTTO 418 -- LA RIGA EPISODI DELLA SCHEDA SERIE E' UNA POSIZIONE CONDIVISA: nello stesso contenitore
-	# (531) passano le stagioni una dopo l'altra, e le serie una dopo l'altra. Perche' una stagione nuova
-	# riparta dal primo episodio la riga va distrutta (router._svuota_prima), e per sapere se c'e'
-	# qualcosa da distruggere la costruzione DOPO deve trovare nel ponte la lista che c'era: qui la si
-	# dichiara, in fondo si dichiara quanti elementi ha consegnato. La posizione si legge dai parametri e
+	# (531) passano le stagioni una dopo l'altra, e le serie una dopo l'altra. Che una stagione nuova riparta
+	# dal primo episodio lo decide la skin, guardando lo schermo (router._consegna_attesa, revisione del 29/09).
+	# Qui si dichiara quale lista occupa la posizione -- se e' cambiata, il gettone della lista di prima non
+	# deve seguire la nuova -- e in fondo quanti elementi ha consegnato, che chiude anche la marca "in
+	# costruzione" alzata dal router (paginator.consegna_posizione). La posizione si legge dai parametri e
 	# non da sys.argv: random_lists chiama questa funzione dall'invocazione di un widget, con parametri
 	# suoi, e quella lista non e' una stagione della scheda. Senza 'pgctl' (season=all, liste casuali,
 	# finestra extra) non si dichiara niente. RIPOSIZIONAMENTO.md.
@@ -165,6 +165,15 @@ def build_episode_list(params):
 	show_landscape = meta_get('landscape') or ''
 	watched_db = get_database(watched_indicators)
 	watched_info = watched_info_episode(tmdb_id, watched_db)
+	# LOTTO 427 -- gli episodi visti della stagione, sul primo elemento (kodi_utils.STAGIONE_VISTI_PROP): lo stesso
+	# numero che la lista stagioni pubblica come watchedepisodes, con lo stesso totale e la stessa regola.
+	if season != 'all':
+		try:
+			_n = int(season)
+			_usciti = ws.episodi_usciti_stagione(meta_get('season_data'), meta_get('total_aired_eps'), meta_get('total_seasons'), _n)
+			_visti = ws.get_watched_status_season(sum(1 for _s, _e in watched_info if _s == _n), _usciti)[1] if _n and _usciti else 0
+			kodi_utils.timbra_primo_elemento(kodi_utils.STAGIONE_VISTI_PROP, str(_visti))
+		except Exception: pass
 	if season == 'all':
 		total_seasons = meta_get('total_seasons')
 		episodes_data = sorted(all_episodes_meta(meta, show_specials()), key=lambda x: (x['season'], x['episode']))
@@ -381,9 +390,8 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 			elif all_episodes: browse_params = URL_ALL_EPISODES % tmdb_id
 			else: browse_params = URL_SEASON_LIST % tmdb_id
 			cm_append(('[B]Sfoglia[/B]', window_command % browse_params))
-			# "Refresh" e' il superset di "Reload": tenuta solo quella, come nei film.
-			if is_external:
-				cm_append(('[B]Aggiorna widget[/B]', run_plugin % URL_REFRESH_WIDGETS))
+			# "Aggiorna widget" ricostruisce la riga dell'elemento (lotto 424, kodi_utils.url_aggiorna_riga).
+			if url_aggiorna_riga: cm_append(('[B]Aggiorna widget[/B]', run_plugin % url_aggiorna_riga))
 			_ph2 = _perf()
 			info_tag = listitem.getVideoInfoTag()
 			info_tag.setMediaType('episode'), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(title), info_tag.setTitle(display), info_tag.setGenres(genre)
@@ -420,6 +428,7 @@ def build_single_episode(list_type, params={}, exclude_keys=None, exclude_unaire
 		# uno scarto voluto. Prima erano indistinguibili, entrambi 'pass'.
 		except: raise
 	handle, is_external, category_name = int(sys.argv[1]), external(), 'Episodes'
+	url_aggiorna_riga = kodi_utils.url_aggiorna_riga() if is_external else ''   # lotto 424
 	_t0 = paginator.now()
 	# Accumulatori LOCALI all'invocazione, non le liste globali di paginator: 'continua a guardare'
 	# chiama questa funzione due volte in parallelo nello stesso interprete (episodi in pausa e

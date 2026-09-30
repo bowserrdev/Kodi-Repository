@@ -5,7 +5,8 @@ from modules import kodi_utils, settings, paginator
 from modules.metadata import tvshow_meta
 from modules.tmdb_art import poster_token
 from modules.utils import get_datetime, adjust_premiered_date, make_thread_list
-from modules.watched_status import get_database, watched_info_season, get_watched_status_season, get_progress_status_season
+from modules.watched_status import get_database, watched_info_season, get_watched_status_season, get_progress_status_season, episodi_usciti_stagione
+from modules.visti_label import DYNAMIC_LABEL as DYNAMIC_VISTI_LABEL
 # logger = kodi_utils.logger
 
 poster_empty, cast_label, set_category = kodi_utils.empty_poster, kodi_utils.cast_label, kodi_utils.set_category
@@ -23,13 +24,12 @@ _BASE = 'plugin://plugin.video.fenlight/?'
 URL_EPISODE_LIST = _BASE + 'mode=build_episode_list&tmdb_id=%s&season=%s'
 URL_EXTRAS = _BASE + 'mode=extras_menu_choice&tmdb_id=%s&media_type=tvshow&is_external=%s'
 URL_OPTIONS = _BASE + 'mode=options_menu_choice&content=season&tmdb_id=%s&is_external=%s'
-URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets&user=true'
 view_mode, content_type = 'view.seasons', 'seasons'
 season_name_str = 'Season %s'
 
 def build_season_list(params):
 	def _process():
-		total_aired_eps, episode_count = meta_get('total_aired_eps'), 0
+		total_aired_eps, tutte_le_stagioni = meta_get('total_aired_eps'), meta_get('season_data')
 		for item in season_data:
 			try:
 				_p0 = _perf()
@@ -53,31 +53,31 @@ def build_season_list(params):
 				except: premiered = ''
 				unaired = aired_eps == 0
 				if unaired or season_special:
-					progress, playcount, total_watched, total_unwatched = 0, 0, 0, aired_eps
+					# watched/unwatched, non altri nomi: sono quelli che si pubblicano qui sotto. Con total_watched
+					# gli Speciali (in fondo alla lista) mostravano i conti della stagione prima.
+					progress, playcount, watched, unwatched = 0, 0, 0, aired_eps
 					if unaired: title = unaired_label % title
 					else: title = 'Specials'
 				else:
-					if season_number < total_seasons:
-						episode_count += aired_eps
-					else: aired_eps = total_aired_eps - episode_count
+					aired_eps = episodi_usciti_stagione(tutte_le_stagioni, total_aired_eps, total_seasons, season_number)
 					playcount, watched, unwatched = get_watched_status_season(watched_info.get(season_number, None), aired_eps)
 					progress = get_progress_status_season(watched, aired_eps)
 				visible_progress = 0 if progress == 100 else progress
-				# panel_nonce: vedi kodi_utils.PANEL_RELOAD_PROP. Nella vista "Combined" il pannello
-				# episodi si aggancia a questa URL tramite $INFO[Container(52X).ListItem.FolderPath]:
-				# senza il nonce un Container.Refresh ricostruisce le stagioni ma lascia il pannello
-				# -- e quindi i badge degli episodi -- fermo su quello di prima.
-				url_params = URL_EPISODE_LIST % (tmdb_id, season_number) + panel_nonce
+				# Qui c'era il nonce del pannello episodi (kodi_utils.PANEL_RELOAD_PROP): dal 29/09 sta nel path
+				# del pannello, non in questa URL. Questa URL e' l'IDENTITA' della stagione, e la skin la
+				# confronta col timbro degli episodi a schermo per decidere se la riga ha cambiato lista.
+				url_params = URL_EPISODE_LIST % (tmdb_id, season_number)
 				# extras_params non e' piu' una voce di menu (come nei film e nelle serie) ma resta
 				# pubblicato come proprieta': lo legge il tasto rapido di custom_keys.py.
 				extras_params = URL_EXTRAS % (tmdb_id, is_external)
 				options_params = URL_OPTIONS % (tmdb_id, is_external)
 				cm_append(('[B]Opzioni[/B]', run_plugin % options_params))
-				if not playcount and not unaired and not season_special:
-						cm_append(('[B]Segna come visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_season', 'action': 'mark_as_watched',
-															'title': show_title, 'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'season': season_number})))
-				if progress:
-					cm_append(('[B]Segna come non visto[/B]', run_plugin % build_url({'mode': 'watched_status.mark_season', 'action': 'mark_as_unwatched',
+				# LOTTO 433 -- UNA voce, che dice lo stato vero: l'etichetta la chiede a una proprieta' che il servizio
+				# tiene giusta per la stagione a fuoco, e l'azione ('alterna') decide al clic. La lista stagioni non si
+				# ricostruisce piu' a ogni "segna come visto" (lotto 427), quindi un'etichetta scritta qui invecchierebbe.
+				# Vedi modules/visti_label.py.
+				if not unaired and not season_special:
+					cm_append((DYNAMIC_VISTI_LABEL, run_plugin % build_url({'mode': 'watched_status.mark_season', 'action': 'alterna',
 														'title': show_title, 'tmdb_id': tmdb_id, 'tvdb_id': tvdb_id, 'season': season_number})))
 				_p1 = _perf()
 				set_properties({'watchedepisodes': string(watched), 'unwatchedepisodes': string(unwatched)})
@@ -85,9 +85,8 @@ def build_season_list(params):
 								'fenlight.extras_params': extras_params, 'fenlight.options_params': options_params,
 								'fenlight.cast': cast_names,
 								'hide_add_remove_favourite': 'true'})  # vedi indexers/movies.py
-				# "Refresh" e' il superset di "Reload": tenuta solo quella, come nei film.
-				if is_external:
-					cm_append(('[B]Aggiorna widget[/B]', run_plugin % URL_REFRESH_WIDGETS))
+				# "Aggiorna widget" ricostruisce la riga dell'elemento (lotto 424, kodi_utils.url_aggiorna_riga).
+				if url_aggiorna_riga: cm_append(('[B]Aggiorna widget[/B]', run_plugin % url_aggiorna_riga))
 				_p2 = _perf()
 				info_tag = listitem.getVideoInfoTag()
 				info_tag.setMediaType('season'), info_tag.setTitle(title), info_tag.setOriginalTitle(orig_title), info_tag.setTvShowTitle(show_title), info_tag.setIMDBNumber(imdb_id)
@@ -106,15 +105,13 @@ def build_season_list(params):
 				yield (url_params, listitem, True)
 			except: pass
 	handle, is_external, category_name = int(sys.argv[1]), external(), 'Season'
+	url_aggiorna_riga = kodi_utils.url_aggiorna_riga() if is_external else ''   # lotto 424
 	_t0 = paginator.now()
 	# single_seasons chiama questa funzione in PARALLELO, una volta per stagione: azzerare li' le fasi
 	# cancellerebbe le misure di una lista che un altro thread sta ancora costruendo. Su quella strada
 	# non si riporta nulla, quindi non si azzera nulla.
 	if params.get('custom_order', None) is None: paginator.phase_reset()
 	fanart_empty = kodi_utils.addon_fanart()
-	# Letto UNA volta per costruzione: e' lo stesso valore per tutte le stagioni della lista.
-	_nonce = kodi_utils.get_property(kodi_utils.PANEL_RELOAD_PROP)
-	panel_nonce = ('&reload=%s' % _nonce) if _nonce else ''
 	watched_indicators, adjust_hours = watched_indicators_info(), date_offset_info()
 	current_date = get_datetime()
 	watched_title = 'Trakt' if watched_indicators == 1 else 'Fen Light'

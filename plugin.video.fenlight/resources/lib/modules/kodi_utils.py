@@ -236,6 +236,44 @@ _SEGNAPOSTO_ASPETTO = {
 						'override_poster': 'common/_none.png',
 						'override_landscape': 'common/_none.png'}),
 }
+# LOTTO 418, revisione del 29/09 -- LO SCHERMO DECIDE (RIPOSIZIONAMENTO.md). Se una riga debba passare
+# dall'attesa prima di ricevere un'altra lista lo decide la skin, che vede cosa c'e' a schermo: il plugin sa
+# cosa ha consegnato, non se Kodi l'ha accettato (una consegna a un path gia' abbandonato Kodi la scarta in
+# silenzio; log della Firestick delle 13:49 del 29/09). Per poterlo decidere la skin deve sapere di quale
+# lista e' cio' che vede: LISTA_PROP, sul primo elemento, e' il path fino a '&pgctl=', cioe' proprio il
+# valore che la skin ha messo in testa al path e con cui confronta.
+# ATTESA_PARAM: '1' = la skin chiede il solo segnaposto (router._consegna_attesa); '0' = il path normale di
+# una riga in cui decide la skin, che quindi non passa dalla distruzione del plugin (router._svuota_prima).
+LISTA_PROP = 'fenlight.lista'
+ATTESA_PARAM = 'attesa'
+# LOTTO 427 -- gli episodi visti della stagione che il pannello mostra, sul suo primo elemento. La lista stagioni
+# e' la cartella della finestra e ricaricarla (Container.Refresh) passa dal dialogo di attesa, che l'indietro
+# annulla: Kodi allora ripiega sulla radice della libreria (Firestick, 21:18:13 del 29/09). Il conteggio che
+# cambia con "segna come visto" lo porta quindi il pannello, che si ricarica comunque e senza dialogo, e le
+# etichette della skin lo chiedono a lui (Label_Stagione_Visti) invece che alla voce della stagione, come la
+# voce della watchlist chiede la sua etichetta a una proprieta' (watchlist_label).
+STAGIONE_VISTI_PROP = 'fenlight.stagione.visti'
+
+def path_invocato():
+	"""Il path per cui gira questa invocazione, come l'ha chiesto chi l'ha aperta, o ''.
+
+	Kodi passa il path diviso in sys.argv[0] (plugin://plugin.video.fenlight/) e sys.argv[2] (?mode=...),
+	senza ricodificarlo (CPluginDirectory::StartScript): riattaccati sono il path chiesto dalla skin, lo
+	stesso che Kodi mostra poi in Container.FolderPath.
+	"""
+	import sys
+	try: return sys.argv[0] + sys.argv[2]
+	except Exception: return ''
+
+def lista_della_riga():
+	"""La lista che questa invocazione costruisce, nella forma in cui la skin la conosce, o ''.
+
+	Cio' che precede '&pgctl=' nel path invocato e' l'espressione che la skin ha scritto prima della posizione.
+	"""
+	path = path_invocato()
+	fine = path.find('&pgctl=')
+	return path[:fine] if fine > 0 else ''
+
 # Elementi consegnati da QUESTA invocazione (una invocazione = un processo Python = una cartella).
 _CONSEGNATI = [0]
 # LOTTO 338 -- lo stato di una consegna sta nel PRIMO ELEMENTO che consegna (specifica del 15/09,
@@ -1115,10 +1153,17 @@ PENDING_NOCHANGE_PROP = 'fenlight.refresh_pending_nochange'
 # IDENTICA e Kodi non ha motivo di ricaricare il pannello: misurato il 24/08 alle 16:49, dopo
 # 'segna come visto' su S1E2 si e' ricostruita solo build_season_list e il badge dell'episodio e'
 # rimasto fermo finche' l'utente non e' uscito e rientrato nella serie.
-# Rimedio: seasons.py accoda questo nonce alla URL di ogni stagione. Cambiarlo cambia la FolderPath,
-# quindi il pannello si ricarica da solo -- stesso principio del token pagine dei widget. 'reload' e'
-# in paginator._VOLATILE_PARAMS, quindi non entra nella chiave del widget ne' nella paginazione.
+# Rimedio: un nonce che, cambiando, cambia il path del pannello, quindi il pannello si ricarica da solo --
+# stesso principio del token pagine dei widget.
+# LOTTO 418, revisione del 29/09 sera: il nonce sta nel path del PANNELLO, non piu' nella URL della stagione.
+# La skin lo accoda come fa col gettone (View_53n_Content, parametro PANNELLO_PARAM). Nella URL della
+# stagione confondeva due cose: QUALE lista e' ("lo schermo decide" confronta la FolderPath della stagione
+# col timbro fenlight.lista sul primo episodio) e "ricaricala". Ogni Container.Refresh cambiava la FolderPath,
+# la skin vedeva un'altra lista e distruggeva la riga: segnaposto e cursore sul primo per la stessa stagione
+# (Firestick, 15:31:41 del 29/09). Nel path del pannello e' solo "ricaricala": ricostruzione sul posto.
+# PANNELLO_PARAM e' in paginator._VOLATILE_PARAMS: non entra nell'impronta della lista.
 PANEL_RELOAD_PROP = 'fenlight.panel_reload'
+PANNELLO_PARAM = 'pannello'
 
 # Riproduzione in corso, letta SENZA toccare la GUI (lotto 111).
 #
@@ -1366,8 +1411,12 @@ def pending_refresh_is_redundant(ids, actions):
 	if get_property(PENDING_NOCHANGE_PROP) != '1': return False
 	return _refresh_covered_by_last(ids, actions)
 
-def _defer_refresh_if_busy(kind, ids=(), actions=()):
+def _defer_refresh_if_busy(kind, ids=(), actions=(), per_il_dialogo=True):
 	"""Rimanda il ridisegno se ADESSO non si puo' disegnare. Torna True se ha rimandato.
+
+	per_il_dialogo=False: il dialogo modale non rimanda qui, perche' chi chiama sa rimandare da se' la sola
+	parte che il dialogo tocca. E' kodi_refresh_ids nella finestra Video (lotto 425): la coda qui sotto e'
+	lavoro per i WIDGET, e la cartella aperta, messa li', non la ridisegnava piu' nessuno.
 
 	Due motivi, un solo canale. La riproduzione in corso era gia' qui; IL DIALOGO MODALE MANCAVA, ed e'
 	il lotto 136. Conseguenza misurata sulla stick il 03/09: menu contestuale aperto alle 15:18:55 su un
@@ -1396,7 +1445,7 @@ def _defer_refresh_if_busy(kind, ids=(), actions=()):
 		queue_pending_refresh('kodi_refresh', scope='')
 		logger('Fen Light', 'DIAG refresh: RIMANDATO (%s -> kodi_refresh), riproduzione in corso' % kind)
 		return True
-	if modal_dialog_open():
+	if per_il_dialogo and modal_dialog_open():
 		_kind = 'kodi_refresh_ids' if (ids or actions) else kind
 		queue_pending_refresh(_kind, ids, actions, scope='')
 		logger('Fen Light', 'DIAG refresh: RIMANDATO (%s), dialogo modale aperto | id=%s azioni=%s'
@@ -1566,7 +1615,7 @@ def kodi_refresh(coalesce=True):
 CONTINUE_WATCHING_ACTION = 'continue_watching'
 
 # AZIONE della watchlist di Trakt. Stesso nome per DUE widget -- film e serie -- che vanno colpiti
-# separatamente: vedi qualify_action e paginator._action_matches.
+# separatamente: vedi qualify_action e paginator.action_matches.
 WATCHLIST_ACTION = 'trakt_watchlist'
 
 def qualify_action(action, media_type):
@@ -1597,6 +1646,138 @@ def episode_uid(tmdb_id, season, episode):
 	try: return '%s:%s:%s' % (int(tmdb_id), int(season), int(episode))
 	except: return None
 
+# LOTTO 418, revisione del 29/09 sera -- DI QUALE AZIONE E' LA CARTELLA APERTA. I widget la pubblicano con
+# set_head; la cartella aperta di una finestra (la watchlist aperta dal menu, "continua a guardare" come
+# cartella) no, e il refresh nella finestra Video non poteva sapere se un'azione la riguardasse: faceva
+# Container.Refresh sempre. Dopo una riproduzione l'eco del nostro stesso avanzamento da Trakt (azione
+# continue_watching, zero titoli cambiati) ricostruiva cosi' stagioni ed episodi gia' aggiornati da Kodi
+# 4 secondi prima (Firestick, 15:31:40 del 29/09).
+# UNA PROPRIETA' PER PATH, non una sola (code review del 29/09). L'azione e' un dato della LISTA, e la lista
+# e' il suo path. Chi costruisce non sa se la sua cartella andra' nella finestra o in una riga: anche le
+# righe non paginate del dialogo info (consigliati, saghe, cast), aperte sopra la finestra Video, passano di
+# qui. Con una proprieta' sola l'ultima costruzione rubava il posto alla cartella: watchlist aperta, info di
+# un film, "rimuovi dalla mia lista" dal dialogo, e l'azione (senza id) trovava annotati i consigliati.
+# Indicizzata per path non c'e' posto da rubare, e chi legge cerca proprio la cartella a schermo: anche
+# quella tornata dalla cache senza che nessuno costruisse. Costa una proprieta' per lista non paginata
+# aperta nella sessione.
+CARTELLA_AZIONE_PROP = 'fenlight.cartella.azione.%s'
+
+def _cartella_azione_prop(path):
+	from hashlib import md5
+	return CARTELLA_AZIONE_PROP % md5(path.encode('utf-8')).hexdigest()
+
+def annota_cartella_aperta(azione):
+	"""Il path di questa invocazione, se Kodi lo apre in una finestra, e' la lista di `azione`."""
+	path = path_invocato()
+	if azione and path: set_property(_cartella_azione_prop(path), azione)
+
+def cartella_aperta_riguarda(actions):
+	"""La cartella aperta nella finestra corrente e' la lista di una di queste azioni?
+
+	Container.FolderPath e' la cartella della finestra (CGUIMediaWindow), qualunque controllo abbia il fuoco.
+	Il confronto e' paginator.action_matches, lo stesso dei widget.
+	"""
+	if not actions: return False
+	path = get_infolabel('Container.FolderPath')
+	if not path: return False
+	from modules.paginator import action_matches
+	return action_matches(get_property(_cartella_azione_prop(path)), set(actions))
+
+# LOTTO 425 -- IL RINVIO DELLA CARTELLA APERTA. Nella finestra Video, con un dialogo modale aperto, il
+# Container.Refresh aspetta che si chiuda (lotto 136: niente ridisegni sotto un dialogo). Finiva nella coda
+# dei rinvii, che e' lavoro per i widget e che WidgetRefresher non consuma nella finestra Video
+# (service._widgets_on_screen): la cartella non si ridisegnava piu'. Firestick, 20:39:42 del 29/09: film
+# aggiunto alla watchlist dalle info, dentro la watchlist aperta come cartella; il rinvio si e' consumato
+# 96 s dopo, nell'hub, e la cartella e' rimasta senza il film. Lo stesso per "segna come visto" dalle info
+# di un episodio dentro la scheda serie.
+# Il rinvio della cartella e' un dato suo: il path della cartella da ridisegnare (e lo scope del timbro).
+# Lo esegue il servizio appena si puo' disegnare, e solo se la cartella aperta e' ancora quella.
+CARTELLA_RINVIO_PROP = 'fenlight.cartella.refresh_rimandato'
+
+# LOTTO 427 -- I PANNELLI EPISODI della vista Combined (Includes_Views_Combined.xml, View_53n_Content). Quando uno
+# e' a schermo la cartella aperta e' una lista stagioni, e cio' che uno STATO cambia (badge dell'episodio, visti
+# della stagione: STAGIONE_VISTI_PROP) lo porta il pannello. Ricaricare la lista stagioni non mostra niente di
+# nuovo, e passa dal dialogo di attesa, che l'indietro annulla facendo ripiegare Kodi sulla radice.
+PANNELLI_EPISODI = ('530', '531', '532', '533', '534')
+
+def pannello_episodi_a_schermo():
+	"""Un pannello episodi della vista Combined e' a schermo? Da chiedere SOLO senza dialoghi modali aperti.
+
+	Control.IsVisible si risolve contro la finestra attiva, e con un dialogo aperto quella e' il dialogo: il
+	pannello risulta invisibile anche quando c'e'. Firestick, 23:35:48 del 29/09: menu contestuale aperto,
+	cambiamento da Trakt, rinvio di tipo "cartella", Container.Refresh della lista stagioni alla chiusura e
+	ripiego sulla radice (PR.md 26). Percio' la domanda si fa solo quando la risposta e' vera: subito se non
+	ci sono dialoghi, altrimenti quando il servizio esegue il rinvio (esegui_refresh_cartella_rimandato).
+	"""
+	return get_visibility(' | '.join('Control.IsVisible(%s)' % c for c in PANNELLI_EPISODI))
+
+def _refresh_cartella(scope, dettaglio, solo_pannello=False):
+	"""Ridisegno della finestra Video: il pannello episodi (col nonce) e, se serve, la cartella aperta."""
+	_stamp_refresh(scope)
+	# Il nonce va cambiato PRIMA del refresh: e' nel path del pannello episodi (PANEL_RELOAD_PROP),
+	# che cosi' si ricostruisce sul posto, da solo o insieme alla lista stagioni.
+	from time import time as _now
+	set_property(PANEL_RELOAD_PROP, '%d' % (_now() * 1000))
+	if solo_pannello:
+		logger('Fen Light', 'DIAG refresh: MIRATO finestra Video (solo il pannello episodi, la lista stagioni resta) | %s' % dettaglio)
+		return
+	logger('Fen Light', 'DIAG refresh: MIRATO finestra Video (Container.Refresh sulla lista aperta) | %s' % dettaglio)
+	execute_builtin('Container.Refresh')
+
+def _rimanda_refresh_cartella(scope, dettaglio, riguarda=False):
+	# Si annota SE l'azione riguarda la cartella, non che cosa ridisegnare: se basti il pannello lo si puo' sapere
+	# solo a dialogo chiuso (pannello_episodi_a_schermo). Una composizione cambiata ('cartella') vince sempre.
+	gia = get_property(CARTELLA_RINVIO_PROP).split('\n')
+	riguarda = riguarda or (len(gia) > 2 and gia[2] == 'cartella')
+	set_property(CARTELLA_RINVIO_PROP, '%s\n%s\n%s' % (get_infolabel('Container.FolderPath'), scope, 'cartella' if riguarda else 'stato'))
+	logger('Fen Light', 'DIAG refresh: RIMANDATO il ridisegno della finestra Video (%s), dialogo modale aperto | %s'
+			% ('composizione' if riguarda else 'stato', dettaglio))
+
+def esegui_refresh_cartella_rimandato():
+	"""Il servizio, a ogni giro in cui il rinvio della cartella c'e': ridisegna se adesso si puo'.
+
+	Torna True se il rinvio e' stato chiuso (eseguito o lasciato cadere), False se deve ancora aspettare.
+	Cade se la cartella aperta non e' piu' quella: il refresh riguardava una cartella precisa, e quella
+	adesso a schermo l'ha appena costruita Kodi.
+	"""
+	valore = get_property(CARTELLA_RINVIO_PROP)
+	if not valore: return True
+	if playback_active() or modal_dialog_open(): return False
+	clear_property(CARTELLA_RINVIO_PROP)
+	path, _, resto = valore.partition('\n')
+	scope, _, tipo = resto.partition('\n')
+	if getCurrentWindowId() != 10025 or get_infolabel('Container.FolderPath') != path:
+		logger('Fen Light', 'DIAG refresh: rinvio della cartella lasciato cadere, la cartella aperta non e\' piu\' quella')
+		return True
+	# Adesso non ci sono dialoghi: la domanda sul pannello ha una risposta vera.
+	_refresh_cartella(scope, 'rimandato, dialogo chiuso', solo_pannello=tipo != 'cartella' and pannello_episodi_a_schermo())
+	return True
+
+def _assorbi_coda(ids, actions):
+	"""Svuota la coda dei rinvii e torna (ids, azioni) da ridisegnare: i propri PIU' quelli mirati in coda.
+
+	LOTTO 426. Chi ridisegna i widget adesso consuma la coda, e fin qui la consumava buttandola: svuotava
+	tutto e ridisegnava solo i propri titoli. Un rinvio mirato ancora in attesa -- nato nella finestra Video
+	(la serie segnata come vista dentro la scheda) o sotto un dialogo -- spariva, se nei secondi in cui
+	WidgetRefresher aspettava la fine delle costruzioni arrivava un ridisegno diretto per un altro titolo.
+	Nei log del 29/09 quell'attesa e' di 10-15 s al rientro nella Home. Il widget restava vecchio a tempo
+	indeterminato.
+	Un rinvio GLOBALE in coda invece cade, come prima e di proposito. Nasce solo durante la riproduzione, dove
+	gli id si buttano (_defer_refresh_if_busy, lotto 210), e a fine riproduzione lo sostituisce il ridisegno
+	mirato del player (player.flush_pending_refresh): tenerlo ricostruirebbe tutto dopo ogni film.
+	"""
+	if not get_property(PENDING_REFRESH_PROP): return ids, actions
+	coda_ids = [i for i in get_property(PENDING_IDS_PROP).split(',') if i]
+	coda_azioni = [a for a in get_property(PENDING_ACTIONS_PROP).split(',') if a]
+	for prop in (PENDING_REFRESH_PROP, PENDING_IDS_PROP, PENDING_ACTIONS_PROP, PENDING_NOCHANGE_PROP, PENDING_SCOPE_PROP):
+		clear_property(prop)
+	if not coda_ids and not coda_azioni: return ids, actions
+	uniti_ids = list(dict.fromkeys([str(i) for i in (ids or ()) if i] + coda_ids))
+	unite_azioni = tuple(sorted(set(a for a in (actions or ()) if a) | set(coda_azioni)))
+	logger('Fen Light', 'DIAG refresh: coda dei rinvii assorbita | id %d -> %d, azioni %d -> %d'
+			% (len(ids or ()), len(uniti_ids), len(actions or ()), len(unite_azioni)))
+	return uniti_ids, unite_azioni
+
 def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# Ricarica MIRATA: ricostruisce i soli contenitori che contengono uno degli id cambiati -- piu'
 	# quelli la cui AZIONE e' fra le richieste, per i casi in cui a cambiare e' la composizione della
@@ -1605,11 +1786,12 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# ricostruiscono centinaia su tutti i widget della schermata.
 	# Se il sondaggio non identifica nessun contenitore (skin diversa, ids sbagliati, infolabel che non
 	# risolve fuori dal fuoco) si ricade sul globale: non puo' comportarsi peggio di prima.
-	if _defer_refresh_if_busy('kodi_refresh', ids, actions): return
-	clear_property(PENDING_REFRESH_PROP)
-	clear_property(PENDING_IDS_PROP)
-	clear_property(PENDING_ACTIONS_PROP)
-	clear_property(PENDING_NOCHANGE_PROP)
+	finestra_video = getCurrentWindowId() == 10025
+	if _defer_refresh_if_busy('kodi_refresh', ids, actions, per_il_dialogo=not finestra_video): return
+	# La coda dei rinvii e' lavoro per i WIDGET: chi li ridisegna adesso la ASSORBE (_assorbi_coda). Nella
+	# finestra Video nessuno li ridisegna: il ramo qui sotto ci AGGIUNGE la sua parte. Svuotarla anche li'
+	# perdeva i rinvii gia' in coda per la Home, sostituiti dall'ultimo (lotto 425).
+	if not finestra_video: ids, actions = _assorbi_coda(ids, actions)
 	# Stessa finestra di kodi_refresh(): due ricostruzioni accavallate sono la stessa, e non importa
 	# se una e' mirata e l'altra globale -- chi arriva secondo lavorerebbe a vuoto.
 	age = refresh_age()
@@ -1627,14 +1809,24 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 	# per quelle vedi cacheToDisc in seasons.py/episodes.py, ora False in finestra Video, cosi'
 	# tornando indietro Kodi le rilegge invece di servirle dalla cache (era il difetto del lotto 43,
 	# che aveva fatto ritirare Container.Refresh la prima volta).
-	if getCurrentWindowId() == 10025:
-		_stamp_refresh(','.join(sorted(_scope_items(ids, actions))))
-		logger('Fen Light', 'DIAG refresh: MIRATO finestra Video (Container.Refresh sulla lista aperta) | id=%s azioni=%s' % (len(ids or []), len(actions or ())))
-		# Il nonce va cambiato PRIMA del refresh: la lista stagioni si ricostruisce subito dopo e deve
-		# gia' pubblicare le URL nuove, altrimenti il pannello episodi resta sulla vecchia FolderPath.
-		from time import time as _now
-		set_property(PANEL_RELOAD_PROP, '%d' % (_now() * 1000))
-		execute_builtin('Container.Refresh')
+	if finestra_video:
+		# LOTTO 418, revisione del 29/09 sera: Container.Refresh solo se la cartella aperta puo' essere cambiata,
+		# cioe' se sono cambiati dei titoli o se e' proprio la lista di una delle azioni. Un'azione che riguarda
+		# solo i widget della Home passa dalla coda qui sotto e basta. Vedi CARTELLA_AZIONE_PROP.
+		riguarda = cartella_aperta_riguarda(actions)
+		if ids or riguarda:
+			scope = ','.join(sorted(_scope_items(ids, actions)))
+			dettaglio = 'id=%s azioni=%s' % (len(ids or []), len(actions or ()))
+			# Con un dialogo modale aperto (le info di un film, "rimuovi dalla mia lista", il menu contestuale, il
+			# dialogo di attesa di un caricamento) la cartella si ridisegna quando si chiude: vedi CARTELLA_RINVIO_PROP.
+			# La parte della Home va in coda subito.
+			# LOTTO 427: sono cambiati solo STATI (nessuna azione che riguardi la cartella) e il pannello episodi e'
+			# a schermo: si ricarica solo lui. Se lo e' si chiede solo senza dialoghi: vedi pannello_episodi_a_schermo.
+			if modal_dialog_open(): _rimanda_refresh_cartella(scope, dettaglio, riguarda)
+			else: _refresh_cartella(scope, dettaglio, not riguarda and pannello_episodi_a_schermo())
+		else:
+			logger('Fen Light', 'DIAG refresh: finestra Video, niente Container.Refresh: nessun titolo cambiato e la '
+					'cartella aperta non e\' la lista di %s' % ','.join(sorted(actions or ())))
 		# Container.Refresh ricarica SOLO la cartella aperta. I widget della schermata principale --
 		# 'continua a guardare' e il conteggio episodi rimanenti sulla serie -- non sono raggiungibili
 		# da qui, e questo ramo usciva senza toccarli. Due guardie a valle davano poi per scontato che
@@ -1706,11 +1898,23 @@ def kodi_refresh_ids(ids, actions=(), coalesce=True):
 			% (hit, other, len(ids or []), len(actions or ()), window_id,
 				'' if (window_id == 10000 or other_seen) else ' | nessuna finestra censita, resto RIMANDATO alla Home'))
 
+# LOTTO 424 -- "AGGIORNA WIDGET" RICOSTRUISCE LA SUA RIGA, NON TUTTE. La voce del menu contestuale chiamava
+# refresh_widgets, cioe' UpdateLibrary: ogni widget della schermata, per un clic su un elemento di una riga
+# sola (Firestick, 20:41:31 del 29/09). La voce porta ora la POSIZIONE della riga che l'ha costruita, la
+# chiave di questa invocazione, e paginator.aggiorna_riga ordina la ricostruzione di quella sola, rileggendo
+# la sorgente. Una lista senza posizione (le righe del dialogo info, una cartella) non ha la voce: non c'e'
+# niente di mirato da ricostruire, e il globale non si offre.
+AGGIORNA_RIGA_MODE = 'aggiorna_riga'
+
+def url_aggiorna_riga():
+	"""L'URL di "Aggiorna widget" per la riga che questa invocazione costruisce, o '' se non e' una riga."""
+	from modules.paginator import chiave_invocazione
+	key = chiave_invocazione()
+	return build_url({'mode': AGGIORNA_RIGA_MODE, 'riga': key}) if key else ''
+
 def refresh_widgets(show_notification='false', coalesce=True):
-	# Due padroni: la voce di menu "Aggiorna widget" (comando esplicito dell'utente, da eseguire
-	# sempre) e il servizio periodico (automatico, accorpabile). Al router arrivano identici, percio'
-	# la voce di menu si dichiara con user=true nell'URL. Accorpare una richiesta esplicita di
-	# aggiornamento sarebbe il caso peggiore possibile: l'utente ha chiesto proprio quello.
+	# Il ridisegno GLOBALE, che resta del solo servizio: il giro periodico (accorpabile) e il rinvio globale
+	# maturo (coalesce=False, lotto 130). La voce di menu "Aggiorna widget" non passa piu' di qui (lotto 424).
 	if _defer_refresh_if_busy('refresh_widgets'): return
 	clear_property(PENDING_REFRESH_PROP)
 	clear_property(PENDING_IDS_PROP)

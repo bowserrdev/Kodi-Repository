@@ -6,7 +6,7 @@
 # refresh, so the already-loaded items keep their position and the focus is preserved.
 from hashlib import md5
 from re import compile as re_compile
-from modules.kodi_utils import parse_qsl, urlencode, SEGNAPOSTO_PARAM
+from modules.kodi_utils import parse_qsl, urlencode, SEGNAPOSTO_PARAM, ATTESA_PARAM, PANNELLO_PARAM
 # Interruttore unico della strumentazione: qui in testa perche' lo usano sia PG_DEBUG sia PERF,
 # e il primo dei due sta molto piu' su del secondo.
 from modules.perf import enabled as _perf_enabled
@@ -218,9 +218,10 @@ ACTION_PROP = 'fenlight.pg.action.%s'
 # costruzione, il giro del watcher da 0,3 s e l'applicazione della lista da parte di Kodi arrivavano
 # nell'ordine giusto: sul Mac si' (29/09 00:25:38, la riga VECCHIA spostata 90 ms prima che Kodi
 # applicasse la nuova), sulla Firestick Discover ripartiva dall'elemento N dopo un'animazione visibile.
-# Adesso una riga che riceve una lista diversa viene DISTRUTTA (router._svuota_prima): passa da un
-# solo elemento, e Kodi rimette il cursore sul primo per la sua stessa regola. Nessun tempo da
-# indovinare. Resta a parte 'continua a guardare' (modules/cw_head.py), che risponde a un'altra
+# Adesso una riga che riceve una lista diversa passa dal segnaposto d'attesa: lo decide la skin guardando
+# lo schermo (router._consegna_attesa: scheda serie e Discover), o fino al 419 il plugin dal ponte
+# (router._svuota_prima: ricerca testuale, Home e hub). Da un solo elemento Kodi rimette il cursore sul
+# primo per la sua stessa regola. Nessun tempo da indovinare. Resta a parte 'continua a guardare' (modules/cw_head.py), che risponde a un'altra
 # domanda: un titolo nuovo in testa alla STESSA lista. RIPOSIZIONAMENTO.md.
 # I contenitori dei widget della skin. Arctic Fuse li numera 501-504 (verificato nel file generato e
 # in Includes_Search.xml); il margine copre una riconfigurazione della home senza dover ritoccare qui.
@@ -268,8 +269,11 @@ CTL_PARAM = 'pgctl'
 # 'pgctl' e' qui perche' make_key ora calcola l'impronta del CONTENUTO, che e' un'altra domanda:
 # "in questa posizione e' cambiata la lista?". La posizione non deve entrarci.
 # SEGNAPOSTO_PARAM e' come la sua riga si presenta da vuota, non quale lista contiene.
+# ATTESA_PARAM (lotto 418, revisione del 29/09): la skin chiede il segnaposto PER la lista che sta per
+# costruire, e l'attesa deve dichiarare la stessa impronta che la costruzione trovera'.
+# PANNELLO_PARAM: il nonce che ricarica il pannello episodi dopo un Container.Refresh (kodi_utils.PANEL_RELOAD_PROP).
 _VOLATILE_PARAMS = ('new_page', 'paginate_start', 'refreshed', 'pages', 'reload', 'reload_property',
-					RELOAD_KIND_PARAM, CTL_PARAM, SEGNAPOSTO_PARAM)
+					RELOAD_KIND_PARAM, CTL_PARAM, SEGNAPOSTO_PARAM, ATTESA_PARAM, PANNELLO_PARAM)
 
 # Text-search hub debounce + anti-stale. The skin rebuilds the search widgets on EVERY keystroke, so a
 # burst of typing (or deleting) launches many overlapping builds for the same container; because each
@@ -1027,10 +1031,10 @@ def _fai_ricariche_rimandate():
 def consegna_posizione(key, items):
 	"""IL PONTE DI UNA POSIZIONE: quanti elementi ha consegnato, e che la costruzione e' finita.
 
-	E' il minimo che serve alla distruzione (router._svuota_prima) per sapere, alla costruzione dopo,
-	se in quella posizione c'e' qualcosa da togliere: tiene_altra_lista guarda BUILT_PROP insieme
-	all'impronta che reconcile_position ha dichiarato. Chiude anche la marca "in costruzione" che il
-	router alza per chiunque abbia 'pgctl' nel path (mark_invocation_start): senza, resterebbe orfana.
+	Chiude la marca "in costruzione" che il router alza per chiunque abbia 'pgctl' nel path
+	(mark_invocation_start): senza, resterebbe orfana. E BUILT_PROP e' il conteggio del ponte: lo leggono
+	il watcher, le ricariche mirate e, fino al 419, la distruzione del plugin (router._svuota_prima, con
+	tiene_altra_lista) per sapere se in quella posizione c'e' qualcosa da togliere.
 
 	La chiamano set_head, che poi pubblica molto altro, e gli episodi della scheda serie (lotto 418),
 	che non sono un widget e quel molto altro non lo vogliono: la firma di testa servirebbe solo a
@@ -1198,7 +1202,8 @@ def dichiara_vuota(stato=None):
 	e' end_directory a sapere che un segnaposto e' stato consegnato, ed e' la sola a saperlo.
 	CHI CI ARRIVA DAVVERO, oggi, e' meno di quanto sembri, e vale la pena scriverlo perche' e'
 	cambiato due volte:
-	  - router._svuota_prima, che consegna un'attesa senza costruire niente. E' il caso vivo;
+	  - router._consegna_attesa e router._svuota_prima, che consegnano un'attesa senza costruire niente.
+	    Sono il caso vivo;
 	  - una costruzione che non passa da set_head e finisce con zero elementi. Una riga di ricerca a
 	    zero risultati NON e' questo caso: e' paginata, quindi set_head ha gia' parlato e il guardiano
 	    qui sotto la ferma.
@@ -1213,7 +1218,7 @@ def dichiara_vuota(stato=None):
 	from modules.kodi_utils import QUERY_PROP, _PRIMO_ELEMENTO
 	return testa_vuota(key, stato, _PRIMO_ELEMENTO.get(QUERY_PROP))
 
-def _action_matches(stored, wanted_actions):
+def action_matches(stored, wanted_actions):
 	"""L'azione pubblicata da un widget soddisfa una delle azioni richieste?
 
 	Le azioni sono qualificate per tipo di media da chi le pubblica ('trakt_watchlist:movie'), perche'
@@ -1411,6 +1416,28 @@ def _ricarica(scope, cid, key, nonce, adesso, per_azione=False):
 	ordina_ricarica(scope, cid, nonce, per_azione)
 	return decisione
 
+def aggiorna_riga(key):
+	""""Aggiorna widget" dal menu contestuale: ricostruisce la sola riga `key`, rileggendo la sorgente.
+
+	LOTTO 424. Stesso canale delle ricariche mirate (_ricarica: il gettone lo scrive il servizio, e una
+	costruzione in volo che rilegge gia' la sorgente copre la richiesta), per AZIONE, perche' l'utente chiede
+	la lista com'e' adesso e non solo gli stati dei titoli che contiene. La bandiera fenlight.refresh_widgets
+	resta: e' cio' che fa estrarre una selezione nuova ai widget casuali (random_lists.py), che rileggere la
+	sorgente non basta a cambiare.
+	"""
+	scope, _, cid = (key or '').partition('.')
+	if not (scope and cid):
+		log('aggiorna_riga: posizione illeggibile %r, nessuna ricostruzione' % key)
+		return False
+	from time import time
+	from modules.kodi_utils import hold_refresh_flag
+	hold_refresh_flag('fenlight.refresh_widgets')
+	adesso = time()
+	decisione = _ricarica(scope, cid, key, '%d' % (adesso * 1000), adesso, per_azione=True)
+	spedisci_ricariche()
+	log('aggiorna_riga key=%s: %s' % (key, decisione))
+	return True
+
 def esegui_ricarica_rimandata(key):
 	"""Chiamata da set_head: la costruzione che teneva ferma una ricarica ha appena pubblicato.
 
@@ -1453,7 +1480,7 @@ def refresh_containers_for_ids(ids, actions=()):
 	momento in cui andrebbe ricostruito. Per quel widget l'AZIONE non e' un affinamento della regola
 	per id: e' la condizione perche' funzioni. Vedi CONTINUE_WATCHING_ACTION.
 
-	Le azioni si confrontano per PREFISSO qualificato (vedi _action_matches): 'trakt_watchlist:movie'
+	Le azioni si confrontano per PREFISSO qualificato (vedi action_matches): 'trakt_watchlist:movie'
 	e 'trakt_watchlist:tvshow' sono due widget distinti e vanno colpiti separatamente, ma chi chiede
 	'trakt_watchlist' senza qualificatore li prende entrambi.
 
@@ -1500,7 +1527,7 @@ def refresh_containers_for_ids(ids, actions=()):
 		# va riletta; un id dice che cambia lo STATO di un titolo che la lista contiene gia'.
 		# L'elenco mai pubblicato cade dalla parte prudente: non si puo' dimostrare niente, e rileggere
 		# la sorgente e' l'unica risposta che non lascia a schermo un dato vecchio.
-		per_azione = _action_matches(get_property(ACTION_PROP % key), wanted_actions) if key else True
+		per_azione = action_matches(get_property(ACTION_PROP % key), wanted_actions) if key else True
 		if key and not per_azione:
 			stored = get_property(IDS_PROP % key)
 			# stored vuota = elenco mai pubblicato: non si puo' dimostrare niente, quindi si ricarica.
@@ -1532,7 +1559,7 @@ def refresh_containers_for_ids(ids, actions=()):
 		if not get_property(BUILT_PROP % key): continue
 		unresolved += 1
 		seen_any = True
-		per_azione = _action_matches(get_property(ACTION_PROP % key), wanted_actions)
+		per_azione = action_matches(get_property(ACTION_PROP % key), wanted_actions)
 		if not per_azione:
 			stored = get_property(IDS_PROP % key)
 			# Elenco vuoto = mai pubblicato: non si dimostra niente, quindi si ricarica. Qui, a
@@ -1569,7 +1596,7 @@ def refresh_containers_for_ids(ids, actions=()):
 		key = '%s.%s' % (other_scope, cid)
 		if not get_property(BUILT_PROP % key): continue
 		seen_other += 1
-		per_azione = _action_matches(get_property(ACTION_PROP % key), wanted_actions)
+		per_azione = action_matches(get_property(ACTION_PROP % key), wanted_actions)
 		if not per_azione:
 			stored = get_property(IDS_PROP % key)
 			if stored and not wanted.intersection(stored.split(',')): continue
@@ -1935,7 +1962,8 @@ def reconcile_position(key, params):
 
 	E' la DICHIARAZIONE di quale lista occupa una posizione (CTL_KEY_PROP), e la fanno tre chiamanti:
 	  - passi_da_caricare, cioe' ogni costruzione paginata, prima di decidere quante pagine caricare;
-	  - gli episodi della scheda serie, che non sono paginati ma occupano una posizione condivisa.
+	  - gli episodi della scheda serie, che non sono paginati ma occupano una posizione condivisa;
+	  - router._consegna_attesa, quando la skin chiede il segnaposto per la lista che sta per costruire.
 	La distruzione di una riga (lotto 418) dichiara la lista nuova anche lei, ma con distruggi: la parte
 	comune e' _nuova_lista, e la differenza e' che distruggi non tocca il gettone (vedi li').
 	E' il rimpiazzo del controllo di cambio inquilino che stava nel watcher: qui il contenuto e' noto
@@ -1967,7 +1995,8 @@ def reconcile_position(key, params):
 	# un contenitore che riceve un'altra lista: CGUIBaseContainer::UpdateListProvider cerca l'elemento
 	# selezionato per puntatore e poi per path, e se non lo trova tiene l'indice -- o va sull'ultimo se
 	# la lista nuova e' piu' corta (PR.md, voce 4). Qui si accodava il riposizionamento del servizio;
-	# adesso la riga che cambia lista la distrugge router._svuota_prima, prima ancora di arrivare qui.
+	# adesso la riga che cambia lista passa dal segnaposto d'attesa prima ancora di arrivare qui
+	# (router._consegna_attesa, o fino al 419 router._svuota_prima).
 	log('reconcile %s: contenuto %s -> %s, conteggio azzerato' % (key, short(was) if was else '(nuovo)', short(content)))
 	return 0
 

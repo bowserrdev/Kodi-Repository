@@ -3,6 +3,8 @@
     <param name="groupid">{widget_group_id}</param>
     <param name="label">{widget_label}</param>
     <param name="include">{widget_include}</param>
+    <!-- LOTTO 428: la finestra della riga, dove l'onfocus scrive TMDbHelper.WidgetContainer (Widget_Row) -->
+    <param name="finestra">1105</param>
         <!-- LOTTO 165 RITIRATO (21/09). Qui c'era anche
          !String.Contains(Window(Home).Property(fenlight.pg.rehead),1105.{widget_id}): la riga
          restava nascosta finche' il watcher non aveva riportato il contenitore in testa, perche'
