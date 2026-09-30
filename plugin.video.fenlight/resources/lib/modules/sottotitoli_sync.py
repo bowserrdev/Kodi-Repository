@@ -21,6 +21,7 @@ terzo, 0 falliti; errore contro la verita' da 0,73 senza sincronizzazione a 0,15
 caso tipico ~1,5-2 s di un core.
 """
 import re, bisect
+from collections import Counter
 
 RAPPORTI = (1.0, 25 / 23.976, 23.976 / 25, 24 / 23.976, 23.976 / 24, 25 / 24, 24 / 25)
 TEMPO = re.compile(r'(\d+):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d+):(\d{2}):(\d{2})[,.](\d{1,3})')
@@ -77,6 +78,7 @@ class Riferimento:
 		self.inizi = [a for a, b in fusi]
 		self.fini = [b for a, b in fusi]
 		self.starts = sorted(a for a, b in intervalli)
+		self.starts_int = [int(x) for x in self.starts]      # lotto 434: gli int() che gli istogrammi rifacevano a ogni voto
 		self.cum = [0]
 		for a, b in fusi: self.cum.append(self.cum[-1] + b - a)
 
@@ -87,22 +89,41 @@ class Riferimento:
 	def sovrapposizione(self, a, b):
 		return self._fino(b) - self._fino(a) if b > a else 0
 
+	def somma(self, iv, rapporto, offset):
+		"""sum(sovrapposizione(a*r+o, b*r+o)) sulle battute: lo stesso conto, con _fino scritto in linea (lotto 434: era
+		meta' del tempo di punteggio in chiamate). I valori si sommano con sum() su una lista, come prima su un
+		generatore: stesso ordine e stessa aritmetica su ogni versione di Python."""
+		inizi, fini, cum, br = self.inizi, self.fini, self.cum, bisect.bisect_right
+		valori = []
+		metti = valori.append
+		for a, b in iv:
+			A = a * rapporto + offset
+			B = b * rapporto + offset
+			if B > A:
+				i = br(inizi, B) - 1
+				fb = 0 if i < 0 else cum[i] + min(B, fini[i]) - inizi[i]
+				i = br(inizi, A) - 1
+				fa = 0 if i < 0 else cum[i] + min(A, fini[i]) - inizi[i]
+				metti(fb - fa)
+			else:
+				metti(0)
+		return sum(valori)
+
 
 def trasforma(iv, rapporto, offset): return [(a * rapporto + offset, b * rapporto + offset) for a, b in iv]
-def punteggio(ref, iv, rapporto=1.0, offset=0): return sum(ref.sovrapposizione(a * rapporto + offset, b * rapporto + offset) for a, b in iv)
+def punteggio(ref, iv, rapporto=1.0, offset=0): return ref.somma(iv, rapporto, offset)
 
 
 # ---- 1. offset unico --------------------------------------------------------------------------------------------------
 def istogramma(ref, iv, rapporto, finestra=120000, passo=100, campione=1):
 	"""Voti delle differenze fra inizi, a secchielli di `passo` ms, entro +-finestra. `campione`: una battuta ogni N."""
-	voti, s = {}, ref.starts
+	voti, s, si = Counter(), ref.starts, ref.starts_int
 	mezzo = passo // 2
-	get = voti.get
+	bl, br = bisect.bisect_left, bisect.bisect_right
 	for a, b in iv[::campione]:
 		x = int(a * rapporto)
-		for j in range(bisect.bisect_left(s, x - finestra), bisect.bisect_right(s, x + finestra)):
-			k = (int(s[j]) - x + mezzo) // passo
-			voti[k] = get(k, 0) + 1
+		# Counter.update conta in C e inserisce le chiavi nell'ordine in cui arrivano, come il dict di prima
+		voti.update([(sj - x + mezzo) // passo for sj in si[bl(s, x - finestra):br(s, x + finestra)]])
 	return voti, passo
 
 
@@ -116,13 +137,25 @@ def picchi(voti, passo, quanti=8, distanza=1000):
 	return [(k * passo, liscio[k]) for k in scelti]
 
 
+def _memo(ref, iv, rapporto):
+	"""punteggio() per offset, ricordato: le rifiniture rivalutavano il centro di ogni passo e il vincitore (lotto 434)."""
+	visti = {}
+	def p(o):
+		try: return visti[o]
+		except KeyError:
+			v = visti[o] = ref.somma(iv, rapporto, o)
+			return v
+	return p
+
+
 def rifinisci(ref, iv, rapporto, offset):
 	"""+-600 a passi di 100, poi +-80 a passi di 20: 22 valutazioni."""
+	p = _memo(ref, iv, rapporto)
 	best = offset
 	for raggio, passo in ((600, 100), (80, 20)):
 		c = best
-		best = max(range(c - raggio, c + raggio + 1, passo), key=lambda o: punteggio(ref, iv, rapporto, o))
-	return best, punteggio(ref, iv, rapporto, best)
+		best = max(range(c - raggio, c + raggio + 1, passo), key=p)
+	return best, p(best)
 
 
 def globale(ref, iv, finalisti=2):
@@ -143,8 +176,9 @@ def globale(ref, iv, finalisti=2):
 		migliori.append((p, r, o))
 	if not migliori: return 1.0, 0, 0.0
 	p, r, o = max(migliori)
-	best = max(range(o - 40, o + 41, 20), key=lambda x: punteggio(ref, iv, r, x))
-	return r, best, punteggio(ref, iv, r, best) / (parlato * r)
+	q = _memo(ref, iv, r)
+	best = max(range(o - 40, o + 41, 20), key=q)
+	return r, best, q(best) / (parlato * r)
 
 
 # ---- 2. candidati a catena ------------------------------------------------------------------------------------------
@@ -155,24 +189,28 @@ def _coperto(ref, bl, rapporto, o):
 
 def _rifinisci_breve(ref, bl, rapporto, o):
 	"""+-300 a passi di 100, poi +-40 a passi di 20: 12 valutazioni su un blocco."""
+	p = _memo(ref, bl, rapporto)
 	for raggio, passo in ((300, 100), (40, 20)):
 		c = o
-		o = max(range(c - raggio, c + raggio + 1, passo), key=lambda x: punteggio(ref, bl, rapporto, x))
+		o = max(range(c - raggio, c + raggio + 1, passo), key=p)
 	return o
 
 
 def _cerca(ref, bl, rapporto, centro, raggio, passo=100):
 	"""Picco dell'istogramma delle differenze del blocco, entro +-raggio da centro."""
-	s, v = ref.starts, {}
+	s, si, v = ref.starts, ref.starts_int, Counter()
 	mezzo = passo // 2
+	sx, dx = bisect.bisect_left, bisect.bisect_right
 	for a, b in bl:
 		x = int(a * rapporto) + centro
-		for j in range(bisect.bisect_left(s, x - raggio), bisect.bisect_right(s, x + raggio)):
-			k = (int(s[j]) - x + mezzo) // passo
-			v[k] = v.get(k, 0) + 1
+		v.update([(sj - x + mezzo) // passo for sj in si[sx(s, x - raggio):dx(s, x + raggio)]])
 	if not v: return None, 0
-	k = max(v, key=lambda k: v.get(k - 1, 0) + v[k] + v.get(k + 1, 0))
-	return centro + k * passo, v.get(k - 1, 0) + v[k] + v.get(k + 1, 0)
+	# come max(v, key=...): il PRIMO, nell'ordine d'inserimento, col punteggio lisciato piu' alto (index() da' il primo)
+	get = v.get
+	chiavi = list(v)
+	lisci = [get(k - 1, 0) + c + get(k + 1, 0) for k, c in v.items()]
+	tb = max(lisci)
+	return centro + chiavi[lisci.index(tb)] * passo, tb
 
 
 def candidati_a_blocchi(ref, iv, rapporto, raggio, blocco=16, offset_globale=0, buono=0.55):
@@ -236,23 +274,34 @@ def a_tratti(ref, iv, rapporto, durata_file=None, penalita=2000, tol=500, costo_
 	V = [[NEG] * K for _ in range(n)]
 	P = [[None] * K for _ in range(n)]
 	V[0] = list(g[0])
+	# lotto 434: le coppie (k1, D) di ogni k2 non dipendono da i. `inizi[i] - D + tol` resta in quest'ordine: in
+	# virgola mobile `(inizi[i] + tol) - D` non e' la stessa aritmetica.
+	scese = [[(k1, cand[k1] - cand[k2]) for k1 in range(k2 + 1, K)] for k2 in range(K)]
+	br = bisect.bisect_right
 	for i in range(1, n):
 		Vp = V[i - 1]
+		# lotto 434: il ramo "sale" era un ciclo su k1 < k2 per ogni k2 (K^2/2); il massimo di Vp[k1] - penalita su
+		# k1 < k2 e' un massimo progressivo. Stessa scelta a parita': il primo k1 col valore piu' alto, e solo se batte
+		# strettamente il restare.
+		sale_v, sale_k = [], []
+		mv, mk = NEG, None
+		for k in range(K):
+			sale_v.append(mv); sale_k.append(mk)
+			x = Vp[k] - penalita
+			if x > mv: mv, mk = x, k
+		qui, di, gi, Vi, Pi = inizi[i], durate[i], g[i], V[i], P[i]
 		for k2 in range(K):
 			best, arg = Vp[k2], (i - 1, k2)
 			# sale (cand[k1] < cand[k2]): nessuna battuta tolta
-			for k1 in range(k2):
-				v = Vp[k1] - penalita
-				if v > best: best, arg = v, (i - 1, k1)
+			if sale_v[k2] > best: best, arg = sale_v[k2], (i - 1, sale_k[k2])
 			# scende di D: si torna all'ultima battuta prima dei D ms che il film non ha
-			for k1 in range(k2 + 1, K):
-				D = cand[k1] - cand[k2]
-				j = bisect.bisect_right(inizi, inizi[i] - D + tol) - 1
+			for k1, D in scese[k2]:
+				j = br(inizi, qui - D + tol) - 1
 				if j < 0 or j >= i: continue
-				v = V[j][k1] - penalita - costo_tolta * (durate[i] - durate[j + 1])
+				v = V[j][k1] - penalita - costo_tolta * (di - durate[j + 1])
 				if v > best: best, arg = v, (j, k1)
-			V[i][k2] = best + g[i][k2] if best > NEG else NEG
-			P[i][k2] = arg
+			Vi[k2] = best + gi[k2] if best > NEG else NEG
+			Pi[k2] = arg
 	i, k = n - 1, max(range(K), key=lambda k: V[n - 1][k])
 	tenute = []
 	while True:

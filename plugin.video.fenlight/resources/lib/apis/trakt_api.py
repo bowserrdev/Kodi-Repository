@@ -783,7 +783,7 @@ def _refresh_watchlist(data):
 		if data.get('shows'): actions.add(kodi_utils.qualify_action(kodi_utils.WATCHLIST_ACTION, 'tvshow'))
 	except: pass
 	# Se i dati non dicono di che tipo sono, si torna al nome nudo: non qualificato vuol dire
-	# 'entrambi i widget', cioe' il comportamento di prima. Vedi paginator._action_matches.
+	# 'entrambi i widget', cioe' il comportamento di prima. Vedi paginator.action_matches.
 	if not actions: actions.add(kodi_utils.WATCHLIST_ACTION)
 	kodi_refresh_ids((), tuple(sorted(actions)), coalesce=False)
 
@@ -1506,6 +1506,17 @@ def _conta_film_su_trakt():
 		return int(_probe[1]) if _probe else None
 	except: return None
 
+def _rimanda_per_marcatura(categoria, esito):
+	"""La scrittura della fotografia e' stata rifiutata perche' una nostra marcatura e' ancora in volo o e' arrivata a
+	Trakt dopo che la fotografia aveva cominciato a scaricare (lotto 431, trakt_cache.IN_VOLO). Non e' un dato
+	perso: si rimanda la categoria come per un guasto di rete, e il giro dopo riscarica una fotografia che la
+	marcatura la contiene. Torna True se ha rimandato."""
+	if esito != trakt_cache.FOTOGRAFIA_SUPERATA: return False
+	_SYNC_DEFERRED.add(categoria)
+	logger('FenLight Trakt', 'watched %s: la fotografia di Trakt e\' piu\' vecchia di una nostra marcatura, non si scrive; '
+			'segnalibro NON avanzato, si riprova al giro dopo' % categoria)
+	return True
+
 def trakt_indicators_movies():
 	# I film sono stati fino al lotto 107 l'unico percorso senza via incrementale: nessun confronto con
 	# la cronologia, solo il rebuild integrale a ogni cambio di attivita'. Nel log della stick del
@@ -1526,6 +1537,8 @@ def trakt_indicators_movies():
 	# Misura che motiva tutto questo: nel log del 29/08 alle 03:25 la sincronizzazione ha scaricato
 	# 6 pagine, '599 da Trakt, 599 in cache, 0 scartati', ~10 s di rete, per scoprire UN titolo
 	# cambiato -- ed e' il pezzo piu' grosso dei 21 s che separano l'avvio dall'allineamento a Trakt.
+	# L'istante da cui la fotografia di Trakt comincia: una nostra marcatura arrivata a Trakt dopo lo rende vecchio.
+	_fotografia = time.time()
 	try: _first = call_trakt('sync/history/movies', params={'limit': history_page_limit}, with_auth=True, pagination=True, page_no=1)
 	except: _first = None
 	if _first:
@@ -1557,7 +1570,8 @@ def trakt_indicators_movies():
 				# il caso peggiore resta il comportamento di prima, mai un dato sbagliato.
 				_remote_count = _conta_film_su_trakt()
 				if _remote_count is not None:
-					_changed = trakt_watched_cache.add_movie_watched(_rows)
+					_changed = trakt_watched_cache.add_movie_watched(_rows, _fotografia)
+					if _rimanda_per_marcatura('movies', _changed): return None
 					_local_count = trakt_watched_cache.watched_movie_count()
 					if _local_count == _remote_count:
 						logger('FenLight Trakt', 'watched movies: %s play nuovi aggiunti, nessun rebuild (via incrementale) | %s visti, coincide con Trakt' % (len(_rows), _local_count))
@@ -1649,7 +1663,9 @@ def trakt_indicators_movies():
 	make_thread_list(_process, result)
 	logger('FenLight Trakt', 'watched movies: %s da Trakt, %s in cache, %s scartati%s'
 			% (len(result), len(insert_list), len(dropped), (' -> %s' % dropped[:10]) if dropped else ''))
-	return trakt_watched_cache.set_bulk_movie_watched(insert_list)
+	_esito = trakt_watched_cache.set_bulk_movie_watched(insert_list, _fotografia)
+	if _rimanda_per_marcatura('movies', _esito): return None
+	return _esito
 
 def trakt_indicators_tv():
 	# Trakt no longer returns the seasons/episodes breakdown in sync/watched/shows, so the watched episodes
@@ -1715,6 +1731,8 @@ def trakt_indicators_tv():
 		except:
 			pagine_cronologia[page_no] = None
 			logger('FenLight Trakt', 'watched history page %s FAILED' % page_no)
+	# L'istante da cui la fotografia di Trakt comincia: una nostra marcatura arrivata a Trakt dopo lo rende vecchio.
+	_fotografia = time.time()
 	try: first_page = call_trakt('sync/history/episodes', params={'limit': history_page_limit}, with_auth=True, pagination=True, page_no=1)
 	except: first_page = None
 	if not first_page:
@@ -1740,7 +1758,8 @@ def trakt_indicators_tv():
 				if _riga is not None: insert_list.append(_riga)
 			except: pass
 		if insert_list:
-			_changed = trakt_watched_cache.add_tvshow_watched(insert_list)
+			_changed = trakt_watched_cache.add_tvshow_watched(insert_list, _fotografia)
+			if _rimanda_per_marcatura('episodes', _changed): return None
 			# Via incrementale: si aggiornano SOLO i play, mai lo scarto. Lo scarto si rimisura
 			# esclusivamente dopo un rebuild integrale (vedi in fondo), perche' e' l'unico momento in
 			# cui la tabella locale e' per costruzione completa. Rimisurarlo qui, dove la tabella e'
@@ -1789,7 +1808,8 @@ def trakt_indicators_tv():
 		# None qui sopra, che prima non esisteva affatto e lasciava che un errore di rete cadesse qui
 		# dentro cancellando l'intera cronologia degli episodi.
 		logger('FenLight Trakt', 'watched shows: Trakt non ha serie viste, episodi allineati a vuoto (ne conteneva %s)' % trakt_watched_cache.watched_episode_count())
-		_esito = trakt_watched_cache.set_bulk_tvshow_watched([])
+		_esito = trakt_watched_cache.set_bulk_tvshow_watched([], fotografia=_fotografia)
+		if _rimanda_per_marcatura('episodes', _esito): return None
 		# Anche l'allineamento a vuoto e' un allineamento riuscito: senza rimisurare qui, lo scarto
 		# resterebbe quello di una tabella piena e si ricostruirebbe a ogni sondaggio.
 		_misura_scarto_episodi(_stats, 'dopo l' + "'" + 'allineamento a vuoto')
@@ -1832,7 +1852,8 @@ def trakt_indicators_tv():
 			% (len(shows), len(history), page_count, len(insert_list)))
 	if _intatte: logger('FenLight Trakt', 'watched episodes rebuild: %s serie lasciate intatte, mappa episodi non disponibile: %s'
 						% (len(_intatte), ', '.join(sorted(_intatte))))
-	_esito = trakt_watched_cache.set_bulk_tvshow_watched(insert_list, _intatte)
+	_esito = trakt_watched_cache.set_bulk_tvshow_watched(insert_list, _intatte, _fotografia)
+	if _rimanda_per_marcatura('episodes', _esito): return None
 	_misura_scarto_episodi(_stats, 'dopo il rebuild integrale', spiegato=len(_saltati))
 	return _esito
 
@@ -2290,12 +2311,45 @@ def activity_rollback(latest, cached, categorie):
 		if cat in cached: indietro[cat] = cached[cat]
 	return indietro
 
+def clear_properties(media_type):
+	for item in ((True, True), (True, False), (False, True), (False, False)): clear_property('1_%s_%s_%s_watched' % (media_type, item[0], item[1]))
+
+def _rifai_avanzamento(progress_info, film, episodi):
+	"""Ricostruisce l'avanzamento dei film e/o degli episodi e dice cosa ridisegnare: (ids, azioni, ignoto),
+	nell'ordine di _publish_changed.
+
+	UNA funzione per i due rami che lo fanno -- quello del cambio di attivita' (`paused_at`) e quello
+	tranquillo (fuori sincrono senza cambio di attivita') -- che fino al 29/09 avevano la stessa decisione
+	scritta in due forme.
+	Le identita' sono quelle che calcolano i costruttori sul prima/dopo della tabella: di livello FILM (il
+	tmdb nudo) e di livello EPISODIO ('tmdb:stagione:episodio'), perche' un episodio in pausa non e' la sua
+	serie e non deve ricostruire ogni widget che contenga quella serie.
+	L'azione CONTINUE_WATCHING accompagna gli id, perche' 'continua a guardare' cambia COMPOSIZIONE: in
+	aggiunta il titolo non e' ancora nella lista, in rimozione l'elenco e' quello di prima.
+	MA SOLO SE QUALCOSA E' CAMBIATO (lotto 423, TRAKT.md 9.5). Prima la si dichiarava sempre, anche quando la
+	riconciliazione non aveva cambiato niente da mostrare: e' il caso dell'ECO, a ogni riproduzione. Il player
+	scrive il segnalibro in locale (pending_put) e lo spinge a Trakt; al poll successivo Trakt lo restituisce,
+	`paused_at` e' cambiato e la riga passa a synced con la stessa percentuale -- una scrittura, non un
+	cambiamento (progress_sync.reconcile, `changed`). Log della Firestick, 15:50:08 del 29/09: 'scritte 1',
+	nessuna 'cambiate', eppure 'azioni: continue_watching', e il widget gia' aggiornato dal player si
+	ricostruiva una seconda volta. La decisione e' declare_change, la stessa dei rami del visto (lotto 141):
+	un insieme VUOTO vuol dire lavoro fatto e niente da ridisegnare; `None` (fallito: qui non c'e' rinvio)
+	resta azione + rete globale.
+	"""
+	ids, azioni, ignoto = set(), set(), False
+	for fare, media_type, costruttore in ((film, 'movie', trakt_progress_movies), (episodi, 'episode', trakt_progress_tv)):
+		if not fare: continue
+		clear_properties(media_type)
+		_azione, _nuovi, _ignoto = declare_change(costruttore(progress_info), False)
+		if _azione: azioni.add(kodi_utils.CONTINUE_WATCHING_ACTION)
+		ids |= _nuovi
+		ignoto = ignoto or _ignoto
+	return ids, azioni, ignoto
+
 def trakt_sync_activities(force_update=False):
 	# def clear_watched_tvshow_cache():
 	# 	from modules.watched_status import clear_cache_watched_tvshow_status
 	# 	clear_cache_watched_tvshow_status(watched_indicators=1)
-	def clear_properties(media_type):
-		for item in ((True, True), (True, False), (False, True), (False, False)): clear_property('1_%s_%s_%s_watched' % (media_type, item[0], item[1]))
 	def _get_timestamp(date_time):
 		return int(time.mktime(date_time.timetuple()))
 	def _compare(latest, cached):
@@ -2364,23 +2418,12 @@ def trakt_sync_activities(force_update=False):
 				if movie_differs or ep_differs:
 					logger('FenLight Trakt', 'avanzamento fuori sincrono senza cambio di attivita\': film [%s] | episodi [%s]'
 							% (movie_differs or '-', ep_differs or '-'))
-				changed_ids, changed_unknown = set(), False
-				if movie_differs:
-					clear_properties('movie')
-					_ids = trakt_progress_movies(progress_info)
-					if _ids is None: changed_unknown = True
-					else: changed_ids |= _ids
-				if ep_differs:
-					clear_properties('episode')
-					_ids = trakt_progress_tv(progress_info)
-					if _ids is None: changed_unknown = True
-					else: changed_ids |= _ids
 				if movie_differs or ep_differs:
 					# Un titolo USCITO dall'avanzamento cambia la composizione di 'continua a guardare':
 					# l'id da solo non basta, perche' il widget lo mostra ancora e la regola per id lo
 					# troverebbe -- ma solo finche' non e' stato ricostruito da qualcun altro. L'azione
-					# lo copre in entrambe le direzioni. Vedi kodi_utils.CONTINUE_WATCHING_ACTION.
-					_publish_changed(changed_ids, {kodi_utils.CONTINUE_WATCHING_ACTION}, changed_unknown)
+					# lo copre in entrambe le direzioni, se qualcosa e' cambiato: vedi _rifai_avanzamento.
+					_publish_changed(*_rifai_avanzamento(progress_info, bool(movie_differs), bool(ep_differs)))
 					return 'success'
 		return 'not needed'
 	refresh_movies_progress, refresh_shows_progress = False, False
@@ -2506,23 +2549,11 @@ def trakt_sync_activities(force_update=False):
 		# dichiaravano NIENTE, quindi il payload usciva '-' -- 'lo sappiamo, non e' cambiato nulla' --
 		# ed era falso. Un film lasciato a meta' su un altro dispositivo arrivava nel database della
 		# stick e non compariva mai a schermo (log del 01/09, 20:04:45). Ora i due costruttori tornano
-		# le identita' che hanno davvero cambiato avanzamento, calcolate sul prima/dopo della tabella.
-		# L'azione accompagna sempre gli id, perche' 'continua a guardare' cambia COMPOSIZIONE:
-		# in aggiunta il titolo non e' ancora nella lista, in rimozione l'elenco e' quello di prima.
-		changed_actions.add(kodi_utils.CONTINUE_WATCHING_ACTION)
-		if refresh_movies_progress:
-			clear_properties('movie')
-			# Identita' di livello FILM: il tmdb nudo.
-			_ids = trakt_progress_movies(progress_info)
-			if _ids is None: changed_unknown = True
-			else: changed_ids |= _ids
-		if refresh_shows_progress:
-			clear_properties('episode')
-			# Identita' di livello EPISODIO ('tmdb:stagione:episodio'): un episodio in pausa non e' la
-			# sua serie, e non deve ricostruire ogni widget che contenga quella serie.
-			_ids = trakt_progress_tv(progress_info)
-			if _ids is None: changed_unknown = True
-			else: changed_ids |= _ids
+		# le identita' che hanno davvero cambiato avanzamento: vedi _rifai_avanzamento.
+		_nuovi, _azioni, _ignoto = _rifai_avanzamento(progress_info, refresh_movies_progress, refresh_shows_progress)
+		changed_ids |= _nuovi
+		changed_actions |= _azioni
+		changed_unknown = changed_unknown or _ignoto
 	# Qualcosa e' stato rimandato: il segnalibro torna indietro, cosi' il prossimo giro riprende il
 	# lavoro invece di trovare 'nessuna modifica'. La guardia self_mark diventa cosi' un RINVIO e non
 	# piu' un cestino: al massimo ritarda di una finestra self_mark, non perde piu' niente.

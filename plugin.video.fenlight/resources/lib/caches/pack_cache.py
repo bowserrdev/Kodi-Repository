@@ -135,8 +135,10 @@ def scrivi(voci):
 			righe.append((h, zlib.compress(json.dumps([list(x) for x in f], separators=(',', ':')).encode('utf-8'), 6), quando))
 			video = _video()
 			for i in v.get('files') or []:
-				nome, oh = i.get('short_name') or '', i.get('opensubtitles_hash')
-				if oh and nome.lower().endswith(video): hashes.append((h, nome, oh, quando))
+				# per PERCORSO (name), non per nome del file (short_name): due video omonimi in cartelle diverse dello
+				# stesso torrent (Disc1/.../00001.m2ts, Disc2/.../00001.m2ts) si scambiavano l'hash (code review 30/09)
+				nome, percorso, oh = i.get('short_name') or '', i.get('name') or i.get('short_name') or '', i.get('opensubtitles_hash')
+				if oh and nome.lower().endswith(video): hashes.append((h, percorso, oh, quando))
 		except: continue
 	if not righe: return 0
 	try:
@@ -159,7 +161,8 @@ def _crea_oshash(dbcon):
 
 
 def oshash(info_hash, nome):
-	"""L'hash OpenSubtitles del video `nome` (short_name) del torrent, se TorBox l'ha dato. None altrimenti."""
+	"""L'hash OpenSubtitles del video `nome` (il PERCORSO nel torrent, `name` di TorBox) se TorBox l'ha dato. None
+	altrimenti. Le righe scritte prima della correzione, per short_name, qui non si trovano piu': l'hash si calcola."""
 	if not info_hash or not nome: return None
 	try:
 		dbcon = connect_database('debridcache_db')
@@ -170,14 +173,14 @@ def oshash(info_hash, nome):
 
 
 def nome_per_dimensione(info_hash, dimensione):
-	"""Lotto 420 -- il nome del video del torrent che pesa esattamente `dimensione` byte (il Content-Range del file che
+	"""Lotto 420 -- il percorso del video del torrent che pesa esattamente `dimensione` byte (il Content-Range del file che
 	si riproduce), se e' uno solo. Il resolver non dice quale file ha scelto; la dimensione esatta lo identifica senza
 	uno stato in piu'. None se l'elenco non c'e' o se due video pesano uguale."""
 	if not info_hash or not dimensione: return None
 	h = info_hash.lower()
 	video = _video()
-	nomi = [n for p, n, b in leggi([h]).get(h, ()) if b == dimensione and n.lower().endswith(video)]
-	return nomi[0] if len(nomi) == 1 else None
+	percorsi = [p for p, n, b in leggi([h]).get(h, ()) if b == dimensione and n.lower().endswith(video)]
+	return percorsi[0] if len(percorsi) == 1 else None
 
 
 def manutenzione():

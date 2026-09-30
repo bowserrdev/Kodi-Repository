@@ -30,6 +30,7 @@
             <include>Animation_Group_Bumper</include>
 
             <include content="Hub_Widget_Switcher">
+                <param name="finestra">1109</param>
                 <param name="home_switcher">true</param>
                 <param name="include_content">Hub_Settings_Items</param>
                 <param name="extended">true</param>

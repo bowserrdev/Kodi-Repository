@@ -696,6 +696,9 @@
         <param name="congela_succ1">0</param>
         <param name="congela_succ2">0</param>
         <param name="congela_testa">false</param>
+        <!-- LOTTO 428: la finestra della riga ('home', '1101', '1105'...), dove scrivere TMDbHelper.WidgetContainer.
+             Senza valore predefinito, di proposito: una riga che non la dichiara non scrive da nessuna parte e si vede
+             subito, invece di scrivere nella finestra sbagliata. La passano i template del generatore. -->
         <definition>
             <include content="_Widget_Row">
                 <param name="id">$PARAM[id]</param>
@@ -728,7 +731,15 @@
                     <param name="refocus">$PARAM[refocus]</param>
                 </include>
 
-                <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id])</onfocus>
+                <!-- LOTTO 428. LA RIGA SCRIVE NELLA SUA FINESTRA. Qui c'era SetProperty(TMDbHelper.WidgetContainer,id) senza
+                     finestra: Kodi esegue le azioni di onfocus DOPO, come messaggi differiti, e un SetProperty senza
+                     finestra va a quella che ha il fuoco in quel momento. Scendendo in fretta fino all'ultima riga, il
+                     giu' successivo apre il rimbalzo (1180) prima che l'onfocus della riga giri: la proprieta' finiva
+                     sul rimbalzo, l'hub restava col numero della riga sopra e ne mostrava il pannello (clearlogo e
+                     informazioni del suo elemento), per tutti gli elementi della riga, fino al cambio di riga.
+                     Firestick, 22:20:08 del 29/09: fenlight.active_widget, che la finestra la dice (Home), era 511;
+                     il pannello era quello della 510 (Past Lives, il suo primo elemento). PR.md voce 27. -->
+                <onfocus>SetProperty(TMDbHelper.WidgetContainer,$PARAM[id],$PARAM[finestra])</onfocus>
                 <onfocus>SetProperty(fenlight.active_widget,$PARAM[id],Home)</onfocus>
                 <onfocus>SetProperty(fenlight.active_widget_path,"$PARAM[widgetpath]",Home)</onfocus>
                 <nested />
@@ -767,7 +778,7 @@
                     <param name="menuid">$PARAM[menuid]</param>
                     <param name="onback">[Integer.IsEqual(Container($PARAM[baseid]$PARAM[id]).CurrentItem,1)]</param>
                 </include>
-                <onfocus condition="$PARAM[set_widgetcontainer]">SetProperty(TMDbHelper.WidgetContainer,$PARAM[baseid]$PARAM[id])</onfocus>
+                <onfocus condition="$PARAM[set_widgetcontainer]">SetProperty(TMDbHelper.WidgetContainer,$PARAM[baseid]$PARAM[id],$PARAM[finestra])</onfocus>
                 <onfocus condition="$PARAM[set_widgetcontainer]">SetProperty(fenlight.active_widget,$PARAM[baseid]$PARAM[id],Home)</onfocus>
                 <nested />
             </include>

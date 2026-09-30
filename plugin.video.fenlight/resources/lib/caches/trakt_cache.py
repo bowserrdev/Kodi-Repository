@@ -35,6 +35,49 @@ BASE_DELETE = 'DELETE FROM %s'
 TC_BASE_GET = 'SELECT data FROM trakt_data WHERE id = ?'
 TC_BASE_SET = 'INSERT OR REPLACE INTO trakt_data (id, data) VALUES (?, ?)'
 TC_BASE_DELETE = 'DELETE FROM trakt_data WHERE id = ?'
+
+# LOTTO 431 -- LE MARCATURE IN VOLO. Una fotografia di Trakt (la cronologia dei visti) scaricata prima che
+# Trakt abbia ricevuto una nostra marcatura e' VECCHIA, e riscriverla in tabella cancella la marcatura. Firestick,
+# 23:08:47-49 del 29/09: la ricostruzione degli episodi comincia a scaricare, l'utente segna A come non visto, la
+# ricostruzione riscrive la tabella con A visto; al "non visto" di B il pannello si ricarica e A torna visto.
+# Non basta sapere QUANDO e' avvenuta la marcatura locale: la spedisce a Trakt un thread di sfondo, qualche istante
+# dopo, e anche una fotografia scaricata dopo la marcatura ma prima della risposta di Trakt e' vecchia.
+# Quindi il dato e' la marcatura in volo: una riga per marcatura, aperta PRIMA della scrittura locale e
+# dell'invio (apri_marcatura), chiusa dal thread quando Trakt ha risposto (chiudi_marcatura), con l'istante.
+# Una fotografia si scrive solo se nessuna marcatura dello stesso tipo e' ancora in volo o e' stata confermata
+# dopo che la fotografia ha cominciato a scaricare; altrimenti si rimanda il giro (_fotografia_superata). La
+# verifica sta DENTRO la transazione della scrittura, e la marcatura si apre prima della scrittura locale:
+# SQLite serializza le due, e nessun ordine perde la marcatura.
+# Una marcatura il cui invio non risponde mai (processo ucciso) si considera persa dopo MARCATURA_PERSA_SECONDI:
+# da li' vale Trakt, come per un invio fallito (watched_status._mark_on_trakt).
+IN_VOLO = 'in_volo|%s|%s'
+MARCATURA_PERSA_SECONDI = 600
+FOTOGRAFIA_SUPERATA = 'fotografia superata'
+
+def _segnala_visti(esito):
+	"""Dopo una fotografia di Trakt: se ha cambiato dei visti (o non si sa), il segnale della voce della stagione
+	(lotto 433, modules/visti_label.py). Una fotografia rifiutata o senza cambiamenti non tocca niente."""
+	if esito != FOTOGRAFIA_SUPERATA and (esito is None or esito):
+		try:
+			from modules.visti_label import bump
+			bump()
+		except Exception: pass
+	return esito
+
+def apri_marcatura(db_type):
+	"""Una marcatura nostra di tipo `db_type` ('movie' o 'episode') parte adesso. Torna la chiave, o None."""
+	from time import time
+	chiave = IN_VOLO % (db_type, repr(time()))
+	try: connect_database('trakt_db').execute(TC_BASE_SET, (chiave, ''))
+	except: return None
+	return chiave
+
+def chiudi_marcatura(chiave):
+	"""Trakt ha risposto alla marcatura (bene o male): si annota quando."""
+	if not chiave: return
+	from time import time
+	try: connect_database('trakt_db').execute(TC_BASE_SET, (chiave, repr(time())))
+	except: pass
 DELETE_LISTS_WITH_MEDIA = 'SELECT id FROM maincache WHERE id LIKE ?'
 
 # Cancellazioni nostre che Trakt non ha ancora recepito, raccolte dalla riconciliazione perche' le
@@ -124,25 +167,45 @@ class TraktWatched:
 			except: return None
 		return set(key[0] for key in (before ^ after))
 
-	def _set_bulk_watched(self, db_type, insert_list, intatte=None):
+	def _fotografia_superata(self, db_type, fotografia):
+		"""Una marcatura nostra rende vecchia la fotografia di Trakt iniziata all'istante `fotografia`? Vedi IN_VOLO.
+
+		Va chiamata dentro la transazione della scrittura. Ripulisce le marcature che non contano piu': quelle
+		confermate prima della fotografia (Trakt le conosce) e quelle perse.
+		"""
+		if fotografia is None: return False
+		from time import time
+		adesso, superata = time(), False
+		dbcon = connect_database('trakt_db')
+		for chiave, dato in dbcon.execute('SELECT id, data FROM trakt_data WHERE id GLOB ?', (IN_VOLO % (db_type, '*'),)).fetchall():
+			try: iniziata, confermata = float(chiave.rsplit('|', 1)[1]), (float(dato) if dato else None)
+			except: iniziata, confermata = 0.0, None
+			if (confermata is not None and confermata < fotografia) or (confermata is None and adesso - iniziata > MARCATURA_PERSA_SECONDI):
+				dbcon.execute(TC_BASE_DELETE, (chiave,))
+			else: superata = True
+		return superata
+
+	def _set_bulk_watched(self, db_type, insert_list, intatte=None, fotografia=None):
 		# Stesso DELETE+INSERT della tabella progress, stessa finestra sporca, stessa cura: qui i
 		# lettori sono gli indicatori di visto delle liste. Vedi _atomic.
 		# `intatte`: id (stringa) delle serie le cui righe NON si toccano, perche' in questo giro la loro mappa
 		# episodi non si sa (utils.mappa_verso_righe_locali). Non si cancellano e non contano come cambiate.
+		# `fotografia`: quando la fotografia di Trakt ha cominciato a scaricare (lotto 431, IN_VOLO).
 		intatte = set(str(i) for i in (intatte or ()))
 		def _work():
+			if self._fotografia_superata(db_type, fotografia): return FOTOGRAFIA_SUPERATA
 			changed = self._changed_media_ids(db_type, insert_list, intatte)
 			if intatte: self._delete(WATCHED_DELETE_TRANNE % ', '.join('?' for _ in intatte), (db_type,) + tuple(sorted(intatte)))
 			else: self._delete(WATCHED_DELETE, (db_type,))
 			self._executemany(WATCHED_INSERT, insert_list)
 			return changed
-		return self._atomic(_work)
+		return _segnala_visti(self._atomic(_work))
 
-	def set_bulk_movie_watched(self, insert_list):
-		return self._set_bulk_watched('movie', insert_list)
+	def set_bulk_movie_watched(self, insert_list, fotografia=None):
+		return self._set_bulk_watched('movie', insert_list, fotografia=fotografia)
 
-	def set_bulk_tvshow_watched(self, insert_list, intatte=None):
-		return self._set_bulk_watched('episode', insert_list, intatte)
+	def set_bulk_tvshow_watched(self, insert_list, intatte=None, fotografia=None):
+		return self._set_bulk_watched('episode', insert_list, intatte, fotografia)
 
 	def _local_progress(self, db_type):
 		"""Le righe locali nella forma che vuole progress_sync: {chiave -> Local}.
@@ -193,7 +256,10 @@ class TraktWatched:
 			if plan.retry_remote_delete: PENDING_REMOTE_DELETES.extend(
 					(db_type, k, rid) for k, rid in plan.retry_remote_delete)
 			if plan.retry_push: PENDING_REMOTE_PUSHES.extend((db_type, k) for k in plan.retry_push)
-			return set(_uid(db_type, key) for key in plan.changed if _uid(db_type, key))
+			# Ogni chiave cambiata conta: senza l'identita' di episodio (stagione o numero non numerici) vale
+			# il tmdb della serie. Scartarla renderebbe l'insieme vuoto, e dal 29/09 un insieme vuoto vuol
+			# dire "niente da ridisegnare" (trakt_api, ramo dell'avanzamento): un cambiamento vero sparirebbe.
+			return set(_uid(db_type, key) or key[0] for key in plan.changed)
 		return self._atomic(_work)
 
 	def _log_plan(self, db_type, local, remote, plan):
@@ -220,20 +286,25 @@ class TraktWatched:
 	def set_bulk_tvshow_progress(self, insert_list, intatte=None):
 		return self._reconcile_progress('episode', insert_list, intatte)
 
-	def add_tvshow_watched(self, insert_list):
-		# used by the incremental sync: keeps the existing rows and refreshes last_played on rewatches
-		self._executemany(WATCHED_UPSERT, insert_list)
-		# Via incrementale: i titoli toccati sono esattamente quelli inseriti, senza bisogno di diff.
-		try: return set(str(row[1]) for row in insert_list)
-		except: return None
+	def _add_watched(self, db_type, insert_list, fotografia=None):
+		# La via incrementale: tiene le righe esistenti e aggiorna last_played sulle rivisioni. I titoli toccati
+		# sono esattamente quelli inseriti, senza bisogno di diff. Anche qui la fotografia puo' essere vecchia:
+		# un play che avevamo appena tolto rientrerebbe (lotto 431, IN_VOLO), quindi la stessa verifica, nella
+		# stessa transazione.
+		def _work():
+			if self._fotografia_superata(db_type, fotografia): return FOTOGRAFIA_SUPERATA
+			self._executemany(WATCHED_UPSERT, insert_list)
+			try: return set(str(row[1]) for row in insert_list)
+			except: return None
+		return _segnala_visti(self._atomic(_work))
 
-	def add_movie_watched(self, insert_list):
-		# Gemella esatta di add_tvshow_watched, per la via incrementale dei film (lotto 107). Tiene le
-		# righe esistenti e aggiorna last_played su una rivisione; i titoli toccati sono per costruzione
-		# quelli inseriti, quindi il refresh mirato non ha bisogno di alcun confronto.
-		self._executemany(WATCHED_UPSERT, insert_list)
-		try: return set(str(row[1]) for row in insert_list)
-		except: return None
+	def add_tvshow_watched(self, insert_list, fotografia=None):
+		# used by the incremental sync: keeps the existing rows and refreshes last_played on rewatches
+		return self._add_watched('episode', insert_list, fotografia)
+
+	def add_movie_watched(self, insert_list, fotografia=None):
+		# Gemella esatta di add_tvshow_watched, per la via incrementale dei film (lotto 107).
+		return self._add_watched('movie', insert_list, fotografia)
 
 	def watched_movie_count(self):
 		# Quanti film risultano visti in locale. Serve al controllo di completezza della via

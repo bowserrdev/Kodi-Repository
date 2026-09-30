@@ -38,7 +38,6 @@ URL_PLAYBACK_CHOICE = _BASE + 'mode=playback_choice&media_type=movie&meta=%s'
 URL_MARK = _BASE + 'mode=watched_status.mark_movie&action=%s&tmdb_id=%s'
 URL_WATCHLIST_TOGGLE = _BASE + 'mode=trakt.watchlist_toggle&media_type=movie&tmdb_id=%s&in_watchlist=%s'
 URL_ERASE_BOOKMARK = _BASE + 'mode=watched_status.erase_bookmark&media_type=movie&tmdb_id=%s&refresh=true'
-URL_REFRESH_WIDGETS = _BASE + 'mode=refresh_widgets&user=true'
 URL_EXIT_MEDIA_MENU = _BASE + 'mode=navigator.exit_media_menu'
 # LOTTO 331 -- le azioni stanno in modules/sorgenti.py, con le sorgenti che le leggono. Qui restano i nomi
 # che usano i rami a pagina singola (lotto 335).
@@ -58,6 +57,7 @@ class Movies:
 		self.category_name = self.params_get('category_name', None) or self.params_get('name', None) or 'Movies'
 		self.id_type, self.list, self.action = self.params_get('id_type', 'tmdb_id'), self.params_get('list', []), self.params_get('action', None)
 		self.items, self.new_page, self.total_pages, self.is_external, self.is_home = [], {}, None, external(), home()
+		self.url_aggiorna_riga = kodi_utils.url_aggiorna_riga() if self.is_external else ''
 		# LOTTO 333 -- `preparata`: questa istanza costruisce gli elementi di una lista mista che il servizio ha
 		# preparato (Trakt, MDbList). Vale la stessa regola delle righe paginate: niente rete, schede scadute
 		# servite, mancanti segnalate -- per conto della lista (pg_key, pg_params), non di questa istanza.
@@ -214,10 +214,12 @@ class Movies:
 				# i due erano indistinguibili: aggiungere un film ricostruiva anche la watchlist delle
 				# serie. Il qualificatore lo aggiunge chi COSTRUISCE, che e' l'unico a sapere con
 				# certezza di che tipo e' il proprio widget. Chi chiede senza qualificatore li prende
-				# ancora entrambi: vedi paginator._action_matches.
+				# ancora entrambi: vedi paginator.action_matches.
 				if self.interactive:
 					paginator.set_head(self.pg_key, items, self.pg_action(), self.params, preparata=True)
 					kodi_utils.tappa('movies.testa')
+				# Una cartella aperta non ha set_head: dichiara la sua azione cosi' (kodi_utils.CARTELLA_AZIONE_PROP).
+				else: kodi_utils.annota_cartella_aperta(self.pg_action())
 				if self.new_page and not self.widget_hide_next_page:
 						self.new_page.update({'mode': 'build_movie_list', 'action': self.action, 'category_name': self.category_name})
 						add_dir(self.new_page, 'Next Page (%s) >>' % self.new_page['new_page'], handle, 'nextpage', nextpage_landscape)
@@ -315,10 +317,9 @@ class Movies:
 						run_plugin % (URL_WATCHLIST_TOGGLE % (tmdb_id, 'true' if in_watchlist else 'false'))))
 			if progress:
 				cm_append(('[B]Azzera avanzamento[/B]', run_plugin % (URL_ERASE_BOOKMARK % tmdb_id)))
-			# "Refresh" e' il superset di "Reload": alza fenlight.refresh_widgets, che i widget random leggono
-			# per rigenerare una selezione nuova, e poi chiama comunque kodi_refresh. Tenuto solo quello.
+			# "Aggiorna widget" ricostruisce la riga dell'elemento (lotto 424, kodi_utils.url_aggiorna_riga).
 			if self.is_external:
-				cm_append(('[B]Aggiorna widget[/B]', run_plugin % URL_REFRESH_WIDGETS))
+				if self.url_aggiorna_riga: cm_append(('[B]Aggiorna widget[/B]', run_plugin % self.url_aggiorna_riga))
 			else: cm_append(('[B]Esci dalla lista[/B]', run_plugin % URL_EXIT_MEDIA_MENU))
 			_t2 = _perf()
 			info_tag = listitem.getVideoInfoTag()

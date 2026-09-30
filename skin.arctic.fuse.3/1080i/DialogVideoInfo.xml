@@ -5,7 +5,9 @@
         <param name="defaultcontrol">8000</param>
     </include>
     <menucontrol>9000</menucontrol>
-    <include>DialogInfo_Onload</include>
+    <include content="DialogInfo_Onload">
+        <param name="finestra">movieinformation</param>
+    </include>
     <onload>SetProperty(TMDbHelper.EnableExtendedProperties,True)</onload>
     <onload>SetProperty(BaseID,$INFO[ListItem.Label]$INFO[ListItem.FolderPath])</onload>
     <onload>SetProperty(FenLight.TMDb_ID,$INFO[ListItem.UniqueID(tmdb)])</onload>
@@ -59,7 +61,9 @@
                 <onback>8000</onback>
                 <ondown>330</ondown>
 
-                <include condition="!String.IsEqual(ListItem.Property(tmdb_type),person)">DialogInfo_VideoWidgets</include>
+                <include content="DialogInfo_VideoWidgets" condition="!String.IsEqual(ListItem.Property(tmdb_type),person)">
+                    <param name="finestra">movieinformation</param>
+                </include>
                 <include condition="String.IsEqual(ListItem.Property(tmdb_type),person)">DialogInfo_PersonWidgets</include>
                 <include condition="!Skin.HasSetting(VideoInfo.Widgets.DisableGallery)">DialogInfo_GalleryWidget</include>
 

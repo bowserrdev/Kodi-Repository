@@ -260,3 +260,96 @@ def secondo(rif):
 	for c in rif[1:]:
 		if c['classe'] != p['classe'] or c['lingua'] != p['lingua']: return c
 	return rif[1]
+
+
+# ---- mp4 (lotto 421) ------------------------------------------------------------------------------------------------
+# Le tracce di testo tx3g di un mp4 hanno i tempi nella tabella dei campioni (stts: durate; stsz: taglie, e un campione
+# di 2 byte e' una cancellazione, non una battuta). Stanno nel moov, che su un film lungo pesa 4-27 MB quasi tutti di
+# tabelle del video e dell'audio: sottotitoli_rete legge solo le tracce di testo. Qui solo i byte.
+# Il marcatore della traccia non basta: le WEB-DL con tracce da Apple dicono 'sbtl', quelle rifatte (Dune, Joker, Il
+# cavaliere oscuro, See nel corpus) dicono 'text' con lo stesso tx3g dentro. Si prendono tutte e due; il capitolo di
+# Apple ('text' con codec 'text', 15 campioni) resta fuori per codec e per numero di battute.
+MP4_TESTO = (b'sbtl', b'text', b'subt')
+# Sottotitoli che non contiamo: VobSub ('subp'), sottotitoli per non udenti ('clcp'), e nei marcatori di testo i codec
+# che non sono tx3g (WebVTT, TTML, CEA-608/708). Il capitolo di Apple ('text'/'text') non e' un sottotitolo.
+MP4_SUB_ALTRI = (b'subp', b'clcp')
+MP4_CODEC_ALTRI = ('wvtt', 'stpp', 'c608', 'c708')
+
+
+def mp4_non_contate(tracce):
+	"""True se fra le trak c'e' un sottotitolo che non sappiamo contare: la presenza di una traccia completa nella lingua
+	dell'utente allora non e' un giudizio (code review 30/09: un italiano completo in WebVTT si sarebbe ignorato)."""
+	for t in tracce:
+		h = (t.get('handler') or '').encode('latin-1')
+		if h in MP4_SUB_ALTRI or (h in MP4_TESTO and t.get('codec') in MP4_CODEC_ALTRI): return True
+	return False
+
+
+def scatole(d, i, fine):
+	"""(tipo, inizio del contenuto, fine) delle scatole in d[i:fine]. Taglia 0 = fino alla fine, 1 = a 64 bit."""
+	fine = min(fine, len(d))
+	while i + 8 <= fine:
+		t = int.from_bytes(d[i:i + 4], 'big'); tipo = d[i + 4:i + 8]; h = 8
+		if t == 1:
+			if i + 16 > fine: return
+			t = int.from_bytes(d[i + 8:i + 16], 'big'); h = 16
+		elif t == 0: t = fine - i
+		if t < h: return
+		yield tipo, i + h, i + t
+		i += t
+
+
+def gestore_mp4(d, a, z):
+	"""Il marcatore (hdlr) di una trak, da trak/mdia/hdlr, anche se la trak e' letta solo in parte. None se non c'e'."""
+	try:
+		for t, x, y in scatole(d, a, z):
+			if t == b'mdia':
+				for t2, x2, y2 in scatole(d, x, y):
+					if t2 == b'hdlr' and x2 + 12 <= len(d): return d[x2 + 8:x2 + 12]
+	except Exception: pass
+	return None
+
+
+def traccia_mp4(d, a, z):
+	"""Una trak intera -> {'handler', 'scala', 'lang', 'codec', 'stts', 'stsz'} (come il banco). {} se illeggibile."""
+	info = {}
+	def giu(a, z):
+		for t, x, y in scatole(d, a, z):
+			if t in (b'mdia', b'minf', b'stbl'): giu(x, y)
+			elif t == b'hdlr': info['handler'] = d[x + 8:x + 12].decode('latin-1')
+			elif t == b'mdhd':
+				v = d[x]
+				info['scala'] = int.from_bytes(d[x + (20 if v == 1 else 12):x + (24 if v == 1 else 16)], 'big')
+				lang = int.from_bytes(d[x + (32 if v == 1 else 20):x + (34 if v == 1 else 22)], 'big')
+				info['lang'] = ''.join(chr(((lang >> s) & 31) + 0x60) for s in (10, 5, 0))
+			elif t == b'stsd': info['codec'] = d[x + 12:x + 16].decode('latin-1')
+			elif t == b'stts':
+				n = int.from_bytes(d[x + 4:x + 8], 'big')
+				info['stts'] = [(int.from_bytes(d[x + 8 + 8 * k:x + 12 + 8 * k], 'big'), int.from_bytes(d[x + 12 + 8 * k:x + 16 + 8 * k], 'big')) for k in range(n)]
+			elif t == b'stsz':
+				unica = int.from_bytes(d[x + 4:x + 8], 'big'); n = int.from_bytes(d[x + 8:x + 12], 'big')
+				info['stsz'] = [unica] * n if unica else [int.from_bytes(d[x + 12 + 4 * k:x + 16 + 4 * k], 'big') for k in range(n)]
+	try: giu(a, z)
+	except Exception: return {}
+	return info
+
+
+def linea_mp4(info):
+	"""tx3g: un campione vuoto (2 byte) cancella la battuta. -> [(inizio, fine)] ms, [] se mancano le tabelle."""
+	if not info.get('scala') or 'stts' not in info or 'stsz' not in info: return []
+	tempi, t = [], 0
+	for n, d in info['stts']:
+		for _ in range(n): tempi.append((t, d)); t += d
+	k = 1000.0 / info['scala']
+	return [(a * k, (a + d) * k) for (a, d), s in zip(tempi, info['stsz']) if s > 2]
+
+
+def candidate_mp4(tracce):
+	"""Le tracce di testo tx3g complete abbastanza da contare, nella forma di tracce_complete() (prima di ordina()).
+	tracce: [{'handler', 'codec', 'lang', 'linea'}]."""
+	fuori = []
+	for t in tracce:
+		if (t.get('handler') or '').encode('latin-1') in MP4_TESTO and t.get('codec') == 'tx3g' and len(t.get('linea') or []) >= MIN_BATTUTE:
+			fuori.append({'lingua': (t.get('lang') or '')[:3], 'nome': t.get('codec') or '', 'sdh': False, 'classe': 0,
+						  'forced': False, 'linea': [tuple(x) for x in t['linea']]})
+	return fuori

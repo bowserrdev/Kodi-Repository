@@ -231,11 +231,15 @@
             </control>
             <control type="group">
                 <visible allowhiddenfocus="true">$EXP[View_Mode_Comb_Tall_Expression]</visible>
-                <include>View_Combined_List_Horz_Selector</include>
+                <include content="View_Combined_List_Horz_Selector">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
             </control>
             <control type="group">
                 <visible allowhiddenfocus="true">$EXP[View_Mode_Comb_Flix_Expression]</visible>
-                <include>View_Combined_Row_Horz_Selector</include>
+                <include content="View_Combined_Row_Horz_Selector">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
             </control>
         </control>
     </include>
@@ -266,35 +270,81 @@
             <control type="group">
 
                 <!-- Row Views -->
-                <include condition="$EXP[Exp_View_500_Include]">View_500_Square_Row</include>
-                <include condition="$EXP[Exp_View_501_Include]">View_501_Landscape_Row</include>
-                <include condition="$EXP[Exp_View_502_Include]">View_502_Poster_Row</include>
-                <include condition="$EXP[Exp_View_503_Include]">View_503_Circle_Row</include>
-                <include condition="$EXP[Exp_View_504_Include]">View_504_Board_Row</include>
-                <include condition="$EXP[Exp_View_505_Include]">View_505_Card_Row</include>
+                <include content="View_500_Square_Row" condition="$EXP[Exp_View_500_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_501_Landscape_Row" condition="$EXP[Exp_View_501_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_502_Poster_Row" condition="$EXP[Exp_View_502_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_503_Circle_Row" condition="$EXP[Exp_View_503_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_504_Board_Row" condition="$EXP[Exp_View_504_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_505_Card_Row" condition="$EXP[Exp_View_505_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
 
                 <!-- Wall Views -->
-                <include condition="$EXP[Exp_View_510_Include]">View_510_Square_Wall</include>
-                <include condition="$EXP[Exp_View_511_Include]">View_511_Landscape_Wall</include>
-                <include condition="$EXP[Exp_View_512_Include]">View_512_Poster_Wall</include>
-                <include condition="$EXP[Exp_View_513_Include]">View_513_Circle_Wall</include>
-                <include condition="$EXP[Exp_View_514_Include]">View_514_Board_Wall</include>
+                <include content="View_510_Square_Wall" condition="$EXP[Exp_View_510_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_511_Landscape_Wall" condition="$EXP[Exp_View_511_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_512_Poster_Wall" condition="$EXP[Exp_View_512_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_513_Circle_Wall" condition="$EXP[Exp_View_513_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_514_Board_Wall" condition="$EXP[Exp_View_514_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
 
                 <!-- Combined Views -->
-                <include condition="$EXP[Exp_View_520_Include]">View_520_Square_Combined_Row</include>
-                <include condition="$EXP[Exp_View_521_Include]">View_521_Landscape_Combined_Row</include>
-                <include condition="$EXP[Exp_View_522_Include]">View_522_Poster_Combined_Row</include>
-                <include condition="$EXP[Exp_View_523_Include]">View_523_Circle_Combined_Row</include>
-                <include condition="$EXP[Exp_View_524_Include]">View_524_Board_Combined_Row</include>
-                <include condition="$EXP[Exp_View_526_Include]">View_526_List_Combined</include>
-                <include condition="$EXP[Exp_View_528_Include]">View_528_List_Combined</include>
+                <include content="View_520_Square_Combined_Row" condition="$EXP[Exp_View_520_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_521_Landscape_Combined_Row" condition="$EXP[Exp_View_521_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_522_Poster_Combined_Row" condition="$EXP[Exp_View_522_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_523_Circle_Combined_Row" condition="$EXP[Exp_View_523_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_524_Board_Combined_Row" condition="$EXP[Exp_View_524_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_526_List_Combined" condition="$EXP[Exp_View_526_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_528_List_Combined" condition="$EXP[Exp_View_528_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
 
                 <!-- List Views -->
-                <include condition="$EXP[Exp_View_506_Include]">View_506_Basic_List</include>
-                <include condition="$EXP[Exp_View_507_Include]">View_507_Media_List</include>
-                <include condition="$EXP[Exp_View_508_Include]">View_508_Expanded_List</include>
-                <include condition="$EXP[Exp_View_509_Include]">View_509_Flixart_List</include>
-                <include condition="$EXP[Exp_View_549_Include]">View_549_Flixart_List</include>
+                <include content="View_506_Basic_List" condition="$EXP[Exp_View_506_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_507_Media_List" condition="$EXP[Exp_View_507_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_508_Expanded_List" condition="$EXP[Exp_View_508_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_509_Flixart_List" condition="$EXP[Exp_View_509_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
+                <include content="View_549_Flixart_List" condition="$EXP[Exp_View_549_Include]">
+                    <param name="finestra">$PARAM[finestra]</param>
+                </include>
 
             </control>
         </definition>
@@ -526,6 +576,11 @@
         </include>
     </include>
 
+    <!-- LOTTO 429: `finestra` e' la finestra che ospita le viste ('videos' da MyVideoNav, 'programs' da MyPrograms).
+         Scende fino alle viste perche' ogni riga scriva TMDbHelper.WidgetContainer nella SUA finestra: le azioni onfocus
+         girano differite, e un SetProperty senza finestra finirebbe su un dialogo aperto nel frattempo (PR.md 27).
+         Kodi non passa i parametri agli include annidati: ogni livello la inoltra. tests/test_429.py espande ogni
+         finestra e verifica ogni scrittura. -->
     <include name="View_Main">
         <definition>
 
@@ -538,8 +593,12 @@
                 <control type="group">
                     <include>Animation_View_WindowChange</include>
                     <include>View_Scrollbar_Strip</include>
-                    <include>View_Row_Items</include>
-                    <include>View_Row_Line</include>
+                    <include content="View_Row_Items">
+                        <param name="finestra">$PARAM[finestra]</param>
+                    </include>
+                    <include content="View_Row_Line">
+                        <param name="finestra">$PARAM[finestra]</param>
+                    </include>
                     <control type="group">
                         <visible>!$EXP[View_Mode_Wall_Expression]</visible>
                         <include>Furniture_Footer_Left</include>

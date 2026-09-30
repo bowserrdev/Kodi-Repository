@@ -254,6 +254,21 @@ def get_watched_status_season(watched_info, aired_eps):
 		return playcount, watched, unwatched
 	except: return 0, 0, aired_eps
 
+def episodi_usciti_stagione(season_data, total_aired_eps, total_seasons, season_number):
+	"""Gli episodi USCITI di una stagione: il `totalepisodes` della lista stagioni (lotto 427, una definizione sola).
+
+	TMDb da' `episode_count` per ogni stagione, ma quello dell'ultima conta anche gli episodi annunciati e non
+	ancora usciti: per l'ultima vale il totale degli usciti della serie meno le stagioni prima. Speciali (0) e
+	stagioni non ancora uscite (conto 0) restano col loro conto. `season_data` e' quello INTERO dei metadati
+	della serie: prima il calcolo si accumulava lungo la lista costruita, e sulla strada di single_seasons,
+	che costruisce una stagione per volta, l'ultima stagione valeva il totale della serie.
+	Lo usano la lista stagioni e il pannello episodi, che deve contare i visti sullo stesso totale.
+	"""
+	conto = next((i.get('episode_count') or 0 for i in season_data or () if i.get('season_number') == season_number), 0)
+	if not conto or not season_number or season_number < (total_seasons or 0): return conto
+	prima = sum(i.get('episode_count') or 0 for i in season_data if 0 < (i.get('season_number') or 0) < season_number)
+	return total_aired_eps - prima
+
 def get_progress_status_season(watched, aired_eps):
 	try: progress = int((float(watched)/aired_eps)*100)
 	except: progress = 0
@@ -326,7 +341,22 @@ def clear_local_bookmarks():
 		for i in ('bookmark', 'streamdetails', 'files'): dbcon.executemany("DELETE FROM %s WHERE idFile=?" % i, file_ids)
 	except: pass
 
-def _mark_on_trakt(args, cache_media_type, ep_map_for=None):
+def _apri_marcatura(watched_indicators, cache_media_type):
+	"""LOTTO 431: la marcatura parte adesso, prima della scrittura locale e dell'invio. Solo con gli indicatori di
+	Trakt, gli unici che una fotografia di Trakt puo' riscrivere. Vedi caches/trakt_cache.IN_VOLO."""
+	if watched_indicators != 1: return None
+	from caches.trakt_cache import apri_marcatura
+	return apri_marcatura('episode' if cache_media_type == 'tvshow' else 'movie')
+
+def _mark_on_trakt(args, cache_media_type, ep_map_for=None, marcatura=None):
+	# `marcatura`: la chiave aperta da _apri_marcatura, che si chiude quando Trakt ha risposto -- bene, male o
+	# per niente (episodio assente su Trakt) -- in fondo, qualunque strada si prenda. Lotto 431.
+	try: _mark_on_trakt_rete(args, cache_media_type, ep_map_for)
+	finally:
+		from caches.trakt_cache import chiudi_marcatura
+		chiudi_marcatura(marcatura)
+
+def _mark_on_trakt_rete(args, cache_media_type, ep_map_for=None):
 	# La chiamata di rete la paga un thread di sfondo, non l'interfaccia. Il badge legge la riga
 	# LOCALE, che a questo punto e' gia' scritta: aspettare Trakt per aggiornarlo significava tenere
 	# ferma l'interfaccia su un dato che era gia' pronto. Stesso schema di _clear_progress_on_trakt.
@@ -559,12 +589,13 @@ def mark_movie(params):
 		try: title = metadata.movie_meta('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime()).get('title', '')
 		except: title = ''
 	watched_indicators = watched_indicators_function()
+	marcatura = _apri_marcatura(watched_indicators, media_type)
 	# Prima il locale e l'interfaccia, poi la rete. Vedi _mark_on_trakt.
 	watched_status_mark(watched_indicators, media_type, tmdb_id, action, title=title)
 	# Un film segnato non puo' ENTRARE in 'continua a guardare'; se ne esce, lo copre l'id.
 	refresh_container_for(tmdb_id, refresh, continua_a_guardare=False)
 	if watched_indicators == 1:
-		_spawn(_mark_on_trakt, ((action, 'movies', tmdb_id), media_type))
+		_spawn(_mark_on_trakt, ((action, 'movies', tmdb_id), media_type, None, marcatura))
 
 def mark_tvshow(params):
 	from modules import metadata
@@ -578,7 +609,7 @@ def mark_tvshow(params):
 	# La rete parte subito ma in PARALLELO al lotto locale, che qui e' lungo (un inserimento per
 	# episodio, con dialogo di avanzamento): prima la si aspettava e basta.
 	if watched_indicators == 1:
-		_spawn(_mark_on_trakt, ((action, 'shows', tmdb_id, tvdb_id), 'tvshow'))
+		_spawn(_mark_on_trakt, ((action, 'shows', tmdb_id, tvdb_id), 'tvshow', None, _apri_marcatura(watched_indicators, 'tvshow')))
 	current_date = get_datetime()
 	insert_list = []
 	insert_append = insert_list.append
@@ -616,14 +647,20 @@ def mark_season(params):
 	try: tvdb_id = int(params.get('tvdb_id', '0'))
 	except: tvdb_id = 0
 	watched_indicators = watched_indicators_function()
+	meta = metadata.tvshow_meta('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime())
+	# LOTTO 433 -- la voce unica della stagione (modules/visti_label.py) chiede 'alterna': si decide QUI, al clic,
+	# dallo stato vero e con la stessa regola dell'etichetta, non da cio' che l'etichetta diceva.
+	if action == 'alterna':
+		from modules.visti_label import conta_visti, tutti_visti
+		usciti = episodi_usciti_stagione(meta.get('season_data'), meta.get('total_aired_eps'), meta.get('total_seasons'), season)
+		action = 'mark_as_unwatched' if tutti_visti(conta_visti(tmdb_id, season) or 0, usciti) else 'mark_as_watched'
 	heading = '[B]Mark Watched %s[/B]' if action == 'mark_as_watched' else '[B]Mark Unwatched %s[/B]'
 	# Come mark_tvshow: la rete in parallelo al lotto locale, non davanti.
 	if watched_indicators == 1:
-		_spawn(_mark_on_trakt, ((action, 'season', tmdb_id, tvdb_id, season), 'tvshow'))
+		_spawn(_mark_on_trakt, ((action, 'season', tmdb_id, tvdb_id, season), 'tvshow', None, _apri_marcatura(watched_indicators, 'tvshow')))
 	progress_backround = progressDialogBG()
 	progress_backround.create('[B]Please Wait..[/B]', '')
 	current_date = get_datetime()
-	meta = metadata.tvshow_meta('tmdb_id', tmdb_id, tmdb_api_key(), mpaa_region(), get_datetime())
 	ep_data = metadata.episodes_meta(season, meta)
 	last_played = get_last_played_value(watched_indicators)
 	for count, item in enumerate(ep_data, 1):
@@ -648,12 +685,18 @@ def mark_episode(params):
 	try: tvdb_id = int(params.get('tvdb_id', '0'))
 	except: tvdb_id = 0
 	watched_indicators = watched_indicators_function()
+	marcatura = _apri_marcatura(watched_indicators, 'tvshow')
 	# Prima il locale e l'interfaccia, poi la rete. Vedi _mark_on_trakt.
 	watched_status_mark(watched_indicators, media_type, tmdb_id, action, season, episode, title)
 	refresh_container_for(tmdb_id, refresh)
 	if watched_indicators == 1:
 		_spawn(_mark_on_trakt, ((action, media_type, tmdb_id, tvdb_id), 'tvshow',
-					(tmdb_id, season, episode)))
+					(tmdb_id, season, episode), marcatura))
+
+def _visti_cambiati():
+	# Il segnale per la voce della stagione (lotto 433, modules/visti_label.py): i visti sono cambiati.
+	from modules.visti_label import bump
+	bump()
 
 def watched_status_mark(watched_indicators, media_type='', media_id='', action='', season='', episode='', title=''):
 	try:
@@ -663,6 +706,7 @@ def watched_status_mark(watched_indicators, media_type='', media_id='', action='
 			dbcon.execute('INSERT OR REPLACE INTO watched VALUES (?, ?, ?, ?, ?, ?)', (media_type, media_id, season, episode, last_played, title))
 		elif action == 'mark_as_unwatched':
 			dbcon.execute('DELETE FROM watched WHERE (db_type = ? and media_id = ? and season = ? and episode = ?)', (media_type, media_id, season, episode))
+		_visti_cambiati()
 		erase_bookmark(media_type, media_id, season, episode)
 		# if media_type == 'episode': clear_cache_watched_tvshow_status()
 	except: notification('Error')
@@ -674,6 +718,7 @@ def batch_watched_status_mark(watched_indicators, insert_list, action):
 			dbcon.executemany('INSERT OR IGNORE INTO watched VALUES (?, ?, ?, ?, ?, ?)', insert_list)
 		elif action == 'mark_as_unwatched':
 			dbcon.executemany('DELETE FROM watched WHERE (db_type = ? and media_id = ? and season = ? and episode = ?)', insert_list)
+		_visti_cambiati()
 		batch_erase_bookmark(watched_indicators, insert_list, action)
 		# clear_cache_watched_tvshow_status()
 	except: notification('Error')

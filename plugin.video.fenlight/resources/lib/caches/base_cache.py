@@ -818,6 +818,10 @@ def clear_cache(cache_type, silent=False, clear_hashes=True):
 		if not _confirm(): return
 		from caches.dub_cache import dub_cache
 		success = dub_cache.delete_all()
+	elif cache_type == 'subtitles':
+		if not _confirm(): return
+		from caches.sottotitoli_cache import svuota
+		success = svuota()
 	else:  # main
 		if not _confirm(): return
 		from caches.main_cache import main_cache
@@ -833,7 +837,8 @@ def clear_all_cache():
 	caches = (
 		('meta', 'Meta Cache'), ('internal_scrapers', 'Internal Scrapers Cache'),
 		('external_scrapers', 'External Scrapers Cache'), ('trakt', 'Trakt Cache'),
-		('imdb', 'IMDb Cache'), ('list', 'List Data Cache'), ('dub', 'Released/Dubbed Filter Cache'), ('main', 'Main Cache'),
+		('imdb', 'IMDb Cache'), ('list', 'List Data Cache'), ('dub', 'Released/Dubbed Filter Cache'),
+		('subtitles', 'Auto Subtitles Cache'), ('main', 'Main Cache'),
 		('pm_cloud', 'Premiumize Cloud'), ('rd_cloud', 'Real Debrid Cloud'),
 		('ad_cloud', 'All Debrid Cloud'), ('oc_cloud', 'OffCloud Cloud'),
 		('ed_cloud', 'Easy Debrid Cloud'), ('tb_cloud', 'TorBox Cloud')

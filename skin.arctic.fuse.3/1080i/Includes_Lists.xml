@@ -79,6 +79,7 @@
                 <param name="shadow_colordiffuse">$PARAM[shadow_colordiffuse]</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <nested />
                 <include>List_Board_Row_Movement</include>
             </include>
@@ -113,6 +114,7 @@
                 <param name="textcolor">$PARAM[textcolor]</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <param name="include_detailed_labels">$PARAM[include_detailed_labels]</param>
                 <param name="diffuse">$PARAM[diffuse]</param>
                 <nested />
@@ -146,6 +148,7 @@
                 <param name="textcolor">$PARAM[textcolor]</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <param name="include_detailed_labels">$PARAM[include_detailed_labels]</param>
                 <param name="diffuse">$PARAM[diffuse]</param>
                 <nested />
@@ -237,10 +240,12 @@
 
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <nested />
                 <include>List_Card_Row_Movement</include>
                 <focusedlayout width="$PARAM[itemlayout_w]" height="$PARAM[itemlayout_h]">
                     <include condition="$PARAM[hidden_button_enabled]" content="$PARAM[hidden_button]">
+                        <param name="finestra">$PARAM[finestra]</param>
                         <param name="id">$PARAM[id]</param>
                     </include>
                     <control type="group">
@@ -305,6 +310,7 @@
                 <param name="detailed">$PARAM[detailed]</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <nested />
                 <include>List_Banner_Row_Movement</include>
             </include>
@@ -326,6 +332,7 @@
                 <param name="detailed">$PARAM[detailed]</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <nested />
                 <include>List_Banner_Row_Movement</include>
             </include>
@@ -354,6 +361,7 @@
                 <param name="detailed">$PARAM[detailed]</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <nested />
                 <include>List_Poster_Row_Movement</include>
             </include>
@@ -384,6 +392,7 @@
                 <param name="shadow_colordiffuse">$PARAM[shadow_colordiffuse]</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <param name="use_label2">$PARAM[use_label2]</param>
                 <nested />
                 <include>List_Landscape_Row_Movement</include>
@@ -418,6 +427,7 @@
                 <param name="shadow_colordiffuse">$PARAM[shadow_colordiffuse]</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <nested />
                 <include>List_Board_Row_Movement</include>
             </include>
@@ -447,6 +457,7 @@
                 <param name="itemlayout_include">Layout_Circle</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <include condition="$PARAM[use_movement]">List_Card_Row_Movement</include>
                 <nested />
             </include>
@@ -476,6 +487,7 @@
                 <param name="itemlayout_include">Layout_Square</param>
                 <param name="hidden_button_enabled">$PARAM[hidden_button_enabled]</param>
                 <param name="hidden_button">$PARAM[hidden_button]</param>
+                <param name="finestra">$PARAM[finestra]</param>
                 <include condition="$PARAM[use_movement]">List_Poster_Row_Movement</include>
                 <nested />
             </include>
@@ -505,11 +517,13 @@
         </control>
     </include>
 
+    <!-- LOTTO 429: la linguetta scrive TMDbHelper.WidgetContainer nella finestra della striscia (`finestra`, da
+         Hub_Widget_Switcher), non in quella col fuoco quando l'onfocus gira. Vedi View_Main e PR.md 27. -->
     <include name="List_ButtonMenu_Row_HiddenButton_ERow_OnFocus">
         <param name="condition">true</param>
         <param name="prefix" />
         <definition>
-            <onfocus condition="$PARAM[condition]">SetProperty(TMDbHelper.WidgetContainer,$INFO[$PARAM[container]ListItem.Property(widget_id)])</onfocus>
+            <onfocus condition="$PARAM[condition]">SetProperty(TMDbHelper.WidgetContainer,$INFO[$PARAM[container]ListItem.Property(widget_id)],$PARAM[finestra])</onfocus>
             <onfocus condition="$PARAM[condition] + !String.IsEmpty($PARAM[container]ListItem.Property(hide_artwork))">SetProperty(Background.HideArtwork,True)</onfocus>
             <onfocus condition="$PARAM[condition] + !String.IsEmpty($PARAM[container]ListItem.Property(show_artwork))">ClearProperty(Background.HideArtwork)</onfocus>
             <onfocus condition="$PARAM[condition] + !String.IsEmpty($PARAM[container]ListItem.Property(show_overlay))">SetProperty(Background.ShowOverlay,True,Home)</onfocus>
@@ -519,7 +533,9 @@
     <include name="List_ButtonMenu_Row_HiddenButton_ERow">
         <control type="button">
             <visible allowhiddenfocus="true">false</visible>
-            <include>List_ButtonMenu_Row_HiddenButton_ERow_OnFocus</include>
+            <include content="List_ButtonMenu_Row_HiddenButton_ERow_OnFocus">
+                <param name="finestra">$PARAM[finestra]</param>
+            </include>
         </control>
     </include>
 
@@ -540,6 +556,7 @@
             <control type="$PARAM[control]" id="$PARAM[id]">
                 <nested />
                 <include content="$PARAM[hidden_button]_OnFocus" condition="$PARAM[hidden_button_enabled]">
+                    <param name="finestra">$PARAM[finestra]</param>
                     <param name="id">$PARAM[id]</param>
                     <param name="container">Container($PARAM[id]).</param>
                     <param name="prefix">$PARAM[hidden_button_prefix]</param>
@@ -571,6 +588,7 @@
                 </itemlayout>
                 <focusedlayout height="120" width="$PARAM[itemlayout_w]">
                     <include content="$PARAM[hidden_button]" condition="$PARAM[hidden_button_enabled]">
+                        <param name="finestra">$PARAM[finestra]</param>
                         <param name="id">$PARAM[id]</param>
                         <param name="prefix">$PARAM[hidden_button_prefix]</param>
                     </include>
@@ -716,6 +734,7 @@
             <control type="$PARAM[control]" id="$PARAM[id]">
                 <nested />
                 <include content="$PARAM[hidden_button]_OnFocus" condition="$PARAM[hidden_button_enabled]">
+                    <param name="finestra">$PARAM[finestra]</param>
                     <param name="prefix">$PARAM[hidden_button_prefix]</param>
                     <param name="container">Container($PARAM[id]).</param>
                     <param name="id">$PARAM[id]</param>
@@ -751,6 +770,7 @@
                     <param name="width">$PARAM[itemlayout_w]</param>
                     <param name="height">$PARAM[itemlayout_h]</param>
                     <include condition="$PARAM[hidden_button_enabled]" content="$PARAM[hidden_button]">
+                        <param name="finestra">$PARAM[finestra]</param>
                         <param name="id">$PARAM[id]</param>
                         <param name="prefix">$PARAM[hidden_button_prefix]</param>
                     </include>

@@ -121,17 +121,61 @@ def _cancelli_riga(sys, params, mode):
 	1. la riscrittura dell'azione dell'hub di ricerca, che l'impronta della lista presuppone;
 	2. il debounce della ricerca: una query gia' lasciata non deve distruggere niente, o il ponte
 	   direbbe "vuoto" mentre a schermo ci sono ancora i risultati (sonda 3098 delle 06:05, 21/09);
-	3. la distruzione, per QUALUNQUE riga che cambia lista (lotto 418).
+	3. l'attesa chiesta dalla skin (attesa=1, lotto 418 rivisto: lo schermo decide). Dopo la riscrittura,
+	   perche' dichiara l'impronta; dopo il debounce, perche' dichiararla per una query gia' lasciata
+	   azzererebbe il gettone di quella viva e consegnerebbe a un path abbandonato (code review del 29/09);
+	4. la distruzione del plugin, per le righe in cui non decide la skin (attesa=0 nel path la salta).
 	Il controllo del gettone scaduto (_stale_token_abort) viene DOPO, nel ramo delle costruzioni: se la
 	riga ha cambiato lista la distruzione dichiara la lista nuova e il gettone vecchio smette di
 	esistere, quindi farlo prima butterebbe un'invocazione (tre invece di due, tests/test_418.py).
 	Torna True se l'invocazione e' gia' stata servita.
 	"""
+	from modules.kodi_utils import ATTESA_PARAM
 	coppia = _AZIONI_HUB_RICERCA.get(mode)
-	if coppia:
-		if params.get('action') == coppia[0] and params.get('search_hub'): params['action'] = coppia[1]
-		if _search_debounce_abort(sys, params, coppia[1]): return True
+	if coppia and params.get('action') == coppia[0] and params.get('search_hub'): params['action'] = coppia[1]
+	if coppia and _search_debounce_abort(sys, params, coppia[1]): return True
+	attesa = params.get(ATTESA_PARAM)
+	if attesa == '1' and _consegna_attesa(sys, params): return True
+	if attesa == '0': return False
 	return _svuota_prima(sys, params)
+
+def _consegna_attesa(sys, params):
+	"""LO SCHERMO DECIDE (lotto 418, revisione del 29/09): la riga mostra un'altra lista e la skin chiede il
+	solo segnaposto per quella che sta per costruire. RIPOSIZIONAMENTO.md, *Lo schermo decide*.
+
+	La skin confronta il timbro del primo elemento a schermo (kodi_utils.LISTA_PROP) con la lista che la riga
+	deve mostrare: se sono diversi e la riga ha piu' di un elemento, il path diventa quello con attesa=1.
+	Qui si consegna il segnaposto e basta: quando e' a schermo la riga ha un elemento solo, la condizione
+	della skin cade, il path torna quello normale e parte la costruzione, con il cursore sul primo (Kodi
+	riparte dal primo solo passando da un elemento, PR.md §4).
+	NIENTE ORDINE DI RICARICA, ed e' il punto. La distruzione del plugin (_svuota_prima) decideva da cio'
+	che il ponte diceva consegnato, e un segnaposto consegnato a un path gia' abbandonato Kodi lo scarta in
+	silenzio: la costruzione dopo trovava il ponte "vuoto" e costruiva sopra la lista vecchia, col cursore
+	dov'era (Firestick, 13:49 del 29/09). E la ricarica ordinata cambiava il path di una riga gia' passata
+	ad altro, facendo buttare anche la consegna successiva. Qui il path lo cambia la skin, guardando lo schermo.
+
+	reconcile_position dichiara la lista nuova e azzera il gettone della vecchia: il path normale, quando la
+	skin ci torna, arriva senza il '&pages=N' di un'altra lista, e _stale_token_abort non ha niente da buttare.
+	Il gettone non e' nel path dell'attesa, quindi azzerarlo non cambia il path di questa invocazione.
+	LA MARCA "IN COSTRUZIONE" SI CHIUDE PRIMA DI CONSEGNARE. E' per posizione, non per invocazione: appena il
+	segnaposto e' a schermo parte la costruzione normale della stessa posizione e alza la sua. Chiusa dopo
+	end_directory -- che dopo endOfDirectory scrive ancora nel db e chiede il lock grafico per il timbro --
+	potrebbe cancellare quella della costruzione viva, e il canale dei rinvii la crederebbe finita. Prima
+	della consegna la costruzione dopo non puo' ancora essere partita. Stesso ordine di consegna_posizione.
+	Torna False solo se la riga non ha chiesto il segnaposto o non ha posizione: allora si costruisce e basta.
+	"""
+	from modules.kodi_utils import vuole_segnaposto, end_directory, STATO_ATTESA
+	from modules import paginator
+	if len(sys.argv) < 3 or not vuole_segnaposto(sys.argv[2]): return False
+	scope, cid = paginator.position_of(params)
+	if not scope: return False
+	key = '%s.%s' % (scope, cid)
+	paginator.reconcile_position(key, params)
+	paginator.log('attesa chiesta dalla skin key=%s: lista %s' % (key, paginator.short(paginator.make_key(params))))
+	paginator.mark_build_end(key)
+	try: end_directory(int(sys.argv[1]), cacheToDisc=False, segnaposto=STATO_ATTESA)
+	except: pass
+	return True
 
 def _svuota_prima(sys, params):
 	"""LA DISTRUZIONE DELLA RIGA: se la posizione tiene un'altra lista, la si svuota prima di costruire.
@@ -142,16 +186,18 @@ def _svuota_prima(sys, params):
 	consegna subito il solo segnaposto in stato di attesa -- la riga e' distrutta, la skin mostra i
 	segnaposto semitrasparenti -- e si ordina la ricostruzione, che arriva con il cursore sul primo.
 
-	NATA PER LA RICERCA (step 5 di RICERCA.md) e dal lotto 418 per ogni riga: le stagioni della scheda
-	serie, Discover, qualunque posizione che mostra liste diverse nello stesso posto. Prima c'erano tre
-	risposte alla stessa causa -- questa, il riposizionamento del servizio (Control.Move, lotti
+	NATA PER LA RICERCA (step 5 di RICERCA.md) e dal lotto 418 per ogni riga. Dalla revisione del 29/09
+	scheda serie e Discover non passano piu' di qui: decide la skin, che vede lo schermo (_consegna_attesa,
+	attesa=0 nel loro path normale). Restano la ricerca testuale e i widget di Home e hub, fino al 419, che
+	porta anche loro allo schermo: allora questa funzione sparisce.
+	Prima c'erano tre risposte alla stessa causa -- questa, il riposizionamento del servizio (Control.Move, lotti
 	92/165/167) e l'azzeramento sull'uscita dalla riga di Arctic Fuse -- e le ultime due fallivano:
 	la prima dipendeva dall'ordine di tre attori, la seconda era legata al fuoco invece che alla lista.
 	RIPOSIZIONAMENTO.md.
 
-	L'UNICO POSTO CHE SVUOTA, e deve restarlo: e' anche l'unico a consegnare STATO_ATTESA in tutto
-	l'addon. Chi sa che la propria cartella sara' scartata (il debounce, l'indexer che molla) non
-	dichiara niente al ponte: la sonda delle 06:05 del 21/09 ha mostrato che una consegna a un path gia'
+	CHI CONSEGNA STATO_ATTESA sono due: questa funzione e _consegna_attesa, cioe' le due risposte a "la riga
+	cambia lista" finche' il 419 non porta tutte le righe allo schermo. Chi sa che la propria cartella sara'
+	scartata (il debounce, l'indexer che molla) non dichiara niente al ponte: la sonda delle 06:05 del 21/09 ha mostrato che una consegna a un path gia'
 	abbandonato non arriva mai a schermo mentre il ponte la registra lo stesso.
 
 	IL GIRO. Si dichiara la lista nuova e si ordina la ricostruzione (paginator.distruggi), si consegna il
@@ -267,6 +313,14 @@ def routing(sys):
 		try:
 			from modules.paginator import mark_invocation_start
 			mark_invocation_start(_pgctl)
+		except: pass
+		# LOTTO 418, revisione del 29/09 -- la lista di questa consegna, sul primo elemento: e' cio' con cui la
+		# skin decide se la riga deve passare dall'attesa (kodi_utils.LISTA_PROP). Qui e in nessun altro posto,
+		# cosi' la portano tutte le consegne di una riga, segnaposto compresi.
+		try:
+			from modules.kodi_utils import timbra_primo_elemento, lista_della_riga, LISTA_PROP
+			_lista = lista_della_riga()
+			if _lista: timbra_primo_elemento(LISTA_PROP, _lista)
 		except: pass
 		# LOTTO 418 -- i cancelli di una riga, prima di smistare: vedi _cancelli_riga.
 		if _cancelli_riga(sys, params, mode): return
@@ -599,13 +653,13 @@ def routing(sys):
 								coalesce=_get('coalesce', 'true') != 'false')
 	if mode == 'refresh_widgets':
 		from modules.kodi_utils import refresh_widgets
-		# user=true lo mette solo la voce di menu degli indexer, non il servizio.
 		# coalesce=false lo mette WidgetRefresher quando consuma un RINVIO globale (lotto 130): e'
 		# lavoro gia' rimandato una volta, e riaccorparlo dietro la costruzione d'avvio lo perde per
-		# sempre. Due canali distinti e non sovrapponibili -- 'e' l'utente' e 'e' un rinvio maturo' --
-		# che pero' chiedono la stessa cosa: non giudicare due volte con la stessa guardia.
-		return refresh_widgets(_get('show_notification', 'false'),
-								_get('user', 'false') != 'true' and _get('coalesce', 'true') != 'false')
+		# sempre. La voce di menu "Aggiorna widget" non arriva piu' qui: e' aggiorna_riga (lotto 424).
+		return refresh_widgets(_get('show_notification', 'false'), _get('coalesce', 'true') != 'false')
+	if mode == 'aggiorna_riga':
+		from modules.paginator import aggiorna_riga
+		return aggiorna_riga(_get('riga'))
 	if mode == 'person_data_dialog':
 		from indexers.people import person_data_dialog
 		return person_data_dialog(params)

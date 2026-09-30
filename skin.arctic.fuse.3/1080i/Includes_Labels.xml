@@ -282,6 +282,14 @@
         <value>$LOCALIZE[19218]</value>
     </variable>
 
+    <!-- LOTTO 427: "N di M episodi visti", prima parte. Per la stagione di Fen Light col fuoco nella scheda serie il
+         numero lo porta il pannello episodi (Exp_Stagione_Visti_Dal_Pannello, Includes_Views_Combined.xml), che si
+         ricarica a ogni "segna come visto"; altrimenti la voce stessa. Stessa forma di prima, $INFO col prefisso. -->
+    <variable name="Label_Episodi_Visti">
+        <value condition="String.IsEqual(ListItem.DBType,season) + $EXP[Exp_Stagione_Visti_Dal_Pannello]">$LOCALIZE[16102] $VAR[Label_Stagione_Visti_Dal_Pannello] $LOCALIZE[1443] </value>
+        <value>$INFO[ListItem.Property(watchedepisodes),$LOCALIZE[16102] , $LOCALIZE[1443] ]</value>
+    </variable>
+
     <variable name="Label_VideoInfo_DetailsItem">
 
         <value condition="!String.IsEmpty(ListItem.Property(role))">$INFO[ListItem.Property(role)]</value>
