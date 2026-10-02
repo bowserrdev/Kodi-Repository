@@ -820,7 +820,7 @@ class WidgetPaginator:
 				# 138, 165, 166). Dipendeva dall'ordine fra la costruzione, questo giro da 0,3 s e l'arrivo della
 				# lista in Kodi, e sulla Firestick Discover ripartiva dall'elemento N. Adesso la riga che cambia
 				# lista passa dal segnaposto d'attesa, deciso dalla skin guardando lo schermo
-				# (router._consegna_attesa; fino al 419 per ricerca, Home e hub il plugin, router._svuota_prima):
+				# (router._consegna_attesa; Home e hub non cambiano mai lista nello stesso contenitore, lotto 419):
 				# passa da un solo elemento e Kodi la rimette sul primo da se'. Qui resta solo 'continua a guardare', qui sopra.
 				# LOTTO 286 -- il fuoco si confronta con System.CurrentControlID, letto in testa al giro,
 				# invece di chiederlo con Control.HasFocus: quella passava da getCondVisibility, cioe' dalla

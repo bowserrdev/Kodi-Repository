@@ -30,9 +30,14 @@
          un elemento, la condizione cade, il path torna quello normale e la stagione nuova arriva dal primo.
          Prima decideva il plugin, dal proprio registro, e una consegna a un path gia' abbandonato Kodi la
          scarta in silenzio: scorrendo in fretta le stagioni sulla Firestick gli episodi ripartivano dall'N-esimo.
-         attesa=0 nel path normale dice al plugin che qui decide la skin (niente router._svuota_prima).
-         La condizione sta in Exp_Episodi_53n_AltraLista perche' la legge anche il rilevatore della riga
-         (Riga_Attesa, parametro identita): gli episodi vecchi si mascherano appena la stagione cambia.
+         attesa=0 nel path normale e' la costruzione (fino al lotto 419 diceva anche al plugin di non decidere
+         da se', con la distruzione dal ponte, che adesso non c'e' piu').
+         Due espressioni, due domande (correzione del 02/10, lotto 419): Exp_Episodi_53n_AltraLista, "la riga mostra
+         un'altra stagione" anche con UN solo episodio, la legge il rilevatore della riga (Riga_Attesa, parametro
+         identita), e gli episodi vecchi si mascherano appena la stagione cambia; Exp_Episodi_53n_Attesa, in piu'
+         "in testa c'e' un episodio vero, non un segnaposto", sceglie il path: Kodi riseleziona l'elemento con lo
+         stesso path se la lista nuova lo contiene (PR.md voce 4), un segnaposto mai.
+         Erano una sola, e una stagione da un episodio restava a schermo durante la costruzione della successiva.
          "La stagione e' una cartella di Fen Light nella finestra Video" e' Exp_Episodi_53n_FenLight, scritta una
          volta e richiamata dai due valori: Kodi espande le espressioni annidate al caricamento della skin.
          IL NONCE DEL PANNELLO (fenlight.panel_reload, kodi_utils.PANEL_RELOAD_PROP) sta qui e non nella
@@ -40,41 +45,46 @@
          dopo un Container.Refresh (segna come visto). Nella FolderPath ogni refresh sembrava un'altra stagione
          e la riga veniva distrutta (Firestick, 15:31:41 del 29/09); qui la stessa lista si ricostruisce sul posto. -->
     <expression name="Exp_Episodi_530_FenLight">Window.IsActive(10025) + String.IsEmpty(Window.Property(SpecialFolderPath)) + Container(520).ListItem.IsFolder + String.StartsWith(Container(520).ListItem.FolderPath,plugin://plugin.video.fenlight/)</expression>
-    <expression name="Exp_Episodi_530_AltraLista">$EXP[Exp_Episodi_530_FenLight] + Integer.IsGreater(Container(530).NumItems,1) + !String.IsEqual(Container(530).ListItemAbsolute(0).Property(fenlight.lista),Container(520).ListItem.FolderPath)</expression>
+    <expression name="Exp_Episodi_530_AltraLista">$EXP[Exp_Episodi_530_FenLight] + Integer.IsGreater(Container(530).NumItems,0) + !String.IsEqual(Container(530).ListItemAbsolute(0).Property(fenlight.lista),Container(520).ListItem.FolderPath)</expression>
+    <expression name="Exp_Episodi_530_Attesa">[$EXP[Exp_Episodi_530_AltraLista]] + String.IsEmpty(Container(530).ListItemAbsolute(0).Property(fenlight.segnaposto))</expression>
     <variable name="View_530_Content">
-        <value condition="$EXP[Exp_Episodi_530_AltraLista]">$INFO[Container(520).ListItem.FolderPath]&amp;pgctl=10025.530&amp;vuota=segnaposto&amp;attesa=1</value>
+        <value condition="$EXP[Exp_Episodi_530_Attesa]">$INFO[Container(520).ListItem.FolderPath]&amp;pgctl=10025.530&amp;vuota=segnaposto&amp;attesa=1</value>
         <value condition="$EXP[Exp_Episodi_530_FenLight]">$INFO[Container(520).ListItem.FolderPath]&amp;pgctl=10025.530&amp;vuota=segnaposto&amp;attesa=0$INFO[Window(Home).Property(fenlight.panel_reload),&amp;pannello=,]$INFO[Window(Home).Property(fenlight.pg.w10025.ctl530.pages),&amp;pages=,]</value>
         <value condition="String.IsEmpty(Window.Property(SpecialFolderPath)) + !String.IsEmpty(Container(520).ListItem.FolderPath) + Container(520).ListItem.IsFolder">$INFO[Container(520).ListItem.FolderPath]</value>
         <value condition="!String.IsEmpty(Window.Property(SpecialFolderPath))">$INFO[Window.Property(SpecialFolderPath)]</value>
     </variable>
     <expression name="Exp_Episodi_531_FenLight">Window.IsActive(10025) + String.IsEmpty(Window.Property(SpecialFolderPath)) + Container(521).ListItem.IsFolder + String.StartsWith(Container(521).ListItem.FolderPath,plugin://plugin.video.fenlight/)</expression>
-    <expression name="Exp_Episodi_531_AltraLista">$EXP[Exp_Episodi_531_FenLight] + Integer.IsGreater(Container(531).NumItems,1) + !String.IsEqual(Container(531).ListItemAbsolute(0).Property(fenlight.lista),Container(521).ListItem.FolderPath)</expression>
+    <expression name="Exp_Episodi_531_AltraLista">$EXP[Exp_Episodi_531_FenLight] + Integer.IsGreater(Container(531).NumItems,0) + !String.IsEqual(Container(531).ListItemAbsolute(0).Property(fenlight.lista),Container(521).ListItem.FolderPath)</expression>
+    <expression name="Exp_Episodi_531_Attesa">[$EXP[Exp_Episodi_531_AltraLista]] + String.IsEmpty(Container(531).ListItemAbsolute(0).Property(fenlight.segnaposto))</expression>
     <variable name="View_531_Content">
-        <value condition="$EXP[Exp_Episodi_531_AltraLista]">$INFO[Container(521).ListItem.FolderPath]&amp;pgctl=10025.531&amp;vuota=segnaposto&amp;attesa=1</value>
+        <value condition="$EXP[Exp_Episodi_531_Attesa]">$INFO[Container(521).ListItem.FolderPath]&amp;pgctl=10025.531&amp;vuota=segnaposto&amp;attesa=1</value>
         <value condition="$EXP[Exp_Episodi_531_FenLight]">$INFO[Container(521).ListItem.FolderPath]&amp;pgctl=10025.531&amp;vuota=segnaposto&amp;attesa=0$INFO[Window(Home).Property(fenlight.panel_reload),&amp;pannello=,]$INFO[Window(Home).Property(fenlight.pg.w10025.ctl531.pages),&amp;pages=,]</value>
         <value condition="String.IsEmpty(Window.Property(SpecialFolderPath)) + !String.IsEmpty(Container(521).ListItem.FolderPath) + Container(521).ListItem.IsFolder">$INFO[Container(521).ListItem.FolderPath]</value>
         <value condition="!String.IsEmpty(Window.Property(SpecialFolderPath))">$INFO[Window.Property(SpecialFolderPath)]</value>
     </variable>
     <expression name="Exp_Episodi_532_FenLight">Window.IsActive(10025) + String.IsEmpty(Window.Property(SpecialFolderPath)) + Container(522).ListItem.IsFolder + String.StartsWith(Container(522).ListItem.FolderPath,plugin://plugin.video.fenlight/)</expression>
-    <expression name="Exp_Episodi_532_AltraLista">$EXP[Exp_Episodi_532_FenLight] + Integer.IsGreater(Container(532).NumItems,1) + !String.IsEqual(Container(532).ListItemAbsolute(0).Property(fenlight.lista),Container(522).ListItem.FolderPath)</expression>
+    <expression name="Exp_Episodi_532_AltraLista">$EXP[Exp_Episodi_532_FenLight] + Integer.IsGreater(Container(532).NumItems,0) + !String.IsEqual(Container(532).ListItemAbsolute(0).Property(fenlight.lista),Container(522).ListItem.FolderPath)</expression>
+    <expression name="Exp_Episodi_532_Attesa">[$EXP[Exp_Episodi_532_AltraLista]] + String.IsEmpty(Container(532).ListItemAbsolute(0).Property(fenlight.segnaposto))</expression>
     <variable name="View_532_Content">
-        <value condition="$EXP[Exp_Episodi_532_AltraLista]">$INFO[Container(522).ListItem.FolderPath]&amp;pgctl=10025.532&amp;vuota=segnaposto&amp;attesa=1</value>
+        <value condition="$EXP[Exp_Episodi_532_Attesa]">$INFO[Container(522).ListItem.FolderPath]&amp;pgctl=10025.532&amp;vuota=segnaposto&amp;attesa=1</value>
         <value condition="$EXP[Exp_Episodi_532_FenLight]">$INFO[Container(522).ListItem.FolderPath]&amp;pgctl=10025.532&amp;vuota=segnaposto&amp;attesa=0$INFO[Window(Home).Property(fenlight.panel_reload),&amp;pannello=,]$INFO[Window(Home).Property(fenlight.pg.w10025.ctl532.pages),&amp;pages=,]</value>
         <value condition="String.IsEmpty(Window.Property(SpecialFolderPath)) + !String.IsEmpty(Container(522).ListItem.FolderPath) + Container(522).ListItem.IsFolder">$INFO[Container(522).ListItem.FolderPath]</value>
         <value condition="!String.IsEmpty(Window.Property(SpecialFolderPath))">$INFO[Window.Property(SpecialFolderPath)]</value>
     </variable>
     <expression name="Exp_Episodi_533_FenLight">Window.IsActive(10025) + String.IsEmpty(Window.Property(SpecialFolderPath)) + Container(523).ListItem.IsFolder + String.StartsWith(Container(523).ListItem.FolderPath,plugin://plugin.video.fenlight/)</expression>
-    <expression name="Exp_Episodi_533_AltraLista">$EXP[Exp_Episodi_533_FenLight] + Integer.IsGreater(Container(533).NumItems,1) + !String.IsEqual(Container(533).ListItemAbsolute(0).Property(fenlight.lista),Container(523).ListItem.FolderPath)</expression>
+    <expression name="Exp_Episodi_533_AltraLista">$EXP[Exp_Episodi_533_FenLight] + Integer.IsGreater(Container(533).NumItems,0) + !String.IsEqual(Container(533).ListItemAbsolute(0).Property(fenlight.lista),Container(523).ListItem.FolderPath)</expression>
+    <expression name="Exp_Episodi_533_Attesa">[$EXP[Exp_Episodi_533_AltraLista]] + String.IsEmpty(Container(533).ListItemAbsolute(0).Property(fenlight.segnaposto))</expression>
     <variable name="View_533_Content">
-        <value condition="$EXP[Exp_Episodi_533_AltraLista]">$INFO[Container(523).ListItem.FolderPath]&amp;pgctl=10025.533&amp;vuota=segnaposto&amp;attesa=1</value>
+        <value condition="$EXP[Exp_Episodi_533_Attesa]">$INFO[Container(523).ListItem.FolderPath]&amp;pgctl=10025.533&amp;vuota=segnaposto&amp;attesa=1</value>
         <value condition="$EXP[Exp_Episodi_533_FenLight]">$INFO[Container(523).ListItem.FolderPath]&amp;pgctl=10025.533&amp;vuota=segnaposto&amp;attesa=0$INFO[Window(Home).Property(fenlight.panel_reload),&amp;pannello=,]$INFO[Window(Home).Property(fenlight.pg.w10025.ctl533.pages),&amp;pages=,]</value>
         <value condition="String.IsEmpty(Window.Property(SpecialFolderPath)) + !String.IsEmpty(Container(523).ListItem.FolderPath) + Container(523).ListItem.IsFolder">$INFO[Container(523).ListItem.FolderPath]</value>
         <value condition="!String.IsEmpty(Window.Property(SpecialFolderPath))">$INFO[Window.Property(SpecialFolderPath)]</value>
     </variable>
     <expression name="Exp_Episodi_534_FenLight">Window.IsActive(10025) + String.IsEmpty(Window.Property(SpecialFolderPath)) + Container(524).ListItem.IsFolder + String.StartsWith(Container(524).ListItem.FolderPath,plugin://plugin.video.fenlight/)</expression>
-    <expression name="Exp_Episodi_534_AltraLista">$EXP[Exp_Episodi_534_FenLight] + Integer.IsGreater(Container(534).NumItems,1) + !String.IsEqual(Container(534).ListItemAbsolute(0).Property(fenlight.lista),Container(524).ListItem.FolderPath)</expression>
+    <expression name="Exp_Episodi_534_AltraLista">$EXP[Exp_Episodi_534_FenLight] + Integer.IsGreater(Container(534).NumItems,0) + !String.IsEqual(Container(534).ListItemAbsolute(0).Property(fenlight.lista),Container(524).ListItem.FolderPath)</expression>
+    <expression name="Exp_Episodi_534_Attesa">[$EXP[Exp_Episodi_534_AltraLista]] + String.IsEmpty(Container(534).ListItemAbsolute(0).Property(fenlight.segnaposto))</expression>
     <variable name="View_534_Content">
-        <value condition="$EXP[Exp_Episodi_534_AltraLista]">$INFO[Container(524).ListItem.FolderPath]&amp;pgctl=10025.534&amp;vuota=segnaposto&amp;attesa=1</value>
+        <value condition="$EXP[Exp_Episodi_534_Attesa]">$INFO[Container(524).ListItem.FolderPath]&amp;pgctl=10025.534&amp;vuota=segnaposto&amp;attesa=1</value>
         <value condition="$EXP[Exp_Episodi_534_FenLight]">$INFO[Container(524).ListItem.FolderPath]&amp;pgctl=10025.534&amp;vuota=segnaposto&amp;attesa=0$INFO[Window(Home).Property(fenlight.panel_reload),&amp;pannello=,]$INFO[Window(Home).Property(fenlight.pg.w10025.ctl534.pages),&amp;pages=,]</value>
         <value condition="String.IsEmpty(Window.Property(SpecialFolderPath)) + !String.IsEmpty(Container(524).ListItem.FolderPath) + Container(524).ListItem.IsFolder">$INFO[Container(524).ListItem.FolderPath]</value>
         <value condition="!String.IsEmpty(Window.Property(SpecialFolderPath))">$INFO[Window.Property(SpecialFolderPath)]</value>
@@ -182,7 +192,7 @@
                              dissolvenza su IsUpdating + NumItems=0 che non poteva distinguere i due casi.
                              Dissolvenza e non visible: un contenitore nascosto non rilegge il path, e la ricarica
                              che lo riempie non arriverebbe. Vedi Riga_Attesa in Includes_Widgets.xml. -->
-                        <animation effect="fade" start="100" end="0" time="0" condition="Control.IsVisible(97453$PARAM[id])">Conditional</animation>
+                        <animation effect="fade" start="100" end="0" time="0" condition="Control.IsVisible(97453$PARAM[id]) | $EXP[Exp_Episodi_53$PARAM[id]_AltraLista]">Conditional</animation>
 
                         <visible>Container(52$PARAM[id]).ListItem.IsFolder</visible>
                         <onclick condition="Container(53$PARAM[id]).ListItem.IsFolder">Container.Update($INFO[Container(53$PARAM[id]).ListItem.FolderPath])</onclick>
@@ -200,7 +210,7 @@
 
                     <include content="Widget_Busy">
                         <param name="label">$INFO[Container(52$PARAM[id]).ListItem.Label]</param>
-                        <param name="visible">Control.IsVisible(97453$PARAM[id])</param>
+                        <param name="visible">Control.IsVisible(97453$PARAM[id]) | $EXP[Exp_Episodi_53$PARAM[id]_AltraLista]</param>
                         <param name="include">$PARAM[include]</param>
                         <top>view_row</top>
                         <left>view_pad</left>

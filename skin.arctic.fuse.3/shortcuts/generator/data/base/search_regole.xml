@@ -1,0 +1,15 @@
+<contents>
+    <value name="comments">Search Rules (lotto 419): la decisione di ogni riga di ricerca, una regola per tutte</value>
+    <template>generator/data/parts/search_regole.xmltemplate</template>
+    <value name="includes_part">
+        <items menu="searchwidgets">
+            <item>
+                <template>generator/data/parts/search_regola.xmltemplate</template>
+                <datafile>generator/data/setup/search_row.xml</datafile>
+                <datafile>generator/data/setup/search_path.xml</datafile>
+                <condition>{item_path}!=</condition>
+                <condition>{item_disabled}!=True</condition>
+            </item>
+        </items>
+    </value>
+</contents>

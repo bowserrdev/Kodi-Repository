@@ -15,25 +15,34 @@
          condizione e' una, quella del path. Il token deve stare nel VALORE di una variabile: nel suffisso di
          un $INFO sarebbe testo letterale (GUIInfoLabel.cpp:339-373). Il nome della proprieta' coincide con
          paginator.CTL_PAGES_PROP % ('1105', '505'): lo verifica tests/test_162.py.
-         LOTTO 418: 'vuota=segnaposto' e' cio' che permette al plugin di DISTRUGGERE la riga quando arriva una
-         ricerca Discover nuova (router._svuota_prima): senza segnaposto non saprebbe come fermarsi.
+         LOTTO 418: 'vuota=segnaposto' e' cio' che permette al plugin di consegnare il solo segnaposto quando
+         arriva una ricerca Discover nuova: senza, non avrebbe niente da consegnare al posto della lista.
          REVISIONE DEL 29/09: LO SCHERMO DECIDE (RIPOSIZIONAMENTO.md, e il commento di View_531_Content in
          Includes_Views_Combined.xml). Se la riga ha piu' di un elemento e il primo non porta la ricerca in
          corso (fenlight.lista = il path fino a '&pgctl=', cioe' ContentPath), si chiede il solo segnaposto
          (attesa=1); a segnaposto arrivato la condizione cade e la ricerca nuova si costruisce dal primo.
-         attesa=0 nel path normale: qui decide la skin, non router._svuota_prima. Due ricerche di fila senza
-         aspettare la prima non lasciano piu' i risultati nuovi sull'N-esimo. -->
+         attesa=0 nel path normale: la costruzione. Due ricerche di fila senza aspettare la prima non lasciano
+         piu' i risultati nuovi sull'N-esimo. Dal lotto 419 la stessa regola vale per la ricerca testuale
+         (search_regola.xmltemplate), e la distruzione decisa dal plugin non c'e' piu'. -->
     <!-- LOTTO 440: l'identita' della riga, scritta una volta. La riga "risponde" se il suo primo elemento porta il timbro
          della ricerca in corso (ogni consegna lo porta, segnaposto compresi: router, LISTA_PROP). La usano la decisione
          dell'attesa qui sotto e il pannello informazioni (Search_Info_Panel), che senza questa regola descriveva
          l'elemento selezionato anche quando la riga conteneva ancora la ricerca di prima (Firestick, 30/09 17:52:33:
          un titolo della ricerca "Soap" sopra i segnaposto della ricerca "Western"). -->
     <expression name="Exp_Discover_Riga_Risponde">String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.lista),Window(Home).Property(FenLight.Discover.ContentPath))</expression>
-    <expression name="Exp_Discover_AltraLista">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + Integer.IsGreater(Container(505).NumItems,1) + ![$EXP[Exp_Discover_Riga_Risponde]]</expression>
+    <!-- LOTTO 419, CORREZIONE DEL 02/10: due domande, due espressioni. AltraLista ("la riga mostra un'altra ricerca",
+         anche con UN solo elemento) maschera gli elementi (identita' del rilevatore); Attesa (in piu', in testa c'e'
+         un titolo vero e non un segnaposto) sceglie il path: Kodi riseleziona l'elemento con lo stesso path se la
+         lista nuova lo contiene (PR.md voce 4), un segnaposto mai, un titolo si'. Erano una sola, con
+         "piu' di un elemento": un unico risultato della ricerca di prima restava a schermo per tutta la costruzione
+         (Mac, 02/10 15:28, nella ricerca testuale; qui lo stesso con una ricerca Discover da un risultato). -->
+    <expression name="Exp_Discover_AltraLista">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + Integer.IsGreater(Container(505).NumItems,0) + ![$EXP[Exp_Discover_Riga_Risponde]]</expression>
+    <expression name="Exp_Discover_Attesa">[$EXP[Exp_Discover_AltraLista]] + String.IsEmpty(Container(505).ListItemAbsolute(0).Property(fenlight.segnaposto))</expression>
     <variable name="Search_Discover_Path">
-        <value condition="$EXP[Exp_Discover_AltraLista]">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]&amp;pgctl=1105.505&amp;vuota=segnaposto&amp;attesa=1</value>
+        <value condition="$EXP[Exp_Discover_Attesa]">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]&amp;pgctl=1105.505&amp;vuota=segnaposto&amp;attesa=1</value>
         <value condition="!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath))">$INFO[Window(Home).Property(FenLight.Discover.ContentPath)]&amp;pgctl=1105.505&amp;vuota=segnaposto&amp;attesa=0$INFO[Window(Home).Property(fenlight.pg.w1105.ctl505.pages),&amp;pages=,]</value>
     </variable>
+
 
 
 
@@ -117,8 +126,8 @@
                                          restava nascosta finche' il servizio non l'aveva riportata in cima con un
                                          Control.Move. Dipendeva dall'ordine fra costruzione, servizio e Kodi, e sulla
                                          Firestick la riga ripartiva dall'elemento N dopo un'animazione visibile.
-                                         Adesso una ricerca nuova DISTRUGGE la riga (router._svuota_prima): si vedono
-                                         i segnaposto, poi i risultati nuovi dal primo. -->
+                                         Adesso una ricerca nuova passa dall'attesa (Exp_Discover_AltraLista): si
+                                         vedono i segnaposto, poi i risultati nuovi dal primo. -->
                                     <param name="visible">!String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + String.IsEmpty(Control.GetLabel(3000).index(1))</param>
                                     <param name="clear_hideartwork_onfocus">true</param>
                                     <param name="hidden_button_enabled">true</param>
@@ -208,7 +217,7 @@
                             <param name="textcolor">main_fg_100</param>
                             <!-- LOTTO 418: non mentre ci sono i segnaposto (la riga e' in attesa, vedi Riga_Attesa):
                                  la rotellina resta il segnale della paginazione, i segnaposto dicono gia' "carico". -->
-                            <param name="visible">Container(505).IsUpdating + !Control.IsVisible(974505)</param>
+                            <param name="visible">Container(505).IsUpdating + !Control.IsVisible(974505) + ![$EXP[Exp_Discover_AltraLista]]</param>
                         </include>
                         <control type="image">
                             <height>1</height>
@@ -247,162 +256,32 @@
         </definition>
     </include>
 
-    <!-- "La ricerca sta ancora cercando": la casella ha del testo e i risultati a schermo non sono
-         ancora i suoi - o perche' l'ultima query annunciata dal plugin e' un'altra, o perche' e'
-         quella ma la sta ancora costruendo. E' la condizione delle due scritte 'Ricerca in corso' /
-         'Attendi il caricamento dei risultati', scritta qui una volta sola perche' ha un secondo
-         lettore che deve dire esattamente il contrario: la rotellina. -->
-    <!-- "QUELLO CHE LA RIGA N HA ADESSO E' DI QUESTA RICERCA."
-         Il primo elemento porta la query che lo ha prodotto (fenlight.query, kodi_utils.QUERY_PROP,
-         regola del lotto 338) e qui si confronta con cio' che e' scritto nella casella. Vale sia per
-         una riga piena di titoli sia per una che tiene il solo segnaposto: dice DI CHI E' il
-         contenuto, non che contenuto sia.
-         Definita una volta per riga perche' la leggono in tre (il cancello della riga, quello della
-         linguetta, la rotellina) e finche' era scritta per esteso in ognuno cambiarla voleva dire
-         quindici modifiche coerenti. E' gia' successo che se ne facessero quattordici: il lotto 167,
-         dove il cancello nuovo entro' nei template delle righe generate e non nella riga scritta a
-         mano. I cinque id sono letterali per la ragione di sempre: non c'e' modo di riferirsi a un
-         contenitore il cui id e' un dato (PR.md, voce 20). -->
-    <expression name="Exp_Search_502_Risponde">String.IsEqual(Container(502).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</expression>
-    <expression name="Exp_Search_503_Risponde">String.IsEqual(Container(503).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</expression>
-    <expression name="Exp_Search_504_Risponde">String.IsEqual(Container(504).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</expression>
-    <expression name="Exp_Search_505_Risponde">String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</expression>
-    <expression name="Exp_Search_506_Risponde">String.IsEqual(Container(506).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</expression>
+    <!-- LOTTO 419. LA RICERCA TESTUALE PASSA ALLO SCHERMO. RIPOSIZIONAMENTO.md, *Lotto 419*.
+         Qui c'erano, scritte a mano per gli id 502-506: per ogni riga "risponde" e "attende"; per tutte "una riga
+         ha risposto niente", "una riga aspetta", "una riga costruisce", "Ricerca in corso" e la rotellina. Erano la
+         risposta a una riga che restava NASCOSTA finche' non arrivavano i suoi titoli: qualcosa doveva dire "sto
+         cercando" al posto suo, e dire "nessun risultato" senza sbagliarsi con una riga che non aveva ancora
+         risposto (21/09: 1,73 s di "Nessun risultato" sopra una ricerca da sedici titoli).
+         Adesso la riga e la sua linguetta ci sono subito, coi segnaposto, come in Discover e negli episodi; la
+         decisione di ogni riga e' generata, una regola per tutte (search_regola.xmltemplate: Risponde, Vuota,
+         AltraLista, il path, la pagina), e qui restano due domande sole. -->
 
-    <!-- "LA RIGA N SI E' SVUOTATA E ASPETTA LA CONSEGNA VERA."
-         Lo stato `attesa` viaggia sul primo elemento dallo step 2 (kodi_utils.STATO_ATTESA) e fino
-         alla revisione del 21/09 non lo leggeva nessuno: la skin confrontava solo con `vuoto`, e
-         "aspetto" finiva confuso con "non lo so". Lo scrive un posto solo, _svuota_prima,
-         che e' anche l'unico che svuota un contenitore vivo.
-         SERVE PERCHE' LE RIGHE NON FINISCONO INSIEME. Se una risponde "niente" in fretta mentre
-         l'altra aspetta, e nell'istante in cui si guarda quest'ultima non sta scaricando (fra la
-         cartella vuota che atterra e la ricostruzione ordinata passano ~90 ms), allora nessuna
-         linguetta esiste, nessun contenitore aggiorna, e una riga ha detto "vuoto": "Nessun
-         risultato" si accendeva sopra una ricerca che stava per consegnare quaranta titoli. E se
-         l'ordine di ricostruzione si perde, quella riga aspetta per sempre e la scritta sbagliata
-         resta per sempre.
-         Si usa NEGATO in "Nessun risultato" e come allargamento in "Ricerca in corso", mai da solo:
-         cosi' un timbro diventato vecchio, perche' l'utente ha continuato a digitare, lo rende falso
-         senza fare danni, perche' in quel caso anche Exp_Search_Row_Empty e' falsa e la domanda non
-         si pone. E' la ragione per cui l'Exp_Search_Row_Waiting del primo tentativo non funzionava:
-         li' era un predicato POSITIVO e doveva inseguire un dato che cambiava sotto di lui. -->
-    <expression name="Exp_Search_502_Attende">[[$EXP[Exp_Search_502_Risponde]] + String.IsEqual(Container(502).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),attesa)]</expression>
-    <expression name="Exp_Search_503_Attende">[[$EXP[Exp_Search_503_Risponde]] + String.IsEqual(Container(503).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),attesa)]</expression>
-    <expression name="Exp_Search_504_Attende">[[$EXP[Exp_Search_504_Risponde]] + String.IsEqual(Container(504).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),attesa)]</expression>
-    <expression name="Exp_Search_505_Attende">[[$EXP[Exp_Search_505_Risponde]] + String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),attesa)]</expression>
-    <expression name="Exp_Search_506_Attende">[[$EXP[Exp_Search_506_Risponde]] + String.IsEqual(Container(506).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),attesa)]</expression>
+    <!-- "LA RICERCA E' FINITA E NON HA PRODOTTO NIENTE": casella con testo e nessuna linguetta. Una linguetta
+         sparisce solo quando la sua riga ha risposto "niente" alla query scritta adesso (search_item.xmltemplate),
+         quindi zero linguette e' esattamente "ogni riga ha risposto, e a vuoto". Non c'e' piu' un istante in cui
+         nessuna riga ha titoli e nessuna ha ancora risposto: le righe in attesa la linguetta ce l'hanno.
+         Container(601).NumItems conta le voci visibili, in tutte e due le modalita' (la striscia c'e' anche a
+         righe separate). La leggono le scritte (Label_Search_NoResults, Label_Search_Title_NoResults).
+         tests/test_logo_vede_il_vuoto.py, tests/test_419.py -->
+    <expression name="Exp_Search_NoResults">!String.IsEmpty(Control.GetLabel(3000).index(1)) + Integer.IsEqual(Container(601).NumItems,0)</expression>
 
-    <!-- ALMENO UNA RIGA HA DETTO DI NON AVER TROVATO NIENTE (step 4).
-         E' il dato che a "Nessun risultato" e' sempre mancato. Il numero delle linguette dice "nessuna
-         riga ha titoli", che e' vero anche prima che qualcuno abbia risposto; Exp_Search_Row_Building lo
-         approssimava con "nessuna sta costruendo", vero pure nell'istante fra due consegne. Qui la riga
-         DICE di aver finito a vuoto: lo stato viaggia sul primo elemento (kodi_utils.STATO_VUOTO,
-         regola del lotto 338) e il confronto con la casella garantisce che abbia risposto a QUESTA
-         ricerca e non a quella di prima.
-         I cinque id sono scritti a mano per la ragione di sempre: non c'e' modo di riferirsi a un
-         contenitore il cui id e' un dato (PR.md, voce 20). -->
-    <expression name="Exp_Search_Row_Empty">[[[$EXP[Exp_Search_502_Risponde]] + String.IsEqual(Container(502).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),vuoto)] | [[$EXP[Exp_Search_503_Risponde]] + String.IsEqual(Container(503).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),vuoto)] | [[$EXP[Exp_Search_504_Risponde]] + String.IsEqual(Container(504).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),vuoto)] | [[$EXP[Exp_Search_505_Risponde]] + String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),vuoto)] | [[$EXP[Exp_Search_506_Risponde]] + String.IsEqual(Container(506).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),vuoto)]]</expression>
-
-    <!-- ALMENO UNA RIGA STA ANCORA ASPETTANDO LA SUA CONSEGNA. Il complemento di Row_Empty: le due
-         insieme dicono "qualcuno ha risposto" e "qualcuno deve ancora rispondere", e servono
-         entrambe perche' una ricerca puo' essere in tutti e due gli stati nello stesso istante. -->
-    <expression name="Exp_Search_Row_Waiting">[[$EXP[Exp_Search_502_Attende]] | [$EXP[Exp_Search_503_Attende]] | [$EXP[Exp_Search_504_Attende]] | [$EXP[Exp_Search_505_Attende]] | [$EXP[Exp_Search_506_Attende]]]</expression>
-
-    <!-- "RICERCA IN CORSO", e la domanda e' POSTA AL CONTRARIO di come verrebbe naturale.
-         Non "qualcuno sta aspettando" ma "nessuno ha ancora risposto". La prima versione chiedeva a
-         una riga di dichiarare l'attesa CON il timbro della query, e non poteva funzionare: il timbro
-         e' la query viva nell'istante in cui la riga si svuota, ma l'utente sta ancora digitando:
-         il segnaposto porta "shar" mentre la casella dice gia' "shark", e il confronto cade. Un
-         predicato positivo qui deve inseguire un dato che cambia sotto di lui; quello negativo no.
-         I due termini: c'e' del testo, e nessuna riga ha titoli (nessuna linguetta). A quel punto o
-         qualcuno ha risposto "niente" per QUESTA ricerca, e allora si scrive "Nessun risultato",
-         oppure no, e allora si sta ancora aspettando. Le due scritte sono le due risposte alla stessa
-         domanda e si escludono per costruzione, non per una guardia. -->
-    <expression name="Exp_Search_Loading">[!String.IsEmpty(Control.GetLabel(3000).index(1)) + Integer.IsEqual(Container(601).NumItems,0) + [![$EXP[Exp_Search_Row_Empty]] | [$EXP[Exp_Search_Row_Waiting]]]]</expression>
-
-    <!-- "Sta ancora costruendo una riga qualunque della ricerca". Grezzo di proposito: non chiede
-         di quale query siano gli elementi, chiede solo se il contenitore ha un lavoro in corso.
-         E' la domanda giusta per sapere se vale la pena dire "nessun risultato", e l'unica che
-         valga anche per una riga che non ha ancora consegnato niente. Stesso intervallo di id
-         letterali di Exp_Search_Row_Spinner, per la stessa ragione. -->
-    <expression name="Exp_Search_Row_Building">[Container(502).IsUpdating | Container(503).IsUpdating | Container(504).IsUpdating | Container(505).IsUpdating | Container(506).IsUpdating]</expression>
-
-    <!-- "La ricerca e' finita e non ha prodotto niente". Lo dice il numero delle LINGUETTE: una
-         linguetta esiste se e solo se la sua riga ha elementi di questa query (vedi
-         search_item.xmltemplate), quindi zero linguette e' esattamente "nessuna riga ha risultati".
-         Il TESTO dell'etichetta legge questa stessa espressione (Label_Search_NoResults e
-         Label_Search_Title_NoResults). Prima aveva una copia sua, "casella piena + zero linguette",
-         rimasta indietro quando la visibilita' e' stata affinata: vera anche durante l'attesa, faceva
-         dire "Nessun risultato" alla scritta "Benvenuto" mentre sfumava in uscita, alla conferma di
-         ogni ricerca (registrazione del 21/09, 21:09:42.252). tests/test_logo_vede_il_vuoto.py
-         PRIMA leggeva FenLight.TextSearch.Movie.HasResults e .TV.HasResults, e la scritta lampeggiava
-         per un paio di secondi prima dei risultati. Quelle due proprieta' valevano 'false' sia per
-         "ha risposto zero" sia per "non ha ancora risposto": _text_search_start le azzerava a ogni
-         query nuova, e in modalita' combinata _text_search_done dichiara lo State 'done' alla PRIMA
-         riga che finisce. Bastava quindi che la riga piu' veloce tornasse a vuoto perche' le due
-         dicessero 'false' insieme mentre l'altra stava ancora lavorando. Nel log del 21/09:
-             01:24:12.712  tvshows BUILD
-             01:24:15.103  tvshows  0 elementi   -> TV.HasResults=false, State=done
-             01:24:16.831  movies  16 elementi
-         1,73 s di "Nessun risultato per ..." sopra una ricerca che ne aveva sedici.
-         La distinzione mancante non si poteva aggiungere a quelle due proprieta': sono per tipo di
-         media, mentre le righe le configura l'utente e possono essere una o dieci, tutte dello
-         stesso tipo (sulla stick ce n'e' una sola: con "non ha ancora risposto" distinto da "zero",
-         la riga TV non avrebbe risposto MAI e la scritta non sarebbe mai comparsa). La risposta che
-         scala e' per riga, ed e' la stessa a cui era gia' arrivato il lotto 338.
-         Il secondo termine e' quello che chiude la finestra: finche' una riga qualunque sta ancora
-         costruendo, non si sa se il risultato sia zero.
-         QUI C'ERA ANCHE ![Exp_Search_Loading], e non poteva mai essere falso. Loading vale
-         'casella piena + nessuna linguetta + nessuna riga vuota', e questa espressione asserisce
-         gia' i primi due insieme al loro opposto sul terzo: dove si arriva a valutarlo, Loading e'
-         falso per costruzione. Era un residuo dello stato precedente, quando il termine
-         Exp_Search_Row_Empty non c'era e la negazione portava un'informazione sua. Le due scritte
-         restano esclusive: lo sono perche' l'una chiede Row_Empty e l'altra la sua negazione, non
-         perche' si guardino a vicenda. -->
-    <expression name="Exp_Search_NoResults">[!String.IsEmpty(Control.GetLabel(3000).index(1)) + ![$EXP[Exp_Search_Row_Building]] + Integer.IsEqual(Container(601).NumItems,0) + [$EXP[Exp_Search_Row_Empty]] + ![$EXP[Exp_Search_Row_Waiting]]]</expression>
-
-    <!-- Quando accendere la rotellina della ricerca. DOVE finisca non si decide piu' qui: la
-         rotellina e' l'ultima voce del grouplist che dispone i nomi, quindi sta sempre a
-         view_spinner_gap dal nome piu' a destra, anche quando quel nome cambia perche' una
-         linguetta in piu' e' comparsa a caricamento finito (Categories_Selector_FakeList).
-         La rotellina resta una sola: qui basta sapere SE una qualunque riga sta caricando altre
-         pagine, non quale. Gli id sono letterali perche' Kodi non risolve Container($INFO[...]):
-         l'intervallo 502-506 copre i percorsi di ricerca configurabili (il generatore li numera da
-         502) con margine. Il tentativo del 169 di metterne una PER linguetta e' stato abbandonato
-         proprio qui: richiedeva di confrontare ListItem.Property(widget_id), che il generatore
-         scrive come '$NUMBER[502]', e quel confronto non e' mai risultato vero.
-         PRIMO TERMINE. Nella ricerca la rotellina significa SOLO "sto caricando altre pagine", mai
-         "sto caricando i widget" come negli altri hub: li' a dirlo c'e' la scritta 'Ricerca in
-         corso', e le due non devono mai comparire insieme. Sono l'una la negazione dell'altra e
-         leggono la STESSA espressione, non una sua copia: cosi' la regola non puo' piu' scollarsi
-         da sola, qualunque corsa la produca.
-         SECONDO TERMINE (lotto 212). Una riga che costruisce MENTRE i suoi elementi sono gia' della
-         query scritta adesso sta caricando una pagina in piu'; durante la PRIMA pagina di una query
-         nuova i suoi elementi sono ancora della query precedente. E' lo stesso cancello dei row e
-         delle linguette, riga per riga (lotto 338: il primo elemento porta la query che lo ha
-         prodotto, kodi_utils.QUERY_PROP).
-         IL TERMINE IN TESTA, la casella non vuota, non e' un di piu': senza, il confronto del
-         secondo termine DEGENERA. A casella svuotata un contenitore senza timbro da'
-         String.IsEqual("","") cioe' VERO, e la rotellina si riaccendeva sopra i risultati appena
-         cancellati (segnalato il 21/09). "Nessun timbro" e "nessuna ricerca" sono due assenze, e
-         due assenze che coincidono non sono una corrispondenza. Le linguette questa guardia ce
-         l'hanno gia' (search_item.xmltemplate); qui mancava.
-         STEP 4 RITIRATO. Qui c'era un terzo termine per riga, String.IsEmpty(fenlight.segnaposto):
-         "una riga che ricostruisce tenendo SOLO il segnaposto non sta paginando". Il ragionamento
-         valeva finche' a coprire quel momento c'era la scritta 'Ricerca in corso', e la scritta si
-         spegne alla PRIMA riga che finisce, perche' guarda il numero delle linguette. Quando le
-         righe finiscono in tempi diversi, e nel log finiscono sempre in tempi diversi, resta un
-         intervallo in cui la riga lenta e' invisibile, la scritta e' spenta e la rotellina era
-         spenta pure: la ricerca sembra finita con i soli risultati della riga veloce.
-         Log del 21/09, ricerca 'lust':
-             06:19:16.500  set_head key=1105.503 built=2     la riga TV finisce
-             06:19:29.242  set_head key=1105.502 built=40    la riga film finisce
-         dodici secondi e sette decimi di silenzio. Il termine contraddiceva il significato
-         dichiarato due righe piu' su: la rotellina dice "stanno arrivando altri risultati", e una
-         riga che ricostruisce dal vuoto sta per consegnarne. Adesso lo dice anche quando la riga
-         parte dal segnaposto, ed e' l'unico stato in cui la ricerca ha ancora qualcosa da dare.
-         tests/test_rotella_riga_lenta.py -->
-    <expression name="Exp_Search_Row_Spinner">!String.IsEmpty(Control.GetLabel(3000).index(1)) + ![$EXP[Exp_Search_Loading]] + [[Container(502).IsUpdating + [$EXP[Exp_Search_502_Risponde]]] | [Container(503).IsUpdating + [$EXP[Exp_Search_503_Risponde]]] | [Container(504).IsUpdating + [$EXP[Exp_Search_504_Risponde]]] | [Container(505).IsUpdating + [$EXP[Exp_Search_505_Risponde]]] | [Container(506).IsUpdating + [$EXP[Exp_Search_506_Risponde]]]]</expression>
+    <!-- LA ROTELLINA DELLA STRISCIA: la riga della linguetta scelta sta caricando altre pagine. E' la regola di
+         Riga_Attesa (aggiornamento di una riga che non e' in attesa), calcolata per riga dalla regola generata e
+         portata dalla linguetta (proprieta' 'pagina'): la riga a schermo e' quella della linguetta scelta, e le
+         righe nascoste non si aggiornano. Mai insieme ai segnaposto, che dicono gia' "sto cercando".
+         La casella non vuota in testa: a casella svuotata la striscia sparisce, e la rotellina con lei (vedi
+         spinner_hide_now). tests/test_rotella_riga_lenta.py, tests/test_419.py -->
+    <expression name="Exp_Search_Row_Spinner">!String.IsEmpty(Control.GetLabel(3000).index(1)) + String.IsEqual(Container(601).ListItem.Property(pagina),true)</expression>
 
     <!-- LOTTO 212. "La ricerca testuale ha risultati a schermo": finestra 1105 (id reale 11105) con testo nel box.
          Serve ai consumatori che devono sapere QUALE contenitore mostra i risultati senza dipendere dal
@@ -474,31 +353,6 @@
                 <left>view_pad</left>
                 <top>360</top>
 	                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + String.IsEmpty(Window(Home).Property(FenLight.Discover.ContentPath)) + [String.IsEmpty(Control.GetLabel(3000).index(1)) | $EXP[Exp_Search_NoResults]]</visible>
-	            </control>
-	            <control type="label">
-	                <font>font_head_bold</font>
-	                <label>Ricerca in corso</label>
-	                <align>left</align>
-	                <height>80</height>
-	                <textcolor>main_fg_90</textcolor>
-
-	                <include>Home_Animation</include>
-	                <left>view_pad</left>
-	                <top>280</top>
-		                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + $EXP[Exp_Search_Loading]</visible>
-	            </control>
-	            <control type="label">
-	                <wrapmultiline>true</wrapmultiline>
-	                <font>font_main_plot</font>
-	                <label>Attendi il caricamento dei risultati.</label>
-	                <align>left</align>
-	                <height>80</height>
-	                <textcolor>main_fg_30</textcolor>
-
-	                <include>Home_Animation</include>
-	                <left>view_pad</left>
-	                <top>360</top>
-		                <visible>String.IsEmpty(Window.Property(Search.ActivePanel)) + $EXP[Exp_Search_Loading]</visible>
 	            </control>
 	        </control>
 	    </include>

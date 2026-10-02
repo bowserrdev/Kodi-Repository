@@ -14,9 +14,10 @@ def _timbra_query(params):
 	19/09 una riga che finiva parlava per tutte, il 21/09 "Nessun risultato" e' rimasto 1,73 s sopra
 	una ricerca da sedici titoli. Adesso ogni riga porta il proprio stato nel primo elemento e quel
 	canale non lo legge piu' nessuno.
-	Il timbro invece resta, ed e' il perno: senza, una riga non e' attribuibile alla sua ricerca. Lo
-	leggono il cancello della riga, quello della linguetta, la rotellina, "Ricerca in corso" e "Nessun
-	risultato". Vale anche per le ricostruzioni di paginazione, che riconsegnano la stessa query.
+	Il timbro invece resta, ed e' il perno: senza, una riga non e' attribuibile alla sua ricerca. Lo legge
+	una sola espressione per riga, generata (Exp_Search_{id}_Risponde, lotto 419), e da li' la riga, la sua
+	linguetta e la decisione dell'attesa. Vale anche per le ricostruzioni di paginazione, che riconsegnano
+	la stessa query. Il segnaposto d'attesa lo porta anche lui, timbrato da _consegna_attesa.
 	"""
 	# La condizione e' la stessa dei due cancelli qui sotto, e prima non lo era: qui si accettavano i
 	# tre valori ('true', 'combined', 'standard') mentre loro guardano solo se il parametro c'e'. Il
@@ -98,9 +99,9 @@ def _search_debounce_abort(sys, params, action_filtered):
 	# Dallo step 3 fino alla sonda delle 06:05 qui si consegnava STATO_ATTESA. Quella consegna non
 	# arrivava mai a schermo, ma chiamava testa_vuota, che porta BUILT_PROP a 0: da li' in poi il ponte
 	# diceva "contenitore vuoto" mentre a schermo c'erano quaranta elementi della ricerca precedente.
-	# E _svuota_prima, che e' la funzione nata per svuotare davvero perche' agisce
-	# sull'invocazione del path VIVO, chiede proprio BUILT_PROP > 0 per sapere se c'e' qualcosa da
-	# togliere: trovava 0 e si fermava. Misurato con la sonda 3098:
+	# E la distruzione del plugin di allora (_svuota_prima, tolta col lotto 419: adesso decide la skin),
+	# che agiva sull'invocazione del path VIVO, chiedeva proprio BUILT_PROP > 0 per sapere se c'era qualcosa
+	# da togliere: trovava 0 e si fermava. Misurato con la sonda 3098:
 	#     06:05:45.566  testa vuota 1105.502 stato=attesa query="bur"
 	#     06:05:45.956  box=[burn]  502[vis=40 q=sea sel=Blu profondo]
 	# Il ponte descrive quello che si VEDE. Chi sa che la propria cartella sara' scartata non lo tocca.
@@ -123,36 +124,46 @@ def _cancelli_riga(sys, params, mode):
 	   direbbe "vuoto" mentre a schermo ci sono ancora i risultati (sonda 3098 delle 06:05, 21/09);
 	3. l'attesa chiesta dalla skin (attesa=1, lotto 418 rivisto: lo schermo decide). Dopo la riscrittura,
 	   perche' dichiara l'impronta; dopo il debounce, perche' dichiararla per una query gia' lasciata
-	   azzererebbe il gettone di quella viva e consegnerebbe a un path abbandonato (code review del 29/09);
-	4. la distruzione del plugin, per le righe in cui non decide la skin (attesa=0 nel path la salta).
-	Il controllo del gettone scaduto (_stale_token_abort) viene DOPO, nel ramo delle costruzioni: se la
-	riga ha cambiato lista la distruzione dichiara la lista nuova e il gettone vecchio smette di
-	esistere, quindi farlo prima butterebbe un'invocazione (tre invece di due, tests/test_418.py).
+	   azzererebbe il gettone di quella viva e consegnerebbe a un path abbandonato (code review del 29/09).
+	Tutto il resto costruisce: attesa=0 (il path normale delle righe che possono cambiare lista) e le righe
+	senza attesa nel path, cioe' Home e hub, la cui lista non cambia mai nello stesso contenitore (lotto 419,
+	RIPOSIZIONAMENTO.md, *La decisione 8, rivista*). Fino al 419 qui c'era un quarto cancello, la distruzione
+	decisa dal plugin (_svuota_prima): decideva dal ponte, cioe' da cio' che il plugin credeva consegnato, e
+	una consegna a un path abbandonato Kodi la scarta senza dirlo. Ora decide sempre la skin, che vede lo schermo.
+	Il controllo del gettone scaduto (_stale_token_abort) viene DOPO, nel ramo delle costruzioni: l'attesa
+	azzera il gettone della lista vecchia, quindi farlo prima butterebbe un'invocazione (tests/test_418.py).
 	Torna True se l'invocazione e' gia' stata servita.
 	"""
 	from modules.kodi_utils import ATTESA_PARAM
 	coppia = _AZIONI_HUB_RICERCA.get(mode)
 	if coppia and params.get('action') == coppia[0] and params.get('search_hub'): params['action'] = coppia[1]
 	if coppia and _search_debounce_abort(sys, params, coppia[1]): return True
-	attesa = params.get(ATTESA_PARAM)
-	if attesa == '1' and _consegna_attesa(sys, params): return True
-	if attesa == '0': return False
-	return _svuota_prima(sys, params)
+	return params.get(ATTESA_PARAM) == '1' and _consegna_attesa(sys, params)
 
 def _consegna_attesa(sys, params):
 	"""LO SCHERMO DECIDE (lotto 418, revisione del 29/09): la riga mostra un'altra lista e la skin chiede il
 	solo segnaposto per quella che sta per costruire. RIPOSIZIONAMENTO.md, *Lo schermo decide*.
 
 	La skin confronta il timbro del primo elemento a schermo (kodi_utils.LISTA_PROP) con la lista che la riga
-	deve mostrare: se sono diversi e la riga ha piu' di un elemento, il path diventa quello con attesa=1.
-	Qui si consegna il segnaposto e basta: quando e' a schermo la riga ha un elemento solo, la condizione
-	della skin cade, il path torna quello normale e parte la costruzione, con il cursore sul primo (Kodi
-	riparte dal primo solo passando da un elemento, PR.md §4).
-	NIENTE ORDINE DI RICARICA, ed e' il punto. La distruzione del plugin (_svuota_prima) decideva da cio'
-	che il ponte diceva consegnato, e un segnaposto consegnato a un path gia' abbandonato Kodi lo scarta in
-	silenzio: la costruzione dopo trovava il ponte "vuoto" e costruiva sopra la lista vecchia, col cursore
-	dov'era (Firestick, 13:49 del 29/09). E la ricarica ordinata cambiava il path di una riga gia' passata
-	ad altro, facendo buttare anche la consegna successiva. Qui il path lo cambia la skin, guardando lo schermo.
+	deve mostrare: se sono diversi e in testa c'e' un elemento vero (non un segnaposto), il path diventa quello
+	con attesa=1. Qui si consegna il segnaposto e basta: quando e' a schermo la condizione della skin cade, il
+	path torna quello normale e parte la costruzione, con il cursore sul primo. Kodi riseleziona l'elemento
+	che aveva selezionato se la lista nuova ne ha uno con lo stesso path, e altrimenti tiene l'indice (PR.md
+	§4): il segnaposto non e' mai nella lista nuova, e da un elemento solo l'indice e' il primo. Un titolo vero
+	invece puo' esserci (lotto 419, "visitor q" -> "visitor": il cursore restava sul film di prima).
+	NIENTE ORDINE DI RICARICA, ed e' il punto. La distruzione del plugin (_svuota_prima, tolta col lotto 419)
+	decideva da cio' che il ponte diceva consegnato, e un segnaposto consegnato a un path gia' abbandonato Kodi
+	lo scarta in silenzio: la costruzione dopo trovava il ponte "vuoto" e costruiva sopra la lista vecchia, col
+	cursore dov'era (Firestick, 13:49 del 29/09). E la ricarica ordinata cambiava il path di una riga gia'
+	passata ad altro, facendo buttare anche la consegna successiva. Qui il path lo cambia la skin, guardando
+	lo schermo.
+
+	LA RICERCA TESTUALE (lotto 419). Per le sue righe l'identita' della lista non e' il path ma la query: la
+	skin chiede l'attesa se il primo elemento e' un titolo (non un segnaposto) e non porta la query scritta adesso
+	(Exp_Search_{id}_Attesa). Il giro lo chiude il segnaposto stesso (con lui in testa, Attesa cade); il timbro serve perche' ogni
+	consegna dica di quale lista e' (R1), segnaposto compresi: i lettori di "la riga risponde" (il pannello
+	informazioni, la riga vuota) devono vedere il segnaposto come della query scritta, non di nessuna. La
+	query VIVA, non quella del path: _timbra_query, che la timbra per le costruzioni, qui non si raggiunge.
 
 	reconcile_position dichiara la lista nuova e azzera il gettone della vecchia: il path normale, quando la
 	skin ci torna, arriva senza il '&pages=N' di un'altra lista, e _stale_token_abort non ha niente da buttare.
@@ -164,81 +175,20 @@ def _consegna_attesa(sys, params):
 	della consegna la costruzione dopo non puo' ancora essere partita. Stesso ordine di consegna_posizione.
 	Torna False solo se la riga non ha chiesto il segnaposto o non ha posizione: allora si costruisce e basta.
 	"""
-	from modules.kodi_utils import vuole_segnaposto, end_directory, STATO_ATTESA
+	from modules.kodi_utils import vuole_segnaposto, end_directory, timbra_primo_elemento, QUERY_PROP, STATO_ATTESA
 	from modules import paginator
 	if len(sys.argv) < 3 or not vuole_segnaposto(sys.argv[2]): return False
 	scope, cid = paginator.position_of(params)
 	if not scope: return False
 	key = '%s.%s' % (scope, cid)
 	paginator.reconcile_position(key, params)
-	paginator.log('attesa chiesta dalla skin key=%s: lista %s' % (key, paginator.short(paginator.make_key(params))))
+	query = params.get('query') if params.get('search_hub') else None
+	if query: timbra_primo_elemento(QUERY_PROP, paginator.query_viva() or query)
+	paginator.log('attesa chiesta dalla skin key=%s: lista %s%s'
+				% (key, paginator.short(paginator.make_key(params)), ' query="%s"' % query if query else ''))
 	paginator.mark_build_end(key)
 	try: end_directory(int(sys.argv[1]), cacheToDisc=False, segnaposto=STATO_ATTESA)
 	except: pass
-	return True
-
-def _svuota_prima(sys, params):
-	"""LA DISTRUZIONE DELLA RIGA: se la posizione tiene un'altra lista, la si svuota prima di costruire.
-
-	Kodi non riporta in testa un contenitore che riceve un'altra lista: tiene l'indice, o va sull'ultimo
-	se la lista nuova e' piu' corta (PR.md, voce 4). L'unico caso in cui riparte dal primo e' quando il
-	contenitore passa da UN SOLO elemento. Quindi, invece di costruire sopra la lista vecchia, si
-	consegna subito il solo segnaposto in stato di attesa -- la riga e' distrutta, la skin mostra i
-	segnaposto semitrasparenti -- e si ordina la ricostruzione, che arriva con il cursore sul primo.
-
-	NATA PER LA RICERCA (step 5 di RICERCA.md) e dal lotto 418 per ogni riga. Dalla revisione del 29/09
-	scheda serie e Discover non passano piu' di qui: decide la skin, che vede lo schermo (_consegna_attesa,
-	attesa=0 nel loro path normale). Restano la ricerca testuale e i widget di Home e hub, fino al 419, che
-	porta anche loro allo schermo: allora questa funzione sparisce.
-	Prima c'erano tre risposte alla stessa causa -- questa, il riposizionamento del servizio (Control.Move, lotti
-	92/165/167) e l'azzeramento sull'uscita dalla riga di Arctic Fuse -- e le ultime due fallivano:
-	la prima dipendeva dall'ordine di tre attori, la seconda era legata al fuoco invece che alla lista.
-	RIPOSIZIONAMENTO.md.
-
-	CHI CONSEGNA STATO_ATTESA sono due: questa funzione e _consegna_attesa, cioe' le due risposte a "la riga
-	cambia lista" finche' il 419 non porta tutte le righe allo schermo. Chi sa che la propria cartella sara'
-	scartata (il debounce, l'indexer che molla) non dichiara niente al ponte: la sonda delle 06:05 del 21/09 ha mostrato che una consegna a un path gia'
-	abbandonato non arriva mai a schermo mentre il ponte la registra lo stesso.
-
-	IL GIRO. Si dichiara la lista nuova e si ordina la ricostruzione (paginator.distruggi), si consegna il
-	segnaposto, e solo dopo si spedisce l'ordine. ordina_ricarica e' aperta a qualunque processo -- il
-	plugin annota, il servizio scrive il token, il token cambia il path, Kodi rilegge. Se l'ordine si
-	perde la riga resta in attesa e nessuno riprova: e' il prezzo del lotto 325, uno scrittore solo per
-	il token, e non si paga con una rete a tempo.
-	La dichiarazione e' la correzione del lotto 418: prima la posizione restava con l'impronta e i
-	conteggi della lista vecchia, la ricarica si portava dietro il suo '&pages=N', e _stale_token_abort
-	la buttava come superata. Ogni cambio di lista costava tre invocazioni invece di due. E il gettone
-	(che sta nel path) lo riscrive il servizio in un colpo solo: il path cambia una volta, non due.
-
-	COSA IMPEDISCE IL GIRO INFINITO. BUILT_PROP: la consegna del segnaposto lo porta a 0
-	(paginator.testa_vuota), quindi la ricostruzione trova il contenitore vuoto, `tiene_altra_lista`
-	risponde no e si costruisce. Ma testa_vuota scrive solo se un segnaposto e' stato davvero
-	consegnato: su una riga che non lo chiede la ricostruzione ritroverebbe il posto occupato e
-	svuoterebbe per sempre. Quel caso non si copre con una rete: si rende impossibile, non
-	cominciandolo. Chi non ha chiesto il segnaposto non passa di qui.
-	"""
-	from modules.kodi_utils import (vuole_segnaposto, timbra_primo_elemento, end_directory,
-									QUERY_PROP, STATO_ATTESA)
-	if len(sys.argv) < 3 or not vuole_segnaposto(sys.argv[2]): return False
-	from modules import paginator
-	scope, cid = paginator.position_of(params)
-	if not scope: return False
-	if not paginator.tiene_altra_lista(params): return False
-	from time import time
-	key = '%s.%s' % (scope, cid)
-	query = params.get('query') if params.get('search_hub') else None
-	paginator.log('svuoto prima di costruire key=%s%s' % (key, ' query="%s"' % query if query else ''))
-	paginator.distruggi(key, params, str(int(time() * 1000)))
-	# Solo per la ricerca: l'attesa porta il timbro della query VIVA, non di quella nel path. Il timbro
-	# sta in _timbra_query, che questo cancello scavalca: senza questa riga si consegnerebbe un'attesa
-	# anonima, e le righe di ricerca si mostrano solo per la query scritta adesso (lotto 338).
-	if query: timbra_primo_elemento(QUERY_PROP, paginator.query_viva() or query)
-	try: end_directory(int(sys.argv[1]), cacheToDisc=False, segnaposto=STATO_ATTESA)
-	except: pass
-	# L'ordine si spedisce DOPO la consegna, non prima: ordina_ricarica annota e basta, a spedire e' una
-	# notifica a Kodi, e davanti a endOfDirectory c'e' il thread grafico che aspetta questa cartella
-	# (stessa ragione del lotto 313, che ha spostato li' anche la scrittura del database).
-	paginator.spedisci_ricariche()
 	return True
 
 def _stale_token_abort(sys, params):

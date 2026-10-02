@@ -1,0 +1,12 @@
+<!-- la riga di ricerca {widget_id} -->
+<expression name="Exp_Search_{widget_id}_Risponde">String.IsEqual(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))</expression>
+<expression name="Exp_Search_{widget_id}_Vuota">[$EXP[Exp_Search_{widget_id}_Risponde]] + String.IsEqual(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.segnaposto.stato),vuoto)</expression>
+<expression name="Exp_Search_{widget_id}_AltraLista">!String.IsEmpty(Control.GetLabel(3000).index(1)) + Integer.IsGreater(Container({widget_id}).NumItems,0) + ![$EXP[Exp_Search_{widget_id}_Risponde]]</expression>
+<expression name="Exp_Search_{widget_id}_Attesa">[$EXP[Exp_Search_{widget_id}_AltraLista]] + String.IsEmpty(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.segnaposto))</expression>
+<variable name="Search_Path_{widget_id}">
+    <value condition="$EXP[Exp_Search_{widget_id}_Attesa]">$VAR[{widget_search_variable},{widget_path},{widget_path_end}&amp;pgctl=1105.{widget_id}&amp;vuota=segnaposto&amp;attesa=1]</value>
+    <value condition="!String.IsEmpty(Control.GetLabel(3000).index(1))">$VAR[{widget_search_variable},{widget_path},{widget_path_end}&amp;pgctl=1105.{widget_id}&amp;vuota=segnaposto&amp;attesa=0]$INFO[Window(Home).Property(fenlight.pg.w1105.ctl{widget_id}.pages),&amp;pages=,]</value>
+</variable>
+<variable name="Search_Pagina_{widget_id}">
+    <value condition="Container({widget_id}).IsUpdating + !Control.IsVisible(974{widget_id}) + ![$EXP[Exp_Search_{widget_id}_AltraLista]]">true</value>
+</variable>

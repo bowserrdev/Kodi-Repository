@@ -219,8 +219,8 @@ ACTION_PROP = 'fenlight.pg.action.%s'
 # nell'ordine giusto: sul Mac si' (29/09 00:25:38, la riga VECCHIA spostata 90 ms prima che Kodi
 # applicasse la nuova), sulla Firestick Discover ripartiva dall'elemento N dopo un'animazione visibile.
 # Adesso una riga che riceve una lista diversa passa dal segnaposto d'attesa: lo decide la skin guardando
-# lo schermo (router._consegna_attesa: scheda serie e Discover), o fino al 419 il plugin dal ponte
-# (router._svuota_prima: ricerca testuale, Home e hub). Da un solo elemento Kodi rimette il cursore sul
+# lo schermo (router._consegna_attesa: scheda serie, Discover e dal lotto 419 la ricerca testuale; Home e hub
+# non cambiano mai lista nello stesso contenitore). Da un solo elemento Kodi rimette il cursore sul
 # primo per la sua stessa regola. Nessun tempo da indovinare. Resta a parte 'continua a guardare' (modules/cw_head.py), che risponde a un'altra
 # domanda: un titolo nuovo in testa alla STESSA lista. RIPOSIZIONAMENTO.md.
 # I contenitori dei widget della skin. Arctic Fuse li numera 501-504 (verificato nel file generato e
@@ -1033,8 +1033,8 @@ def consegna_posizione(key, items):
 
 	Chiude la marca "in costruzione" che il router alza per chiunque abbia 'pgctl' nel path
 	(mark_invocation_start): senza, resterebbe orfana. E BUILT_PROP e' il conteggio del ponte: lo leggono
-	il watcher, le ricariche mirate e, fino al 419, la distruzione del plugin (router._svuota_prima, con
-	tiene_altra_lista) per sapere se in quella posizione c'e' qualcosa da togliere.
+	il watcher e le ricariche mirate. (Fino al lotto 419 anche la distruzione del plugin, per sapere se in
+	quella posizione c'era qualcosa da togliere: adesso lo decide la skin, guardando lo schermo.)
 
 	La chiamano set_head, che poi pubblica molto altro, e gli episodi della scheda serie (lotto 418),
 	che non sono un widget e quel molto altro non lo vogliono: la firma di testa servirebbe solo a
@@ -1202,8 +1202,7 @@ def dichiara_vuota(stato=None):
 	e' end_directory a sapere che un segnaposto e' stato consegnato, ed e' la sola a saperlo.
 	CHI CI ARRIVA DAVVERO, oggi, e' meno di quanto sembri, e vale la pena scriverlo perche' e'
 	cambiato due volte:
-	  - router._consegna_attesa e router._svuota_prima, che consegnano un'attesa senza costruire niente.
-	    Sono il caso vivo;
+	  - router._consegna_attesa, che consegna un'attesa senza costruire niente. E' il caso vivo;
 	  - una costruzione che non passa da set_head e finisce con zero elementi. Una riga di ricerca a
 	    zero risultati NON e' questo caso: e' paginata, quindi set_head ha gia' parlato e il guardiano
 	    qui sotto la ferma.
@@ -1305,14 +1304,11 @@ def abilita_token_locale():
 	"""Chiamata dal servizio all'avvio: da qui in poi gli ordini si applicano subito, senza notifica."""
 	_TOKEN_LOCALE[0] = True
 
-def ordina_ricarica(scope, cid, nonce, per_azione=False, nuova=False):
+def ordina_ricarica(scope, cid, nonce, per_azione=False):
 	# Non scrive niente: annota. Lo scrittore e' uno solo e non e' qui.
-	# nuova: la posizione ha cambiato lista (distruggi). Il servizio riparte dal conteggio della lista
-	# nuova invece di tenere quello che trova nel gettone, che e' della vecchia.
-	# Il campo c'e' solo quando vale: gli ordini di sempre restano identici a prima.
-	ordine = {'scope': str(scope), 'cid': str(cid), 'nonce': str(nonce), 'azione': bool(per_azione)}
-	if nuova: ordine['nuova'] = True
-	_ORDINI.append(ordine)
+	# (Fino al lotto 419 c'era anche 'nuova', l'ordine della distruzione del plugin: la posizione aveva
+	# cambiato lista e il servizio ripartiva dal conteggio di quella nuova. La distruzione non c'e' piu'.)
+	_ORDINI.append({'scope': str(scope), 'cid': str(cid), 'nonce': str(nonce), 'azione': bool(per_azione)})
 
 def spedisci_ricariche():
 	"""Manda al servizio gli ordini raccolti. Dentro il servizio li applica e basta."""
@@ -1337,8 +1333,7 @@ def applica_ricariche(dati):
 	fatti = 0
 	for o in dati or []:
 		try:
-			scrivi_token(o.get('scope'), o.get('cid'), ricarica=(o.get('nonce'), bool(o.get('azione'))),
-						nuova=bool(o.get('nuova')))
+			scrivi_token(o.get('scope'), o.get('cid'), ricarica=(o.get('nonce'), bool(o.get('azione'))))
 			fatti += 1
 		except Exception as e:
 			log('ordine di ricarica non applicato (%r): %r' % (o, e))
@@ -1347,15 +1342,11 @@ def applica_ricariche(dati):
 from threading import Lock as _Lock
 _TOKEN_LOCK = _Lock()
 
-def scrivi_token(scope, cid, passi=None, ricarica=None, nuova=False):
+def scrivi_token(scope, cid, passi=None, ricarica=None):
 	"""L'UNICA funzione che compone il token di un contenitore. La chiama solo il servizio.
 
 	passi    nuovo numero di passi (lo alza il watcher). None = lascia quello che c'e'.
 	ricarica (nonce, per_azione) per ordinare una ricostruzione. None = lascia quella che c'e'.
-	nuova    con ricarica: la posizione ha cambiato lista (distruggi, lotto 418). Il conteggio che sta nel
-	         gettone e' quello della lista VECCHIA, e portarlo nel path farebbe buttare la ricostruzione
-	         come superata (token_is_stale); si riparte da quello della lista nuova, che distruggi ha gia'
-	         azzerato per chiave. In una scrittura sola: il path cambia una volta, non due.
 
 	Il token vive nel <content> del widget come $INFO[], quindi cambiarne il valore ricarica SOLO
 	questo contenitore invece di sparare UpdateLibrary, che e' globale. 'reload' e 'rifai' stanno in
@@ -1384,7 +1375,7 @@ def scrivi_token(scope, cid, passi=None, ricarica=None, nuova=False):
 			# essere gia' espansa: il conteggio vero sta nella proprieta' PER CHIAVE, che la scrive
 			# set_state a fine costruzione. Ripiegare sul lotto iniziale la farebbe collassare, ed e'
 			# esattamente il guasto che il lotto 89 ha dovuto disfare.
-			if nuova or not testa: testa = str(raw_pages('%s.%s' % (scope, cid), passi_iniziali()))
+			if not testa: testa = str(raw_pages('%s.%s' % (scope, cid), passi_iniziali()))
 		set_property(prop, '&'.join([testa] + coda) if coda else testa)
 
 def _ricarica(scope, cid, key, nonce, adesso, per_azione=False):
@@ -1907,56 +1898,6 @@ def token_is_stale(params):
 		'build lasciata cadere e token azzerato' % (scope, cid, path_pages))
 	return True
 
-def tiene_altra_lista(params):
-	"""Il contenitore mostra ancora una lista DIVERSA da quella che stiamo per costruire?
-
-	La costruzione non puo' guardare lo schermo, ma non le serve: la risposta sta nel ponte.
-	CTL_KEY_PROP porta l'impronta della lista che occupa quella POSIZIONE, e la aggiorna
-	reconcile_position (in testa a ogni costruzione paginata, all'inizio degli episodi, e nella
-	distruzione stessa) -- quindi finche' non e' girata contiene ancora quella di PRIMA. BUILT_PROP lo
-	scrive consegna_posizione. Se l'impronta e' diversa dalla nostra e il contenitore ha elementi, cio'
-	che l'utente sta vedendo non e' nostro.
-
-	Le due condizioni servono entrambe: un'impronta diversa su un contenitore gia' vuoto non ha niente
-	da togliere, e un contenitore pieno con la NOSTRA impronta e' una ricostruzione in posto (un passo
-	di paginazione, un refresh), che non va svuotata o l'infinite-scroll singhiozza.
-	"""
-	from modules.kodi_utils import get_property
-	scope, cid = position_of(params)
-	if not scope: return False
-	try:
-		if int(get_property(BUILT_PROP % ('%s.%s' % (scope, cid))) or 0) <= 0: return False
-	except Exception: return False
-	attuale = get_property(CTL_KEY_PROP % (scope, cid))
-	return bool(attuale) and attuale != make_key(params)
-
-def _nuova_lista(key, scope, cid, content):
-	"""In questa posizione c'e' adesso la lista `content`: lo si dichiara, e il conteggio per chiave della
-	lista di prima non la descrive piu'. Il pezzo comune a reconcile_position e a distruggi."""
-	from modules.kodi_utils import set_property, clear_property
-	set_property(CTL_KEY_PROP % (scope, cid), content)
-	clear_property(PAGES_PROP % key)
-
-def distruggi(key, params, nonce):
-	"""La riga cambia lista e router._svuota_prima la distrugge: si dichiara la lista nuova e si ordina la
-	ricostruzione. Lotto 418, RIPOSIZIONAMENTO.md.
-
-	DICHIARARE, perche' altrimenti la posizione resterebbe con l'impronta e i conteggi della lista vecchia
-	fino alla ricostruzione, e la ricarica si porterebbe nel path il '&pages=N' della lista precedente:
-	token_is_stale la butterebbe via come superata, e ogni cambio di lista costerebbe tre invocazioni
-	invece di due.
-	SENZA TOCCARE IL GETTONE, ed e' la differenza da reconcile_position. Il gettone sta nel path: se lo
-	si cancellasse qui e poi il servizio lo riscrivesse con la ricarica, il path cambierebbe DUE volte, e
-	Kodi potrebbe chiedere anche quello intermedio -- una costruzione intera che verrebbe scartata, ma
-	che il plugin porta a termine lo stesso (PR.md, voce 5). Lo riscrive il servizio, in un colpo solo,
-	con il conteggio della lista nuova: e' cio' che dice 'nuova' nell'ordine (scrivi_token).
-	"""
-	scope, cid = position_of(params)
-	if not scope: return
-	_nuova_lista(key, scope, cid, make_key(params))
-	ordina_ricarica(scope, cid, nonce, nuova=True)
-	log('distruggi %s: lista nuova %s, ricostruzione ordinata' % (key, short(make_key(params))))
-
 def reconcile_position(key, params):
 	"""Azzera il conteggio se in questa posizione e' cambiata la lista. Torna il path_pages da usare.
 
@@ -1964,8 +1905,8 @@ def reconcile_position(key, params):
 	  - passi_da_caricare, cioe' ogni costruzione paginata, prima di decidere quante pagine caricare;
 	  - gli episodi della scheda serie, che non sono paginati ma occupano una posizione condivisa;
 	  - router._consegna_attesa, quando la skin chiede il segnaposto per la lista che sta per costruire.
-	La distruzione di una riga (lotto 418) dichiara la lista nuova anche lei, ma con distruggi: la parte
-	comune e' _nuova_lista, e la differenza e' che distruggi non tocca il gettone (vedi li').
+	(Fino al lotto 419 la dichiarava anche la distruzione del plugin, senza toccare il gettone: la
+	distruzione non c'e' piu', e questa e' di nuovo l'unica dichiarazione.)
 	E' il rimpiazzo del controllo di cambio inquilino che stava nel watcher: qui il contenuto e' noto
 	per certo, li' era dedotto da cio' che si credeva di vedere a schermo.
 
@@ -1989,14 +1930,15 @@ def reconcile_position(key, params):
 	# Prima volta o lista cambiata. Non si distingue fra i due casi ed e' voluto: in entrambi il
 	# conteggio precedente non descrive quello che stiamo per costruire.
 	was = get_property(prop)
-	_nuova_lista(key, scope, cid, content)
+	set_property(prop, content)
+	clear_property(PAGES_PROP % key)
 	clear_property(CTL_PAGES_PROP % (scope, cid))
 	# IL CURSORE (lotto 163, e dal 418 non e' piu' compito di questa funzione). Kodi non riporta in testa
 	# un contenitore che riceve un'altra lista: CGUIBaseContainer::UpdateListProvider cerca l'elemento
 	# selezionato per puntatore e poi per path, e se non lo trova tiene l'indice -- o va sull'ultimo se
 	# la lista nuova e' piu' corta (PR.md, voce 4). Qui si accodava il riposizionamento del servizio;
 	# adesso la riga che cambia lista passa dal segnaposto d'attesa prima ancora di arrivare qui
-	# (router._consegna_attesa, o fino al 419 router._svuota_prima).
+	# (router._consegna_attesa, chiesto dalla skin).
 	log('reconcile %s: contenuto %s -> %s, conteggio azzerato' % (key, short(was) if was else '(nuovo)', short(content)))
 	return 0
 

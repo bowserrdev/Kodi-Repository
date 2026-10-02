@@ -64,13 +64,18 @@
         <param name="widget_showoverlay">false</param>
         <param name="congela">false</param>
         <param name="congelata">false</param>
+        <!-- LOTTO 419: il controllo d'identita' del rilevatore (Riga_Attesa). Lo passano le righe che possono
+             mostrare un'altra lista: qui le righe di ricerca a righe separate (search_row_standard.xmltemplate). -->
+        <param name="identita">true</param>
         <definition>
             <include content="Widget_Label">
                 <param name="groupid">$PARAM[groupid]</param>
                 <param name="label">$PARAM[label]</param>
                 <param name="id">$PARAM[id]</param>
                 <param name="visible">[Container($PARAM[id]).IsUpdating | !Integer.IsEqual(Container($PARAM[id]).NumItems,0) | $PARAM[altvisible]] + $PARAM[visible]</param>
-                <param name="busy_visible">[Container($PARAM[id]).IsUpdating | $PARAM[busy_isupdating]] + $PARAM[busy_visible]</param>
+                <!-- LOTTO 419: oppure la riga mostra un'altra lista (identita' falsa), letto dai dati e non solo dal
+                     rilevatore, che dopo una casella vuota arriva in ritardo (PR.md voce 30, visto nella registrazione del 02/10 16:01); vedi Hub_Combined_Widget. -->
+                <param name="busy_visible">[[Container($PARAM[id]).IsUpdating | $PARAM[busy_isupdating]] + $PARAM[busy_visible]] | ![$PARAM[identita]]</param>
                 <param name="usewidgetlabel">$PARAM[usewidgetlabel]</param>
                 <param name="labelvisible">$PARAM[labelvisible]</param>
                 <param name="labeltop">$PARAM[labeltop]</param>
@@ -81,6 +86,7 @@
                      e un gruppo in piu' diventerebbe un elemento della colonna. Vedi Riga_Attesa. -->
                 <include content="Riga_Attesa">
                     <param name="id">$PARAM[id]</param>
+                    <param name="identita">$PARAM[identita]</param>
                 </include>
                 <include content="Animation_ConditionalFade">
                     <param name="condition">$PARAM[conditional_fade]</param>
@@ -108,7 +114,7 @@
                 </include>
                 <top>$PARAM[widgettop]</top>
                 <height>$PARAM[widgetheight]</height>
-                <animation effect="fade" start="100" end="0" time="0" condition="[Container($PARAM[id]).IsUpdating | $PARAM[busy_isupdating]] + $PARAM[busy_visible]">Conditional</animation>
+                <animation effect="fade" start="100" end="0" time="0" condition="[[Container($PARAM[id]).IsUpdating | $PARAM[busy_isupdating]] + $PARAM[busy_visible]] | ![$PARAM[identita]]">Conditional</animation>
                 <include content="Widget_Row_Visibile">
                     <param name="accesa">$PARAM[visible] + [Container($PARAM[id]).IsUpdating | !Integer.IsEqual(Container($PARAM[id]).NumItems,0) | $PARAM[altvisible]]</param>
                     <param name="congela">$PARAM[congela]</param>
@@ -598,8 +604,10 @@
     </include>
 
     <!-- LOTTO 418. LA RIGA IN ATTESA, definita una volta sola. RIPOSIZIONAMENTO.md.
-         Una riga che riceve una lista diversa viene DISTRUTTA dal plugin (router._svuota_prima): riceve un
-         solo elemento, il segnaposto in stato 'attesa', e Kodi rimette il cursore sul primo. Mentre e' cosi'
+         Una riga che deve mostrare una lista diversa passa dall'attesa: lo decide la skin guardando lo schermo
+         (l'espressione AltraLista della riga: episodi, Discover, dal lotto 419 la ricerca testuale), il plugin
+         consegna un solo elemento, il segnaposto in stato 'attesa' (router._consegna_attesa), e Kodi rimette il
+         cursore sul primo. Fino al 419 per la ricerca decideva il plugin dal ponte (_svuota_prima). Mentre e' cosi'
          si vedono SOLO i segnaposto semitrasparenti (Widget_Busy), gli elementi si nascondono, e la rotellina
          tace: i segnaposto dicono gia' "sto caricando", la rotellina resta il segnale di "arriva altro in una
          riga che ha gia' i suoi elementi" (la paginazione, una ricostruzione in posto).
@@ -621,10 +629,15 @@
          La condizione, in ordine:
            la riga e' vuota e Kodi la sta riempiendo (vuota e FERMA no: una riga di un altro addon che ha
            risposto senza elementi mostrerebbe i segnaposto per sempre, come se caricasse);
-           il primo elemento e' il segnaposto in attesa (la riga e' stata distrutta);
+           il primo elemento e' il segnaposto in attesa;
            c'e' solo il segnaposto e Kodi sta aggiornando ("nessun risultato" che si ricostruisce);
-           oppure il controllo d'identita' della riga e' falso (la ricerca testuale, lotto 419: il primo
-           elemento non porta la query scritta adesso). Chi non lo passa ha 'true'.
+           oppure il controllo d'identita' della riga e' falso: la riga mostra ancora un'altra lista, e gli
+           elementi vecchi si nascondono subito, prima che arrivi il segnaposto (!AltraLista: episodi, Discover e
+           ricerca testuale). Home e hub non lo passano, e vale 'true': la loro lista non cambia.
+           ATTENZIONE: l'identita' e' "la riga ha elementi di un'altra lista", con UN elemento o mille. Non e' la
+           decisione del path (le espressioni Attesa): usarla qui lasciava a schermo l'unico elemento della lista di
+           prima (Mac, 02/10 15:28). E chi la legge per mascherare la legge come condizione, non solo da questo
+           rilevatore, che dopo un gruppo nascosto arriva in ritardo (PR.md voce 30).
          Cosa NON c'e': "Kodi sta aggiornando" da solo. E' il caso della stessa lista ricostruita, dove gli
          elementi restano a schermo e niente deve coprirli. -->
     <include name="Riga_Attesa">
@@ -642,9 +655,11 @@
         <param name="labelheight">widget_label_h</param>
         <param name="widgettop">widget_items_t</param>
         <param name="widgetheight">widget_items_h</param>
+        <param name="identita">true</param>
         <definition>
             <include content="Widget_Content">
                 <param name="id">$PARAM[id]</param>
+                <param name="identita">$PARAM[identita]</param>
                 <param name="groupid">$PARAM[groupid]</param>
                 <param name="label">$PARAM[label]</param>
                 <param name="usewidgetlabel">$PARAM[usewidgetlabel]</param>
@@ -696,12 +711,16 @@
         <param name="congela_succ1">0</param>
         <param name="congela_succ2">0</param>
         <param name="congela_testa">false</param>
+        <!-- LOTTO 419: il controllo d'identita' del rilevatore, vedi Widget_Content. Le righe di Home e hub non lo
+             passano: la loro lista non cambia mai nello stesso contenitore. -->
+        <param name="identita">true</param>
         <!-- LOTTO 428: la finestra della riga ('home', '1101', '1105'...), dove scrivere TMDbHelper.WidgetContainer.
              Senza valore predefinito, di proposito: una riga che non la dichiara non scrive da nessuna parte e si vede
              subito, invece di scrivere nella finestra sbagliata. La passano i template del generatore. -->
         <definition>
             <include content="_Widget_Row">
                 <param name="id">$PARAM[id]</param>
+                <param name="identita">$PARAM[identita]</param>
                 <param name="groupid">$PARAM[groupid]</param>
                 <param name="label">$PARAM[label]</param>
                 <param name="usewidgetlabel">$PARAM[usewidgetlabel]</param>
