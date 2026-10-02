@@ -44,7 +44,7 @@ passi_da_caricare, non ha pagine, nel log dichiara hasmore=False. Questa regola 
 Stava dentro il paginatore per un incidente di percorso -- set_head passava di li' -- e da quella
 convivenza sono arrivati un controllo sull'azione, una proprieta' in piu' e una coda con due
 committenti che non si somigliano. (Quella coda, fenlight.pg.rehead, dal lotto 418 non esiste piu':
-una riga che cambia lista passa dal segnaposto d'attesa (router._consegna_attesa, router._svuota_prima).
+una riga che cambia lista passa dal segnaposto d'attesa, chiesto dalla skin (router._consegna_attesa).
 Questa regola resta perche' risponde a un'altra domanda -- un titolo nuovo in testa alla STESSA lista -- dove non c'e' niente da distruggere.)
 
 PERCHE' IL LAVORO LO FA IL SERVIZIO E NON IL PLUGIN. Quando la build finisce, Kodi non ha ancora

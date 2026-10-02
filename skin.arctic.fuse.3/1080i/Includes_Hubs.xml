@@ -169,7 +169,8 @@
         <param name="onup">601</param>
         <param name="refocus">SetFocus(601)</param>
         <param name="widgetpath" />
-        <!-- il controllo d'identita' del rilevatore (Riga_Attesa): lo passa Discover, dove decide la skin -->
+        <!-- il controllo d'identita' del rilevatore (Riga_Attesa): lo passano le righe che possono mostrare un'altra
+             lista, Discover e le righe di ricerca (lotto 419). Home e hub no: la loro lista non cambia. -->
         <param name="identita">true</param>
         <definition>
             <!-- LOTTO 418: il rilevatore della riga in attesa, prima della riga (vedi Riga_Attesa in
@@ -186,8 +187,13 @@
                 <bottom>-40</bottom>
                 <!-- LOTTO 418: mentre la riga e' in attesa gli elementi non si vedono, compreso il segnaposto
                      stesso: si vedono solo i segnaposto semitrasparenti. Dissolvenza e non visible: un
-                     contenitore nascosto non rilegge il path, e la ricarica che lo riempie non arriverebbe. -->
-                <animation effect="fade" start="100" end="0" time="0" condition="Control.IsVisible(974$PARAM[id])">Conditional</animation>
+                     contenitore nascosto non rilegge il path, e la ricarica che lo riempie non arriverebbe.
+                     LOTTO 419: l'identita' si legge anche QUI, come condizione sui dati, e non solo dal rilevatore.
+                     Control.IsVisible(974...) e' lo stato di un altro controllo: dopo che il gruppo e' stato nascosto
+                     (casella vuota) resta vecchio finche' Kodi non lo rielabora, e chi lo legge per primo nel fotogramma
+                     fissa quel valore per tutti quelli che scrivono la stessa condizione. Alla prima lettera di una
+                     ricerca nuova il titolo di quella di prima si disegnava per un fotogramma (PR.md voce 30, visto nella registrazione del 02/10 16:01). -->
+                <animation effect="fade" start="100" end="0" time="0" condition="Control.IsVisible(974$PARAM[id]) | ![$PARAM[identita]]">Conditional</animation>
                 <onup>$PARAM[onup]</onup>
                 <include content="Action_Widget_OnBack">
                     <param name="id">$PARAM[id]</param>
@@ -256,7 +262,7 @@
 
             </include>
             <include content="Widget_Busy">
-                <param name="visible">Control.IsVisible(974$PARAM[id])</param>
+                <param name="visible">Control.IsVisible(974$PARAM[id]) | ![$PARAM[identita]]</param>
                 <param name="include">$PARAM[include]</param>
                 <top>510</top>
                 <left>view_pad</left>
@@ -437,8 +443,13 @@
                 <visible>![$EXP[Exp_Hubs_SlideInfo] | Control.IsVisible(973$PARAM[id])]</visible>
                 <include>Info_Panel_Dimensions</include>
                 <include>Home_Info_Animation</include>
+                <!-- LOTTO 419: nella ricerca i dettagli descrivono la riga a schermo solo se i suoi elementi sono della
+                     query scritta e non sono il segnaposto: la regola del logo qui sopra, letta dai dati e mai dal
+                     rilevatore 974, che dopo una casella vuota arriva in ritardo (PR.md voce 30, visto nella registrazione del 02/10 16:01). Dal 419 la riga resta visibile anche mentre tiene i risultati di
+                     un'altra query, con gli elementi in dissolvenza: senza questo termine trama e dati sarebbero quelli
+                     dell'elemento vecchio fino all'arrivo dei nuovi (RIPOSIZIONAMENTO.md, V26). -->
                 <include content="Info_Panel">
-                    <param name="visible">[!$EXP[Exp_InfoDialogs] + [[$EXP[Exp_Search_Window_Text] + Control.IsVisible($PARAM[id])] | [!$EXP[Exp_Search_Window_Text] + Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id])]]]</param>
+                    <param name="visible">[!$EXP[Exp_InfoDialogs] + [[$EXP[Exp_Search_Window_Text] + Control.IsVisible($PARAM[id]) + String.IsEqual(Container($PARAM[id]).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1)) + String.IsEmpty(Container($PARAM[id]).ListItemAbsolute(0).Property(fenlight.segnaposto))] | [!$EXP[Exp_Search_Window_Text] + Integer.IsEqual(Window.Property(TMDBHelper.WidgetContainer),$PARAM[id])]]]</param>
                     <!-- LOTTO 296 -> 297: qui c'era visible_line = !Control.IsVisible(972$PARAM[id]). Ora sparisce
                          l'intero blocco (gruppo qui sopra), quindi la condizione sulla sola riga e' superflua e si
                          toglie per non valutarla a ogni fotogramma. -->

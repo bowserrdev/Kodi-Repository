@@ -5,14 +5,14 @@
     <property name="widget_id">$NUMBER[{widget_id}]</property>
     <property name="show_artwork">true</property>
     <property name="widget_numitems">$INFO[Container({widget_id}).NumItems]</property>
-    <visible>!String.IsEmpty(Control.GetLabel(3000).index(1))</visible>
-    <!-- Stesso cancello della riga (search_row.xmltemplate): la linguetta esiste solo se il primo elemento
-         della SUA riga porta la query scritta adesso, il che implica anche che la riga ha elementi. Con il
-         solo NumItems restava accesa, al cambio di query, con il nome dei risultati vecchi (19/09). Da
-         questa visible dipendono anche la linea sotto le linguette e la freccia giu' verso 601: leggono
-         Container(601).NumItems. -->
-    <!-- STEP 4: e il segnaposto non merita una linguetta. Lo porta anche lui, il timbro della query,
-         quindi senza questo termine una riga che ha risposto "niente" avrebbe comunque il suo nome
-         in cima, e da Container(601).NumItems dipende anche "Nessun risultato". -->
-    <visible>String.IsEqual(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1)) + String.IsEmpty(Container({widget_id}).ListItemAbsolute(0).Property(fenlight.segnaposto))</visible>
+    <!-- LOTTO 419: la riga sta caricando altre pagine (search_regola.xmltemplate). La legge la rotellina della
+         striscia (Exp_Search_Row_Spinner) dalla linguetta scelta: e' la riga a schermo, e le righe nascoste
+         non si aggiornano. Cosi' nessuna espressione deve elencare gli id delle righe. -->
+    <property name="pagina">$VAR[Search_Pagina_{widget_id}]</property>
+    <!-- LOTTO 419: la linguetta c'e' se la casella ha testo e la sua riga NON ha risposto "niente" alla query
+         scritta adesso (Exp_Search_N_Vuota, generata). C'e' quindi subito, anche mentre la riga aspetta: la riga
+         mostra i segnaposto. Prima (lotto 338, step 4) compariva solo quando la riga aveva TITOLI della query
+         scritta, e "Ricerca in corso" copriva l'attesa. Da questa visible dipendono la linea sotto le linguette,
+         la freccia giu' verso 601 e "Nessun risultato": leggono Container(601).NumItems. -->
+    <visible>!String.IsEmpty(Control.GetLabel(3000).index(1)) + ![$EXP[Exp_Search_{widget_id}_Vuota]]</visible>
 </item>

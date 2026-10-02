@@ -284,13 +284,18 @@
          La risposta giusta senza fuoco e' la stessa usata dal pannello info: in combinata e' visibile un
          solo row della ricerca, quello della linguetta selezionata. Vedi Hub_Combined_Info.
          Gli id sono letterali per la ragione di sempre (Kodi non risolve Container($INFO[...])) e
-         l'intervallo 502-506 e' quello di Exp_Search_Row_Spinner. -->
+         l'intervallo 502-506 copre le righe di ricerca configurabili (il generatore le numera da 502).
+         LOTTO 419: solo se gli elementi della riga sono della query scritta (il timbro, come il logo). Dal 419 la
+         riga resta visibile anche mentre tiene i risultati di un'altra query, in dissolvenza: senza il termine il
+         fanart sarebbe quello dell'elemento vecchio. Dai dati e MAI dal rilevatore 974: lo sfondo si elabora per
+         primo nella finestra, leggeva il rilevatore prima che Kodi lo aggiornasse e ne fissava il valore vecchio
+         per tutto il fotogramma, anche per la riga (PR.md voce 30, visto nella registrazione del 02/10 16:01). -->
     <variable name="Image_Foreground">
-        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(502)">$INFO[Container(502).ListItem.Art(fanart)]</value>
-        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(503)">$INFO[Container(503).ListItem.Art(fanart)]</value>
-        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(504)">$INFO[Container(504).ListItem.Art(fanart)]</value>
-        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(505)">$INFO[Container(505).ListItem.Art(fanart)]</value>
-        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(506)">$INFO[Container(506).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(502) + String.IsEqual(Container(502).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))">$INFO[Container(502).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(503) + String.IsEqual(Container(503).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))">$INFO[Container(503).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(504) + String.IsEqual(Container(504).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))">$INFO[Container(504).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(505) + String.IsEqual(Container(505).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))">$INFO[Container(505).ListItem.Art(fanart)]</value>
+        <value condition="$EXP[Exp_Search_Window_Text] + Control.IsVisible(506) + String.IsEqual(Container(506).ListItemAbsolute(0).Property(fenlight.query),Control.GetLabel(3000).index(1))">$INFO[Container(506).ListItem.Art(fanart)]</value>
         <value condition="$EXP[Exp_BackgroundArtwork_IsSimple]">$INFO[Window(Home).Property(TMDbHelper.SimpleBackground.BlurImage.Original)]</value>
         <value condition="!$EXP[Exp_TMDbHelper_IsBlur]">$VAR[Image_Foreground_NoService]</value>
         <value condition="!String.IsEmpty(Window.Property(TMDbHelper.ListItem.BlurImage.Original))">$INFO[Window.Property(TMDbHelper.ListItem.BlurImage.Original)]</value>

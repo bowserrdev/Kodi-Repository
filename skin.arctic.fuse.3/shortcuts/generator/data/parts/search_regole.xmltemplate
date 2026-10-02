@@ -1,0 +1,26 @@
+<!-- {comments}
+     LOTTO 419. Espressioni e variabili AL PRIMO LIVELLO del file generato, non dentro un include: le leggono le
+     righe (search_row, search_row_standard), le linguette (search_item) e Includes_Search.xml. Una copia per riga
+     perche' in Kodi espressioni e variabili non prendono parametri (PR.md, voce 20), ma una sola regola: questo
+     template. RIPOSIZIONAMENTO.md, *Lotto 419*. -->
+<!-- PER OGNI RIGA DI RICERCA. Lo schermo decide (lotto 418, rivisto il 29/09), per la ricerca testuale dal
+     lotto 419. L'identita' della lista di una riga di ricerca e' la QUERY: e' l'unica parte del path che cambia.
+     Risponde: il primo elemento porta la query scritta adesso (fenlight.query, kodi_utils.QUERY_PROP; la regola
+     del lotto 338). La portano tutte le consegne, il segnaposto d'attesa compreso (router._consegna_attesa).
+     Vuota: la riga ha risposto "niente" alla query scritta adesso. Nasconde la riga e la sua linguetta.
+     AltraLista: la riga ha elementi e non risponde, cioe' mostra i risultati di un'altra query. Li maschera
+     (il rilevatore di Riga_Attesa, parametro identita), anche se e' UNO solo.
+     Attesa: AltraLista con un TITOLO VERO in testa, non un segnaposto. Decide il path. Kodi, ricevuta la lista
+     nuova, riseleziona l'elemento che aveva selezionato se ne trova uno con lo stesso path (PR.md, voce 4): un
+     segnaposto non c'e' mai nella lista nuova, quindi da li' si riparte dal primo senza giro; un titolo si', se
+     la ricerca nuova lo contiene, e il cursore restava su di lui ("visitor q" -> "visitor", Mac 02/10 16:01).
+     Prima c'era "piu' di un elemento", che presupponeva il contrario.
+     Sono DUE domande, e finche' erano una sola espressione un unico titolo della ricerca di prima restava a
+     schermo per tutta la costruzione (Mac, 02/10 15:28, "visitor q" -> "nisnie"). Stessa forma di Discover e
+     degli episodi (tests/test_419.py).
+     Il path: con Attesa il solo segnaposto (attesa=1, senza gettone); a casella piena la costruzione
+     (attesa=0) con il gettone delle pagine, che deve stare nel VALORE di una variabile (Defs_Widget_Content).
+     A casella vuota nessun valore, quindi nessun path.
+     Pagina: la riga sta caricando altre pagine (aggiornamento senza segnaposto, la regola di Riga_Attesa). La
+     legge la linguetta, e da li' la rotellina della striscia (Exp_Search_Row_Spinner). -->
+{includes_part}

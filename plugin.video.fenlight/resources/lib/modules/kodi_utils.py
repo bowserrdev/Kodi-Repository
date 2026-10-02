@@ -243,7 +243,8 @@ _SEGNAPOSTO_ASPETTO = {
 # lista e' cio' che vede: LISTA_PROP, sul primo elemento, e' il path fino a '&pgctl=', cioe' proprio il
 # valore che la skin ha messo in testa al path e con cui confronta.
 # ATTESA_PARAM: '1' = la skin chiede il solo segnaposto (router._consegna_attesa); '0' = il path normale di
-# una riga in cui decide la skin, che quindi non passa dalla distruzione del plugin (router._svuota_prima).
+# una riga che puo' cambiare lista (episodi, Discover, ricerca testuale), che costruisce. Home e hub non hanno
+# il parametro: la loro lista non cambia mai nello stesso contenitore, e costruiscono anche loro (lotto 419).
 LISTA_PROP = 'fenlight.lista'
 ATTESA_PARAM = 'attesa'
 # LOTTO 427 -- gli episodi visti della stagione che il pannello mostra, sul suo primo elemento. La lista stagioni

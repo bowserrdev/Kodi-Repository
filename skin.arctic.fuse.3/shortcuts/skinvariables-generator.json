@@ -3,7 +3,7 @@
     "output": "script-skinvariables-generator-includes-{skinuser}.xml",
     "header": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<includes>",
     "footer": "</includes>",
-    "buildv": "0.3.2-finestra-della-riga",
+    "buildv": "0.3.7-attesa-sui-titoli",
     "skinid": "skin.arctic.fuse.3",
     "getnfo": {},
     "global": {
@@ -13,6 +13,7 @@
     "genxml": [
         {"datafile": "generator/data/base/home_widgets.xml"},
         {"datafile": "generator/data/base/home_submenu.xml"},
+        {"datafile": "generator/data/base/search_regole.xml"},
         {"datafile": "generator/data/base/search_widgets.xml"},
         {"datafile": "generator/data/base/search_widgets_standard.xml"},
         {"datafile": "generator/data/base/search_selector.xml"},
